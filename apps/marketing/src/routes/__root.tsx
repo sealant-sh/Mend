@@ -8,9 +8,9 @@ import { PLATFORM_SITE_URL, PLATFORM_URL, REPO_URL } from "#/components/primitiv
 
 import appCss from "../styles.css?url";
 
-const TITLE = "Mend — issue in, reviewed pull request out · by Sealant";
+const TITLE = "Mend — coding agents that show their work";
 const DESCRIPTION =
-  "Mend hands your GitHub issue to a coding harness in a self-hosted Sealant sandbox and hands back a pull request with the whole run as evidence — the diff, the commands, the checks, the artifacts, and a record you can replay. Open-source, by Sealant, built on the public SDK.";
+  "Mend takes a GitHub issue, runs a coding harness in an isolated sandbox, and opens a pull request with the complete, replayable record of how the change was made: every command, every test run, every file touched. Open source, self-hosted, built on Sealant.";
 
 export const Route = createRootRoute({
   head: () => ({
@@ -43,10 +43,10 @@ function RootComponent() {
             <div className="flex items-center gap-9">
               <Brand />
               <nav className="hidden items-center gap-7 lg:flex" aria-label="Primary">
-                <TopLevelNavLink href="#loop">The loop</TopLevelNavLink>
-                <TopLevelNavLink href="#review">Review</TopLevelNavLink>
-                <TopLevelNavLink href="#queue">The queue</TopLevelNavLink>
-                <TopLevelNavLink href="#sdk">SDK</TopLevelNavLink>
+                <TopLevelNavLink href="#why">Why</TopLevelNavLink>
+                <TopLevelNavLink href="#evidence">The evidence</TopLevelNavLink>
+                <TopLevelNavLink href="#how">How it works</TopLevelNavLink>
+                <TopLevelNavLink href="#mobile">Mobile</TopLevelNavLink>
                 <TopLevelNavLink href={PLATFORM_SITE_URL}>Sealant</TopLevelNavLink>
               </nav>
             </div>
@@ -83,17 +83,18 @@ function RootComponent() {
                   <span className="font-mono text-xs font-normal text-faint">by Sealant</span>
                 </a>
                 <p className="mt-4 max-w-[34ch] text-sm leading-relaxed text-muted-foreground">
-                  Issue in, reviewed pull request out — with the whole run as evidence. An
-                  open-source product by Sealant, built on the public SDK.
+                  Takes a GitHub issue, runs a coding harness in an isolated sandbox, and opens a
+                  pull request with the complete record of how the change was made. Open source and
+                  self-hosted.
                 </p>
               </div>
               <FooterCol
                 title="Product"
                 links={[
-                  ["The loop", "#loop"],
-                  ["Review", "#review"],
-                  ["The queue", "#queue"],
-                  ["Built on the SDK", "#sdk"],
+                  ["Why", "#why"],
+                  ["The evidence", "#evidence"],
+                  ["How it works", "#how"],
+                  ["The mobile app", "#mobile"],
                   ["GitHub", REPO_URL],
                 ]}
               />

@@ -5,7 +5,12 @@ import { ArrowRight } from "lucide-react";
 
 import { Container, Reveal } from "#/components/primitives";
 
-const STEPS = ["File an issue", "A harness mends it", "Review the run", "Merge the PR"] as const;
+const STEPS = [
+  "File an issue",
+  "A harness mends it",
+  "Review the evidence",
+  "Merge the PR",
+] as const;
 
 export function LoopStrip() {
   return (

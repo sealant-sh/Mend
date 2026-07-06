@@ -195,11 +195,17 @@ export function Callout({ children, className = "" }: { children: ReactNode; cla
 }
 
 // Honest build status — dot + word, never a glowing badge.
-export function BuildingNow({ className = "" }: { className?: string }) {
+export function BuildingNow({
+  word = "In development",
+  className = "",
+}: {
+  word?: string;
+  className?: string;
+}) {
   return (
     <span className={`flex shrink-0 items-center gap-1.5 ${className}`}>
       <span className="size-1.5 rounded-full bg-warning-dot" aria-hidden="true" />
-      <span className="font-mono text-xs text-warning">Building now</span>
+      <span className="font-mono text-xs text-warning">{word}</span>
     </span>
   );
 }

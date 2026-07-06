@@ -1,28 +1,31 @@
 import { createFileRoute } from "@tanstack/react-router";
 
+import { Evidence } from "#/sections/evidence";
 import { FinalCta } from "#/sections/final-cta";
 import { Hero } from "#/sections/hero";
 import { LoopStrip } from "#/sections/loop-strip";
+import { Mobile } from "#/sections/mobile";
 import { OpenSource } from "#/sections/opensource";
-import { Queue } from "#/sections/queue";
-import { Review } from "#/sections/review";
-import { BuiltOnSdk } from "#/sections/sdk";
+import { HowItWorks } from "#/sections/queue";
+import { Why } from "#/sections/why";
 
 export const Route = createFileRoute("/")({
   component: MarketingPage,
 });
 
-// Ordered by value: the reviewed change (hero) → the loop → the review surface
-// (evidence) → the queue (product surface) → built on the public SDK → open
-// source → adopt.
+// Ordered for a developer meeting Mend before Sealant: the artifact (hero) →
+// the loop in one line → why the current workflow fails → the evidence and
+// the runtime underneath it → how the product works → the mobile app → open
+// source → the ask.
 function MarketingPage() {
   return (
     <main className="overflow-x-clip">
       <Hero />
       <LoopStrip />
-      <Review />
-      <Queue />
-      <BuiltOnSdk />
+      <Why />
+      <Evidence />
+      <HowItWorks />
+      <Mobile />
       <OpenSource />
       <FinalCta />
     </main>

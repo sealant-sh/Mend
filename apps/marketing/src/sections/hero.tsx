@@ -1,20 +1,12 @@
-// THE HERO — the artifact, not the promise. A centered claim, then the Mend
-// Exhibit as the hero screenshot: an issue in, the mending run, and the
-// reviewed pull request out with its evidence attached. Static-legible; the
-// page opens on a change that is ready to review.
+// THE HERO — one concrete claim, then the artifact as the hero screenshot:
+// an issue in, the run that fixed it, and the pull request out with its
+// record attached. No adjectives doing the work the exhibit should do.
 
 import { motion, useReducedMotion } from "framer-motion";
 
 import { GitHubLogo } from "#/components/github";
 import { MendExhibit } from "#/components/mend-exhibit";
-import {
-  PLATFORM_SITE_URL,
-  PrimaryCTA,
-  REPO_URL,
-  riseChild,
-  riseParent,
-  SecondaryCTA,
-} from "#/components/primitives";
+import { PrimaryCTA, REPO_URL, riseChild, riseParent, SecondaryCTA } from "#/components/primitives";
 
 export function Hero() {
   const reduce = useReducedMotion();
@@ -34,32 +26,34 @@ export function Hero() {
           <motion.div {...child}>
             <span className="ev-eyebrow inline-flex items-center gap-2 text-primary">
               <span className="size-1.5 rounded-full bg-primary" aria-hidden="true" />
-              Issue → reviewed change → PR · by Sealant
+              GitHub issue in → pull request out
             </span>
           </motion.div>
           <motion.h1
             {...child}
             className="mt-6 font-display text-[2.5rem] leading-[1.05] font-semibold tracking-[-0.03em] text-foreground text-balance sm:text-5xl lg:text-[3.4rem]"
           >
-            File the issue. Review the pull request.
+            Coding agents that show their work.
           </motion.h1>
           <motion.p
             {...child}
             className="mx-auto mt-6 max-w-[58ch] text-lg leading-relaxed text-muted-foreground"
           >
-            Mend hands your GitHub issue to a coding harness in a self-hosted Sealant sandbox and
-            hands back a pull request with the whole run attached: the diff, the commands, the
-            checks, the artifacts, and a record you can replay.
+            Mend takes a GitHub issue, runs a coding harness in an isolated sandbox, and opens a
+            pull request with the complete record of how the change was made: every command, every
+            test run, every file touched. Replayable after the sandbox is gone.
           </motion.p>
           <motion.div {...child} className="mt-9 flex flex-wrap items-center justify-center gap-3">
             <PrimaryCTA href={REPO_URL}>
               <GitHubLogo className="size-4" />
               GitHub
             </PrimaryCTA>
-            <SecondaryCTA href={PLATFORM_SITE_URL}>Built on Sealant</SecondaryCTA>
+            <SecondaryCTA href="#why" external={false}>
+              How it works
+            </SecondaryCTA>
           </motion.div>
           <motion.p {...child} className="mt-6 font-mono text-xs text-faint">
-            Open source · Self-hosted · Building now · Powered by @sealant/sdk
+            Open source · Self-hosted · In development
           </motion.p>
         </motion.div>
 

@@ -1,9 +1,9 @@
-// THE QUEUE — the product surface, shown honestly as work in progress. Issues
-// flow triage → queued → mending → review → PR opened; the board exhibit is a
+// HOW IT WORKS — the queue, shown honestly as work in progress. Issues flow
+// triage → queued → mending → review → PR opened; the board exhibit is a
 // static preview of that surface. Cards are quiet panels with dot+word status;
 // exactly one card is live (the mending run), streaming its latest event.
 
-import { Container, Eyebrow, Reveal, SectionHead } from "#/components/primitives";
+import { BuildingNow, Container, Eyebrow, Reveal, SectionHead } from "#/components/primitives";
 
 type CardTone = "pending" | "queued" | "running" | "review" | "opened";
 
@@ -117,27 +117,25 @@ function Card({ card }: { card: QueueCard }) {
   );
 }
 
-export function Queue() {
+export function HowItWorks() {
   return (
-    <section id="queue" className="bg-[var(--sw-canvas)] py-24 lg:py-32">
+    <section id="how" className="bg-[var(--sw-canvas)] py-24 lg:py-32">
       <Container>
         <div className="flex flex-wrap items-end justify-between gap-6">
           <SectionHead
-            eyebrow={<Eyebrow>The queue</Eyebrow>}
-            title="Your issues, moving through an observable queue."
+            eyebrow={<Eyebrow>How it works</Eyebrow>}
+            title="From issue to PR, stage by stage."
             intro={
               <p>
-                Drag issues from triage into the queue, reorder priorities, and watch mending runs
-                stream their progress live. Review is a stage, not an afterthought — nothing opens a
-                PR until you've seen its evidence.
+                Point Mend at a repository and mark the issues you want handled. They move through
+                five stages, all of them visible: drag an issue into the queue, set its priority, a
+                harness picks it up in a fresh sandbox, and the run streams onto its card while it
+                works.
               </p>
             }
           />
           <Reveal className="pb-1">
-            <span className="flex shrink-0 items-center gap-1.5">
-              <span className="size-1.5 rounded-full bg-warning-dot" aria-hidden="true" />
-              <span className="font-mono text-xs text-warning">Building now</span>
-            </span>
+            <BuildingNow />
           </Reveal>
         </div>
 
@@ -178,16 +176,16 @@ export function Queue() {
           {(
             [
               [
-                "Drag-and-drop, first-class",
-                "Move issues between stages and reorder priority with pointer or keyboard — legal transitions only, built on @dnd-kit.",
+                "Prioritise by dragging",
+                "Reorder the queue and move issues between stages with pointer or keyboard. Only legal transitions accept a drop.",
               ],
               [
-                "Live mending cards",
-                "Running cards stream progress straight from run.record.stream() — the same events the record keeps.",
+                "Watch runs live",
+                "A mending card streams the run's events as the runtime records them — the same events the durable record keeps.",
               ],
               [
-                "Review before anything opens",
-                "The review stage shows the run's evidence: diff, commands, checks, and the record link.",
+                "Review is a gate",
+                "The review stage shows the diff, the commands, the checks, and the record. Approving is what opens the PR — nothing opens one unseen.",
               ],
             ] as const
           ).map(([title, body]) => (
