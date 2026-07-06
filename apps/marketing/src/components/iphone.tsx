@@ -31,7 +31,7 @@ export function IPhoneFrame({
   return (
     <figure className={`w-[17rem] shrink-0 ${className}`}>
       <div className="rounded-[2.8rem] bg-[#17171a] p-[0.45rem] shadow-[var(--shadow-lg)] ring-1 ring-black/25">
-        <div className="relative flex min-h-[33rem] flex-col overflow-hidden rounded-[2.35rem] bg-[var(--sw-bg)]">
+        <div className="relative flex min-h-[36.5rem] flex-col overflow-hidden rounded-[2.35rem] bg-[var(--sw-bg)]">
           <div
             className="absolute top-2.5 left-1/2 z-10 h-[1.25rem] w-[5.2rem] -translate-x-1/2 rounded-full bg-[#17171a]"
             aria-hidden="true"
