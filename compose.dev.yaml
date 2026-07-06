@@ -1,0 +1,18 @@
+# Dev-only Postgres, on 5433 so it never fights a local install.
+# The product compose (mend + postgres + Sealant env) is compose.yaml.
+#
+#   docker compose -f compose.dev.yaml up -d
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: mend
+      POSTGRES_PASSWORD: mend
+      POSTGRES_DB: mend
+    ports:
+      - "5433:5432"
+    volumes:
+      - mend-dev-pgdata:/var/lib/postgresql/data
+
+volumes:
+  mend-dev-pgdata:

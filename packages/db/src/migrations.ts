@@ -1,0 +1,166 @@
+import { Effect } from "effect";
+import { SqlClient } from "effect/unstable/sql";
+
+/**
+ * The core tables from ARCHITECTURE.md §3. pg-boss owns its own `pgboss`
+ * schema (created on start); the tables here are Mend's product state plus
+ * better-auth's required tables (camelCase columns, quoted, as better-auth
+ * expects them).
+ */
+const init = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+
+  yield* sql`
+    CREATE TABLE issues (
+      id text PRIMARY KEY,
+      source text NOT NULL,
+      external_ref text,
+      repository text NOT NULL,
+      title text NOT NULL,
+      body text NOT NULL DEFAULT '',
+      stage text NOT NULL DEFAULT 'triage',
+      position integer,
+      last_failure_run_id text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`CREATE INDEX issues_stage_position_idx ON issues (stage, position)`;
+
+  // One change per issue: the UNIQUE constraint is the cardinality rule.
+  yield* sql`
+    CREATE TABLE changes (
+      id text PRIMARY KEY,
+      issue_id text NOT NULL UNIQUE REFERENCES issues(id) ON DELETE CASCADE,
+      branch text NOT NULL,
+      base_sha text,
+      head_sha text,
+      pr_number integer,
+      pr_url text,
+      freshness text NOT NULL DEFAULT 'current',
+      moved_base_sha text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+
+  // The recording itself stays in Sealant; this is the index over executions.
+  yield* sql`
+    CREATE TABLE runs (
+      id text PRIMARY KEY,
+      issue_id text NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+      change_id text REFERENCES changes(id) ON DELETE SET NULL,
+      kind text NOT NULL,
+      sealant_run_id text,
+      sealant_workspace_id text,
+      status text NOT NULL DEFAULT 'queued',
+      outcome text,
+      summary text,
+      last_seen_sequence bigint NOT NULL DEFAULT 0,
+      started_at timestamptz,
+      settled_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`CREATE INDEX runs_issue_idx ON runs (issue_id)`;
+
+  // One living brief per change; prior versions stay in history.
+  yield* sql`
+    CREATE TABLE briefs (
+      id text PRIMARY KEY,
+      change_id text NOT NULL UNIQUE REFERENCES changes(id) ON DELETE CASCADE,
+      current_version integer NOT NULL DEFAULT 1,
+      document jsonb NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`
+    CREATE TABLE brief_versions (
+      brief_id text NOT NULL REFERENCES briefs(id) ON DELETE CASCADE,
+      version integer NOT NULL,
+      document jsonb NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (brief_id, version)
+    )`;
+  yield* sql`
+    CREATE TABLE review_questions (
+      id text PRIMARY KEY,
+      brief_id text NOT NULL REFERENCES briefs(id) ON DELETE CASCADE,
+      index integer NOT NULL,
+      question text NOT NULL,
+      disposition text NOT NULL,
+      evidence jsonb NOT NULL DEFAULT '[]',
+      UNIQUE (brief_id, index)
+    )`;
+
+  // The interface-inference audit trail: every tool call and model exchange.
+  yield* sql`
+    CREATE TABLE inference_calls (
+      id text PRIMARY KEY,
+      context text NOT NULL,
+      tool text,
+      input jsonb NOT NULL,
+      output jsonb NOT NULL,
+      occurred_at timestamptz NOT NULL DEFAULT now()
+    )`;
+
+  yield* sql`
+    CREATE TABLE settings (
+      key text PRIMARY KEY,
+      value jsonb NOT NULL,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+
+  // better-auth tables — camelCase columns as its pg adapter expects.
+  yield* sql`
+    CREATE TABLE "user" (
+      "id" text PRIMARY KEY,
+      "name" text NOT NULL,
+      "email" text NOT NULL UNIQUE,
+      "emailVerified" boolean NOT NULL DEFAULT false,
+      "image" text,
+      "createdAt" timestamptz NOT NULL DEFAULT now(),
+      "updatedAt" timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`
+    CREATE TABLE "session" (
+      "id" text PRIMARY KEY,
+      "expiresAt" timestamptz NOT NULL,
+      "token" text NOT NULL UNIQUE,
+      "createdAt" timestamptz NOT NULL DEFAULT now(),
+      "updatedAt" timestamptz NOT NULL DEFAULT now(),
+      "ipAddress" text,
+      "userAgent" text,
+      "userId" text NOT NULL REFERENCES "user"("id") ON DELETE CASCADE
+    )`;
+  yield* sql`CREATE INDEX session_user_idx ON "session" ("userId")`;
+  yield* sql`
+    CREATE TABLE "account" (
+      "id" text PRIMARY KEY,
+      "accountId" text NOT NULL,
+      "providerId" text NOT NULL,
+      "userId" text NOT NULL REFERENCES "user"("id") ON DELETE CASCADE,
+      "accessToken" text,
+      "refreshToken" text,
+      "idToken" text,
+      "accessTokenExpiresAt" timestamptz,
+      "refreshTokenExpiresAt" timestamptz,
+      "scope" text,
+      "password" text,
+      "createdAt" timestamptz NOT NULL DEFAULT now(),
+      "updatedAt" timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`CREATE INDEX account_user_idx ON "account" ("userId")`;
+  yield* sql`
+    CREATE TABLE "verification" (
+      "id" text PRIMARY KEY,
+      "identifier" text NOT NULL,
+      "value" text NOT NULL,
+      "expiresAt" timestamptz NOT NULL,
+      "createdAt" timestamptz NOT NULL DEFAULT now(),
+      "updatedAt" timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`CREATE INDEX verification_identifier_idx ON "verification" ("identifier")`;
+});
+
+export const migrations = {
+  "0001_init": init,
+};
