@@ -1,24 +1,124 @@
-import { Effect, Layer } from "effect";
+import { InferenceCallsRepo } from "@mend/db";
+import { SealantClient } from "@mend/sealant";
+import type { InferenceResponse, InferenceToolResult } from "@sealant/sdk";
+import { Config, Effect, Layer, Option } from "effect";
 
-import { InferenceError, InferenceProvider } from "./provider.ts";
+import {
+  InferenceError,
+  InferenceProvider,
+  type InferenceRequest,
+  type InferenceTool,
+} from "./provider.ts";
+
+const MAX_TOOL_ROUNDS = 12;
 
 /**
- * The shipped default: inference via Sealant, on the AI subscriptions the user
- * connected there. That surface does not exist in @sealant/sdk 0.4.0 — the
- * only model-access path today is a harness inside a workspace. Recorded as
- * platform feedback (PLATFORM-FEEDBACK.md, "Inference on connected accounts
- * (no workspace)"); when `sealant.inference.respond(...)` ships, this layer
- * gets its implementation and the dev-only direct layer stops being needed.
+ * The shipped default: inference on the AI subscriptions the user connected in
+ * Sealant (SDK 0.5.0). The model call runs server-side through the official
+ * agent SDKs; the closed tool set executes HERE, and every exchange and tool
+ * call lands in `inference_calls`. Mend ships no model keys.
+ *
+ * MEND_INFERENCE_CLAUDE_ACCOUNT names a specific connected account; unset
+ * means the caller's default account.
  */
-export const sealantProviderLayer = Layer.succeed(InferenceProvider, {
-  respond: () =>
-    Effect.fail(
-      new InferenceError({
-        message:
-          "Inference via Sealant is not available yet: @sealant/sdk 0.4.0 exposes no inference " +
-          "surface (see PLATFORM-FEEDBACK.md, 'Inference on connected accounts'). " +
-          "For development only, provide devDirectProviderLayer instead.",
+export const sealantProviderLayer = Layer.effect(
+  InferenceProvider,
+  Effect.gen(function* () {
+    const sealant = yield* SealantClient;
+    const audit = yield* InferenceCallsRepo;
+    const account = yield* Config.option(Config.string("MEND_INFERENCE_CLAUDE_ACCOUNT"));
+    const credentials = {
+      claude: Option.getOrElse(account, () => true as const),
+    };
+
+    const respond = Effect.fn("InferenceProvider.respond")(function* (request: InferenceRequest) {
+      const toolsByName = new Map<string, InferenceTool>(
+        (request.tools ?? []).map((tool) => [tool.name, tool]),
+      );
+
+      const exchange = (options: Parameters<typeof sealant.inferenceRespond>[0]) =>
+        sealant.inferenceRespond(options).pipe(
+          Effect.mapError((error) => new InferenceError({ message: error.message, cause: error })),
+          Effect.tap((response) =>
+            audit.record({
+              context: request.context,
+              tool: null,
+              input: options,
+              output: response,
+            }),
+          ),
+        );
+
+      const runTool = Effect.fn("InferenceProvider.runTool")(function* (call: {
+        readonly toolCallId: string;
+        readonly name: string;
+        readonly input: unknown;
+      }) {
+        const tool = toolsByName.get(call.name);
+        if (tool === undefined) {
+          const result: InferenceToolResult = {
+            toolCallId: call.toolCallId,
+            content: `Unknown tool: ${call.name}`,
+            isError: true,
+          };
+          return result;
+        }
+        const outcome = yield* tool.handle(call.input).pipe(
+          Effect.map((value) => ({ ok: true as const, value })),
+          Effect.catch((error) => Effect.succeed({ ok: false as const, value: error.message })),
+        );
+        yield* audit.record({
+          context: request.context,
+          tool: tool.name,
+          input: call.input,
+          output: outcome,
+        });
+        const result: InferenceToolResult = {
+          toolCallId: call.toolCallId,
+          content: JSON.stringify(outcome.value),
+          ...(outcome.ok ? {} : { isError: true }),
+        };
+        return result;
+      });
+
+      let response: InferenceResponse = yield* exchange({
+        prompt: request.prompt,
+        ...(request.system === undefined ? {} : { system: request.system }),
+        ...(request.tools === undefined || request.tools.length === 0
+          ? {}
+          : {
+              tools: request.tools.map((tool) => ({
+                name: tool.name,
+                description: tool.description,
+                inputSchema: tool.inputSchema,
+              })),
+            }),
+        ...(request.outputSchema === undefined
+          ? {}
+          : { responseFormat: { type: "json", schema: request.outputSchema } }),
+        credentials,
+      });
+
+      for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+        if (response.turn.type === "text") {
+          if (request.outputSchema === undefined) return response.turn.text;
+          if (response.turn.json !== undefined) return response.turn.json;
+          return yield* Effect.try({
+            try: (): unknown => JSON.parse(response.turn.type === "text" ? response.turn.text : ""),
+            catch: (cause) =>
+              new InferenceError({ message: "final answer was not valid JSON", cause }),
+          });
+        }
+        const toolResults = yield* Effect.forEach(response.turn.calls, runTool);
+        response = yield* exchange({ sessionId: response.sessionId, toolResults });
+      }
+
+      return yield* new InferenceError({
+        message: `tool loop did not settle within ${MAX_TOOL_ROUNDS} rounds`,
         cause: null,
-      }),
-    ),
-});
+      });
+    });
+
+    return { respond };
+  }),
+);

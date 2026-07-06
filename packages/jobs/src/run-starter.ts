@@ -54,7 +54,7 @@ export const runStarterLayer = Layer.effect(
               runId: run.id,
               issueId: issue.id,
               sequence: String(entry.sequence),
-              line: entry.kind,
+              line: entry.summary,
             });
           }),
         ),

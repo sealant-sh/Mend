@@ -4,9 +4,31 @@ Mend consumes the Sealant platform only through the public SDK (`@sealant/sdk`).
 missing something Mend needs, it gets recorded here as feedback for the platform — never worked
 around by importing internals.
 
-Format: date · SDK version · what Mend needed · what exists today · suggested surface.
+Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
+after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
-## 2026-07-06 · 0.4.0 · Inference on connected accounts (no workspace)
+## 2026-07-07 · 0.5.0 · `/effect` exports the ops, not the composition layer
+
+- **Needed:** Mend consumes the workspace/run object model Effect-natively: workspace ready-waiting,
+  harness start, the record read surface (`commands()`/`transcript()`), and the resumable
+  `record.stream({ from })` as a `Stream`. With 0.5.0 those still exist only behind the Promise
+  facade — `dist/effect/run-harness.js` and friends are real but typed against unexported facade
+  internals, and `@sealant/sdk/effect` exports only the api client, the flat operation effects, and
+  `makeSdkRuntime`.
+- **Today:** `@mend/sealant` runs flat calls (connection check, `inferenceRespondOp`) on the Effect
+  core with typed contract errors, but keeps `Effect.tryPromise` around the facade for the stateful
+  handles — a deliberate split, documented in `packages/sealant/src/client.ts`, rather than
+  duplicating the facade's reconstruction/polling logic.
+- **Suggested:** export the composition layer Effect-natively — e.g. a `Workspaces`/`Runs` service
+  pair whose record surface returns `Stream`/`Effect` values — so Effect consumers never touch the
+  Promise boundary.
+
+## ✅ 2026-07-06 · 0.4.0 · Inference on connected accounts (no workspace)
+
+**Shipped in 0.5.0** — `sealant.inference.respond()` (facade) and `inferenceRespondOp` (`/effect`):
+server-side via the official agent SDKs on account references, caller-executed tool loop over
+`sessionId`, JSON response format. Adopted as `@mend/inference`'s shipped `sealantProviderLayer`;
+the dev-only direct layer remains for development.
 
 - **Needed:** Mend's interface inference — brief compilation, run/failure summaries,
   reviewer-comment routing — must run model calls on the user's connected subscriptions (PRODUCT.md:
@@ -26,7 +48,11 @@ Format: date · SDK version · what Mend needed · what exists today · suggeste
   ships, Mend hides inference behind an internal `InferenceProvider` service; the dev-only layer may
   call a provider directly, but the shipped default must be Sealant.
 
-## 2026-07-06 · 0.4.0 · Deterministic exec in a workspace
+## ✅ 2026-07-06 · 0.4.0 · Deterministic exec in a workspace
+
+**Shipped in 0.5.0** — `workspace.exec(argv, options)` returns `{ exitCode, run }` with the exec
+recorded as a run record; exit codes are check data, not errors. Exposed as `SealantClient.exec`;
+the causal proof (M2) builds on it.
 
 - **Needed:** the causal proof (`base fails · head passes · revert fails`) and re-verification on a
   moved base are fixed command sequences (checkout ref → run repro/tests → record exit codes). They
@@ -40,7 +66,11 @@ Format: date · SDK version · what Mend needed · what exists today · suggeste
   exit code and output, recorded into the run record like any process (or a first-class "check run"
   primitive: a list of commands executed verbatim, one record).
 
-## 2026-07-06 · 0.4.0 · `@sealant/sdk/effect` subpath not exported
+## ✅ 2026-07-06 · 0.4.0 · `@sealant/sdk/effect` subpath not exported
+
+**Shipped in 0.5.0** — the subpath exports the contract-derived `SealantApiClient` (+ layer), the
+per-endpoint operation effects with typed contract errors, and `makeSdkRuntime`. `@mend/sealant`'s
+flat calls now run on it; the remaining gap is the composition layer (entry above).
 
 - **Needed:** Mend is Effect end-to-end; it wants the SDK's Effect-native core (services, `Stream`s,
   typed errors) instead of wrapping Promises.
@@ -49,7 +79,12 @@ Format: date · SDK version · what Mend needed · what exists today · suggeste
   `dist/` but are not addressable.
 - **Suggested:** export the subpath. Until then `@mend/sealant` wraps the Promise facade in Effect.
 
-## 2026-07-06 · 0.4.0 · Typed record event taxonomy (the source trail)
+## ✅ 2026-07-06 · 0.4.0 · Typed record event taxonomy (the source trail)
+
+**Shipped in 0.5.0** — `TimelineEntry` is a discriminated union of twelve typed kinds (including
+`networkRequest`/`networkSourceObserved` for the source trail) with a human `summary` per entry and
+an `unknown` forward-compatibility case. Mend's live cards now stream `entry.summary`; the run audit
+and source trail (M2) build on the typed kinds.
 
 - **Needed:** the brief's source trail — every source the agent opened, grouped
   `relied on / consulted / contradicted / discarded`, with provenance chips — requires semantic
