@@ -9,7 +9,7 @@ services:
   mend:
     build: .
     ports:
-      - "3000:3000"
+      - "${MEND_PORT:-3000}:3000"
     environment:
       MEND_MODE: all
       PORT: 3000

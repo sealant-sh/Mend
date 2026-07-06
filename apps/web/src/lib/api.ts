@@ -20,7 +20,7 @@ export interface IssueDto {
 }
 
 export interface SealantConnectionDto {
-  readonly status: "connected" | "unauthorized" | "unreachable";
+  readonly status: "connected" | "unauthorized" | "mismatched" | "unreachable";
   readonly baseUrl: string;
   readonly detail: string | null;
   readonly checkedAt: string;

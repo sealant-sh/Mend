@@ -40,6 +40,11 @@ const STATUS_COPY: Record<
     textClass: "text-success",
   },
   unauthorized: { word: "Unauthorized", dotClass: "bg-danger-dot", textClass: "text-danger" },
+  mismatched: {
+    word: "Responded · surface mismatch",
+    dotClass: "bg-[var(--sw-amber)]",
+    textClass: "text-warning",
+  },
   unreachable: { word: "Unreachable", dotClass: "bg-danger-dot", textClass: "text-danger" },
 };
 

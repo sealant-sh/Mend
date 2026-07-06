@@ -7,6 +7,8 @@ import { Schema } from "effect";
 export const SealantConnectionStatus = Schema.Literals([
   "connected",
   "unauthorized",
+  /** The control plane responded, but not with the SDK surface Mend speaks. */
+  "mismatched",
   "unreachable",
 ]);
 export type SealantConnectionStatus = typeof SealantConnectionStatus.Type;

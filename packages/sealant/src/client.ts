@@ -121,8 +121,16 @@ export class SealantClient extends Context.Service<
           Effect.catch((error) =>
             Effect.succeed(
               new SealantConnection({
+                // A response is evidence too: 401/403 is an auth problem, any
+                // other status means the control plane answered but not with
+                // the surface this SDK speaks (version skew). No response at
+                // all is the only "unreachable".
                 status:
-                  error.status === 401 || error.status === 403 ? "unauthorized" : "unreachable",
+                  error.status === 401 || error.status === 403
+                    ? "unauthorized"
+                    : error.status !== null
+                      ? "mismatched"
+                      : "unreachable",
                 baseUrl: env.baseUrl,
                 detail: error.message,
                 checkedAt: new Date(now),

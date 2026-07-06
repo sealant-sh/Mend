@@ -1,7 +1,10 @@
 # Dev-only Postgres, on 5433 so it never fights a local install.
-# The product compose (mend + postgres + Sealant env) is compose.yaml.
+# The product compose (mend + postgres + Sealant env) is compose.yaml; the
+# distinct project name keeps the two stacks from recreating each other.
 #
 #   docker compose -f compose.dev.yaml up -d
+name: mend-dev
+
 services:
   postgres:
     image: postgres:17-alpine
