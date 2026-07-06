@@ -20,6 +20,9 @@ services:
       # Your Sealant control plane; host.docker.internal reaches the host.
       SEALANT_BASE_URL: ${SEALANT_BASE_URL:-http://host.docker.internal:8080}
       SEALANT_API_KEY: ${SEALANT_API_KEY:-}
+      # Pre-auth owner principal: must be the user id your Sealant web UI
+      # writes connected accounts under, or Mend sees none (PLATFORM-FEEDBACK).
+      SEALANT_OWNER_USER_ID: ${SEALANT_OWNER_USER_ID:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
