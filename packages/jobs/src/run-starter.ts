@@ -4,7 +4,7 @@ import { SealantRunId, SealantWorkspaceId, type Issue, type IssueId, type Run } 
 import { SealantClient } from "@mend/sealant";
 import type { Run as SdkRun } from "@sealant/sdk";
 import { opencode } from "@sealant/sdk";
-import { Effect, Layer, Scope, Stream } from "effect";
+import { Effect, Layer, Option, Stream } from "effect";
 
 import { RunStarter } from "./dispatcher.ts";
 
