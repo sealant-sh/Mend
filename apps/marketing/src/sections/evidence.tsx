@@ -114,7 +114,7 @@ export function Evidence() {
         <div className="grid items-start gap-12 lg:grid-cols-2 lg:gap-16">
           <div className="min-w-0">
             <SectionHead
-              eyebrow={<Eyebrow>The evidence</Eyebrow>}
+              eyebrow={<Eyebrow>Where the recording comes from</Eyebrow>}
               title="The record is written by the runtime, not the model."
               intro={
                 <p>

@@ -36,7 +36,7 @@ const QUEUE_GROUPS: ReadonlyArray<readonly [string, ReadonlyArray<QueueRow>]> = 
       {
         ref: "#209",
         title: "Timezone off-by-one in digest",
-        word: "Evidence ready",
+        word: "Brief ready",
         dot: "bg-[var(--sw-amber)]",
         text: "text-warning",
       },
@@ -167,10 +167,10 @@ function ReviewScreen() {
       </div>
       <div className="mt-auto px-5 pt-2 pb-3">
         <span className="flex min-h-10 w-full items-center justify-center rounded-xl bg-primary font-sans text-[0.8rem] font-medium text-primary-foreground shadow-[var(--shadow-cobalt)]">
-          Approve and open PR
+          Approve and merge
         </span>
         <p className="mt-2 text-center font-mono text-[0.6rem] text-faint">
-          Opens #221 on acme/billing-service
+          Merges draft PR #218 into main
         </p>
       </div>
     </div>
@@ -186,12 +186,12 @@ export function Mobile() {
         <div className="flex flex-wrap items-end justify-between gap-6">
           <SectionHead
             eyebrow={<Eyebrow>The mobile app</Eyebrow>}
-            title="Triage and review from your phone."
+            title="The whole loop, from your phone."
             intro={
               <p>
-                Runs take minutes; you don't have to be at a desk while they do. The mobile app
-                carries the same three surfaces: the queue, the live run, and review — with the same
-                evidence, not a stripped-down approval button.
+                Runs take minutes; you don't have to be at a desk while they do. The app carries the
+                same surfaces as the web — the queue, the live run, the brief — and approving from
+                the phone merges, same as at the desk.
               </p>
             }
           />
@@ -208,7 +208,7 @@ export function Mobile() {
             <IPhoneFrame caption="A run, live">
               <RunScreen />
             </IPhoneFrame>
-            <IPhoneFrame caption="Review" className="lg:translate-y-6">
+            <IPhoneFrame caption="The brief" className="lg:translate-y-6">
               <ReviewScreen />
             </IPhoneFrame>
           </div>

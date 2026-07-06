@@ -8,9 +8,9 @@ import { PLATFORM_SITE_URL, PLATFORM_URL, REPO_URL } from "#/components/primitiv
 
 import appCss from "../styles.css?url";
 
-const TITLE = "Mend — coding agents that show their work";
+const TITLE = "Mend — code is now cheap, trust is not";
 const DESCRIPTION =
-  "Mend takes a GitHub issue, runs a coding harness in an isolated sandbox, and opens a pull request with the complete, replayable record of how the change was made: every command, every test run, every file touched. Open source, self-hosted, built on Sealant.";
+  "Mend takes an issue from your tracker (GitHub, Linear, or Jira), has a coding agent fix it in a recorded sandbox, and reviews the change against that recording — everything else reads the diff and guesses. The PR arrives with the review done. Open source, self-hosted, built on Sealant.";
 
 export const Route = createRootRoute({
   head: () => ({
@@ -44,9 +44,9 @@ function RootComponent() {
               <Brand />
               <nav className="hidden items-center gap-7 lg:flex" aria-label="Primary">
                 <TopLevelNavLink href="#why">Why</TopLevelNavLink>
-                <TopLevelNavLink href="#evidence">The evidence</TopLevelNavLink>
+                <TopLevelNavLink href="#review">The brief</TopLevelNavLink>
+                <TopLevelNavLink href="#sources">Sources</TopLevelNavLink>
                 <TopLevelNavLink href="#how">How it works</TopLevelNavLink>
-                <TopLevelNavLink href="#mobile">Mobile</TopLevelNavLink>
                 <TopLevelNavLink href={PLATFORM_SITE_URL}>Sealant</TopLevelNavLink>
               </nav>
             </div>
@@ -83,18 +83,18 @@ function RootComponent() {
                   <span className="font-mono text-xs font-normal text-faint">by Sealant</span>
                 </a>
                 <p className="mt-4 max-w-[34ch] text-sm leading-relaxed text-muted-foreground">
-                  Takes a GitHub issue, runs a coding harness in an isolated sandbox, and opens a
-                  pull request with the complete record of how the change was made. Open source and
-                  self-hosted.
+                  Reviews every agent change against a full recording of how it was made, and opens
+                  pull requests with the review done. Open source and self-hosted.
                 </p>
               </div>
               <FooterCol
                 title="Product"
                 links={[
                   ["Why", "#why"],
-                  ["The evidence", "#evidence"],
-                  ["How it works", "#how"],
+                  ["The brief", "#review"],
+                  ["The source trail", "#sources"],
                   ["The mobile app", "#mobile"],
+                  ["How it works", "#how"],
                   ["GitHub", REPO_URL],
                 ]}
               />

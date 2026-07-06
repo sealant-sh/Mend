@@ -53,21 +53,21 @@ const COLUMNS: ReadonlyArray<QueueColumn> = [
       {
         ref: "#209",
         title: "Timezone off-by-one in digest",
-        meta: "run mnd_2xw9 · 148 events",
+        meta: "draft PR #218 · brief ready",
         tone: "review",
-        word: "Evidence ready",
+        word: "Brief ready",
       },
     ],
   },
   {
-    stage: "PR opened",
+    stage: "Merged",
     cards: [
       {
         ref: "#204",
         title: "Null customer on refund path",
-        meta: "PR #218 → main",
+        meta: "PR #212 · merged c41f9ae",
         tone: "opened",
-        word: "PR opened · observed",
+        word: "Merged",
       },
     ],
   },
@@ -124,13 +124,13 @@ export function HowItWorks() {
         <div className="flex flex-wrap items-end justify-between gap-6">
           <SectionHead
             eyebrow={<Eyebrow>How it works</Eyebrow>}
-            title="From issue to PR, stage by stage."
+            title="From issue to merged, stage by stage."
             intro={
               <p>
-                Point Mend at a repository and mark the issues you want handled. They move through
-                five stages, all of them visible: drag an issue into the queue, set its priority, a
-                harness picks it up in a fresh sandbox, and the run streams onto its card while it
-                works.
+                Issues come in from your tracker — GitHub, Linear, or Jira. A human drags them from
+                triage into the queue and sets the order; a coding agent picks each one up in a
+                fresh recorded sandbox, and the run streams onto its card while it works. Mend never
+                chooses its own work.
               </p>
             }
           />
@@ -176,16 +176,16 @@ export function HowItWorks() {
           {(
             [
               [
-                "Prioritise by dragging",
-                "Reorder the queue and move issues between stages with pointer or keyboard. Only legal transitions accept a drop.",
+                "Drafts by default",
+                "Every successful run opens a draft PR immediately, with the brief as its description. Approving in Mend merges it on GitHub, respecting branch protection. (A gated mode opens the PR only on approval.)",
               ],
               [
-                "Watch runs live",
-                "A mending card streams the run's events as the runtime records them — the same events the durable record keeps.",
+                "Failures come back useful",
+                "A run that can't fix the issue opens nothing. Mend comments on the issue with what it tried, what it observed, and a link to the run audit.",
               ],
               [
-                "Review is a gate",
-                "The review stage shows the diff, the commands, the checks, and the record. Approving is what opens the PR — nothing opens one unseen.",
+                "Iteration stays on the record",
+                "Comment on the brief and Mend acts on it: a follow-up run on the same branch, or a question back. New commits land on the same draft PR and the brief recompiles.",
               ],
             ] as const
           ).map(([title, body]) => (

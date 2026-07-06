@@ -1,8 +1,9 @@
 # Mend Quick Context
 
-Mend (by Sealant) is a `pnpm` + `turbo` monorepo: **issue → reviewed change → PR**. Give a coding
-harness an engineering task (a GitHub issue) and get back the change, the checks, the artifacts, and
-the full execution record — ending in a pull request you review like a teammate's work.
+Mend (by Sealant) is a `pnpm` + `turbo` monorepo. **Code is now cheap. Trust is not.** Mend takes an
+issue from your tracker (GitHub, Linear, or Jira), has a coding agent fix it in a recorded sandbox,
+then reviews the change against that recording — delivering a PR whose review (**the brief**) is
+already done. Read `MEND-PLAN.md` first; it is the product source of truth.
 
 - `apps/marketing`: TanStack Start marketing site (Cloudflare Workers via wrangler).
 - `apps/web`: TanStack Start product web app — the queue surface.
@@ -17,12 +18,14 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
 
 ## Product Language Contract
 
-- The primary product nouns are `issue` (the task in), `run` (the durable execution record),
-  `harness` (the agent that does the work), and `PR` (the reviewed change out). The queue stages are
-  `triage → queued → mending → review → PR opened`.
+- The primary product nouns are `issue` (the task in, from GitHub/Linear/Jira), `run` (the durable
+  execution record), `harness` (the agent that does the work), `the brief` (the review Mend compiles
+  from the recording), and `the run audit` (the deep view: milestones · full trace · sources). The
+  queue stages are `triage → queued → mending → review → merged`.
 - Platform nouns follow Sealant: `sandbox` (the live environment), `run`, `harness`.
 - Evidence, not verdicts: status words describe what was observed ("Completed · observed"), never a
-  judgment ("safe to merge"). The reviewer decides.
+  judgment ("safe to merge"). Mend performs the review; the human makes the merge decision.
+- Full vocabulary table and voice rules: `MEND-PLAN.md` §9 and §11.
 
 ## Agent Defaults
 

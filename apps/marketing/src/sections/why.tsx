@@ -1,36 +1,35 @@
-// WHY — the problem, stated plainly for developers who have reviewed agent
-// output before. No drama: three concrete reasons the current workflow
-// doesn't hold up, each one testable against the reader's own experience.
+// WHY — the problem, stated for someone who has merged (or refused to merge)
+// agent PRs. Three facts, each checkable against the reader's own experience.
 
 import { Container, Eyebrow, Reveal, SectionHead } from "#/components/primitives";
 
 const PROBLEMS: ReadonlyArray<readonly [string, string]> = [
   [
-    "The summary is self-reported",
-    "The model that made the change also wrote the description of what it did. If it missed something, the summary misses it too. That isn't evidence — it's the work under review describing itself.",
+    "The summary reviews itself",
+    "The description on an agent PR is written by the model that made the change. If it missed something, its summary misses it too.",
   ],
   [
-    "The environment is gone",
-    "By the time you review, the workspace that produced the change has been torn down. You can't check what ran, what failed on the first attempt, or what else was touched along the way.",
+    "The workspace is gone",
+    "By review time, the environment that produced the change has been torn down. What ran, what failed first, what else was touched — unrecoverable.",
   ],
   [
-    "So review becomes re-work",
-    "You either re-derive the change yourself — check out the branch, run the tests, retrace the reasoning — or you approve on trust. Neither scales past small PRs.",
+    "So the diff is all you get",
+    "Agent PRs merge unread, or queue until they rot. Reviewing one properly means re-deriving the work yourself, which is the job the agent was supposed to remove.",
   ],
 ];
 
 export function Why() {
   return (
-    <section id="why" className="bg-[var(--sw-bg)] py-24 lg:py-32">
+    <section id="why" className="bg-panel py-24 lg:py-32">
       <Container>
         <SectionHead
           eyebrow={<Eyebrow>Why</Eyebrow>}
-          title="A diff and a summary isn't a review."
+          title="Nobody reads the code anymore. Something has to."
           intro={
             <p>
-              Agent tooling today hands you a diff, a green check, and a description written by the
-              model itself. Everything between the prompt and the pull request happened somewhere
-              you can't see, in an environment that no longer exists.
+              Agent tooling optimized writing the change. Deciding whether to merge it is still your
+              problem — and everything you'd need to decide with disappears when the agent's
+              workspace does.
             </p>
           }
         />

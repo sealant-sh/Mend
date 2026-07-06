@@ -26,8 +26,8 @@ export function FinalCta() {
               Early, and building in public.
             </Display>
             <p className="mx-auto mt-5 max-w-[52ch] text-lg leading-relaxed text-muted-foreground">
-              The queue is being built now; the first mended PRs will land in this repo. If the
-              approach holds up to your scrutiny, star it, read the code, or open an issue.
+              The queue is being built now; the first briefs will land in this repo. If the approach
+              holds up to your scrutiny, star it, read the code, or open an issue.
             </p>
             <div className="mt-9 flex flex-wrap items-center justify-center gap-3">
               <PrimaryCTA href={REPO_URL}>
@@ -42,7 +42,7 @@ export function FinalCta() {
               runId="run mnd_0001"
               status={{ word: "Not started", tone: "pending" }}
               events={[]}
-              footnote="queue.empty · the first mended PR lands here"
+              footnote="queue.empty · the first brief lands here"
               className="mx-auto mt-10 max-w-md text-left"
             />
           </div>
