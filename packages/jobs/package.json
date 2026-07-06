@@ -13,8 +13,11 @@
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@effect/sql-pg": "catalog:",
     "@mend/db": "workspace:*",
     "@mend/domain": "workspace:*",
+    "@mend/sealant": "workspace:*",
+    "@sealant/sdk": "catalog:",
     "effect": "catalog:",
     "pg-boss": "catalog:"
   },

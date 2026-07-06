@@ -13,6 +13,7 @@
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@effect/sql-pg": "catalog:",
     "@mend/auth": "workspace:*",
     "@mend/db": "workspace:*",
     "@mend/domain": "workspace:*",

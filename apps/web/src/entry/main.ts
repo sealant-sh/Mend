@@ -4,10 +4,17 @@ import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { NodeHttpServer, NodeRuntime } from "@effect/platform-node";
-import { MendApiLive } from "@mend/api";
+import { EventsRoutes, MendApiLive } from "@mend/api";
 import { Auth } from "@mend/auth";
-import { InferenceCallsRepo, IssuesRepo, MigratorLive, PgLive, SettingsRepo } from "@mend/db";
-import { Dispatcher, JobRunner, RunStarter } from "@mend/jobs";
+import {
+  InferenceCallsRepo,
+  IssuesRepo,
+  MigratorLive,
+  PgLive,
+  RunsRepo,
+  SettingsRepo,
+} from "@mend/db";
+import { Dispatcher, JobRunner, runStarterLayer } from "@mend/jobs";
 import { SealantClient } from "@mend/sealant";
 import { Config, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
@@ -24,6 +31,7 @@ const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..
 // ─── Data: Postgres, migrated before anything reads it ─────────────────────
 const DatabaseLive = Layer.mergeAll(
   IssuesRepo.layer,
+  RunsRepo.layer,
   SettingsRepo.layer,
   InferenceCallsRepo.layer,
 ).pipe(Layer.provideMerge(MigratorLive.pipe(Layer.provideMerge(PgLive))));
@@ -82,9 +90,9 @@ const WebAppRoutes = HttpRouter.use((router) =>
 const ServerLive = Layer.unwrap(
   Effect.gen(function* () {
     const port = yield* Config.int("PORT").pipe(Config.orElse(() => Config.succeed(3105)));
-    return HttpRouter.serve(Layer.mergeAll(MendApiLive, AuthRoutes, WebAppRoutes)).pipe(
-      Layer.provide(NodeHttpServer.layer(createServer, { port })),
-    );
+    return HttpRouter.serve(
+      Layer.mergeAll(MendApiLive, AuthRoutes, EventsRoutes, WebAppRoutes),
+    ).pipe(Layer.provide(NodeHttpServer.layer(createServer, { port })));
   }),
 );
 
@@ -96,7 +104,7 @@ const WorkerLive = Layer.effectDiscard(
   }),
 ).pipe(
   Layer.provide(Dispatcher.layer),
-  Layer.provide(RunStarter.noopLayer),
+  Layer.provide(runStarterLayer),
   Layer.provide(JobRunner.pgBossLayer),
 );
 
