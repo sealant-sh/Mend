@@ -1,0 +1,12 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "mend-marketing",
+  "compatibility_date": "2026-03-28",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "@tanstack/react-start/server-entry",
+  // Custom domain intentionally unset — the production domain for Mend is an open
+  // decision (mend.sealant.dev vs its own domain). Deploys land on workers.dev until then.
+  "observability": {
+    "enabled": true,
+  },
+}

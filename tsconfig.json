@@ -1,0 +1,5 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Effect-TS/language-service/refs/heads/main/schema.json",
+  "files": [],
+  "references": [{ "path": "./apps/marketing" }]
+}

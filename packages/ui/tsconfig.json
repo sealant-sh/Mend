@@ -1,0 +1,4 @@
+{
+  "extends": "@mend/typescript/web.json",
+  "include": ["src/**/*.ts", "src/**/*.tsx", "package.json"]
+}

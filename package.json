@@ -1,0 +1,42 @@
+{
+  "name": "mend",
+  "private": true,
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "turbo build",
+    "clean": "pnpm run clean:workspaces && rm -rf node_modules .turbo",
+    "clean:turbo": "turbo clean",
+    "clean:workspaces": "pnpm -r --parallel exec rm -rf node_modules .turbo",
+    "dev": "turbo dev --ui=tui",
+    "format": "oxfmt . --check",
+    "format:check": "oxfmt . --check",
+    "format:fix": "oxfmt .",
+    "lint": "turbo lint --ui=tui",
+    "lint:fix": "oxlint . --fix",
+    "lint:types": "oxlint . --type-aware --type-check",
+    "test": "turbo test",
+    "test:watch": "vitest",
+    "typecheck": "turbo typecheck --ui=tui"
+  },
+  "dependencies": {
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@typescript/native-preview": "7.0.0-dev.20260315.1",
+    "effect-solutions": "^0.5.2",
+    "oxfmt": "^0.40.0",
+    "oxlint": "^1.55.0",
+    "oxlint-tsgolint": "^0.17.0",
+    "turbo": "^2.5.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "packageManager": "pnpm@10.32.1",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "lightningcss"
+    ]
+  }
+}
