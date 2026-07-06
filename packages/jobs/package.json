@@ -1,0 +1,28 @@
+{
+  "name": "@mend/jobs",
+  "version": "0.0.0",
+  "private": true,
+  "description": "JobRunner seam with a pg-boss live layer, and the dispatcher that fills mending slots",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "lint": "oxlint . --no-error-on-unmatched-pattern",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsgo -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@mend/db": "workspace:*",
+    "@mend/domain": "workspace:*",
+    "effect": "catalog:",
+    "pg-boss": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@mend/typescript": "workspace:*",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
