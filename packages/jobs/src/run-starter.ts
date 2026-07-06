@@ -111,7 +111,7 @@ export const runStarterLayer = Layer.effect(
       const unsettled = yield* runs.listUnsettled();
       for (const run of unsettled) {
         const issue = yield* issues.byId(run.issueId).pipe(Effect.option);
-        if (issue._tag === "None") continue;
+        if (Option.isNone(issue)) continue;
         if (run.sealantRunId === null) {
           // Died between run-row creation and harness start; nothing recorded.
           yield* failRun(run, run.issueId, "process restarted before the harness started");
