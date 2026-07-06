@@ -57,7 +57,10 @@ export class Auth extends Context.Service<
         basePath: "/api/auth",
         emailAndPassword: { enabled: true },
         plugins: [bearer()],
-        trustedOrigins: [baseUrl],
+        // APP_URL is authoritative; the two extras cover both local entry
+        // points (vite dev on 3101, the Effect server itself on 3105) so a
+        // dev instance never rejects its own origin.
+        trustedOrigins: [baseUrl, "http://localhost:3101", "http://localhost:3105"],
       });
 
       const handler = Effect.fn("Auth.handler")((request: Request) =>
