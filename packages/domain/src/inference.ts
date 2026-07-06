@@ -1,0 +1,41 @@
+import { Schema } from "effect";
+
+import { InferenceCallId } from "./ids.ts";
+
+/**
+ * Interface-side inference deliberately has no product noun — Mend uses
+ * inference. Contexts name where it runs; each context is given only the tools
+ * it needs, never the full set by default.
+ */
+export const InferenceContext = Schema.Literals([
+  "brief-compilation",
+  "run-summary",
+  "failure-comment",
+  "comment-routing",
+  "run-audit-qa",
+]);
+export type InferenceContext = typeof InferenceContext.Type;
+
+/** The closed first-party tool set from PRODUCT.md. Enforced by omission. */
+export const InferenceToolName = Schema.Literals([
+  "read_recording",
+  "read_issue",
+  "read_change",
+  "read_brief",
+  "post_issue_comment",
+  "reply_on_brief",
+  "start_run",
+  "publish_brief",
+]);
+export type InferenceToolName = typeof InferenceToolName.Type;
+
+/** One audited tool call or model exchange — the interface-inference audit trail. */
+export class InferenceCall extends Schema.Class<InferenceCall>("InferenceCall")({
+  id: InferenceCallId,
+  context: InferenceContext,
+  /** Null for the model exchange itself; set for each tool call inside the loop. */
+  tool: Schema.NullOr(InferenceToolName),
+  input: Schema.Unknown,
+  output: Schema.Unknown,
+  occurredAt: Schema.Date,
+}) {}

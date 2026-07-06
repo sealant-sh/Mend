@@ -9,10 +9,13 @@ catalog:
   "@dnd-kit/modifiers": ^9.0.0
   "@dnd-kit/sortable": ^10.0.0
   "@dnd-kit/utilities": ^3.2.2
+  "@effect/platform-node": ^4.0.0-beta.93
+  "@effect/sql-pg": ^4.0.0-beta.93
   "@effect/vitest": ^4.0.0-beta.85
   "@fontsource/inter": ^5.2.8
   "@fontsource/jetbrains-mono": ^5.2.8
   "@fontsource/space-grotesk": ^5.2.8
+  "@sealant/sdk": ^0.4.0
   "@tailwindcss/vite": ^4.1.18
   "@tanstack/devtools-vite": 0.8.0
   "@tanstack/react-query": ^5.101.0
@@ -23,10 +26,13 @@ catalog:
   "@types/react": ^19.2.0
   "@types/react-dom": ^19.2.0
   "@vitejs/plugin-react": ^5.1.4
+  better-auth: ^1.6.23
   effect: ^4.0.0-beta.85
   framer-motion: ^12.23.24
   jsdom: ^28.1.0
   lucide-react: ^0.545.0
+  pg: ^8.22.0
+  pg-boss: ^12.25.1
   react: 19.2.3
   react-dom: 19.2.3
   tailwindcss: ^4.1.18
