@@ -1,0 +1,27 @@
+{
+  "name": "@mend/sealant",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The Sealant platform behind Effect service contracts — wraps the public @sealant/sdk Promise facade",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "lint": "oxlint . --no-error-on-unmatched-pattern",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsgo -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@mend/domain": "workspace:*",
+    "@sealant/sdk": "catalog:",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@mend/typescript": "workspace:*",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
