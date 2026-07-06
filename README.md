@@ -3,12 +3,12 @@
 **Code is now cheap. Trust is not.**
 
 Mend takes an issue from your tracker (GitHub, Linear, or Jira), has a coding agent fix it in a
-recorded sandbox, and then reviews the change **against that recording** — every other reviewer,
+recorded workspace, and then reviews the change **against that recording** — every other reviewer,
 human or bot, reads the diff and guesses. What comes out is a pull request whose review is already
 done: **the brief**.
 
 ```
-issue in → a harness mends it in a recorded sandbox → Mend reviews the change → you merge
+issue in → a harness mends it in a recorded workspace → Mend reviews the change → you merge
 ```
 
 The brief answers the reviewer's questions from the recording: the bug reproduces on base, the fix

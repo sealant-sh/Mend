@@ -15,7 +15,7 @@ product. What matters is what the evidence is used for.
 
 ## 2. What Mend is
 
-**Mend takes an issue from your tracker, has a coding agent fix it in a recorded sandbox, and then
+**Mend takes an issue from your tracker, has a coding agent fix it in a recorded workspace, and then
 reviews the resulting change against that recording — delivering a pull request whose review is
 already done, grounded in what actually happened.**
 
@@ -51,7 +51,7 @@ triage → queued → mending → review → merged
   GitHub; issues come from anywhere.
 - **Gate 1 — what gets worked:** a human drags an issue from triage into the queue and orders it.
   Mend never picks its own work.
-- **Mending:** one harness per issue in a Sealant sandbox; the run streams live onto the issue's
+- **Mending:** one harness per issue in a Sealant workspace; the run streams live onto the issue's
   card and is recorded durably.
 - **PR timing (configurable):**
   - **Default:** every successful run opens a **draft PR immediately**; the brief is posted into the
@@ -63,12 +63,14 @@ triage → queued → mending → review → merged
     stays on GitHub. Two modes only.
 - **Failed runs:** no PR. Mend posts a failure comment on the issue — a mini-brief: what was tried,
   what was observed, reproduction status, link to the run audit. Failures are evidence too.
-- **Iteration:** stays in Mend, with inference running throughout (via Sealant). A reviewer comment
-  on the brief is read by a tool that decides the next action — follow-up run on the same branch, a
-  question back to the reviewer, a verification pass. New commits land on the same draft PR; the
-  brief recompiles.
+- **Iteration:** stays in Mend, with inference running throughout (via Sealant, on the user's
+  connected subscriptions). A reviewer comment on the brief is read by Mend (inference), which
+  decides the next action: follow-up run on the same branch, a question back to the reviewer, a
+  verification pass. Interface inference writes language and routes actions through a closed set of
+  first-party tools; code changes are always a new harness run. New commits land on the same draft
+  PR; the brief recompiles.
 - **Evidence freshness:** if base moves while a brief sits in review, it flips to
-  `evidence stale · <old sha> → <new sha>` with one-click re-verification in a fresh sandbox.
+  `evidence stale · <old sha> → <new sha>` with one-click re-verification in a fresh workspace.
 
 ## 6. Scope
 
@@ -83,7 +85,7 @@ failure comments · web app · mobile app with the **full loop including merge**
   that changes deliberately.
 - **Not a merge bot, not a judge.** No auto-merge, no scores, no "safe to merge", ever.
 - **Not an orchestrator.** No multi-agent swarms; no agent picks its own backlog.
-- **Not CI.** Sandbox checks are evidence; CI stays authoritative.
+- **Not CI.** Workspace checks are evidence; CI stays authoritative.
 - **Not hosted.** Self-hosted only; code, runs, and credentials stay on your machines.
 - v1 practical limits: single repo per issue; no cross-repo changes.
 
@@ -114,16 +116,18 @@ what the agent took from it, where it was used, and provenance chips
 
 ## 9. Vocabulary
 
-| Thing               | Word                                              | Notes                              |
-| ------------------- | ------------------------------------------------- | ---------------------------------- |
-| The act             | mend / mending                                    | the brand verb                     |
-| The prepared review | **the brief**                                     | the most-used noun                 |
-| The deep view       | **the run audit**                                 | milestones · full trace · sources  |
-| The causal proof    | `base fails · head passes · revert fails`         | keep raw and mono                  |
-| Dispositions        | direct evidence · not executed · unrelated change | green/amber/red, earned only       |
-| Event provenance    | observed · inferred                               | runtime saw it vs. harness claimed |
-| Freshness           | evidence current · evidence stale                 | real product state                 |
-| Attribution         | Mend, by Sealant                                  | Sealant = "the runtime underneath" |
+| Thing               | Word                                              | Notes                                                                      |
+| ------------------- | ------------------------------------------------- | -------------------------------------------------------------------------- |
+| The act             | mend / mending                                    | the brand verb                                                             |
+| The environment     | workspace                                         | never "sandbox" (over-claims)                                              |
+| The prepared review | **the brief**                                     | the most-used noun                                                         |
+| The deep view       | **the run audit**                                 | milestones · full trace · sources                                          |
+| The causal proof    | `base fails · head passes · revert fails`         | keep raw and mono                                                          |
+| Dispositions        | direct evidence · not executed · unrelated change | green/amber/red, earned only                                               |
+| Event provenance    | observed · inferred                               | runtime saw it vs. harness claimed                                         |
+| Interface inference | no noun — "Mend uses inference"                   | never edits code; user's subscriptions via Sealant; first-party tools only |
+| Freshness           | evidence current · evidence stale                 | real product state                                                         |
+| Attribution         | Mend, by Sealant                                  | Sealant = "the runtime underneath"                                         |
 
 ## 10. Principles
 

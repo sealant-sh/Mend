@@ -1,0 +1,9 @@
+**/node_modules
+**/dist
+**/.turbo
+**/.output
+.git
+*.md
+PRODUCT.html
+compose*.yaml
+Dockerfile

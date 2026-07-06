@@ -97,7 +97,7 @@ function QueueScreen() {
 // ── Screen 2 — a live run ────────────────────────────────────────────────────
 
 const LIVE_EVENTS: ReadonlyArray<readonly [string, string, string?]> = [
-  ["00:00.000", "sandbox.ready"],
+  ["00:00.000", "workspace.ready"],
   ["00:07.115", "process.started", "pnpm install"],
   ["00:14.628", "process.exited", "exit 0"],
   ["00:19.310", "process.exited", "pnpm test · exit 1"],

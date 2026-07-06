@@ -129,8 +129,8 @@ export function HowItWorks() {
               <p>
                 Issues come in from your tracker — GitHub, Linear, or Jira. A human drags them from
                 triage into the queue and sets the order; a coding agent picks each one up in a
-                fresh recorded sandbox, and the run streams onto its card while it works. Mend never
-                chooses its own work.
+                fresh recorded workspace, and the run streams onto its card while it works. Mend
+                never chooses its own work.
               </p>
             }
           />

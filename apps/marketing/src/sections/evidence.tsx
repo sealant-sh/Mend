@@ -13,9 +13,9 @@ type Tone = "kw" | "str" | "fn" | "comment" | "plain";
 const CODE: ReadonlyArray<ReadonlyArray<readonly [string, Tone]>> = [
   [
     ["const", "kw"],
-    [" sandbox = ", "plain"],
+    [" workspace = ", "plain"],
     ["await", "kw"],
-    [" sealant.sandboxes.", "plain"],
+    [" sealant.workspaces.", "plain"],
     ["create", "fn"],
     ["({", "plain"],
   ],
@@ -35,7 +35,7 @@ const CODE: ReadonlyArray<ReadonlyArray<readonly [string, Tone]>> = [
     ["const", "kw"],
     [" run = ", "plain"],
     ["await", "kw"],
-    [" sandbox.harness.", "plain"],
+    [" workspace.harness.", "plain"],
     ["start", "fn"],
     ["(", "plain"],
     ["promptFor", "fn"],
@@ -127,9 +127,9 @@ export function Evidence() {
                   >
                     Sealant
                   </a>
-                  , an open-source runtime that puts the harness in an isolated sandbox and records
-                  the run from underneath it: processes, exits, file changes, command output,
-                  network. The harness can't embellish a record it doesn't write.
+                  , an open-source runtime that puts the harness in a workspace it doesn't control
+                  and records the run from underneath it: processes, exits, file changes, command
+                  output, network. The harness can't embellish a record it doesn't write.
                 </p>
               }
             />
@@ -146,7 +146,7 @@ export function Evidence() {
               </div>
               <div>
                 <h3 className="font-display text-lg font-semibold tracking-[-0.01em] text-foreground">
-                  The record outlives the sandbox
+                  The record outlives the workspace
                 </h3>
                 <p className="mt-2 max-w-[52ch] leading-relaxed text-muted-foreground">
                   The run is a durable event log, not a terminal scrollback. Replay it step by step
@@ -225,7 +225,7 @@ export function Evidence() {
             <p className="mt-4 max-w-[52ch] text-lg leading-relaxed text-muted-foreground">
               This is Mend's whole integration with Sealant — the public{" "}
               <code className="font-mono text-[0.85em] text-foreground">@sealant/sdk</code> from
-              npm. Create a sandbox around the issue's repository, start the harness, stream the
+              npm. Create a workspace around the issue's repository, start the harness, stream the
               record onto the board, open the PR from the settled changes.
             </p>
             <p className="mt-4 max-w-[52ch] leading-relaxed text-muted-foreground">

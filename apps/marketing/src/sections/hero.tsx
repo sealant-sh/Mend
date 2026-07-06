@@ -50,7 +50,7 @@ export function Hero() {
               className="mt-4 max-w-[46ch] text-[0.95rem] leading-relaxed text-muted-foreground"
             >
               A coding agent fixes the issue from your tracker — GitHub, Linear, or Jira — in a
-              recorded sandbox. The pull request arrives with the review done.
+              recorded workspace. The pull request arrives with the review done.
             </motion.p>
             <motion.div {...child} className="mt-8 flex flex-wrap items-center gap-3">
               <PrimaryCTA href={REPO_URL}>

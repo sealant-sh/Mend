@@ -2,7 +2,7 @@ import { betterAuth } from "better-auth";
 import { bearer } from "better-auth/plugins";
 import { Config, Effect, Layer, Option, Redacted } from "effect";
 import * as Context from "effect/Context";
-import pg from "pg";
+import { Pool } from "pg";
 
 /** What the rest of the product needs to know about who is signed in. */
 export interface AuthUser {
@@ -44,7 +44,7 @@ export class Auth extends Context.Service<
       );
 
       const pool = yield* Effect.acquireRelease(
-        Effect.sync(() => new pg.Pool({ connectionString: Redacted.value(databaseUrl) })),
+        Effect.sync(() => new Pool({ connectionString: Redacted.value(databaseUrl) })),
         (p) => Effect.promise(() => p.end()),
       );
 

@@ -1,9 +1,9 @@
 # Mend Quick Context
 
 Mend (by Sealant) is a `pnpm` + `turbo` monorepo. **Code is now cheap. Trust is not.** Mend takes an
-issue from your tracker (GitHub, Linear, or Jira), has a coding agent fix it in a recorded sandbox,
-then reviews the change against that recording — delivering a PR whose review (**the brief**) is
-already done. Read `MEND-PLAN.md` first; it is the product source of truth.
+issue from your tracker (GitHub, Linear, or Jira), has a coding agent fix it in a recorded
+workspace, then reviews the change against that recording — delivering a PR whose review (**the
+brief**) is already done. Read `MEND-PLAN.md` first; it is the product source of truth.
 
 - `apps/marketing`: TanStack Start marketing site (Cloudflare Workers via wrangler).
 - `apps/web`: TanStack Start product web app — the queue surface.
@@ -11,7 +11,7 @@ already done. Read `MEND-PLAN.md` first; it is the product source of truth.
 - `tooling/*`: shared configs (`typescript`).
 
 Mend consumes the Sealant platform **only through the public SDK** (`@sealant/sdk` on npm):
-`sandboxes.create({ repository, harness })`, blocking `harness.run(prompt)` or non-blocking
+`workspaces.create({ repository, harness })`, blocking `harness.run(prompt)` or non-blocking
 `harness.start(prompt)` + `run.record.stream()`, `run.wait()`, `run.changes`, and the replayable
 record. **Never import Sealant internals.** If the SDK is missing something Mend needs, record it as
 platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
@@ -20,9 +20,13 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
 
 - The primary product nouns are `issue` (the task in, from GitHub/Linear/Jira), `run` (the durable
   execution record), `harness` (the agent that does the work), `the brief` (the review Mend compiles
-  from the recording), and `the run audit` (the deep view: milestones · full trace · sources). The
-  queue stages are `triage → queued → mending → review → merged`.
-- Platform nouns follow Sealant: `sandbox` (the live environment), `run`, `harness`.
+  from the recording), and `the run audit` (the deep view: milestones · full trace · sources).
+  Interface-side inference deliberately has **no product noun** — write "Mend uses inference" (it
+  compiles the brief, sums up runs, interprets reviewer comments; never edits code; runs on the
+  user's Sealant-connected subscriptions through first-party tools only). The queue stages are
+  `triage → queued → mending → review → merged`. Cardinality: runs are many; the change and its PR
+  are one; the brief is one per change, living.
+- Platform nouns follow Sealant: `workspace` (the live environment), `run`, `harness`.
 - Evidence, not verdicts: status words describe what was observed ("Completed · observed"), never a
   judgment ("safe to merge"). Mend performs the review; the human makes the merge decision.
 - Full vocabulary table and voice rules: `MEND-PLAN.md` §9 and §11.

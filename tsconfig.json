@@ -1,5 +1,15 @@
 {
   "$schema": "https://raw.githubusercontent.com/Effect-TS/language-service/refs/heads/main/schema.json",
   "files": [],
-  "references": [{ "path": "./apps/marketing" }]
+  "references": [
+    { "path": "./apps/marketing" },
+    { "path": "./apps/web" },
+    { "path": "./packages/api" },
+    { "path": "./packages/auth" },
+    { "path": "./packages/db" },
+    { "path": "./packages/domain" },
+    { "path": "./packages/inference" },
+    { "path": "./packages/jobs" },
+    { "path": "./packages/sealant" }
+  ]
 }

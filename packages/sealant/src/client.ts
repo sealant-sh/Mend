@@ -7,6 +7,23 @@ import { SealantEnv } from "./config.ts";
 import { SealantConnection } from "./connection.ts";
 import { SealantPlatformError } from "./errors.ts";
 
+const toPlatformError = (cause: unknown) =>
+  new SealantPlatformError({
+    code: cause instanceof SealantError ? cause.code : "UNKNOWN",
+    status: cause instanceof SealantApiError ? (cause.status ?? null) : null,
+    message: cause instanceof Error ? cause.message : String(cause),
+    cause,
+  });
+
+const wrap = <A>(run: () => Promise<A>): Effect.Effect<A, SealantPlatformError> =>
+  Effect.tryPromise({ try: run, catch: toPlatformError });
+
+const recordStream = (run: Run, options?: { readonly from?: bigint }) =>
+  Stream.fromAsyncIterable(
+    run.record.stream(options?.from === undefined ? {} : { from: options.from }),
+    toPlatformError,
+  );
+
 /**
  * The Sealant platform behind an Effect service contract. Wraps the public
  * SDK's Promise facade — and nothing else. When `@sealant/sdk/effect` ships
@@ -65,18 +82,6 @@ export class SealantClient extends Context.Service<
         (client) => Effect.promise(() => client.close()),
       );
 
-      const wrap = <A>(run: () => Promise<A>): Effect.Effect<A, SealantPlatformError> =>
-        Effect.tryPromise({
-          try: run,
-          catch: (cause) =>
-            new SealantPlatformError({
-              code: cause instanceof SealantError ? cause.code : "UNKNOWN",
-              status: cause instanceof SealantApiError ? (cause.status ?? null) : null,
-              message: cause instanceof Error ? cause.message : String(cause),
-              cause,
-            }),
-        });
-
       const createWorkspace = Effect.fn("SealantClient.createWorkspace")((options: CreateOptions) =>
         wrap(() => sealant.workspaces.create(options)),
       );
@@ -100,18 +105,6 @@ export class SealantClient extends Context.Service<
       );
 
       const waitRun = Effect.fn("SealantClient.waitRun")((run: Run) => wrap(() => run.wait()));
-
-      const recordStream = (run: Run, options?: { readonly from?: bigint }) =>
-        Stream.fromAsyncIterable(
-          run.record.stream(options?.from === undefined ? {} : { from: options.from }),
-          (cause) =>
-            new SealantPlatformError({
-              code: cause instanceof SealantError ? cause.code : "UNKNOWN",
-              status: cause instanceof SealantApiError ? (cause.status ?? null) : null,
-              message: cause instanceof Error ? cause.message : String(cause),
-              cause,
-            }),
-        );
 
       const connectionCheck = Effect.fn("SealantClient.connectionCheck")(function* () {
         const now = yield* Clock.currentTimeMillis;

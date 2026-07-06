@@ -10,7 +10,7 @@ import appCss from "../styles.css?url";
 
 const TITLE = "Mend — code is now cheap, trust is not";
 const DESCRIPTION =
-  "Mend takes an issue from your tracker (GitHub, Linear, or Jira), has a coding agent fix it in a recorded sandbox, and reviews the change against that recording — everything else reads the diff and guesses. The PR arrives with the review done. Open source, self-hosted, built on Sealant.";
+  "Mend takes an issue from your tracker (GitHub, Linear, or Jira), has a coding agent fix it in a recorded workspace, and reviews the change against that recording — everything else reads the diff and guesses. The PR arrives with the review done. Open source, self-hosted, built on Sealant.";
 
 export const Route = createRootRoute({
   head: () => ({
