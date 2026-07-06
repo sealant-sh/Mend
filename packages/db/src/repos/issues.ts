@@ -112,9 +112,7 @@ export class IssuesRepo extends Context.Service<
             }),
           )
           .pipe(
-            Effect.catch((error) =>
-              error._tag === "IssueNotFoundError" ? Effect.fail(error) : Effect.die(error),
-            ),
+            Effect.catchTag("SqlError", (error) => Effect.die(error)),
             Effect.tap(() => notifyEvent(sql, { type: "issue", issueId: id })),
           );
       });
