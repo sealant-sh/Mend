@@ -24,8 +24,8 @@ function MarketingPage() {
       <LoopStrip />
       <Why />
       <Evidence />
-      <HowItWorks />
       <Mobile />
+      <HowItWorks />
       <OpenSource />
       <FinalCta />
     </main>
