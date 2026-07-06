@@ -223,9 +223,9 @@ export class SealantClient extends Context.Service<
   static readonly layerFromEnv = SealantClient.layer.pipe(Layer.provide(SealantEnv.layer));
 }
 
-/** The facade's `true` means "my default account"; the wire wants a name or nothing. */
+/** The facade's `true` means "the account named default"; the wire wants a name or nothing. */
 const accountReference = (value: boolean | string | undefined) =>
-  typeof value === "string" ? value : undefined;
+  typeof value === "string" ? value : value === true ? "default" : undefined;
 
 /** The wire's optional `usage` needs re-narrowing under exactOptionalPropertyTypes. */
 const toInferenceResponse = (wire: {
