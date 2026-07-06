@@ -9,6 +9,7 @@ import {
   AuthMiddleware,
   CurrentUser,
   HealthStatus,
+  IssueDetail,
   MendApi,
   NotFound,
   RunCommandView,
@@ -74,7 +75,7 @@ export const IssuesGroupLive = HttpApiBuilder.group(MendApi, "issues", (handlers
           .byId(params.id)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         const issueRuns = yield* runs.listForIssue(params.id);
-        return { issue, runs: issueRuns };
+        return new IssueDetail({ issue, runs: issueRuns });
       }),
     )
     .handle("move", ({ params, payload }) =>

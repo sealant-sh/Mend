@@ -36,3 +36,26 @@
     background: color-mix(in oklab, var(--sw-accent) 18%, transparent);
   }
 }
+
+/* The recording pulse — a live run's dot breathes. */
+@keyframes mend-status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.82);
+  }
+}
+
+.mend-status-running {
+  animation: mend-status-pulse 1.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mend-status-running {
+    animation: none;
+  }
+}
