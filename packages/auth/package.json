@@ -1,0 +1,28 @@
+{
+  "name": "@mend/auth",
+  "version": "0.0.0",
+  "private": true,
+  "description": "better-auth wiring for Mend: cookie sessions for web, bearer tokens for mobile",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "lint": "oxlint . --no-error-on-unmatched-pattern",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsgo -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "better-auth": "catalog:",
+    "effect": "catalog:",
+    "pg": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@mend/typescript": "workspace:*",
+    "@types/node": "catalog:",
+    "@types/pg": "^8.11.10",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
