@@ -1,6 +1,15 @@
 import type { AuthSession } from "@mend/auth";
 import { NewIssue, QueueMove } from "@mend/db";
-import { Brief, Change, Issue, IssueId, Run, RunId } from "@mend/domain";
+import {
+  Brief,
+  BriefComment,
+  BriefVersion,
+  Change,
+  Issue,
+  IssueId,
+  Run,
+  RunId,
+} from "@mend/domain";
 import { SealantConnection } from "@mend/sealant";
 import { Schema } from "effect";
 import * as Context from "effect/Context";
@@ -141,11 +150,40 @@ export class BriefDetail extends Schema.Class<BriefDetail>("BriefDetail")({
   change: Change,
 }) {}
 
+/** A reviewer's comment as posted: the thread it anchors to, and the words. */
+export class NewBriefComment extends Schema.Class<NewBriefComment>("NewBriefComment")({
+  /** `q<index>` anchors a review question; `general` is the brief-wide thread. */
+  thread: Schema.String,
+  body: Schema.String,
+}) {}
+
 const briefsGroup = HttpApiGroup.make("briefs")
   .add(
     HttpApiEndpoint.get("byIssue", "/issues/:id/brief", {
       params: { id: IssueId },
       success: BriefDetail,
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("comments", "/issues/:id/brief/comments", {
+      params: { id: IssueId },
+      success: Schema.Array(BriefComment),
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("comment", "/issues/:id/brief/comments", {
+      params: { id: IssueId },
+      payload: NewBriefComment,
+      success: BriefComment,
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("versions", "/issues/:id/brief/versions", {
+      params: { id: IssueId },
+      success: Schema.Array(BriefVersion),
       error: NotFound,
     }),
   )

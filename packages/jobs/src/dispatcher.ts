@@ -1,26 +1,30 @@
 import { IssuesRepo, SettingsRepo } from "@mend/db";
-import type { Issue } from "@mend/domain";
-import { Config, Duration, Effect, Layer, Option, Schedule } from "effect";
+import type { ChangeId, Issue, RunId } from "@mend/domain";
+import { Config, Duration, Effect, Layer, Option, Schedule, Schema } from "effect";
 import * as Context from "effect/Context";
 
+/** A routed run could not start — the message is written for the review thread. */
+export class RunStartError extends Schema.TaggedErrorClass<RunStartError>()("RunStartError", {
+  message: Schema.String,
+}) {}
+
 /**
- * The M1 seam: what happens when a free mending slot meets the top of the
- * queue. Starting a run (workspace + harness via @mend/sealant, supervised
- * fiber, live card) lands with M1; the dispatcher's shape doesn't change.
+ * Starts harness runs: the dispatcher hands it the top of the queue (initial
+ * runs), and comment routing hands it review actions (follow-up and
+ * verification runs on a change's existing branch and workspace).
  */
 export class RunStarter extends Context.Service<
   RunStarter,
   {
     readonly start: (issue: Issue) => Effect.Effect<void>;
+    /** The `start_run` tool's engine — runs on the change's existing workspace. */
+    readonly startOnChange: (
+      change: ChangeId,
+      instruction: string,
+      kind: "follow-up" | "verification",
+    ) => Effect.Effect<RunId, RunStartError>;
   }
->()("@mend/jobs/RunStarter") {
-  static readonly noopLayer = Layer.succeed(RunStarter, {
-    start: (issue) =>
-      Effect.logInfo("dispatcher: run start pending M1 — leaving issue queued").pipe(
-        Effect.annotateLogs({ issueId: issue.id }),
-      ),
-  });
-}
+>()("@mend/jobs/RunStarter") {}
 
 /** What one dispatch pass observed and did — returned so tests can assert it. */
 export interface DispatchTick {

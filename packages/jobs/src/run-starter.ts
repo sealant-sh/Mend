@@ -4,6 +4,7 @@ import {
   Sha,
   SealantRunId,
   SealantWorkspaceId,
+  type ChangeId,
   type Issue,
   type IssueId,
   type Run,
@@ -13,7 +14,7 @@ import type { Run as SdkRun } from "@sealant/sdk";
 import { opencode } from "@sealant/sdk";
 import { Effect, Layer, Option, Stream } from "effect";
 
-import { RunStarter } from "./dispatcher.ts";
+import { RunStarter, RunStartError } from "./dispatcher.ts";
 import { JobRunner } from "./job-runner.ts";
 
 /**
@@ -48,6 +49,18 @@ A leg you cannot execute is stated and skipped, never faked.
 
 The issue:
 ${buildPrompt(issue)}`;
+
+/** A routed follow-up: review feedback, self-contained, on the existing branch. */
+const followUpPrompt = (instruction: string) =>
+  `This is a follow-up run on an existing change, responding to review feedback. Work on the current branch as checked out; commit what you change; leave the working tree clean.
+
+${instruction}`;
+
+/** A routed verification pass: execute the scenario, change nothing. */
+const routedVerificationPrompt = (instruction: string) =>
+  `This is a verification run for review evidence. Do not change any code: leave HEAD where it is and the working tree clean when you finish. Demonstrate the scenario below with commands, so their exit codes land in the record. A step you cannot execute is stated and skipped, never faked.
+
+${instruction}`;
 
 /**
  * One supervised fiber per active run (ARCHITECTURE.md §5): stream the record,
@@ -142,9 +155,10 @@ export const runStarterLayer = Layer.effect(
     ) {
       yield* runs.settle(run.id, "failed", summary);
 
-      // A failed verification never drags the issue back to triage — the change
-      // still stands; the brief recompiles and reports the absent proof.
-      if (run.kind === "verification") {
+      // A failed verification or follow-up never drags the issue back to
+      // triage — the change still stands; the brief recompiles and reports
+      // what the failed recording observed.
+      if (run.kind !== "initial") {
         const current = yield* runs.byId(run.id).pipe(Effect.orElseSucceed(() => run));
         if (current.changeId === null) return;
         yield* enqueueLogged(run, {
@@ -313,6 +327,59 @@ export const runStarterLayer = Layer.effect(
       yield* launch(run, issue);
     });
 
-    return { start };
+    /**
+     * A routed run on the change's existing branch (PRODUCT.md, Iteration):
+     * same workspace as the recordings behind the change, supervised like any
+     * run. The card stays in review — the review is the conversation.
+     */
+    const startOnChange = Effect.fn("RunStarter.startOnChange")(function* (
+      changeId: ChangeId,
+      instruction: string,
+      kind: "follow-up" | "verification",
+    ) {
+      const change = yield* changes
+        .byId(changeId)
+        .pipe(Effect.mapError(() => new RunStartError({ message: `no change ${changeId}` })));
+      const issue = yield* issues
+        .byId(change.issueId)
+        .pipe(Effect.mapError(() => new RunStartError({ message: `no issue ${change.issueId}` })));
+
+      const issueRuns = yield* runs.listForIssue(change.issueId);
+      const anchor = issueRuns.find((run) => run.sealantWorkspaceId !== null);
+      if (anchor === undefined || anchor.sealantWorkspaceId === null) {
+        return yield* new RunStartError({
+          message: `no workspace stands behind change ${changeId} — nothing to run on`,
+        });
+      }
+      const workspaceId = anchor.sealantWorkspaceId;
+
+      const run = yield* runs.create(issue.id, kind);
+      yield* runs.linkChange(run.id, change.id);
+
+      const promptText =
+        kind === "follow-up" ? followUpPrompt(instruction) : routedVerificationPrompt(instruction);
+      const work = Effect.gen(function* () {
+        const workspace = yield* sealant.getWorkspace(workspaceId);
+        const sdkRun = yield* sealant.startHarness(workspace, promptText, {
+          idempotencyKey: run.id,
+        });
+        yield* runs.setSealantIds(
+          run.id,
+          SealantRunId.make(sdkRun.id),
+          SealantWorkspaceId.make(workspace.id),
+        );
+        yield* runs.setStatus(run.id, "running");
+        yield* supervise(run, issue, sdkRun, 0n);
+      }).pipe(
+        Effect.catchTag("SealantPlatformError", (error) => failRun(run, issue.id, error.message)),
+        Effect.catchDefect((defect) =>
+          failRun(run, issue.id, `run supervision died: ${String(defect)}`),
+        ),
+      );
+      yield* Effect.forkIn(work, scope);
+      return run.id;
+    });
+
+    return { start, startOnChange };
   }),
 );

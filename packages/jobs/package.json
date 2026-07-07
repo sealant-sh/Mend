@@ -16,6 +16,7 @@
     "@effect/sql-pg": "catalog:",
     "@mend/db": "workspace:*",
     "@mend/domain": "workspace:*",
+    "@mend/inference": "workspace:*",
     "@mend/sealant": "workspace:*",
     "@sealant/sdk": "catalog:",
     "effect": "catalog:",

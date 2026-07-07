@@ -1,6 +1,7 @@
 import { Auth } from "@mend/auth";
-import { BriefsRepo, ChangesRepo, IssuesRepo, RunsRepo } from "@mend/db";
+import { BriefCommentsRepo, BriefsRepo, ChangesRepo, IssuesRepo, RunsRepo } from "@mend/db";
 import type { RunId } from "@mend/domain";
+import { JobRunner } from "@mend/jobs";
 import { SealantClient } from "@mend/sealant";
 import { Config, Effect, Layer, Option, Stream } from "effect";
 import { HttpServerRequest } from "effect/unstable/http";
@@ -95,20 +96,68 @@ export const IssuesGroupLive = HttpApiBuilder.group(MendApi, "issues", (handlers
     ),
 );
 
+/** issue → change → brief, or 404 — the spine of every brief endpoint. */
+const briefOfIssue = (id: (typeof IssueDetail.Type)["issue"]["id"]) =>
+  Effect.gen(function* () {
+    const changes = yield* ChangesRepo;
+    const briefs = yield* BriefsRepo;
+    const change = yield* changes.byIssue(id).pipe(Effect.mapError(() => new NotFound({ id })));
+    const brief = yield* briefs
+      .byChange(change.id)
+      .pipe(Effect.mapError(() => new NotFound({ id })));
+    return { brief, change };
+  });
+
 export const BriefsGroupLive = HttpApiBuilder.group(MendApi, "briefs", (handlers) =>
-  handlers.handle("byIssue", ({ params }) =>
-    Effect.gen(function* () {
-      const changes = yield* ChangesRepo;
-      const briefs = yield* BriefsRepo;
-      const change = yield* changes
-        .byIssue(params.id)
-        .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-      const brief = yield* briefs
-        .byChange(change.id)
-        .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-      return new BriefDetail({ brief, change });
-    }),
-  ),
+  handlers
+    .handle("byIssue", ({ params }) =>
+      Effect.gen(function* () {
+        const { brief, change } = yield* briefOfIssue(params.id);
+        return new BriefDetail({ brief, change });
+      }),
+    )
+    .handle("comments", ({ params }) =>
+      Effect.gen(function* () {
+        const comments = yield* BriefCommentsRepo;
+        const { brief } = yield* briefOfIssue(params.id);
+        return yield* comments.listForBrief(brief.id);
+      }),
+    )
+    .handle("comment", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const comments = yield* BriefCommentsRepo;
+        const jobs = yield* JobRunner;
+        const session = yield* CurrentUser;
+        const { brief, change } = yield* briefOfIssue(params.id);
+
+        const comment = yield* comments.create({
+          briefId: brief.id,
+          thread: payload.thread,
+          authorKind: "reviewer",
+          authorName: session.user.name === "" ? session.user.email : session.user.name,
+          body: payload.body,
+        });
+
+        // Mend reads the comment and decides the next action — asynchronously,
+        // exactly once per comment.
+        yield* jobs
+          .enqueue({
+            name: "route-comment",
+            payload: { commentId: comment.id, changeId: change.id, issueId: params.id },
+            idempotencyKey: `route:${comment.id}`,
+          })
+          .pipe(Effect.orDie);
+
+        return comment;
+      }),
+    )
+    .handle("versions", ({ params }) =>
+      Effect.gen(function* () {
+        const briefs = yield* BriefsRepo;
+        const { change } = yield* briefOfIssue(params.id);
+        return yield* briefs.versions(change.id);
+      }),
+    ),
 );
 
 /** One trace page — big enough to read a phase, small enough to stay snappy. */

@@ -7,6 +7,7 @@ import { NodeHttpServer, NodeRuntime } from "@effect/platform-node";
 import { EventsRoutes, MendApiLive } from "@mend/api";
 import { Auth } from "@mend/auth";
 import {
+  BriefCommentsRepo,
   BriefsRepo,
   ChangesRepo,
   InferenceCallsRepo,
@@ -18,13 +19,15 @@ import {
 } from "@mend/db";
 import {
   BriefCompiler,
+  CommentRouter,
   CompileBriefJob,
   FailureSummarizer,
   liveToolsLayer,
+  RouteCommentJob,
   sealantProviderLayer,
   SummarizeFailureJob,
 } from "@mend/inference";
-import { Dispatcher, JobRunner, runStarterLayer } from "@mend/jobs";
+import { Dispatcher, JobRunner, runStarterLayer, startRunToolLayer } from "@mend/jobs";
 import { SealantClient } from "@mend/sealant";
 import { Config, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
@@ -44,6 +47,7 @@ const DatabaseLive = Layer.mergeAll(
   RunsRepo.layer,
   ChangesRepo.layer,
   BriefsRepo.layer,
+  BriefCommentsRepo.layer,
   SettingsRepo.layer,
   InferenceCallsRepo.layer,
 ).pipe(Layer.provideMerge(MigratorLive.pipe(Layer.provideMerge(PgLive))));
@@ -111,6 +115,7 @@ const ServerLive = Layer.unwrap(
 // ─── Worker: the dispatcher loop and the side-effect jobs it feeds ──────────
 const decodeCompileBriefJob = Schema.decodeUnknownEffect(CompileBriefJob);
 const decodeSummarizeFailureJob = Schema.decodeUnknownEffect(SummarizeFailureJob);
+const decodeRouteCommentJob = Schema.decodeUnknownEffect(RouteCommentJob);
 
 /** The inference job workers: a failed handler dies into the engine's retry. */
 const InferenceWorkersLive = Layer.effectDiscard(
@@ -118,6 +123,7 @@ const InferenceWorkersLive = Layer.effectDiscard(
     const jobs = yield* JobRunner;
     const compiler = yield* BriefCompiler;
     const summarizer = yield* FailureSummarizer;
+    const router = yield* CommentRouter;
     yield* jobs.work("brief", (payload) =>
       decodeCompileBriefJob(payload).pipe(
         Effect.flatMap((job) => compiler.compile(job)),
@@ -127,6 +133,12 @@ const InferenceWorkersLive = Layer.effectDiscard(
     yield* jobs.work("failure-brief", (payload) =>
       decodeSummarizeFailureJob(payload).pipe(
         Effect.flatMap((job) => summarizer.summarize(job)),
+        Effect.orDie,
+      ),
+    );
+    yield* jobs.work("route-comment", (payload) =>
+      decodeRouteCommentJob(payload).pipe(
+        Effect.flatMap((job) => router.route(job)),
         Effect.orDie,
       ),
     );
@@ -143,13 +155,15 @@ const WorkerLive = Layer.mergeAll(
   InferenceWorkersLive,
 ).pipe(
   Layer.provide(Dispatcher.layer),
-  Layer.provide(runStarterLayer),
   Layer.provide(BriefCompiler.layer),
   Layer.provide(FailureSummarizer.layer),
+  Layer.provide(CommentRouter.layer),
   Layer.provide(liveToolsLayer),
+  // start_run: the one tool that reaches the run machinery.
+  Layer.provide(startRunToolLayer),
   // Inference runs on the user's Sealant-connected subscriptions — Mend ships no model keys.
   Layer.provide(sealantProviderLayer),
-  Layer.provide(JobRunner.pgBossLayer),
+  Layer.provide(runStarterLayer),
 );
 
 const MainLive = Layer.unwrap(
@@ -165,6 +179,8 @@ const MainLive = Layer.unwrap(
           ? WorkerLive
           : Layer.merge(ServerLive, WorkerLive);
     return parts.pipe(
+      // Shared by the API (enqueue on comment) and the workers (one instance).
+      Layer.provide(JobRunner.pgBossLayer),
       Layer.provide(Auth.layer),
       Layer.provide(SealantClient.layerFromEnv),
       Layer.provide(DatabaseLive),

@@ -171,7 +171,30 @@ const failureBrief = Effect.gen(function* () {
   yield* sql`ALTER TABLE runs ADD COLUMN failure_brief jsonb`;
 });
 
+/**
+ * The brief's review conversation (PRODUCT.md, Iteration): reviewer comments
+ * threaded onto the living document, Mend's replies beside them, and the
+ * routed decision recorded on the comment that caused it.
+ */
+const briefComments = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE brief_comments (
+      id text PRIMARY KEY,
+      brief_id text NOT NULL REFERENCES briefs(id) ON DELETE CASCADE,
+      thread text NOT NULL,
+      author_kind text NOT NULL,
+      author_name text NOT NULL,
+      body text NOT NULL,
+      routed_action text,
+      routed_run_id text,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`CREATE INDEX brief_comments_brief_idx ON brief_comments (brief_id, created_at)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
+  "0003_brief_comments": briefComments,
 };

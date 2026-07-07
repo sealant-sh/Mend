@@ -10,6 +10,7 @@
  *
  * Runs are many; the change and its PR are one; the brief is one, and current.
  */
+export * from "./brief-comment.ts";
 export * from "./brief.ts";
 export * from "./change.ts";
 export * from "./evidence.ts";

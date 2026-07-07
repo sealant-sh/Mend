@@ -27,3 +27,6 @@ export type SealantWorkspaceId = typeof SealantWorkspaceId.Type;
 
 export const Sha = Schema.String.pipe(Schema.brand("Sha"));
 export type Sha = typeof Sha.Type;
+
+export const BriefCommentId = Schema.String.pipe(Schema.brand("BriefCommentId"));
+export type BriefCommentId = typeof BriefCommentId.Type;

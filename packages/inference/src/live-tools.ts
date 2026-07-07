@@ -1,4 +1,4 @@
-import { BriefsRepo, ChangesRepo, IssuesRepo, RunsRepo } from "@mend/db";
+import { BriefCommentsRepo, BriefsRepo, ChangesRepo, IssuesRepo, RunsRepo } from "@mend/db";
 import type { ChangeId, IssueId, RunId } from "@mend/domain";
 import { SealantClient } from "@mend/sealant";
 import { Effect, Layer, Stream } from "effect";
@@ -7,6 +7,7 @@ import { InferenceToolError } from "./provider.ts";
 import {
   ChangedFile,
   ChangeView,
+  CommentRef,
   IssueView,
   PublishBrief,
   ReadBrief,
@@ -14,6 +15,7 @@ import {
   ReadIssue,
   ReadRecording,
   RecordingEvent,
+  ReplyOnBrief,
   type RecordingSelector,
 } from "./tools.ts";
 
@@ -205,13 +207,51 @@ export const publishBriefLayer = Layer.effect(
   }),
 );
 
-/** Every live tool layer, ready to sit behind the per-context tool sets. */
+export const replyOnBriefLayer = Layer.effect(
+  ReplyOnBrief,
+  Effect.gen(function* () {
+    const briefs = yield* BriefsRepo;
+    const comments = yield* BriefCommentsRepo;
+
+    const reply = Effect.fn("ReplyOnBrief.reply")(function* (
+      changeId: ChangeId,
+      thread: string,
+      body: string,
+    ) {
+      const brief = yield* briefs.byChange(changeId).pipe(
+        Effect.mapError(
+          () =>
+            new InferenceToolError({
+              tool: "reply_on_brief",
+              message: `no brief exists for change ${changeId}`,
+            }),
+        ),
+      );
+      const comment = yield* comments.create({
+        briefId: brief.id,
+        thread,
+        authorKind: "mend",
+        authorName: "Mend",
+        body,
+      });
+      return new CommentRef({ id: comment.id, url: null });
+    });
+
+    return { reply };
+  }),
+);
+
+/**
+ * Every live tool layer, ready to sit behind the per-context tool sets.
+ * `start_run`'s live layer lives in @mend/jobs beside the run machinery.
+ */
 export const liveToolsLayer = Layer.mergeAll(
   readRecordingLayer,
   readIssueLayer,
   readChangeLayer,
   readBriefLayer,
   publishBriefLayer,
+  replyOnBriefLayer,
 );
 
 const toToolError =

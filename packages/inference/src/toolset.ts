@@ -11,6 +11,7 @@ import { Effect, Schema } from "effect";
 import { InferenceToolError, type InferenceTool, type ToolInputSchema } from "./provider.ts";
 import {
   ChangeView,
+  CommentRef,
   IssueView,
   PublishBrief,
   ReadBrief,
@@ -19,6 +20,9 @@ import {
   ReadRecording,
   RecordingEvent,
   RecordingSelector,
+  ReplyOnBrief,
+  StartRun,
+  StartRunKind,
 } from "./tools.ts";
 
 /**
@@ -142,22 +146,16 @@ const readRecordingTool = (readRecording: {
     encode: encodeWith(Schema.Array(RecordingEvent)),
   });
 
-/**
- * Brief compilation: the read set plus `publish_brief`. Returns the tools
- * bound to the live services in context.
- */
-export const briefCompilationTools: Effect.Effect<
+/** The read set — grounding, no side effects — bound to the live services. */
+const readSet: Effect.Effect<
   ReadonlyArray<InferenceTool>,
   never,
-  ReadRecording | ReadIssue | ReadChange | ReadBrief | PublishBrief
+  ReadRecording | ReadIssue | ReadChange | ReadBrief
 > = Effect.gen(function* () {
   const readRecording = yield* ReadRecording;
   const readIssue = yield* ReadIssue;
   const readChange = yield* ReadChange;
   const readBrief = yield* ReadBrief;
-  const publishBrief = yield* PublishBrief;
-
-  const documentJsonSchema = Schema.toJsonSchemaDocument(BriefDocument);
 
   return [
     readRecordingTool(readRecording),
@@ -207,6 +205,25 @@ export const briefCompilationTools: Effect.Effect<
       run: (input) => readBrief.read(input.change),
       encode: encodeWith(Brief),
     }),
+  ];
+});
+
+/**
+ * Brief compilation: the read set plus `publish_brief`. Returns the tools
+ * bound to the live services in context.
+ */
+export const briefCompilationTools: Effect.Effect<
+  ReadonlyArray<InferenceTool>,
+  never,
+  ReadRecording | ReadIssue | ReadChange | ReadBrief | PublishBrief
+> = Effect.gen(function* () {
+  const reads = yield* readSet;
+  const publishBrief = yield* PublishBrief;
+
+  const documentJsonSchema = Schema.toJsonSchemaDocument(BriefDocument);
+
+  return [
+    ...reads,
     makeTool({
       name: "publish_brief",
       description:
@@ -243,3 +260,104 @@ export const failureCommentTools: Effect.Effect<
   const readRecording = yield* ReadRecording;
   return [readRecordingTool(readRecording)];
 });
+
+/** What the routing loop did — collected so the decision lands on the comment. */
+export interface RoutedActionCollector {
+  readonly record: (
+    action:
+      | { readonly kind: "replied" }
+      | { readonly kind: "run-started"; readonly runKind: StartRunKind; readonly runId: string },
+  ) => void;
+}
+
+const ReplyInput = Schema.Struct({
+  change: ChangeId,
+  thread: Schema.String,
+  body: Schema.String,
+});
+
+const StartRunInput = Schema.Struct({
+  change: ChangeId,
+  instruction: Schema.String,
+  kind: StartRunKind,
+});
+
+/**
+ * Comment routing: the read set plus the act set (PRODUCT.md, context → tools).
+ * `post_issue_comment` joins when trackers land (M3); `publish_brief` stays
+ * with the compiler worker — the recompile after a routed run settles is the
+ * only writer of the document.
+ */
+export const commentRoutingTools = (
+  collector: RoutedActionCollector,
+): Effect.Effect<
+  ReadonlyArray<InferenceTool>,
+  never,
+  ReadRecording | ReadIssue | ReadChange | ReadBrief | ReplyOnBrief | StartRun
+> =>
+  Effect.gen(function* () {
+    const reads = yield* readSet;
+    const replyOnBrief = yield* ReplyOnBrief;
+    const startRun = yield* StartRun;
+
+    return [
+      ...reads,
+      makeTool({
+        name: "reply_on_brief",
+        description:
+          "Answer the reviewer inside this brief thread — the question-back action. Use it when " +
+          "the comment is ambiguous, or when the recording already answers it (cite what you " +
+          "read). Asking is cheaper and safer than guessing at a follow-up run.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            change: { type: "string", description: "The change id." },
+            thread: { type: "string", description: "The thread the comment lives in." },
+            body: { type: "string", description: "The reply, plain and grounded." },
+          },
+          required: ["change", "thread", "body"],
+          additionalProperties: false,
+        },
+        input: ReplyInput,
+        run: (input) =>
+          replyOnBrief
+            .reply(input.change, input.thread, input.body)
+            .pipe(Effect.tap(() => Effect.sync(() => collector.record({ kind: "replied" })))),
+        encode: encodeWith(CommentRef),
+      }),
+      makeTool({
+        name: "start_run",
+        description:
+          "Start a harness run on the change's existing branch — the only path by which code can " +
+          "change. kind 'follow-up' alters code in response to the review; kind 'verification' " +
+          "executes a scenario without changing code (e.g. an amber not-executed question the " +
+          "reviewer wants exercised). The instruction must be self-contained: the harness sees " +
+          "nothing but it and the repository.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            change: { type: "string", description: "The change id." },
+            instruction: {
+              type: "string",
+              description: "Self-contained instruction for the harness.",
+            },
+            kind: { type: "string", enum: ["follow-up", "verification"] },
+          },
+          required: ["change", "instruction", "kind"],
+          additionalProperties: false,
+        },
+        input: StartRunInput,
+        run: (input) =>
+          startRun
+            .start(input.change, input.instruction, input.kind)
+            .pipe(
+              Effect.tap((runId) =>
+                Effect.sync(() =>
+                  collector.record({ kind: "run-started", runKind: input.kind, runId }),
+                ),
+              ),
+            ),
+        encode: (runId) => Effect.succeed({ run: runId }),
+      }),
+    ];
+  });

@@ -17,6 +17,7 @@
     "@mend/auth": "workspace:*",
     "@mend/db": "workspace:*",
     "@mend/domain": "workspace:*",
+    "@mend/jobs": "workspace:*",
     "@mend/sealant": "workspace:*",
     "effect": "catalog:"
   },
