@@ -113,7 +113,8 @@ export type MendEventDto =
       readonly sequence: string;
       readonly line: string;
     }
-  | { readonly type: "brief"; readonly changeId: string; readonly issueId: string };
+  | { readonly type: "brief"; readonly changeId: string; readonly issueId: string }
+  | { readonly type: "brief-comment"; readonly briefId: string; readonly issueId: string };
 
 // ─── The brief (M2): sequences ride the wire as decimal strings ─────────────
 
@@ -193,6 +194,27 @@ export interface BriefDetailDto {
   readonly change: ChangeDto;
 }
 
+export type RoutedActionDto = "follow-up-run" | "verification-run" | "question-back";
+
+export interface BriefCommentDto {
+  readonly id: string;
+  readonly briefId: string;
+  readonly thread: string;
+  readonly authorKind: "reviewer" | "mend";
+  readonly authorName: string;
+  readonly body: string;
+  readonly routedAction: RoutedActionDto | null;
+  readonly routedRunId: string | null;
+  readonly createdAt: string;
+}
+
+export interface BriefVersionDto {
+  readonly briefId: string;
+  readonly version: number;
+  readonly document: BriefDocumentDto;
+  readonly createdAt: string;
+}
+
 async function request<A>(path: string, init?: RequestInit): Promise<A> {
   const response = await fetch(path, { credentials: "include", ...init });
   if (response.status === 401) throw redirect({ to: "/login" });
@@ -232,6 +254,16 @@ export const briefByIssue = async (issueId: string): Promise<BriefDetailDto | nu
   const body: BriefDetailDto = await response.json();
   return body;
 };
+
+export const listBriefComments = (issueId: string) =>
+  request<ReadonlyArray<BriefCommentDto>>(`/api/issues/${issueId}/brief/comments`);
+
+/** Posting a comment is Gate-free — Mend reads it and routes the next action. */
+export const postBriefComment = (issueId: string, thread: string, body: string) =>
+  post<BriefCommentDto>(`/api/issues/${issueId}/brief/comments`, { thread, body });
+
+export const briefVersions = (issueId: string) =>
+  request<ReadonlyArray<BriefVersionDto>>(`/api/issues/${issueId}/brief/versions`);
 
 export const createIssue = (input: {
   readonly repository: string;

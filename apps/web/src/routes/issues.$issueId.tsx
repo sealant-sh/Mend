@@ -1,11 +1,21 @@
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import { BriefView } from "#/components/brief";
 import { FailureBriefCard } from "#/components/failure-brief";
+import { ReviewConversation } from "#/components/review-conversation";
 import { AppShell } from "#/components/shell";
 import { RunStatusDot } from "#/components/status";
-import { briefByIssue, issueDetail, type MendEventDto, type RunDto } from "#/lib/api";
+import {
+  briefByIssue,
+  briefVersions,
+  issueDetail,
+  listBriefComments,
+  type BriefDetailDto,
+  type BriefVersionDto,
+  type MendEventDto,
+  type RunDto,
+} from "#/lib/api";
 
 export const Route = createFileRoute("/issues/$issueId")({
   ssr: false,
@@ -14,13 +24,17 @@ export const Route = createFileRoute("/issues/$issueId")({
       issueDetail(params.issueId),
       briefByIssue(params.issueId),
     ]);
-    return { ...detail, brief };
+    const [comments, versions] =
+      brief === null
+        ? [[], []]
+        : await Promise.all([listBriefComments(params.issueId), briefVersions(params.issueId)]);
+    return { ...detail, brief, comments, versions };
   },
   component: IssuePage,
 });
 
 function IssuePage() {
-  const { issue, runs, brief } = Route.useLoaderData();
+  const { issue, runs, brief, comments, versions } = Route.useLoaderData();
   const router = useRouter();
 
   // A live subscription has a real lifecycle — refresh when this issue's runs
@@ -64,8 +78,13 @@ function IssuePage() {
           </p>
         ) : null
       ) : (
-        <div className="mb-8 max-w-5xl">
-          <BriefView detail={brief} />
+        <div className="mb-8 max-w-5xl space-y-6">
+          <VersionedBrief brief={brief} versions={versions} />
+          <ReviewConversation
+            issueId={issue.id}
+            document={brief.brief.document}
+            comments={comments}
+          />
         </div>
       )}
 
@@ -106,6 +125,64 @@ function IssuePage() {
         </section>
       </div>
     </AppShell>
+  );
+}
+
+/**
+ * The living brief with its history visible: prior versions stay readable, so
+ * "what did the brief claim when I approved" has an answer on screen.
+ */
+function VersionedBrief({
+  brief,
+  versions,
+}: {
+  readonly brief: BriefDetailDto;
+  readonly versions: ReadonlyArray<BriefVersionDto>;
+}) {
+  const [viewing, setViewing] = useState<number | null>(null);
+  const current = brief.brief.currentVersion;
+  const selected =
+    viewing === null ? null : (versions.find((version) => version.version === viewing) ?? null);
+
+  return (
+    <div>
+      {versions.length > 1 ? (
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-label">
+            version
+          </span>
+          <select
+            className="rounded-lg border border-input bg-background px-2 py-1 font-mono text-[12px] outline-none focus:border-[var(--sw-accent)]"
+            value={viewing ?? current}
+            onChange={(event) => {
+              const version = Number(event.target.value);
+              setViewing(version === current ? null : version);
+            }}
+          >
+            {versions.map((version) => (
+              <option key={version.version} value={version.version}>
+                v{version.version}
+                {version.version === current ? " · current" : ""} ·{" "}
+                {new Date(version.createdAt).toLocaleString()}
+              </option>
+            ))}
+          </select>
+        </div>
+      ) : null}
+      {selected === null ? null : (
+        <p className="mb-3 border-l-2 border-[var(--sw-amber)] pl-3 text-[13px] leading-relaxed text-warning">
+          Viewing version {selected.version}, superseded by version {current}. The living brief is
+          the current one.
+        </p>
+      )}
+      <BriefView
+        detail={
+          selected === null
+            ? brief
+            : { ...brief, brief: { ...brief.brief, document: selected.document } }
+        }
+      />
+    </div>
   );
 }
 
