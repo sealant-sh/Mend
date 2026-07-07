@@ -1,0 +1,241 @@
+import { BriefsRepo, ChangesRepo, IssuesRepo, RunsRepo } from "@mend/db";
+import type { ChangeId, IssueId, RunId } from "@mend/domain";
+import { SealantClient } from "@mend/sealant";
+import { Effect, Layer, Stream } from "effect";
+
+import { InferenceToolError } from "./provider.ts";
+import {
+  ChangedFile,
+  ChangeView,
+  IssueView,
+  PublishBrief,
+  ReadBrief,
+  ReadChange,
+  ReadIssue,
+  ReadRecording,
+  RecordingEvent,
+  type RecordingSelector,
+} from "./tools.ts";
+
+/**
+ * The live layers behind the read/act tool contracts — everything the
+ * `brief-compilation` context is handed. Errors surface as `InferenceToolError`
+ * with a message the model can act on (correct the input, narrow the slice),
+ * never as defects: a bad tool call is part of the loop, not a crash.
+ */
+
+/** One read_recording call returns at most this many events — narrow with the selector. */
+const MAX_RECORDING_EVENTS = 500;
+
+/** The record's source-trail kinds (PLATFORM-FEEDBACK.md, typed taxonomy). */
+const SOURCE_KINDS: ReadonlySet<string> = new Set(["networkRequest", "networkSourceObserved"]);
+
+export const readRecordingLayer = Layer.effect(
+  ReadRecording,
+  Effect.gen(function* () {
+    const sealant = yield* SealantClient;
+    const runs = yield* RunsRepo;
+
+    const read = Effect.fn("ReadRecording.read")(function* (
+      runId: RunId,
+      selector?: RecordingSelector,
+    ) {
+      const run = yield* runs
+        .byId(runId)
+        .pipe(
+          Effect.mapError(
+            () => new InferenceToolError({ tool: "read_recording", message: `no run ${runId}` }),
+          ),
+        );
+      if (run.sealantRunId === null) {
+        return yield* new InferenceToolError({
+          tool: "read_recording",
+          message: `run ${runId} has no recording (the harness never started)`,
+        });
+      }
+
+      const sdkRun = yield* sealant
+        .getRun(run.sealantRunId)
+        .pipe(toToolError("read_recording", "the record could not be opened"));
+
+      const from = selector?.fromSequence ?? 0n;
+      const to = selector?.toSequence ?? null;
+      const kinds = selector?.kinds ?? null;
+      const sourcesOnly = selector?.sourcesOnly ?? false;
+
+      const events = yield* sealant.recordStream(sdkRun, { from }).pipe(
+        Stream.takeWhile((entry) => to === null || entry.sequence <= to),
+        Stream.filter((entry) => (sourcesOnly ? SOURCE_KINDS.has(entry.kind) : true)),
+        Stream.filter((entry) => (kinds === null ? true : kinds.includes(entry.kind))),
+        Stream.take(MAX_RECORDING_EVENTS),
+        Stream.map(
+          (entry) =>
+            new RecordingEvent({
+              sequence: entry.sequence,
+              kind: entry.kind,
+              occurredAt: new Date(entry.occurredAt),
+              summary: entry.summary,
+              // The runtime recorded every timeline entry — that is what `observed` means.
+              provenance: "observed",
+              data: entry.data,
+            }),
+        ),
+        Stream.runCollect,
+        toToolError("read_recording", "reading the record failed"),
+      );
+
+      return events;
+    });
+
+    return { read };
+  }),
+);
+
+export const readIssueLayer = Layer.effect(
+  ReadIssue,
+  Effect.gen(function* () {
+    const issues = yield* IssuesRepo;
+
+    const read = Effect.fn("ReadIssue.read")(function* (issueId: IssueId) {
+      const issue = yield* issues
+        .byId(issueId)
+        .pipe(
+          Effect.mapError(
+            () => new InferenceToolError({ tool: "read_issue", message: `no issue ${issueId}` }),
+          ),
+        );
+      // Manual issues carry no comment thread and no links; trackers add both in M3.
+      return new IssueView({ title: issue.title, body: issue.body, comments: [], links: [] });
+    });
+
+    return { read };
+  }),
+);
+
+export const readChangeLayer = Layer.effect(
+  ReadChange,
+  Effect.gen(function* () {
+    const sealant = yield* SealantClient;
+    const changes = yield* ChangesRepo;
+    const runs = yield* RunsRepo;
+
+    const read = Effect.fn("ReadChange.read")(function* (changeId: ChangeId) {
+      const change = yield* changes
+        .byId(changeId)
+        .pipe(
+          Effect.mapError(
+            () => new InferenceToolError({ tool: "read_change", message: `no change ${changeId}` }),
+          ),
+        );
+
+      // The diff behind the current head: the latest completed recording.
+      const issueRuns = yield* runs.listForIssue(change.issueId);
+      const latest = issueRuns.find(
+        (run) => run.outcome === "completed" && run.sealantRunId !== null,
+      );
+      if (latest === undefined || latest.sealantRunId === null) {
+        return yield* new InferenceToolError({
+          tool: "read_change",
+          message: `change ${changeId} has no completed recording behind it`,
+        });
+      }
+
+      const sdkRun = yield* sealant
+        .getRun(latest.sealantRunId)
+        .pipe(toToolError("read_change", "the record could not be opened"));
+      const observed = yield* sealant
+        .runChanges(sdkRun)
+        .pipe(toToolError("read_change", "reading the change failed"));
+
+      const counts = diffCounts(observed.diff);
+      return new ChangeView({
+        diff: observed.diff,
+        baseSha: change.baseSha,
+        headSha: change.headSha,
+        files: observed.files.map(
+          (file) =>
+            new ChangedFile({
+              path: file.path,
+              additions: counts.get(file.path)?.additions ?? 0,
+              deletions: counts.get(file.path)?.deletions ?? 0,
+            }),
+        ),
+        // CI checks join the brief with the PR (M3).
+        checks: [],
+        freshness: change.freshness,
+      });
+    });
+
+    return { read };
+  }),
+);
+
+export const readBriefLayer = Layer.effect(
+  ReadBrief,
+  Effect.gen(function* () {
+    const briefs = yield* BriefsRepo;
+
+    const read = Effect.fn("ReadBrief.read")(function* (changeId: ChangeId) {
+      return yield* briefs.byChange(changeId).pipe(
+        Effect.mapError(
+          () =>
+            new InferenceToolError({
+              tool: "read_brief",
+              message: `no brief exists for change ${changeId} yet — this is the first compile`,
+            }),
+        ),
+      );
+    });
+
+    return { read };
+  }),
+);
+
+export const publishBriefLayer = Layer.effect(
+  PublishBrief,
+  Effect.gen(function* () {
+    const briefs = yield* BriefsRepo;
+
+    const publish = Effect.fn("PublishBrief.publish")((changeId: ChangeId, document) =>
+      briefs.publish(changeId, document),
+    );
+
+    return { publish };
+  }),
+);
+
+/** Every live tool layer, ready to sit behind the per-context tool sets. */
+export const liveToolsLayer = Layer.mergeAll(
+  readRecordingLayer,
+  readIssueLayer,
+  readChangeLayer,
+  readBriefLayer,
+  publishBriefLayer,
+);
+
+const toToolError =
+  (tool: string, what: string) =>
+  <A, E extends { readonly message: string }, R>(effect: Effect.Effect<A, E, R>) =>
+    effect.pipe(
+      Effect.mapError(
+        (error) => new InferenceToolError({ tool, message: `${what}: ${error.message}` }),
+      ),
+    );
+
+/** Per-file +/− counts out of a unified diff — the brief's mono facts. */
+const diffCounts = (diff: string) => {
+  const counts = new Map<string, { additions: number; deletions: number }>();
+  let current: { additions: number; deletions: number } | null = null;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+++ ")) {
+      const path = line.slice(4).replace(/^b\//, "");
+      current = { additions: 0, deletions: 0 };
+      if (path !== "/dev/null") counts.set(path, current);
+      continue;
+    }
+    if (current === null) continue;
+    if (line.startsWith("+") && !line.startsWith("+++")) current.additions++;
+    else if (line.startsWith("-") && !line.startsWith("---")) current.deletions++;
+  }
+  return counts;
+};

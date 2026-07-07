@@ -1,12 +1,20 @@
 import { PgClient } from "@effect/sql-pg";
-import { IssuesRepo, notifyEvent, RunsRepo } from "@mend/db";
-import { SealantRunId, SealantWorkspaceId, type Issue, type IssueId, type Run } from "@mend/domain";
+import { ChangesRepo, IssuesRepo, notifyEvent, RunsRepo } from "@mend/db";
+import {
+  Sha,
+  SealantRunId,
+  SealantWorkspaceId,
+  type Issue,
+  type IssueId,
+  type Run,
+} from "@mend/domain";
 import { SealantClient } from "@mend/sealant";
 import type { Run as SdkRun } from "@sealant/sdk";
 import { opencode } from "@sealant/sdk";
 import { Effect, Layer, Option, Stream } from "effect";
 
 import { RunStarter } from "./dispatcher.ts";
+import { JobRunner } from "./job-runner.ts";
 
 /**
  * The prompt is the issue, verbatim — Mend adds no instructions of its own.
@@ -27,8 +35,65 @@ export const runStarterLayer = Layer.effect(
     const sealant = yield* SealantClient;
     const runs = yield* RunsRepo;
     const issues = yield* IssuesRepo;
+    const changes = yield* ChangesRepo;
+    const jobs = yield* JobRunner;
     const sql = yield* PgClient.PgClient;
     const scope = yield* Effect.scope;
+
+    /**
+     * The head the evidence describes, read from the workspace itself — each
+     * exec is recorded, so even these facts have records behind them. Failures
+     * degrade to nulls: a gap is content, not a broken pipeline.
+     */
+    const discoverHeadFacts = Effect.fn("RunStarter.discoverHeadFacts")(function* (run: Run) {
+      if (run.sealantWorkspaceId === null) {
+        return { branch: "", baseSha: null, headSha: null };
+      }
+      const workspace = yield* sealant.getWorkspace(run.sealantWorkspaceId);
+      const head = yield* sealant.exec(workspace, ["git", "rev-parse", "HEAD"]);
+      const branch = yield* sealant.exec(workspace, ["git", "branch", "--show-current"]);
+      const sha = head.exitCode === 0 ? head.stdout.trim() : "";
+      return {
+        branch: branch.exitCode === 0 ? branch.stdout.trim() : "",
+        baseSha: null,
+        headSha: /^[0-9a-f]{40}$/.test(sha) ? Sha.make(sha) : null,
+      };
+    });
+
+    /**
+     * A completed run grows the change and recompiles the brief: ensure the
+     * change row, tie the run's recording to it, enqueue the `brief` job. The
+     * idempotency key follows the head so a re-settled run never double-compiles
+     * (ARCHITECTURE.md §5).
+     */
+    const afterCompleted = Effect.fn("RunStarter.afterCompleted")(function* (
+      run: Run,
+      issue: Issue,
+    ) {
+      const facts = yield* discoverHeadFacts(run).pipe(
+        Effect.catchTag("SealantPlatformError", (error) =>
+          Effect.logWarning("run supervisor: head discovery failed").pipe(
+            Effect.annotateLogs({ runId: run.id, error: error.message }),
+            Effect.as({ branch: "", baseSha: null, headSha: null }),
+          ),
+        ),
+      );
+      const change = yield* changes.ensureForIssue(issue.id, facts);
+      yield* runs.linkChange(run.id, change.id);
+      yield* jobs
+        .enqueue({
+          name: "brief",
+          payload: { issueId: issue.id, changeId: change.id, runId: run.id },
+          idempotencyKey: `brief:${change.id}:${facts.headSha ?? run.id}`,
+        })
+        .pipe(
+          Effect.catchTag("JobEnqueueError", (error) =>
+            Effect.logError("run supervisor: brief enqueue failed").pipe(
+              Effect.annotateLogs({ runId: run.id, cause: String(error.cause) }),
+            ),
+          ),
+        );
+    });
 
     const failRun = Effect.fn("RunStarter.failRun")(function* (
       run: Run,
@@ -71,6 +136,7 @@ export const runStarterLayer = Layer.effect(
       if (settled.result.outcome === "completed") {
         yield* runs.settle(run.id, "completed", settled.result.summary ?? null);
         yield* issues.markReview(issue.id).pipe(Effect.ignore);
+        yield* afterCompleted(run, issue);
         return;
       }
       yield* failRun(

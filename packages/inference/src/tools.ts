@@ -26,8 +26,9 @@ import { InferenceToolError } from "./provider.ts";
 
 /** Narrows `read_recording` to a slice — the full trace is large. */
 export class RecordingSelector extends Schema.Class<RecordingSelector>("RecordingSelector")({
-  fromSequence: Schema.NullOr(Schema.BigInt),
-  toSequence: Schema.NullOr(Schema.BigInt),
+  // Sequences ride every wire as decimal strings (JSON has no bigint).
+  fromSequence: Schema.NullOr(Schema.BigIntFromString),
+  toSequence: Schema.NullOr(Schema.BigIntFromString),
   /** Timeline entry kinds to keep, null for all. */
   kinds: Schema.NullOr(Schema.Array(Schema.String)),
   /** Only the source trail. */
@@ -35,9 +36,11 @@ export class RecordingSelector extends Schema.Class<RecordingSelector>("Recordin
 }) {}
 
 export class RecordingEvent extends Schema.Class<RecordingEvent>("RecordingEvent")({
-  sequence: Schema.BigInt,
+  sequence: Schema.BigIntFromString,
   kind: Schema.String,
   occurredAt: Schema.Date,
+  /** One-line human summary, straight from the record. */
+  summary: Schema.String,
   /** `observed` (the runtime saw it) or `inferred` (the harness claimed it). */
   provenance: Provenance,
   data: Schema.Unknown,

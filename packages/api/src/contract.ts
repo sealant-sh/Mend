@@ -1,6 +1,6 @@
 import type { AuthSession } from "@mend/auth";
 import { NewIssue, QueueMove } from "@mend/db";
-import { Issue, IssueId, Run, RunId } from "@mend/domain";
+import { Brief, Change, Issue, IssueId, Run, RunId } from "@mend/domain";
 import { SealantConnection } from "@mend/sealant";
 import { Schema } from "effect";
 import * as Context from "effect/Context";
@@ -97,6 +97,22 @@ const issuesGroup = HttpApiGroup.make("issues")
   )
   .middleware(AuthMiddleware);
 
+/** The living brief with the change it belongs to — one per issue at most. */
+export class BriefDetail extends Schema.Class<BriefDetail>("BriefDetail")({
+  brief: Brief,
+  change: Change,
+}) {}
+
+const briefsGroup = HttpApiGroup.make("briefs")
+  .add(
+    HttpApiEndpoint.get("byIssue", "/issues/:id/brief", {
+      params: { id: IssueId },
+      success: BriefDetail,
+      error: NotFound,
+    }),
+  )
+  .middleware(AuthMiddleware);
+
 const runsGroup = HttpApiGroup.make("runs")
   .add(
     HttpApiEndpoint.get("detail", "/runs/:id", {
@@ -111,5 +127,6 @@ export const MendApi = HttpApi.make("mend")
   .add(healthGroup)
   .add(sealantGroup)
   .add(issuesGroup)
+  .add(briefsGroup)
   .add(runsGroup)
   .prefix("/api");

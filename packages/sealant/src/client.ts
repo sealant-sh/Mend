@@ -4,6 +4,7 @@ import type {
   InferenceRespondOptions,
   InferenceResponse,
   Run,
+  RunFileChange,
   RunOptions,
   TimelineEntry,
   Workspace,
@@ -80,6 +81,14 @@ export class SealantClient extends Context.Service<
       run: Run,
       options?: { readonly from?: bigint },
     ) => Stream.Stream<TimelineEntry, SealantPlatformError>;
+    /** The before/after of what a run changed: file list plus the unified diff. */
+    readonly runChanges: (run: Run) => Effect.Effect<
+      {
+        readonly files: ReadonlyArray<RunFileChange>;
+        readonly diff: string;
+      },
+      SealantPlatformError
+    >;
     /** Cheap authenticated round-trip for the settings page. Never fails — the failure is the content. */
     readonly connectionCheck: () => Effect.Effect<SealantConnection>;
   }
@@ -178,6 +187,10 @@ export class SealantClient extends Context.Service<
           toPlatformError,
         );
 
+      const runChanges = Effect.fn("SealantClient.runChanges")((run: Run) =>
+        wrap(async () => ({ files: run.changes.files, diff: await run.changes.diff() })),
+      );
+
       const connectionCheck = Effect.fn("SealantClient.connectionCheck")(function* () {
         const now = yield* Clock.currentTimeMillis;
         return yield* listWorkspacesOp({ ownerUserId, limit: "1" }).pipe(
@@ -214,6 +227,7 @@ export class SealantClient extends Context.Service<
         exec,
         inferenceRespond,
         recordStream,
+        runChanges,
         connectionCheck,
       };
     }),

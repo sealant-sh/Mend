@@ -1,0 +1,91 @@
+import { BriefsRepo } from "@mend/db";
+import { ChangeId, IssueId, RunId } from "@mend/domain";
+import { Effect, Layer, Schema } from "effect";
+import * as Context from "effect/Context";
+
+import { InferenceError, InferenceProvider } from "./provider.ts";
+import { briefCompilationTools } from "./toolset.ts";
+
+/** The `brief` job's payload — enqueued when a run settles completed. */
+export class CompileBriefJob extends Schema.Class<CompileBriefJob>("CompileBriefJob")({
+  issueId: IssueId,
+  changeId: ChangeId,
+  runId: RunId,
+}) {}
+
+/**
+ * The rules the brief never breaks (PRODUCT.md §4), addressed to the model.
+ * Everything else — anatomy, dispositions, grounding — is carried by the
+ * document schema on the publish_brief tool.
+ */
+const SYSTEM = `You compile the brief: the review of a code change, grounded in the recording of the run that produced it. You are Mend's interface inference — you phrase and organize evidence; you cannot mint claims.
+
+Rules the brief never breaks:
+- Evidence, not verdicts. Status words describe what was observed ("completed · observed"), never a judgment ("safe to merge"). No scores, no grades, no confidence numbers, no recommendation to merge.
+- The recording is the only permitted source of claims. Every claim carries evidence pointers (run id, sequence, and a short quoted excerpt from that event). A statement the recording does not support must be phrased as inferred, or carried as a gap.
+- Dispositions are earned. "direct-evidence" only when the recording contains direct evidence for that question — an event you can point to. Nothing defaults to green. A path never exercised is "not-executed" (amber). An edit in the diff with no cause in the recording is "unrelated-change" (red).
+- Gaps are content, not omissions. Paths the agent never exercised are listed in the attention callouts, never hidden.
+- Recompiles amend the living document: read the existing brief first when one exists, keep questions whose evidence still stands, renumber coherently.
+
+Method:
+1. read_issue — restate the issue in one line; quote the failing reproduction if the issue carries one.
+2. read_change — the diff and per-file counts; write the mono facts line from these numbers only.
+3. read_recording — work through the recording (page and narrow as needed; processStarted/processExited carry commands and exit codes, fileChange carries edits, network kinds carry sources). Match every edit in the diff to its cause in the recording.
+4. read_brief — when a brief already exists, amend it.
+5. Decompose the review into numbered questions a careful reviewer would ask (typically 3-7), give each its earned disposition and evidence pointers, then publish_brief exactly once.
+
+Excerpts are short (one line, the event's summary or the relevant fragment). Sequences are decimal strings.`;
+
+const prompt = (job: CompileBriefJob) =>
+  `Compile the brief for change ${job.changeId} (issue ${job.issueId}). ` +
+  `The run that just settled completed is ${job.runId} — its recording is the primary evidence. ` +
+  `Publish with publish_brief when every claim is grounded.`;
+
+/**
+ * Compiles the living brief for a change — the `brief` job's worker body.
+ * Succeeds only when a publish actually happened; anything else fails into the
+ * job engine's retry.
+ */
+export class BriefCompiler extends Context.Service<
+  BriefCompiler,
+  {
+    readonly compile: (job: CompileBriefJob) => Effect.Effect<void, InferenceError>;
+  }
+>()("@mend/inference/BriefCompiler") {
+  static readonly layer = Layer.effect(
+    BriefCompiler,
+    Effect.gen(function* () {
+      const provider = yield* InferenceProvider;
+      const briefs = yield* BriefsRepo;
+      const tools = yield* briefCompilationTools;
+
+      const compile = Effect.fn("BriefCompiler.compile")(function* (job: CompileBriefJob) {
+        const before = yield* briefs.byChange(job.changeId).pipe(
+          Effect.map((brief) => brief.currentVersion),
+          Effect.orElseSucceed(() => 0),
+        );
+
+        yield* provider.respond({
+          context: "brief-compilation",
+          system: SYSTEM,
+          prompt: prompt(job),
+          tools,
+        });
+
+        // The compile is judged by its side effect: a new version, or it failed.
+        const after = yield* briefs.byChange(job.changeId).pipe(
+          Effect.map((brief) => brief.currentVersion),
+          Effect.orElseSucceed(() => 0),
+        );
+        if (after <= before) {
+          return yield* new InferenceError({
+            message: `the compile finished without publishing (version stayed at ${before})`,
+            cause: null,
+          });
+        }
+      });
+
+      return { compile };
+    }),
+  );
+}

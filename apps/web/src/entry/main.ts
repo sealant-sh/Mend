@@ -7,6 +7,8 @@ import { NodeHttpServer, NodeRuntime } from "@effect/platform-node";
 import { EventsRoutes, MendApiLive } from "@mend/api";
 import { Auth } from "@mend/auth";
 import {
+  BriefsRepo,
+  ChangesRepo,
   InferenceCallsRepo,
   IssuesRepo,
   MigratorLive,
@@ -14,6 +16,12 @@ import {
   RunsRepo,
   SettingsRepo,
 } from "@mend/db";
+import {
+  BriefCompiler,
+  CompileBriefJob,
+  liveToolsLayer,
+  sealantProviderLayer,
+} from "@mend/inference";
 import { Dispatcher, JobRunner, runStarterLayer } from "@mend/jobs";
 import { SealantClient } from "@mend/sealant";
 import { Config, Effect, Layer, Schema } from "effect";
@@ -32,6 +40,8 @@ const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..
 const DatabaseLive = Layer.mergeAll(
   IssuesRepo.layer,
   RunsRepo.layer,
+  ChangesRepo.layer,
+  BriefsRepo.layer,
   SettingsRepo.layer,
   InferenceCallsRepo.layer,
 ).pipe(Layer.provideMerge(MigratorLive.pipe(Layer.provideMerge(PgLive))));
@@ -96,15 +106,38 @@ const ServerLive = Layer.unwrap(
   }),
 );
 
-// ─── Worker: the dispatcher loop (and the job engine it will feed) ──────────
-const WorkerLive = Layer.effectDiscard(
+// ─── Worker: the dispatcher loop and the side-effect jobs it feeds ──────────
+const decodeCompileBriefJob = Schema.decodeUnknownEffect(CompileBriefJob);
+
+/** The `brief` job worker: a failed compile dies into the engine's retry. */
+const BriefWorkerLive = Layer.effectDiscard(
   Effect.gen(function* () {
-    const dispatcher = yield* Dispatcher;
-    yield* Effect.forkScoped(dispatcher.run());
+    const jobs = yield* JobRunner;
+    const compiler = yield* BriefCompiler;
+    yield* jobs.work("brief", (payload) =>
+      decodeCompileBriefJob(payload).pipe(
+        Effect.flatMap((job) => compiler.compile(job)),
+        Effect.orDie,
+      ),
+    );
   }),
+);
+
+const WorkerLive = Layer.mergeAll(
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      const dispatcher = yield* Dispatcher;
+      yield* Effect.forkScoped(dispatcher.run());
+    }),
+  ),
+  BriefWorkerLive,
 ).pipe(
   Layer.provide(Dispatcher.layer),
   Layer.provide(runStarterLayer),
+  Layer.provide(BriefCompiler.layer),
+  Layer.provide(liveToolsLayer),
+  // Inference runs on the user's Sealant-connected subscriptions — Mend ships no model keys.
+  Layer.provide(sealantProviderLayer),
   Layer.provide(JobRunner.pgBossLayer),
 );
 

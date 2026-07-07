@@ -1,5 +1,5 @@
 import { Auth } from "@mend/auth";
-import { IssuesRepo, RunsRepo } from "@mend/db";
+import { BriefsRepo, ChangesRepo, IssuesRepo, RunsRepo } from "@mend/db";
 import { SealantClient } from "@mend/sealant";
 import { Config, Effect, Layer, Option } from "effect";
 import { HttpServerRequest } from "effect/unstable/http";
@@ -7,6 +7,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import {
   AuthMiddleware,
+  BriefDetail,
   CurrentUser,
   HealthStatus,
   IssueDetail,
@@ -88,6 +89,22 @@ export const IssuesGroupLive = HttpApiBuilder.group(MendApi, "issues", (handlers
     ),
 );
 
+export const BriefsGroupLive = HttpApiBuilder.group(MendApi, "briefs", (handlers) =>
+  handlers.handle("byIssue", ({ params }) =>
+    Effect.gen(function* () {
+      const changes = yield* ChangesRepo;
+      const briefs = yield* BriefsRepo;
+      const change = yield* changes
+        .byIssue(params.id)
+        .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+      const brief = yield* briefs
+        .byChange(change.id)
+        .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+      return new BriefDetail({ brief, change });
+    }),
+  ),
+);
+
 export const RunsGroupLive = HttpApiBuilder.group(MendApi, "runs", (handlers) =>
   handlers.handle("detail", ({ params }) =>
     Effect.gen(function* () {
@@ -147,6 +164,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
   Layer.provide(HealthGroupLive),
   Layer.provide(SealantGroupLive),
   Layer.provide(IssuesGroupLive),
+  Layer.provide(BriefsGroupLive),
   Layer.provide(RunsGroupLive),
   Layer.provide(AuthMiddlewareLive),
 );

@@ -26,6 +26,11 @@ export const MendEvent = Schema.Union([
     sequence: Schema.String,
     line: Schema.String,
   }),
+  Schema.Struct({
+    type: Schema.Literals(["brief"]),
+    changeId: Schema.String,
+    issueId: Schema.String,
+  }),
 ]);
 export type MendEvent = typeof MendEvent.Type;
 

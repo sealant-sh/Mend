@@ -9,7 +9,9 @@ import { RunId } from "./ids.ts";
  */
 export class EvidencePointer extends Schema.Class<EvidencePointer>("EvidencePointer")({
   runId: RunId,
-  sequence: Schema.BigInt,
+  // BigInt in the domain, a decimal string on every wire (jsonb, HTTP, the
+  // publish_brief tool input) — sequences can pass 2^53 and JSON has no bigint.
+  sequence: Schema.BigIntFromString,
   excerpt: Schema.String,
 }) {}
 

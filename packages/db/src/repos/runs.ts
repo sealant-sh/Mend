@@ -2,6 +2,7 @@ import { PgClient } from "@effect/sql-pg";
 import {
   Run,
   RunId,
+  type ChangeId,
   type IssueId,
   type RunKind,
   type RunOutcome,
@@ -47,6 +48,8 @@ export class RunsRepo extends Context.Service<
       workspaceId: SealantWorkspaceId,
     ) => Effect.Effect<void>;
     readonly setStatus: (id: RunId, status: RunStatus) => Effect.Effect<void>;
+    /** Ties a settled run to the change its recording is evidence for. */
+    readonly linkChange: (id: RunId, changeId: ChangeId) => Effect.Effect<void>;
     readonly saveLastSeenSequence: (id: RunId, sequence: bigint) => Effect.Effect<void>;
     readonly settle: (
       id: RunId,
@@ -120,6 +123,15 @@ export class RunsRepo extends Context.Service<
         yield* notifyEvent(sql, { type: "run", runId: id, issueId });
       });
 
+      const linkChange = Effect.fn("RunsRepo.linkChange")(function* (
+        id: RunId,
+        changeId: ChangeId,
+      ) {
+        yield* sql`
+          UPDATE runs SET change_id = ${changeId}, updated_at = now()
+          WHERE id = ${id}`.pipe(Effect.orDie);
+      });
+
       const saveLastSeenSequence = Effect.fn("RunsRepo.saveLastSeenSequence")(function* (
         id: RunId,
         sequence: bigint,
@@ -159,6 +171,7 @@ export class RunsRepo extends Context.Service<
         listUnsettled,
         setSealantIds,
         setStatus,
+        linkChange,
         saveLastSeenSequence,
         settle,
       };

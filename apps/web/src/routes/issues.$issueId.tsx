@@ -1,17 +1,39 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
+import { useEffect } from "react";
 
+import { BriefView } from "#/components/brief";
 import { AppShell } from "#/components/shell";
 import { RunStatusDot } from "#/components/status";
-import { issueDetail, type RunDto } from "#/lib/api";
+import { briefByIssue, issueDetail, type MendEventDto, type RunDto } from "#/lib/api";
 
 export const Route = createFileRoute("/issues/$issueId")({
   ssr: false,
-  loader: ({ params }) => issueDetail(params.issueId),
+  loader: async ({ params }) => {
+    const [detail, brief] = await Promise.all([
+      issueDetail(params.issueId),
+      briefByIssue(params.issueId),
+    ]);
+    return { ...detail, brief };
+  },
   component: IssuePage,
 });
 
 function IssuePage() {
-  const { issue, runs } = Route.useLoaderData();
+  const { issue, runs, brief } = Route.useLoaderData();
+  const router = useRouter();
+
+  // A live subscription has a real lifecycle — refresh when this issue's runs
+  // settle or its brief recompiles.
+  useEffect(() => {
+    const source = new EventSource("/api/events");
+    source.addEventListener("message", (message) => {
+      const event: MendEventDto = JSON.parse(message.data);
+      if (event.type === "run-progress") return;
+      if (event.issueId !== issue.id) return;
+      void router.invalidate();
+    });
+    return () => source.close();
+  }, [router, issue.id]);
 
   return (
     <AppShell>
@@ -26,6 +48,18 @@ function IssuePage() {
           {issue.externalRef ?? issue.repository}
         </p>
       </div>
+
+      {brief === null ? (
+        issue.stage === "mending" || issue.stage === "queued" ? (
+          <p className="mb-8 max-w-[60ch] text-[13px] leading-relaxed text-muted-foreground">
+            The brief compiles from the recording once a run completes.
+          </p>
+        ) : null
+      ) : (
+        <div className="mb-8 max-w-5xl">
+          <BriefView detail={brief} />
+        </div>
+      )}
 
       <div className="grid max-w-5xl gap-6 lg:grid-cols-[1.4fr_1fr]">
         <section className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">

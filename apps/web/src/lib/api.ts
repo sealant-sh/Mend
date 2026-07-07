@@ -72,7 +72,86 @@ export type MendEventDto =
       readonly issueId: string;
       readonly sequence: string;
       readonly line: string;
-    };
+    }
+  | { readonly type: "brief"; readonly changeId: string; readonly issueId: string };
+
+// ─── The brief (M2): sequences ride the wire as decimal strings ─────────────
+
+export type DispositionDto = "direct-evidence" | "not-executed" | "unrelated-change";
+
+export interface EvidencePointerDto {
+  readonly runId: string;
+  readonly sequence: string;
+  readonly excerpt: string;
+}
+
+export interface BriefQuestionDto {
+  readonly index: number;
+  readonly question: string;
+  readonly disposition: DispositionDto;
+  readonly evidence: ReadonlyArray<EvidencePointerDto>;
+}
+
+export interface BriefCalloutDto {
+  readonly severity: "not-executed" | "unrelated-change";
+  readonly text: string;
+  readonly evidence: ReadonlyArray<EvidencePointerDto>;
+}
+
+export interface BriefEvidenceSourceDto {
+  readonly source: string;
+  readonly established: string;
+  readonly pointers: ReadonlyArray<EvidencePointerDto>;
+}
+
+export interface BriefDocumentDto {
+  readonly header: {
+    readonly repository: string;
+    readonly prRef: string | null;
+    readonly issueRef: string;
+    readonly checksCount: number | null;
+    readonly headSha: string | null;
+    readonly freshness: "current" | "stale";
+  };
+  readonly causalProof: {
+    readonly baseFails: EvidencePointerDto | null;
+    readonly headPasses: EvidencePointerDto | null;
+    readonly revertFails: EvidencePointerDto | null;
+  };
+  readonly issueRestated: string;
+  readonly reproduction: string | null;
+  readonly whatWasDone: string;
+  readonly statusNow: string;
+  readonly monoFacts: string;
+  readonly questions: ReadonlyArray<BriefQuestionDto>;
+  readonly attention: ReadonlyArray<BriefCalloutDto>;
+  readonly evidenceUsed: ReadonlyArray<BriefEvidenceSourceDto>;
+}
+
+export interface BriefDto {
+  readonly id: string;
+  readonly changeId: string;
+  readonly currentVersion: number;
+  readonly document: BriefDocumentDto;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface ChangeDto {
+  readonly id: string;
+  readonly issueId: string;
+  readonly branch: string;
+  readonly baseSha: string | null;
+  readonly headSha: string | null;
+  readonly prNumber: number | null;
+  readonly prUrl: string | null;
+  readonly freshness: "current" | "stale";
+}
+
+export interface BriefDetailDto {
+  readonly brief: BriefDto;
+  readonly change: ChangeDto;
+}
 
 async function request<A>(path: string, init?: RequestInit): Promise<A> {
   const response = await fetch(path, { credentials: "include", ...init });
@@ -95,6 +174,17 @@ export const listIssues = () => request<ReadonlyArray<IssueDto>>("/api/issues");
 export const issueDetail = (id: string) => request<IssueDetailDto>(`/api/issues/${id}`);
 
 export const runDetail = (id: string) => request<RunDetailDto>(`/api/runs/${id}`);
+
+/** The issue's living brief — null while no brief exists yet (404 is a state, not an error). */
+export const briefByIssue = async (issueId: string): Promise<BriefDetailDto | null> => {
+  const response = await fetch(`/api/issues/${issueId}/brief`, { credentials: "include" });
+  if (response.status === 401) throw redirect({ to: "/login" });
+  if (response.status === 404) return null;
+  if (!response.ok)
+    throw new Error(`GET /api/issues/${issueId}/brief responded ${response.status}`);
+  const body: BriefDetailDto = await response.json();
+  return body;
+};
 
 export const createIssue = (input: {
   readonly repository: string;
