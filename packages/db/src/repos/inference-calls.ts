@@ -32,7 +32,7 @@ export class InferenceCallsRepo extends Context.Service<
       }) {
         yield* sql`
           INSERT INTO inference_calls (id, context, tool, input, output)
-          VALUES (${crypto.randomUUID()}, ${call.context}, ${call.tool}, ${sql.json(call.input)}, ${sql.json(call.output)})`.pipe(
+          VALUES (${crypto.randomUUID()}, ${call.context}, ${call.tool}, ${JSON.stringify(call.input) ?? "null"}::jsonb, ${JSON.stringify(call.output) ?? "null"}::jsonb)`.pipe(
           Effect.orDie,
         );
       });

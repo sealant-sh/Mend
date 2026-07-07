@@ -80,7 +80,7 @@ export class BriefsRepo extends Context.Service<
             Effect.gen(function* () {
               const rows = yield* sql`
               INSERT INTO briefs (id, change_id, current_version, document)
-              VALUES (${briefId}, ${changeId}, 1, ${sql.json(encoded)})
+              VALUES (${briefId}, ${changeId}, 1, ${JSON.stringify(encoded)}::jsonb)
               ON CONFLICT (change_id) DO UPDATE
               SET current_version = briefs.current_version + 1,
                   document = EXCLUDED.document,
@@ -90,7 +90,7 @@ export class BriefsRepo extends Context.Service<
 
               yield* sql`
               INSERT INTO brief_versions (brief_id, version, document)
-              VALUES (${row.id}, ${row.currentVersion}, ${sql.json(encoded)})`;
+              VALUES (${row.id}, ${row.currentVersion}, ${JSON.stringify(encoded)}::jsonb)`;
 
               // The index over the document's questions — replaced with it.
               yield* sql`DELETE FROM review_questions WHERE brief_id = ${row.id}`;
@@ -98,7 +98,7 @@ export class BriefsRepo extends Context.Service<
                 yield* sql`
                 INSERT INTO review_questions (id, brief_id, index, question, disposition, evidence)
                 VALUES (${crypto.randomUUID()}, ${row.id}, ${question.index}, ${question.question},
-                        ${question.disposition}, ${sql.json(serializeEvidence(question))})`;
+                        ${question.disposition}, ${JSON.stringify(serializeEvidence(question))}::jsonb)`;
               }
 
               return row.currentVersion;

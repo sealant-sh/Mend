@@ -127,7 +127,10 @@ export const runStarterLayer = Layer.effect(
     // a deliberate cycle (a run's settle can start the next run).
     const afterCompleted: (run: Run, issue: Issue) => Effect.Effect<void> = Effect.fn(
       "RunStarter.afterCompleted",
-    )(function* (run: Run, issue: Issue) {
+    )(function* (staleRun: Run, issue: Issue) {
+      // The in-memory row predates setSealantIds — without the re-read, head
+      // discovery sees no workspace and the verification run never starts.
+      const run = yield* runs.byId(staleRun.id).pipe(Effect.orElseSucceed(() => staleRun));
       const facts = yield* discoverHeadFacts(run).pipe(
         Effect.catchTag("SealantPlatformError", (error) =>
           Effect.logWarning("run supervisor: head discovery failed").pipe(
@@ -242,14 +245,17 @@ export const runStarterLayer = Layer.effect(
       );
 
       const work = Effect.gen(function* () {
-        const workspace = yield* sealant.getWorkspace(workspaceId);
-        const sdkRun = yield* sealant.startHarness(workspace, verificationPrompt(issue), {
-          idempotencyKey: run.id,
-        });
+        // The creating handle is gone — start by workspace id (the re-fetched
+        // facade handle carries no harness; see PLATFORM-FEEDBACK.md).
+        const sdkRun = yield* sealant.startHarnessInWorkspace(
+          workspaceId,
+          opencode(),
+          verificationPrompt(issue),
+        );
         yield* runs.setSealantIds(
           run.id,
           SealantRunId.make(sdkRun.id),
-          SealantWorkspaceId.make(workspace.id),
+          SealantWorkspaceId.make(workspaceId),
         );
         yield* runs.setStatus(run.id, "running");
         yield* supervise(run, issue, sdkRun, 0n);
@@ -359,14 +365,11 @@ export const runStarterLayer = Layer.effect(
       const promptText =
         kind === "follow-up" ? followUpPrompt(instruction) : routedVerificationPrompt(instruction);
       const work = Effect.gen(function* () {
-        const workspace = yield* sealant.getWorkspace(workspaceId);
-        const sdkRun = yield* sealant.startHarness(workspace, promptText, {
-          idempotencyKey: run.id,
-        });
+        const sdkRun = yield* sealant.startHarnessInWorkspace(workspaceId, opencode(), promptText);
         yield* runs.setSealantIds(
           run.id,
           SealantRunId.make(sdkRun.id),
-          SealantWorkspaceId.make(workspace.id),
+          SealantWorkspaceId.make(workspaceId),
         );
         yield* runs.setStatus(run.id, "running");
         yield* supervise(run, issue, sdkRun, 0n);

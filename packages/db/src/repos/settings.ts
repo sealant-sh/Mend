@@ -28,8 +28,8 @@ export class SettingsRepo extends Context.Service<
       const set = Effect.fn("SettingsRepo.set")(function* (settings: MendSettings) {
         const encoded = yield* Schema.encodeEffect(MendSettings)(settings).pipe(Effect.orDie);
         yield* sql`
-          INSERT INTO settings (key, value) VALUES ('mend', ${sql.json(encoded)})
-          ON CONFLICT (key) DO UPDATE SET value = ${sql.json(encoded)}, updated_at = now()`.pipe(
+          INSERT INTO settings (key, value) VALUES ('mend', ${JSON.stringify(encoded)}::jsonb)
+          ON CONFLICT (key) DO UPDATE SET value = ${JSON.stringify(encoded)}::jsonb, updated_at = now()`.pipe(
           Effect.orDie,
         );
         return settings;

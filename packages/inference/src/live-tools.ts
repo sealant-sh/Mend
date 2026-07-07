@@ -131,10 +131,12 @@ export const readChangeLayer = Layer.effect(
           ),
         );
 
-      // The diff behind the current head: the latest completed recording.
+      // The diff behind the current head: the latest completed recording that
+      // could have changed code — verification runs change nothing by design.
       const issueRuns = yield* runs.listForIssue(change.issueId);
       const latest = issueRuns.find(
-        (run) => run.outcome === "completed" && run.sealantRunId !== null,
+        (run) =>
+          run.outcome === "completed" && run.sealantRunId !== null && run.kind !== "verification",
       );
       if (latest === undefined || latest.sealantRunId === null) {
         return yield* new InferenceToolError({

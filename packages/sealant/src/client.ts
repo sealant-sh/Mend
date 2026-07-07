@@ -12,7 +12,9 @@ import type {
   WorkspaceExecResult,
 } from "@sealant/sdk";
 import { Sealant, SealantApiError, SealantError } from "@sealant/sdk";
+import type { Harness } from "@sealant/sdk";
 import {
+  createRunOp,
   inferenceRespondOp,
   listWorkspacesOp,
   resolveInternalConfig,
@@ -57,6 +59,17 @@ export class SealantClient extends Context.Service<
       workspace: Workspace,
       prompt: string,
       options?: RunOptions,
+    ) => Effect.Effect<Run, SealantPlatformError>;
+    /**
+     * Starts a harness in a workspace BY ID — for runs on a workspace that
+     * outlives the handle that created it (follow-ups, verification passes).
+     * Re-fetched facade handles carry no harness (PLATFORM-FEEDBACK.md), so
+     * this goes through the /effect ops and hand-assembles the run command.
+     */
+    readonly startHarnessInWorkspace: (
+      workspaceId: string,
+      harness: Harness,
+      prompt: string,
     ) => Effect.Effect<Run, SealantPlatformError>;
     readonly waitRun: (run: Run) => Effect.Effect<Run, SealantPlatformError>;
     /**
@@ -144,6 +157,26 @@ export class SealantClient extends Context.Service<
       );
 
       const waitRun = Effect.fn("SealantClient.waitRun")((run: Run) => wrap(() => run.wait()));
+
+      // No idempotency on this path: `attemptId` is a workspace-attempt FK,
+      // not a client key, and the wire op carries no idempotency header —
+      // callers dedupe upstream (Mend routes each comment exactly once).
+      const startHarnessInWorkspace = Effect.fn("SealantClient.startHarnessInWorkspace")(function* (
+        workspaceId: string,
+        harness: Harness,
+        prompt: string,
+      ) {
+        const wire = yield* createRunOp({
+          workspaceId,
+          harnessId: harness.id,
+          ownerUserId,
+          mode: "one-shot",
+          prompt,
+          command: harness.buildRunCommand(prompt),
+        }).pipe(Effect.provideContext(apiContext), Effect.mapError(toPlatformError));
+        // The facade's run handle carries the record surface and wait().
+        return yield* wrap(() => sealant.runs.get(wire.runId));
+      });
 
       const exec = Effect.fn("SealantClient.exec")(
         (workspace: Workspace, argv: readonly string[], options?: WorkspaceExecOptions) =>
@@ -234,6 +267,7 @@ export class SealantClient extends Context.Service<
         getRun,
         runHarness,
         startHarness,
+        startHarnessInWorkspace,
         waitRun,
         exec,
         inferenceRespond,

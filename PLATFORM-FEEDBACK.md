@@ -51,6 +51,20 @@ process-env parsers alias the sandbox-era names for a release.
   disappears once auth lands. Until then, surfacing the web user's id somewhere copyable in the
   Sealant UI (or aligning the default owner) would save the next self-hoster the archaeology.
 
+## 2026-07-08 · 0.5.1 · Re-fetched workspace handles cannot start a harness
+
+- **Needed:** follow-up and verification runs start in a workspace that outlives the handle that
+  created it (Mend's supervisor holds no handles across settles or restarts): fetch by id, start a
+  harness.
+- **Today:** `workspaces.get(id).harness.start(...)` throws
+  `This workspace handle has no harness; use the handle returned by workspaces.create().` — only the
+  creating handle carries the harness's invoke knowledge. Mend works with the public `/effect` ops
+  instead (`createRunOp` with `harnessId` + a hand-assembled `command` from
+  `harness.buildRunCommand`), which duplicates the facade's command construction at every consumer.
+- **Suggested:** let a harness be attached to a fetched handle — `workspaces.get(id, { harness })`
+  or `workspace.harness.with(harness).start(...)` — or move run-command construction fully
+  server-side (the SDK's own harness.ts notes that migration is planned).
+
 ## 2026-07-07 · 0.5.0 · `/effect` exports the ops, not the composition layer
 
 - **Needed:** Mend consumes the workspace/run object model Effect-natively: workspace ready-waiting,

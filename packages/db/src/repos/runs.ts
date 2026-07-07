@@ -164,7 +164,7 @@ export class RunsRepo extends Context.Service<
       ) {
         const encoded = yield* Schema.encodeEffect(FailureBrief)(brief).pipe(Effect.orDie);
         yield* sql`
-          UPDATE runs SET failure_brief = ${sql.json(encoded)}, updated_at = now()
+          UPDATE runs SET failure_brief = ${JSON.stringify(encoded)}::jsonb, updated_at = now()
           WHERE id = ${id}`.pipe(Effect.orDie);
         const issueId = yield* issueIdOf(id);
         yield* notifyEvent(sql, { type: "run", runId: id, issueId });
