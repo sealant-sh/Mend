@@ -1,5 +1,5 @@
-import { BriefsRepo } from "@mend/db";
-import { ChangeId, IssueId, RunId } from "@mend/domain";
+import { BriefsRepo, RunsRepo } from "@mend/db";
+import { ChangeId, IssueId, RunId, type Run } from "@mend/domain";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -36,10 +36,20 @@ Method:
 
 Excerpts are short (one line, the event's summary or the relevant fragment). Sequences are decimal strings.`;
 
-const prompt = (job: CompileBriefJob) =>
-  `Compile the brief for change ${job.changeId} (issue ${job.issueId}). ` +
-  `The run that just settled completed is ${job.runId} — its recording is the primary evidence. ` +
-  `Publish with publish_brief when every claim is grounded.`;
+const prompt = (job: CompileBriefJob, runs: ReadonlyArray<Run>) => {
+  const recordings = runs
+    .map((run) => `- ${run.id} · ${run.kind} · ${run.outcome ?? run.status}`)
+    .join("\n");
+  return (
+    `Compile the brief for change ${job.changeId} (issue ${job.issueId}). ` +
+    `The run that just settled is ${job.runId}.\n\n` +
+    `The recordings behind this change:\n${recordings}\n\n` +
+    `Verification recordings carry the causal proof legs (base fails · head passes · revert ` +
+    `fails) as observed exit codes — cite them in causalProof when present; a leg with no ` +
+    `observed event stays null.\n\n` +
+    `Publish with publish_brief when every claim is grounded.`
+  );
+};
 
 /**
  * Compiles the living brief for a change — the `brief` job's worker body.
@@ -57,6 +67,7 @@ export class BriefCompiler extends Context.Service<
     Effect.gen(function* () {
       const provider = yield* InferenceProvider;
       const briefs = yield* BriefsRepo;
+      const runs = yield* RunsRepo;
       const tools = yield* briefCompilationTools;
 
       const compile = Effect.fn("BriefCompiler.compile")(function* (job: CompileBriefJob) {
@@ -65,10 +76,16 @@ export class BriefCompiler extends Context.Service<
           Effect.orElseSucceed(() => 0),
         );
 
+        // Every recording behind the change, settled or live — verification
+        // recordings are where the causal proof legs live.
+        const issueRuns = yield* runs
+          .listForIssue(job.issueId)
+          .pipe(Effect.map((all) => all.filter((run) => run.sealantRunId !== null)));
+
         yield* provider.respond({
           context: "brief-compilation",
           system: SYSTEM,
-          prompt: prompt(job),
+          prompt: prompt(job, issueRuns),
           tools,
         });
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { BriefNotFoundError, BriefsRepo } from "@mend/db";
+import { BriefNotFoundError, BriefsRepo, RunNotFoundError, RunsRepo } from "@mend/db";
 import {
   Brief,
   BriefDocument,
@@ -8,6 +8,7 @@ import {
   IssueId,
   RunId,
   type BriefVersion,
+  type Run,
 } from "@mend/domain";
 import { Effect, Layer, Schema } from "effect";
 
@@ -96,6 +97,20 @@ const briefsMemoryLayer = Layer.sync(BriefsRepo, () => {
   };
 });
 
+/** A RunsRepo with no runs — the compiler only lists recordings for the prompt. */
+const runsEmptyLayer = Layer.succeed(RunsRepo, {
+  create: () => Effect.die("not in this test"),
+  byId: (id: RunId) => Effect.fail(new RunNotFoundError({ runId: id })),
+  listForIssue: () => Effect.succeed([] as ReadonlyArray<Run>),
+  listUnsettled: () => Effect.succeed([] as ReadonlyArray<Run>),
+  setSealantIds: () => Effect.void,
+  setStatus: () => Effect.void,
+  linkChange: () => Effect.void,
+  saveLastSeenSequence: () => Effect.void,
+  settle: () => Effect.void,
+  saveFailureBrief: () => Effect.void,
+});
+
 /** Tool services the compiler binds but these tests never exercise. */
 const unusedToolLayers = Layer.mergeAll(
   Layer.succeed(ReadRecording, {
@@ -156,6 +171,7 @@ const scriptedProviderLayer = (script: ReadonlyArray<{ name: string; input: unkn
 const testLayer = (script: ReadonlyArray<{ name: string; input: unknown }>) =>
   BriefCompiler.layer.pipe(
     Layer.provideMerge(scriptedProviderLayer(script)),
+    Layer.provideMerge(runsEmptyLayer),
     Layer.provideMerge(
       Layer.mergeAll(unusedToolLayers, readBriefLiveOnMemory, publishBriefLiveOnMemory).pipe(
         Layer.provideMerge(briefsMemoryLayer),
