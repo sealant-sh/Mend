@@ -63,7 +63,8 @@ export const readRecordingLayer = Layer.effect(
       const kinds = selector?.kinds ?? null;
       const sourcesOnly = selector?.sourcesOnly ?? false;
 
-      const events = yield* sealant.recordStream(sdkRun, { from }).pipe(
+      // The timeline surface ends at the record's end — a read, not a live tail.
+      const events = yield* sealant.recordTimeline(sdkRun, { from }).pipe(
         Stream.takeWhile((entry) => to === null || entry.sequence <= to),
         Stream.filter((entry) => (sourcesOnly ? SOURCE_KINDS.has(entry.kind) : true)),
         Stream.filter((entry) => (kinds === null ? true : kinds.includes(entry.kind))),

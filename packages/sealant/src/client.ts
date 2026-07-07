@@ -81,6 +81,11 @@ export class SealantClient extends Context.Service<
       run: Run,
       options?: { readonly from?: bigint },
     ) => Stream.Stream<TimelineEntry, SealantPlatformError>;
+    /** The full timeline as recorded so far — ends at the record's end, never waits for more. */
+    readonly recordTimeline: (
+      run: Run,
+      options?: { readonly from?: bigint },
+    ) => Stream.Stream<TimelineEntry, SealantPlatformError>;
     /** The before/after of what a run changed: file list plus the unified diff. */
     readonly runChanges: (run: Run) => Effect.Effect<
       {
@@ -187,6 +192,12 @@ export class SealantClient extends Context.Service<
           toPlatformError,
         );
 
+      const recordTimeline = (run: Run, options?: { readonly from?: bigint }) =>
+        Stream.fromAsyncIterable(
+          run.record.timeline(options?.from === undefined ? {} : { from: options.from }),
+          toPlatformError,
+        );
+
       const runChanges = Effect.fn("SealantClient.runChanges")((run: Run) =>
         wrap(async () => ({ files: run.changes.files, diff: await run.changes.diff() })),
       );
@@ -227,6 +238,7 @@ export class SealantClient extends Context.Service<
         exec,
         inferenceRespond,
         recordStream,
+        recordTimeline,
         runChanges,
         connectionCheck,
       };

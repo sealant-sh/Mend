@@ -64,16 +64,54 @@ export class RunCommandView extends Schema.Class<RunCommandView>("RunCommandView
   durationMs: Schema.NullOr(Schema.Number),
 }) {}
 
+/** A telemetry gap, straight from the record's loss report — never fabricated. */
+export class LossSpanView extends Schema.Class<LossSpanView>("LossSpanView")({
+  fromSequence: Schema.NullOr(Schema.String),
+  toSequence: Schema.NullOr(Schema.String),
+}) {}
+
+/** Provenance-honest: `complete` or the exact spans that were dropped. */
+export class LossReportView extends Schema.Class<LossReportView>("LossReportView")({
+  complete: Schema.Boolean,
+  spans: Schema.Array(LossSpanView),
+}) {}
+
 /**
  * The run detail: the indexed row plus what the record can already show
- * (commands · transcript). `recordError` carries the observed failure when the
- * recording could not be read — a gap is content, not an omission.
+ * (commands · transcript · loss). `recordError` carries the observed failure
+ * when the recording could not be read — a gap is content, not an omission.
  */
 export class RunDetail extends Schema.Class<RunDetail>("RunDetail")({
   run: Run,
   commands: Schema.Array(RunCommandView),
   transcript: Schema.NullOr(Schema.String),
+  loss: Schema.NullOr(LossReportView),
   recordError: Schema.NullOr(Schema.String),
+}) {}
+
+/** One timeline entry of the full trace, summary-first (typed data stays platform-side). */
+export class TraceEntryView extends Schema.Class<TraceEntryView>("TraceEntryView")({
+  sequence: Schema.String,
+  occurredAt: Schema.String,
+  kind: Schema.String,
+  summary: Schema.String,
+  processId: Schema.NullOr(Schema.String),
+}) {}
+
+/** A page of the full trace; `nextFrom` resumes where this page ended. */
+export class TracePage extends Schema.Class<TracePage>("TracePage")({
+  entries: Schema.Array(TraceEntryView),
+  nextFrom: Schema.NullOr(Schema.String),
+}) {}
+
+/** One network source the run touched, aggregated from the record's source events. */
+export class RunSourceView extends Schema.Class<RunSourceView>("RunSourceView")({
+  host: Schema.String,
+  method: Schema.NullOr(Schema.String),
+  path: Schema.NullOr(Schema.String),
+  status: Schema.NullOr(Schema.Int),
+  count: Schema.Int,
+  firstSequence: Schema.String,
 }) {}
 
 /** The queue: list, manual entry into triage, the Gate 1 drag, the detail views. */
@@ -118,6 +156,21 @@ const runsGroup = HttpApiGroup.make("runs")
     HttpApiEndpoint.get("detail", "/runs/:id", {
       params: { id: RunId },
       success: RunDetail,
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("trace", "/runs/:id/trace", {
+      params: { id: RunId },
+      query: { from: Schema.optional(Schema.String) },
+      success: TracePage,
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("sources", "/runs/:id/sources", {
+      params: { id: RunId },
+      success: Schema.Array(RunSourceView),
       error: NotFound,
     }),
   )

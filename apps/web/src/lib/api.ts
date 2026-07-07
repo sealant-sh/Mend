@@ -57,11 +57,42 @@ export interface RunCommandDto {
   readonly durationMs: number | null;
 }
 
+export interface LossReportDto {
+  readonly complete: boolean;
+  readonly spans: ReadonlyArray<{
+    readonly fromSequence: string | null;
+    readonly toSequence: string | null;
+  }>;
+}
+
 export interface RunDetailDto {
   readonly run: RunDto;
   readonly commands: ReadonlyArray<RunCommandDto>;
   readonly transcript: string | null;
+  readonly loss: LossReportDto | null;
   readonly recordError: string | null;
+}
+
+export interface TraceEntryDto {
+  readonly sequence: string;
+  readonly occurredAt: string;
+  readonly kind: string;
+  readonly summary: string;
+  readonly processId: string | null;
+}
+
+export interface TracePageDto {
+  readonly entries: ReadonlyArray<TraceEntryDto>;
+  readonly nextFrom: string | null;
+}
+
+export interface RunSourceDto {
+  readonly host: string;
+  readonly method: string | null;
+  readonly path: string | null;
+  readonly status: number | null;
+  readonly count: number;
+  readonly firstSequence: string;
 }
 
 export interface SealantConnectionDto {
@@ -183,6 +214,13 @@ export const listIssues = () => request<ReadonlyArray<IssueDto>>("/api/issues");
 export const issueDetail = (id: string) => request<IssueDetailDto>(`/api/issues/${id}`);
 
 export const runDetail = (id: string) => request<RunDetailDto>(`/api/runs/${id}`);
+
+/** One page of the full trace; pass `from` to resume where the last page ended. */
+export const runTrace = (id: string, from?: string) =>
+  request<TracePageDto>(`/api/runs/${id}/trace${from === undefined ? "" : `?from=${from}`}`);
+
+export const runSources = (id: string) =>
+  request<ReadonlyArray<RunSourceDto>>(`/api/runs/${id}/sources`);
 
 /** The issue's living brief — null while no brief exists yet (404 is a state, not an error). */
 export const briefByIssue = async (issueId: string): Promise<BriefDetailDto | null> => {
