@@ -44,10 +44,10 @@ layer), shippable when it does.
   `inference_calls` audit trail.
 - Brief compilation grounded in the record: header facts, what-was-done, review questions with
   earned dispositions, quoted excerpts denormalized, `publish_brief` versioning.
-- Causal proof via verification runs (deterministic-exec feedback pending; harness-prompted
-  interim).
-- The run audit v1: milestones + full trace + commands + loss report. (Sources tab waits on the
-  record's source-event taxonomy — feedback filed.)
+- Causal proof via verification runs (`workspace.exec` shipped in 0.5.0; the harness-prompted
+  interim stands until a structured reproduction command exists to make the legs deterministic).
+- The run audit v1: milestones + full trace + sources + loss report (the typed source-event taxonomy
+  shipped in 0.5.0, so the sources tab landed with v1).
 - Failure mini-brief rendered in-app (tracker comment lands in M3).
 
 **Exit:** a mended manual issue produces a brief whose every green claim clicks through to the
