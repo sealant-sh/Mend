@@ -9,6 +9,9 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
 ## 2026-07-07 · 0.5.0 · Release artifact: api image cannot run inference
 
+**Fix in flight** — [sealant#107](https://github.com/sealant-sh/sealant/pull/107): the builder
+stages the resolved platform package and the runtime image carries it next to `dist/`.
+
 - **Needed:** `sealant.inference.respond()` working against the published `sealant-api:0.5.0` image
   — Mend's brief compilation depends on it.
 - **Today:** the image bundles the API into `dist/` and ships no `node_modules`, but the Claude
@@ -22,6 +25,9 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
   builder stage, or `npm install` it pinned in the runtime stage.
 
 ## 2026-07-07 · 0.5.0 · Release artifact: ssh-gateway env schema broke existing installs
+
+**Fix in flight** — [sealant#107](https://github.com/sealant-sh/sealant/pull/107): the process-env
+parsers alias the sandbox-era names for a release.
 
 - **Needed:** nothing from Mend's loop (the gateway serves interactive SSH only) — recorded so the
   observation isn't lost.
