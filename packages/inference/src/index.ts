@@ -1,5 +1,6 @@
 export * from "./brief-compiler.ts";
 export * from "./dev-provider.ts";
+export * from "./failure-summarizer.ts";
 export * from "./live-tools.ts";
 export * from "./provider.ts";
 export * from "./sealant-provider.ts";

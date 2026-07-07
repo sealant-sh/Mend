@@ -2,6 +2,7 @@ import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
 import { useEffect } from "react";
 
 import { BriefView } from "#/components/brief";
+import { FailureBriefCard } from "#/components/failure-brief";
 import { AppShell } from "#/components/shell";
 import { RunStatusDot } from "#/components/status";
 import { briefByIssue, issueDetail, type MendEventDto, type RunDto } from "#/lib/api";
@@ -35,6 +36,13 @@ function IssuePage() {
     return () => source.close();
   }, [router, issue.id]);
 
+  // The failure the card carried back to triage, when its recording was summed.
+  const failureRun = runs.find((run) => run.id === issue.lastFailureRunId);
+  const failure =
+    failureRun === undefined || failureRun.failureBrief === null
+      ? null
+      : { run: failureRun, brief: failureRun.failureBrief };
+
   return (
     <AppShell>
       <div className="mb-8">
@@ -58,6 +66,12 @@ function IssuePage() {
       ) : (
         <div className="mb-8 max-w-5xl">
           <BriefView detail={brief} />
+        </div>
+      )}
+
+      {failure === null ? null : (
+        <div className="mb-8 max-w-5xl">
+          <FailureBriefCard run={failure.run} brief={failure.brief} />
         </div>
       )}
 

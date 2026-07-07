@@ -24,6 +24,14 @@ export interface IssueDto {
 
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
+/** The failure mini-brief: what was tried · what was observed · reproduction status. */
+export interface FailureBriefDto {
+  readonly whatWasTried: string;
+  readonly whatWasObserved: string;
+  readonly reproductionStatus: string;
+  readonly evidence: ReadonlyArray<EvidencePointerDto>;
+}
+
 export interface RunDto {
   readonly id: string;
   readonly issueId: string;
@@ -31,6 +39,7 @@ export interface RunDto {
   readonly status: RunStatus;
   readonly outcome: "completed" | "failed" | null;
   readonly summary: string | null;
+  readonly failureBrief: FailureBriefDto | null;
   readonly sealantRunId: string | null;
   readonly startedAt: string | null;
   readonly settledAt: string | null;

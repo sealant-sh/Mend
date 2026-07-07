@@ -161,6 +161,17 @@ const init = Effect.gen(function* () {
   yield* sql`CREATE INDEX verification_identifier_idx ON "verification" ("identifier")`;
 });
 
+/**
+ * The failure mini-brief (PRODUCT.md §6), denormalized onto the run it sums
+ * up: what was tried, what was observed, reproduction status — kept and
+ * reported, never hidden. A failed run has no change row to hang a brief off.
+ */
+const failureBrief = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE runs ADD COLUMN failure_brief jsonb`;
+});
+
 export const migrations = {
   "0001_init": init,
+  "0002_failure_brief": failureBrief,
 };

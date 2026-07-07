@@ -19,8 +19,10 @@ import {
 import {
   BriefCompiler,
   CompileBriefJob,
+  FailureSummarizer,
   liveToolsLayer,
   sealantProviderLayer,
+  SummarizeFailureJob,
 } from "@mend/inference";
 import { Dispatcher, JobRunner, runStarterLayer } from "@mend/jobs";
 import { SealantClient } from "@mend/sealant";
@@ -108,15 +110,23 @@ const ServerLive = Layer.unwrap(
 
 // ─── Worker: the dispatcher loop and the side-effect jobs it feeds ──────────
 const decodeCompileBriefJob = Schema.decodeUnknownEffect(CompileBriefJob);
+const decodeSummarizeFailureJob = Schema.decodeUnknownEffect(SummarizeFailureJob);
 
-/** The `brief` job worker: a failed compile dies into the engine's retry. */
-const BriefWorkerLive = Layer.effectDiscard(
+/** The inference job workers: a failed handler dies into the engine's retry. */
+const InferenceWorkersLive = Layer.effectDiscard(
   Effect.gen(function* () {
     const jobs = yield* JobRunner;
     const compiler = yield* BriefCompiler;
+    const summarizer = yield* FailureSummarizer;
     yield* jobs.work("brief", (payload) =>
       decodeCompileBriefJob(payload).pipe(
         Effect.flatMap((job) => compiler.compile(job)),
+        Effect.orDie,
+      ),
+    );
+    yield* jobs.work("failure-brief", (payload) =>
+      decodeSummarizeFailureJob(payload).pipe(
+        Effect.flatMap((job) => summarizer.summarize(job)),
         Effect.orDie,
       ),
     );
@@ -130,11 +140,12 @@ const WorkerLive = Layer.mergeAll(
       yield* Effect.forkScoped(dispatcher.run());
     }),
   ),
-  BriefWorkerLive,
+  InferenceWorkersLive,
 ).pipe(
   Layer.provide(Dispatcher.layer),
   Layer.provide(runStarterLayer),
   Layer.provide(BriefCompiler.layer),
+  Layer.provide(FailureSummarizer.layer),
   Layer.provide(liveToolsLayer),
   // Inference runs on the user's Sealant-connected subscriptions — Mend ships no model keys.
   Layer.provide(sealantProviderLayer),

@@ -113,6 +113,35 @@ const readRecordingSchema: ToolInputSchema = {
 
 // ─── The per-context tool sets (PRODUCT.md, "Which contexts get which tools") ─
 
+const readRecordingTool = (readRecording: {
+  readonly read: (
+    run: RunId,
+    selector?: RecordingSelector,
+  ) => Effect.Effect<ReadonlyArray<RecordingEvent>, InferenceToolError>;
+}) =>
+  makeTool({
+    name: "read_recording",
+    description:
+      "Read the recording of one run — the only permitted source of claims. Returns timeline " +
+      "events (sequence, kind, one-line summary, typed data), every one `observed` by the " +
+      "runtime. The full trace is large: narrow with fromSequence/toSequence/kinds, or " +
+      "sourcesOnly for the network-source trail. At most 500 events per call — page with " +
+      "fromSequence.",
+    inputSchema: readRecordingSchema,
+    input: ReadRecordingInput,
+    run: (input) =>
+      readRecording.read(
+        input.run,
+        new RecordingSelector({
+          fromSequence: input.fromSequence ?? null,
+          toSequence: input.toSequence ?? null,
+          kinds: input.kinds ?? null,
+          sourcesOnly: input.sourcesOnly ?? false,
+        }),
+      ),
+    encode: encodeWith(Schema.Array(RecordingEvent)),
+  });
+
 /**
  * Brief compilation: the read set plus `publish_brief`. Returns the tools
  * bound to the live services in context.
@@ -131,28 +160,7 @@ export const briefCompilationTools: Effect.Effect<
   const documentJsonSchema = Schema.toJsonSchemaDocument(BriefDocument);
 
   return [
-    makeTool({
-      name: "read_recording",
-      description:
-        "Read the recording of one run — the only permitted source of claims. Returns timeline " +
-        "events (sequence, kind, one-line summary, typed data), every one `observed` by the " +
-        "runtime. The full trace is large: narrow with fromSequence/toSequence/kinds, or " +
-        "sourcesOnly for the network-source trail. At most 500 events per call — page with " +
-        "fromSequence.",
-      inputSchema: readRecordingSchema,
-      input: ReadRecordingInput,
-      run: (input) =>
-        readRecording.read(
-          input.run,
-          new RecordingSelector({
-            fromSequence: input.fromSequence ?? null,
-            toSequence: input.toSequence ?? null,
-            kinds: input.kinds ?? null,
-            sourcesOnly: input.sourcesOnly ?? false,
-          }),
-        ),
-      encode: encodeWith(Schema.Array(RecordingEvent)),
-    }),
+    readRecordingTool(readRecording),
     makeTool({
       name: "read_issue",
       description:
@@ -221,4 +229,17 @@ export const briefCompilationTools: Effect.Effect<
       encode: (value) => Effect.succeed(value),
     }),
   ];
+});
+
+/**
+ * Failure comment: `read_recording` only today — the mini-brief renders
+ * in-app; `post_issue_comment` joins the set when trackers land (M3).
+ */
+export const failureCommentTools: Effect.Effect<
+  ReadonlyArray<InferenceTool>,
+  never,
+  ReadRecording
+> = Effect.gen(function* () {
+  const readRecording = yield* ReadRecording;
+  return [readRecordingTool(readRecording)];
 });

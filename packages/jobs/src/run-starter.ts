@@ -102,6 +102,24 @@ export const runStarterLayer = Layer.effect(
     ) {
       yield* runs.settle(run.id, "failed", summary);
       yield* issues.returnToTriage(issueId, run.id).pipe(Effect.ignore);
+      // The failure mini-brief needs a recording to sum; without one, the
+      // settle summary is all there is — a gap, carried as content. The row is
+      // re-read because the in-memory run predates setSealantIds.
+      const current = yield* runs.byId(run.id).pipe(Effect.orElseSucceed(() => run));
+      if (current.sealantRunId === null) return;
+      yield* jobs
+        .enqueue({
+          name: "failure-brief",
+          payload: { issueId, runId: run.id },
+          idempotencyKey: `failure-brief:${run.id}`,
+        })
+        .pipe(
+          Effect.catchTag("JobEnqueueError", (error) =>
+            Effect.logError("run supervisor: failure-brief enqueue failed").pipe(
+              Effect.annotateLogs({ runId: run.id, cause: String(error.cause) }),
+            ),
+          ),
+        );
     });
 
     const supervise = Effect.fn("RunStarter.supervise")(function* (

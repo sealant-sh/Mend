@@ -1,5 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import {
+  FailureBrief,
   Run,
   RunId,
   type ChangeId,
@@ -56,6 +57,8 @@ export class RunsRepo extends Context.Service<
       outcome: RunOutcome,
       summary: string | null,
     ) => Effect.Effect<void>;
+    /** The failure mini-brief, summed from the recording after a failed settle. */
+    readonly saveFailureBrief: (id: RunId, brief: FailureBrief) => Effect.Effect<void>;
   }
 >()("@mend/db/RunsRepo") {
   static readonly layer = Layer.effect(
@@ -155,6 +158,18 @@ export class RunsRepo extends Context.Service<
         yield* notifyEvent(sql, { type: "run", runId: id, issueId });
       });
 
+      const saveFailureBrief = Effect.fn("RunsRepo.saveFailureBrief")(function* (
+        id: RunId,
+        brief: FailureBrief,
+      ) {
+        const encoded = yield* Schema.encodeEffect(FailureBrief)(brief).pipe(Effect.orDie);
+        yield* sql`
+          UPDATE runs SET failure_brief = ${sql.json(encoded)}, updated_at = now()
+          WHERE id = ${id}`.pipe(Effect.orDie);
+        const issueId = yield* issueIdOf(id);
+        yield* notifyEvent(sql, { type: "run", runId: id, issueId });
+      });
+
       const issueIdOf = (id: RunId) =>
         sql`SELECT issue_id FROM runs WHERE id = ${id}`.pipe(
           Effect.orDie,
@@ -174,6 +189,7 @@ export class RunsRepo extends Context.Service<
         linkChange,
         saveLastSeenSequence,
         settle,
+        saveFailureBrief,
       };
     }),
   );

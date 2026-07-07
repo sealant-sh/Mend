@@ -23,7 +23,7 @@ const DISPOSITION: Record<DispositionDto, { word: string; dot: string; text: str
   "unrelated-change": { word: "Unrelated change", dot: "bg-[var(--sw-red)]", text: "text-danger" },
 };
 
-function SectionLabel({ children }: { readonly children: ReactNode }) {
+export function SectionLabel({ children }: { readonly children: ReactNode }) {
   return <p className="text-[0.78rem] font-medium text-label">{children}</p>;
 }
 
@@ -50,7 +50,11 @@ function EvidenceLink({ pointer }: { readonly pointer: EvidencePointerDto }) {
   );
 }
 
-function EvidenceList({ evidence }: { readonly evidence: ReadonlyArray<EvidencePointerDto> }) {
+export function EvidenceList({
+  evidence,
+}: {
+  readonly evidence: ReadonlyArray<EvidencePointerDto>;
+}) {
   if (evidence.length === 0) return null;
   return (
     <span className="inline-flex flex-wrap items-baseline gap-x-2">
