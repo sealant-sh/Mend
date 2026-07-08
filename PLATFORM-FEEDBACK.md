@@ -51,6 +51,24 @@ process-env parsers alias the sandbox-era names for a release.
   disappears once auth lands. Until then, surfacing the web user's id somewhere copyable in the
   Sealant UI (or aligning the default owner) would save the next self-hoster the archaeology.
 
+## 2026-07-08 · 0.5.1 · No file-change events recorded for harness edits (diff comes up empty)
+
+- **Needed:** the brief's machine facts (`N files · +X / −Y`, the unified diff) and its
+  `unrelated change` disposition come from `run.changes` / the record's `fileChange` and
+  `fileDiffAvailable` events — the typed file-event taxonomy shipped in 0.5.0.
+- **Today:** across a real ~10-minute `opencode` run that demonstrably edited a file and committed
+  it (`git diff base..head` shows +92 lines in `FormApi.ts`), the record contained **only**
+  `ioChunk` stdout/stderr and `runtimeHeartbeat` events — **zero** `fileChange` /
+  `fileDiffAvailable`, and the `ioChunk` payloads are opaque (byte counts + content hash, no text).
+  So `run.changes.diff()` is an empty string and `run.changes.files` is `[]` even though a real
+  change landed. The file-watch telemetry is not capturing the harness's edits. Interim workaround:
+  `@mend/sealant` reads the real diff from git (`git diff base..head` via `workspace.exec`) instead
+  of trusting `run.changes`; this needs the workspace still alive at brief-compile time.
+- **Suggested:** record `fileChange` / `fileDiffAvailable` / `fileSnapshotCompleted` events for
+  edits the harness makes (the taxonomy exists; the watcher isn't firing for these writes), so a
+  recording-grounded diff is available without a post-hoc git read. Separately, exposing byte-exact
+  `ioChunk` text through the read surface would let the brief quote what the agent actually printed.
+
 ## 2026-07-08 · 0.5.1 · Re-fetched workspace handles cannot start a harness
 
 - **Needed:** follow-up and verification runs start in a workspace that outlives the handle that

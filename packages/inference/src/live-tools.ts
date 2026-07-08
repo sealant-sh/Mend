@@ -145,26 +145,49 @@ export const readChangeLayer = Layer.effect(
         });
       }
 
-      const sdkRun = yield* sealant
-        .getRun(latest.sealantRunId)
-        .pipe(toToolError("read_change", "the record could not be opened"));
-      const observed = yield* sealant
-        .runChanges(sdkRun)
-        .pipe(toToolError("read_change", "reading the change failed"));
+      // The diff is a machine fact of the change, read from git — the source of
+      // truth for what the commit contains. The recording-derived `runChanges`
+      // diff is currently empty (the runtime records no file-change events —
+      // PLATFORM-FEEDBACK.md), so when there is a committed head that differs
+      // from base, read the real `git diff base..head`; fall back to runChanges
+      // only when there is no committed range to read (e.g. uncommitted work).
+      const base = change.baseSha;
+      const head = change.headSha;
+      const workspaceId = latest.sealantWorkspaceId;
 
-      const counts = diffCounts(observed.diff);
+      const resolved: {
+        readonly diff: string;
+        readonly files: ReadonlyArray<{
+          readonly path: string;
+          readonly additions: number;
+          readonly deletions: number;
+        }>;
+      } =
+        base !== null && head !== null && base !== head && workspaceId !== null
+          ? yield* sealant
+              .diffCommits(workspaceId, base, head)
+              .pipe(toToolError("read_change", "reading the committed diff failed"))
+          : yield* sealant.getRun(latest.sealantRunId).pipe(
+              Effect.flatMap((sdkRun) => sealant.runChanges(sdkRun)),
+              toToolError("read_change", "reading the change failed"),
+              Effect.map((rc) => {
+                const counts = diffCounts(rc.diff);
+                return {
+                  diff: rc.diff,
+                  files: rc.files.map((file) => ({
+                    path: file.path,
+                    additions: counts.get(file.path)?.additions ?? 0,
+                    deletions: counts.get(file.path)?.deletions ?? 0,
+                  })),
+                };
+              }),
+            );
+
       return new ChangeView({
-        diff: observed.diff,
+        diff: resolved.diff,
         baseSha: change.baseSha,
         headSha: change.headSha,
-        files: observed.files.map(
-          (file) =>
-            new ChangedFile({
-              path: file.path,
-              additions: counts.get(file.path)?.additions ?? 0,
-              deletions: counts.get(file.path)?.deletions ?? 0,
-            }),
-        ),
+        files: resolved.files.map((file) => new ChangedFile(file)),
         // CI checks join the brief with the PR (M3).
         checks: [],
         freshness: change.freshness,

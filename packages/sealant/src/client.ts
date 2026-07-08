@@ -83,6 +83,27 @@ export class SealantClient extends Context.Service<
       options?: WorkspaceExecOptions,
     ) => Effect.Effect<WorkspaceExecResult, SealantPlatformError>;
     /**
+     * The committed diff between two shas, read from git in the workspace — the
+     * source of truth for what a change contains. Mend prefers this to the
+     * recording-derived `runChanges` diff, which today comes up empty because
+     * the runtime is not recording file-change events (PLATFORM-FEEDBACK.md).
+     */
+    readonly diffCommits: (
+      workspaceId: string,
+      base: string,
+      head: string,
+    ) => Effect.Effect<
+      {
+        readonly diff: string;
+        readonly files: ReadonlyArray<{
+          readonly path: string;
+          readonly additions: number;
+          readonly deletions: number;
+        }>;
+      },
+      SealantPlatformError
+    >;
+    /**
      * Inference on connected accounts (0.5.0): server-side via the official
      * agent SDKs; the tool loop is caller-executed via `sessionId`.
      */
@@ -183,6 +204,32 @@ export class SealantClient extends Context.Service<
           wrap(() => workspace.exec(argv, options)),
       );
 
+      const diffCommits = Effect.fn("SealantClient.diffCommits")(function* (
+        workspaceId: string,
+        base: string,
+        head: string,
+      ) {
+        const workspace = yield* wrap(() => sealant.workspaces.get(workspaceId));
+        const range = `${base}..${head}`;
+        const unified = yield* wrap(() => workspace.exec(["git", "diff", range]));
+        // `--numstat` gives exact per-file counts (tab-separated: adds, dels, path).
+        const numstat = yield* wrap(() => workspace.exec(["git", "diff", "--numstat", range]));
+        const files = numstat.stdout
+          .split("\n")
+          .map((line) => line.trim())
+          .filter((line) => line !== "")
+          .map((line) => {
+            const [adds, dels, ...rest] = line.split("\t");
+            return {
+              path: rest.join("\t"),
+              additions: Number(adds) || 0,
+              deletions: Number(dels) || 0,
+            };
+          })
+          .filter((file) => file.path !== "");
+        return { diff: unified.stdout, files };
+      });
+
       const inferenceRespond = Effect.fn("SealantClient.inferenceRespond")(
         (options: InferenceRespondOptions | InferenceContinueOptions) =>
           "sessionId" in options
@@ -270,6 +317,7 @@ export class SealantClient extends Context.Service<
         startHarnessInWorkspace,
         waitRun,
         exec,
+        diffCommits,
         inferenceRespond,
         recordStream,
         recordTimeline,
