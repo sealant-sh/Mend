@@ -18,11 +18,34 @@ import { RunStarter, RunStartError } from "./dispatcher.ts";
 import { JobRunner } from "./job-runner.ts";
 
 /**
- * The prompt is the issue, verbatim — Mend adds no instructions of its own.
- * What the harness did with it is the recording's story to tell.
+ * The raw issue text — the harness's task, quoted verbatim. Used wherever the
+ * issue is embedded (the initial-run contract below, and the verification
+ * prompt), so it stays unadorned.
  */
 const buildPrompt = (issue: Issue) =>
   issue.body === "" ? issue.title : `${issue.title}\n\n${issue.body}`;
+
+/**
+ * The initial run's prompt: the issue wrapped in Mend's operational contract for
+ * a *reviewable* change — work on a branch, run the repo's own checks, commit
+ * with a clean tree, report honestly — and deliberately no solution guidance, so
+ * the brief still reviews the agent's own judgment, not Mend's instructions. A
+ * bare issue prompt used to let the agent do real work and walk away without
+ * committing; the contract (and the `git status` self-check) closes that.
+ */
+const initialPrompt = (issue: Issue) =>
+  `You are working in a fresh clone of this repository, checked out at its default branch. Your task is the issue below. How to solve it is your call: read enough of the code to understand the problem, then make the change you judge right. Nothing here tells you how to fix it.
+
+For the work to be reviewable, it has to land a certain way:
+
+- Work on a new branch, not the default branch.
+- If the issue carries a reproduction, reproduce the problem first, so you know you are fixing the right thing. If it is a feature request or is only loosely specified, work from what it actually says; do not invent a reproduction it does not provide.
+- Check your own work with the tooling the repository already has: its build, its tests, its typecheck. Run them and read the results rather than assume them. A check that still fails is something to report, not to hide or force green.
+- Commit the work on your branch with a clear message, and leave the working tree clean when you stop: nothing staged, nothing unstaged. Work left uncommitted is not part of the change and is invisible to the review; only what you commit counts. A quick \`git status\` before you finish confirms it.
+- Report honestly what you did and did not accomplish. If the change is partial, or something blocks you, commit what you have and describe what remains. That is worth more than a claim of completion the work does not support.
+
+The issue:
+${buildPrompt(issue)}`;
 
 /**
  * The causal proof, harness-prompted (ROADMAP §M2 interim): a verification run
@@ -52,7 +75,9 @@ ${buildPrompt(issue)}`;
 
 /** A routed follow-up: review feedback, self-contained, on the existing branch. */
 const followUpPrompt = (instruction: string) =>
-  `This is a follow-up run on an existing change, responding to review feedback. Work on the current branch as checked out; commit what you change; leave the working tree clean.
+  `This is a follow-up run on an existing change, responding to review feedback. The change's branch is already checked out with the earlier work committed on it: keep working on that branch, and do not start a new one or reset it.
+
+Address the feedback below, using your own judgment about how. Check your work with the repository's own build, tests, or typecheck; a check that still fails is something to report, not to force green. Commit what you change with a clear message and leave the working tree clean: uncommitted work is invisible to the review, so a quick \`git status\` before you finish confirms nothing is left behind. Report honestly what you changed and what you did not. If part of the feedback cannot or should not be done, commit what you have and say so plainly rather than claim more than the work supports.
 
 ${instruction}`;
 
@@ -101,6 +126,56 @@ export const runStarterLayer = Layer.effect(
       };
     });
 
+    /**
+     * The prompt asks the harness to commit its work; this guarantees it. If a
+     * completed run left the working tree dirty — real edits the agent did but
+     * forgot to commit, the failure a bare issue prompt used to produce — Mend
+     * snapshots them into a commit itself, on the agent's branch or a fresh
+     * `mend/<issue>` one, so no real work is ever invisible to a git-state
+     * review. Every exec is recorded, so the snapshot commit is honest evidence.
+     */
+    const ensureCommitted = Effect.fn("RunStarter.ensureCommitted")(function* (
+      run: Run,
+      issue: Issue,
+    ) {
+      if (run.sealantWorkspaceId === null) return;
+      const workspace = yield* sealant.getWorkspace(run.sealantWorkspaceId);
+      const status = yield* sealant.exec(workspace, ["git", "status", "--porcelain"]);
+      // Clean tree: the agent committed (or genuinely did nothing) — leave it be.
+      if (status.exitCode !== 0 || status.stdout.trim() === "") return;
+
+      const current = yield* sealant.exec(workspace, ["git", "branch", "--show-current"]);
+      const defRef = yield* sealant.exec(workspace, [
+        "git",
+        "rev-parse",
+        "--abbrev-ref",
+        "origin/HEAD",
+      ]);
+      const currentBranch = current.exitCode === 0 ? current.stdout.trim() : "";
+      const defaultBranch =
+        defRef.exitCode === 0 ? defRef.stdout.trim().replace(/^origin\//, "") : "";
+      // Commit on the agent's branch if it made one; otherwise start a mend branch.
+      const onDefault = currentBranch === "" || currentBranch === defaultBranch;
+      const branch = onDefault ? `mend/${issue.id.slice(0, 8)}` : currentBranch;
+      if (onDefault) {
+        yield* sealant.exec(workspace, ["git", "checkout", "-B", branch]);
+      }
+      yield* sealant.exec(workspace, ["git", "add", "-A"]);
+      yield* sealant.exec(workspace, [
+        "git",
+        "-c",
+        "user.email=mend@sealant.local",
+        "-c",
+        "user.name=Mend",
+        "commit",
+        "-m",
+        `mend: snapshot of the ${run.kind} run for "${issue.title}"`,
+      ]);
+      yield* Effect.logInfo("run supervisor: committed the agent's uncommitted work").pipe(
+        Effect.annotateLogs({ runId: run.id, branch }),
+      );
+    });
+
     const enqueueLogged = Effect.fn("RunStarter.enqueueLogged")(function* (
       run: Run,
       job: { name: string; payload: Record<string, unknown>; idempotencyKey: string },
@@ -131,6 +206,17 @@ export const runStarterLayer = Layer.effect(
       // The in-memory row predates setSealantIds — without the re-read, head
       // discovery sees no workspace and the verification run never starts.
       const run = yield* runs.byId(staleRun.id).pipe(Effect.orElseSucceed(() => staleRun));
+      // A verification run must change nothing; every other run's uncommitted
+      // work is snapshotted so it lands in the diff the brief reviews.
+      if (run.kind !== "verification") {
+        yield* ensureCommitted(run, issue).pipe(
+          Effect.catchTag("SealantPlatformError", (error) =>
+            Effect.logWarning("run supervisor: commit snapshot failed").pipe(
+              Effect.annotateLogs({ runId: run.id, error: error.message }),
+            ),
+          ),
+        );
+      }
       const facts = yield* discoverHeadFacts(run).pipe(
         Effect.catchTag("SealantPlatformError", (error) =>
           Effect.logWarning("run supervisor: head discovery failed").pipe(
@@ -275,7 +361,7 @@ export const runStarterLayer = Layer.effect(
           harness: opencode(),
           name: `mend-${issue.id.slice(0, 8)}`,
         });
-        const sdkRun = yield* sealant.startHarness(workspace, buildPrompt(issue), {
+        const sdkRun = yield* sealant.startHarness(workspace, initialPrompt(issue), {
           idempotencyKey: run.id,
         });
         yield* runs.setSealantIds(

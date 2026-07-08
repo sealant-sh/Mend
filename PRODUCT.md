@@ -68,6 +68,14 @@ triage → queued → mending → review → merged
 
 - One harness per issue, in a Sealant workspace, created and driven through the public
   `@sealant/sdk` only.
+- The harness receives the issue **plus Mend's operational contract for a reviewable change**: work
+  on a dedicated branch, run the repository's own build/test/typecheck, commit with a clean tree,
+  and report honestly (including partial or blocked work). Mend gives **no solution guidance** — how
+  to fix the issue is the harness's own judgment, so the brief reviews that judgment, not Mend's
+  instructions. If a completed run leaves real work uncommitted, Mend snapshots it into a commit
+  itself, so no work the agent actually did is invisible to the review. This does not weaken Fact 1:
+  the brief is still compiled from the recording, never from the harness's own summary — the
+  contract only makes the agent's real work land where the recording and git state can see it.
 - The run streams live onto the issue's card and is recorded durably. The recording is the raw
   material for everything downstream: a run that was not recorded cannot be reviewed.
 
