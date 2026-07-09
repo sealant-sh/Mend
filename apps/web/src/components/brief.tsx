@@ -1,16 +1,20 @@
-// The brief — the compiled review, rendered from the living document. Follows
-// the canonical exhibit (apps/marketing) in the evidence-review vocabulary:
-// machine facts in mono, dispositions earned, gaps first-class. Every evidence
-// pointer clicks through to the run it came from.
+// The brief — the compiled review, rendered from the living document. A
+// working surface, not the marketing miniature: one reading column, zones in
+// the order a reviewer decides in (what is this → what needs attention → the
+// checklist → the full account → the sources), at DESIGN.md's working type
+// scale. Machine facts stay mono, dispositions stay earned, gaps stay
+// first-class, and every evidence pointer clicks through to the run it came
+// from, labeled by which run that was.
 
 import { Link } from "@tanstack/react-router";
-import { type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import type {
   BriefDetailDto,
   BriefDocumentDto,
   DispositionDto,
   EvidencePointerDto,
+  RunDto,
 } from "#/lib/api";
 
 const DISPOSITION: Record<DispositionDto, { word: string; dot: string; text: string }> = {
@@ -23,27 +27,71 @@ const DISPOSITION: Record<DispositionDto, { word: string; dot: string; text: str
   "unrelated-change": { word: "Unrelated change", dot: "bg-[var(--sw-red)]", text: "text-danger" },
 };
 
+/** Which run a pointer belongs to, by kind — "initial · seq 2" over a bare "seq 2". */
+export type RunLabels = ReadonlyMap<string, string>;
+
+export const runLabelsFrom = (runs: ReadonlyArray<RunDto>): RunLabels => {
+  const kindCounts = new Map<string, number>();
+  for (const run of runs) kindCounts.set(run.kind, (kindCounts.get(run.kind) ?? 0) + 1);
+  return new Map(
+    runs.map((run) => [
+      run.id,
+      (kindCounts.get(run.kind) ?? 0) > 1 ? `${run.kind} ${run.id.slice(0, 8)}` : run.kind,
+    ]),
+  );
+};
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const shortRef = (value: string) => (UUID_RE.test(value) ? value.slice(0, 8) : value);
+
+/**
+ * Presentational paragraphing only — the compiler writes the account as one
+ * block; break it at sentence boundaries (period + space + capital) into
+ * readable paragraphs. The text itself is untouched.
+ */
+const paragraphs = (text: string): ReadonlyArray<string> => {
+  const explicit = text.split(/\n{2,}/).filter((block) => block.trim() !== "");
+  if (explicit.length > 1 || text.length <= 700) return explicit.length === 0 ? [text] : explicit;
+  const sentences = text.split(/(?<=[.!?])\s+(?=[A-Z"'`(])/);
+  const blocks: Array<string> = [];
+  let current = "";
+  for (const sentence of sentences) {
+    current = current === "" ? sentence : `${current} ${sentence}`;
+    if (current.length >= 420) {
+      blocks.push(current);
+      current = "";
+    }
+  }
+  if (current !== "") blocks.push(current);
+  return blocks;
+};
+
 export function SectionLabel({ children }: { readonly children: ReactNode }) {
   return <p className="text-[0.78rem] font-medium text-label">{children}</p>;
 }
 
-function HeaderChip({ children, dot }: { readonly children: ReactNode; readonly dot?: string }) {
-  return (
-    <span className="inline-flex items-center gap-1.5 font-mono text-[0.68rem] text-muted-foreground">
-      {dot ? <span className={`size-1.5 rounded-full ${dot}`} aria-hidden="true" /> : null}
-      {children}
-    </span>
-  );
+function Dot({ tone }: { readonly tone: "green" | "amber" | "red" | "accent" | "hollow" }) {
+  const fill =
+    tone === "green"
+      ? "bg-[var(--sw-green-dot)]"
+      : tone === "amber"
+        ? "bg-[var(--sw-amber)]"
+        : tone === "red"
+          ? "bg-[var(--sw-red)]"
+          : tone === "accent"
+            ? "bg-primary"
+            : "border-[1.5px] border-[var(--sw-faint)] bg-transparent";
+  return <span className={`size-2 shrink-0 rounded-full ${fill}`} aria-hidden="true" />;
 }
 
-/** A claim's link back to the recording: run + sequence, excerpt on hover. */
+/** A pointer's link back to the recording: run + sequence, excerpt on hover. */
 function EvidenceLink({ pointer }: { readonly pointer: EvidencePointerDto }) {
   return (
     <Link
       to="/runs/$runId"
       params={{ runId: pointer.runId }}
       title={pointer.excerpt}
-      className="font-mono text-[0.66rem] text-primary no-underline hover:underline"
+      className="font-mono text-[0.72rem] text-primary no-underline hover:underline"
     >
       seq {pointer.sequence}
     </Link>
@@ -52,19 +100,35 @@ function EvidenceLink({ pointer }: { readonly pointer: EvidencePointerDto }) {
 
 export function EvidenceList({
   evidence,
+  runLabels,
 }: {
   readonly evidence: ReadonlyArray<EvidencePointerDto>;
+  readonly runLabels?: RunLabels | undefined;
 }) {
   if (evidence.length === 0) return null;
+  const groups = new Map<string, Array<EvidencePointerDto>>();
+  for (const pointer of evidence) {
+    const entries = groups.get(pointer.runId) ?? [];
+    entries.push(pointer);
+    groups.set(pointer.runId, entries);
+  }
   return (
-    <span className="inline-flex flex-wrap items-baseline gap-x-2">
-      {evidence.map((pointer) => (
-        <EvidenceLink key={`${pointer.runId}:${pointer.sequence}`} pointer={pointer} />
+    <span className="inline-flex flex-wrap items-baseline gap-x-4 gap-y-1">
+      {[...groups.entries()].map(([runId, pointers]) => (
+        <span key={runId} className="inline-flex flex-wrap items-baseline gap-x-2">
+          <span className="font-mono text-[0.72rem] text-faint">
+            {runLabels?.get(runId) ?? `run ${runId.slice(0, 8)}`}
+          </span>
+          {pointers.map((pointer) => (
+            <EvidenceLink key={`${pointer.runId}:${pointer.sequence}`} pointer={pointer} />
+          ))}
+        </span>
       ))}
     </span>
   );
 }
 
+/** The proof legs, raw and mono — a dot per leg, observed or not. Never struck through. */
 function CausalProof({ document }: { readonly document: BriefDocumentDto }) {
   const { baseFails, headPasses, revertFails } = document.causalProof;
   const legs: ReadonlyArray<readonly [string, EvidencePointerDto | null]> = [
@@ -72,33 +136,36 @@ function CausalProof({ document }: { readonly document: BriefDocumentDto }) {
     ["head passes", headPasses],
     ["revert fails", revertFails],
   ];
-  const executed = legs.filter(([, pointer]) => pointer !== null);
+  const observed = legs.filter(([, pointer]) => pointer !== null).length;
 
   return (
-    <div className="shrink-0 text-right">
-      {executed.length === 0 ? (
-        <p className="flex items-center justify-end gap-1.5">
-          <span
-            className="size-1.5 rounded-full bg-transparent ring-[1.5px] ring-[#b3b0a8]"
-            aria-hidden="true"
-          />
-          <span className="font-mono text-[0.72rem] text-muted-foreground">
-            Causal proof not executed
-          </span>
-        </p>
-      ) : (
-        <p className="flex items-center justify-end gap-1.5">
-          <span className="size-1.5 rounded-full bg-[var(--sw-green-dot)]" aria-hidden="true" />
-          <span className="text-[0.8rem] font-medium text-success">
-            {executed.length} of 3 proof legs observed
-          </span>
-        </p>
-      )}
-      <p className="mt-1 font-mono text-[0.68rem] text-faint">
-        {legs.map(([label, pointer], index) => (
-          <span key={label}>
-            {index > 0 ? " · " : ""}
-            <span className={pointer === null ? "line-through opacity-60" : ""}>{label}</span>
+    <div className="shrink-0 lg:text-right">
+      <SectionLabel>Causal proof</SectionLabel>
+      <p className="mt-2 flex items-center gap-2 lg:justify-end">
+        <Dot tone={observed === 0 ? "hollow" : "green"} />
+        <span
+          className={`text-[0.85rem] font-medium ${observed === 0 ? "text-ink-2" : "text-success"}`}
+        >
+          {observed === 0 ? "Not executed" : `${observed} of 3 legs observed`}
+        </span>
+      </p>
+      <p className="mt-2.5 space-y-1 font-mono text-[0.75rem]">
+        {legs.map(([label, pointer]) => (
+          <span key={label} className="flex items-center gap-2 lg:justify-end">
+            <span className={pointer === null ? "text-faint" : "text-ink-2"}>{label}</span>
+            {pointer === null ? (
+              <Dot tone="hollow" />
+            ) : (
+              <Link
+                to="/runs/$runId"
+                params={{ runId: pointer.runId }}
+                title={pointer.excerpt}
+                className="inline-flex items-center gap-2 text-success no-underline hover:underline"
+              >
+                seq {pointer.sequence}
+                <Dot tone="green" />
+              </Link>
+            )}
           </span>
         ))}
       </p>
@@ -106,160 +173,227 @@ function CausalProof({ document }: { readonly document: BriefDocumentDto }) {
   );
 }
 
-function MainColumn({ document }: { readonly document: BriefDocumentDto }) {
-  const footer = {
-    total: document.questions.length,
-    direct: document.questions.filter((q) => q.disposition === "direct-evidence").length,
-  };
+/** A long account narrative: collapsed to three lines until asked for. */
+function AccountText({ text }: { readonly text: string }) {
+  const [open, setOpen] = useState(false);
+  const long = text.length > 550;
 
+  if (!long) {
+    return <p className="mt-2 max-w-[75ch] text-[0.9rem] leading-[1.65] text-foreground">{text}</p>;
+  }
   return (
-    <div className="min-w-0 flex-1 px-5 py-5 sm:px-7 sm:py-6">
-      <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
-        <p className="min-w-0 font-mono text-[0.68rem] text-faint">
-          {document.header.issueRef}
-          {document.header.headSha === null ? "" : ` · ${document.header.headSha.slice(0, 7)}`}
-        </p>
-        <CausalProof document={document} />
-      </div>
-
-      <div className="mt-5 space-y-5 border-t border-rule pt-5">
-        <div>
-          <SectionLabel>The issue</SectionLabel>
-          <p className="mt-1.5 max-w-[58ch] text-[0.86rem] leading-relaxed text-foreground">
-            {document.issueRestated}
-          </p>
-          {document.reproduction === null ? null : (
-            <p className="mt-1 font-mono text-[0.72rem] whitespace-pre-wrap text-muted-foreground">
-              {document.reproduction}
+    <div className="mt-2 max-w-[75ch]">
+      {open ? (
+        <div className="space-y-3">
+          {paragraphs(text).map((block) => (
+            <p key={block.slice(0, 48)} className="text-[0.9rem] leading-[1.65] text-foreground">
+              {block}
             </p>
-          )}
+          ))}
         </div>
-        <div>
-          <SectionLabel>What was done</SectionLabel>
-          <p className="mt-1.5 max-w-[58ch] text-[0.86rem] leading-relaxed text-foreground">
-            {document.whatWasDone}
-          </p>
-          <p className="mt-1 font-mono text-[0.72rem] text-muted-foreground">
-            {document.monoFacts}
-          </p>
-        </div>
-        <div>
-          <SectionLabel>Status now</SectionLabel>
-          <p className="mt-1.5 max-w-[58ch] text-[0.86rem] leading-relaxed text-foreground">
-            {document.statusNow}
-          </p>
-        </div>
-      </div>
+      ) : (
+        <p className="line-clamp-3 text-[0.9rem] leading-[1.65] text-foreground">{text}</p>
+      )}
+      <button
+        type="button"
+        className="mt-2 font-mono text-[0.75rem] text-primary hover:underline"
+        onClick={() => setOpen(!open)}
+      >
+        {open ? "Show less" : "Show the full account"}
+      </button>
+    </div>
+  );
+}
 
-      <div className="mt-6 border-t border-rule pt-5">
-        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-          <SectionLabel>Review questions</SectionLabel>
-          <p className="font-mono text-[0.66rem] text-faint">
-            {footer.direct} of {footer.total} directly observed
-          </p>
-        </div>
-        <div className="mt-2.5">
-          {document.questions.map((question) => {
-            const d = DISPOSITION[question.disposition];
+function Attention({
+  document,
+  runLabels,
+}: {
+  readonly document: BriefDocumentDto;
+  readonly runLabels?: RunLabels | undefined;
+}) {
+  return (
+    <section className="border-t border-rule px-6 py-6 sm:px-8">
+      <SectionLabel>What needs attention</SectionLabel>
+      {document.attention.length === 0 ? (
+        <p className="mt-3 flex items-center gap-2">
+          <Dot tone="hollow" />
+          <span className="text-[0.85rem] text-muted-foreground">
+            No amber or red callouts in this compile.
+          </span>
+        </p>
+      ) : (
+        <div className="mt-4 space-y-5">
+          {document.attention.map((callout) => {
+            const d = DISPOSITION[callout.severity];
             return (
               <div
-                key={question.index}
-                className="border-b border-rule-faint py-2.5 last:border-b-0"
+                key={callout.text}
+                className={`border-l-2 pl-4 ${
+                  callout.severity === "not-executed"
+                    ? "border-[var(--sw-amber)]"
+                    : "border-[var(--sw-red)]"
+                }`}
               >
-                <div className="flex items-baseline justify-between gap-3">
-                  <span className="flex min-w-0 items-baseline gap-3">
-                    <span className="font-mono text-[0.68rem] text-faint">
-                      {String(question.index).padStart(2, "0")}
-                    </span>
-                    <span className="text-[0.86rem] font-medium text-foreground">
-                      {question.question}
-                    </span>
+                <p className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+                  <span className={`font-mono text-[0.72rem] ${d.text}`}>{d.word}</span>
+                  <EvidenceList evidence={callout.evidence} runLabels={runLabels} />
+                </p>
+                <p className="mt-1.5 max-w-[75ch] text-[0.9rem] leading-[1.6] text-foreground">
+                  {callout.text}
+                </p>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function Questions({
+  document,
+  runLabels,
+}: {
+  readonly document: BriefDocumentDto;
+  readonly runLabels?: RunLabels | undefined;
+}) {
+  return (
+    <section className="border-t border-rule px-6 py-6 sm:px-8">
+      <SectionLabel>Review questions</SectionLabel>
+      <div className="mt-2">
+        {document.questions.map((question) => {
+          const d = DISPOSITION[question.disposition];
+          return (
+            <div
+              key={question.index}
+              className="grid grid-cols-[2.25rem_minmax(0,1fr)] items-baseline gap-x-2 gap-y-1.5 border-b border-rule-faint py-3.5 last:border-b-0 sm:grid-cols-[2.25rem_minmax(0,1fr)_11rem]"
+            >
+              <span className="font-mono text-[0.72rem] text-faint">
+                {String(question.index).padStart(2, "0")}
+              </span>
+              <span className="max-w-[70ch] text-[0.9rem] leading-[1.5] font-medium text-foreground">
+                {question.question}
+              </span>
+              <span className="col-start-2 flex items-center gap-2 sm:col-start-3 sm:justify-self-end">
+                <Dot
+                  tone={
+                    question.disposition === "direct-evidence"
+                      ? "green"
+                      : question.disposition === "not-executed"
+                        ? "amber"
+                        : "red"
+                  }
+                />
+                <span className={`font-mono text-[0.75rem] whitespace-nowrap ${d.text}`}>
+                  {d.word}
+                </span>
+              </span>
+              {question.evidence.length === 0 ? null : (
+                <span className="col-start-2">
+                  <EvidenceList evidence={question.evidence} runLabels={runLabels} />
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function Account({ document }: { readonly document: BriefDocumentDto }) {
+  return (
+    <section className="grid gap-x-12 gap-y-6 border-t border-rule px-6 py-6 sm:px-8">
+      <div>
+        <SectionLabel>What was done</SectionLabel>
+        <AccountText text={document.whatWasDone} />
+        <p className="mt-3 max-w-[85ch] font-mono text-[0.75rem] leading-[1.6] text-muted-foreground">
+          {document.monoFacts}
+        </p>
+      </div>
+      <div>
+        <SectionLabel>Status now</SectionLabel>
+        <AccountText text={document.statusNow} />
+      </div>
+    </section>
+  );
+}
+
+const SOURCE_KIND: Record<string, string> = {
+  read_issue: "Issue",
+  read_change: "Change diff",
+  read_recording: "Recording",
+};
+
+function EvidenceUsed({
+  document,
+  runLabels,
+}: {
+  readonly document: BriefDocumentDto;
+  readonly runLabels?: RunLabels | undefined;
+}) {
+  return (
+    <section className="border-t border-rule px-6 py-6 sm:px-8">
+      <SectionLabel>Evidence used</SectionLabel>
+      {document.evidenceUsed.length === 0 ? (
+        <p className="mt-3 text-[0.85rem] text-muted-foreground">
+          No sources beyond the recording itself.
+        </p>
+      ) : (
+        <div className="mt-4 grid gap-x-10 gap-y-5 sm:grid-cols-2">
+          {document.evidenceUsed.map((source) => {
+            const [tool, ...rest] = source.source.split(" ");
+            const kind = tool === undefined ? undefined : SOURCE_KIND[tool];
+            const ref = rest.join(" ");
+            return (
+              <div key={source.source}>
+                <p className="flex flex-wrap items-baseline gap-x-2.5">
+                  <span className="text-[0.85rem] font-medium text-foreground">
+                    {kind ?? source.source}
                   </span>
-                  <span className="flex shrink-0 items-center gap-1.5">
-                    <span className={`size-1.5 rounded-full ${d.dot}`} aria-hidden="true" />
-                    <span className={`font-mono text-[0.72rem] ${d.text}`}>{d.word}</span>
-                  </span>
-                </div>
-                {question.evidence.length === 0 ? null : (
-                  <p className="mt-1 pl-[calc(0.68rem*2+0.75rem)]">
-                    <EvidenceList evidence={question.evidence} />
+                  {kind === undefined || ref === "" ? null : (
+                    <span className="font-mono text-[0.72rem] text-faint">{shortRef(ref)}</span>
+                  )}
+                </p>
+                <p className="mt-1 max-w-[60ch] text-[0.82rem] leading-[1.55] text-muted-foreground">
+                  {source.established}
+                </p>
+                {source.pointers.length === 0 ? null : (
+                  <p className="mt-1.5">
+                    <EvidenceList evidence={source.pointers} runLabels={runLabels} />
                   </p>
                 )}
               </div>
             );
           })}
         </div>
-      </div>
-    </div>
-  );
-}
-
-function AttentionRail({ document }: { readonly document: BriefDocumentDto }) {
-  return (
-    <aside className="w-full shrink-0 border-t border-rule px-5 py-5 sm:px-6 sm:py-6 lg:w-[19rem] lg:border-t-0 lg:border-l">
-      <SectionLabel>What needs attention</SectionLabel>
-      {document.attention.length === 0 ? (
-        <p className="mt-2.5 text-[0.82rem] leading-snug text-muted-foreground">
-          No amber or red callouts in this compile.
-        </p>
-      ) : (
-        <div className="mt-2.5 space-y-2.5">
-          {document.attention.map((callout) => (
-            <div
-              key={callout.text}
-              className={`border-l-2 pl-3 ${
-                callout.severity === "not-executed"
-                  ? "border-[var(--sw-amber)]"
-                  : "border-[var(--sw-red)]"
-              }`}
-            >
-              <p className="text-[0.82rem] leading-snug text-foreground">{callout.text}</p>
-              <EvidenceList evidence={callout.evidence} />
-            </div>
-          ))}
-        </div>
       )}
-
-      <div className="mt-6 border-t border-rule-faint pt-5">
-        <SectionLabel>Evidence used</SectionLabel>
-        {document.evidenceUsed.length === 0 ? (
-          <p className="mt-2.5 text-[0.8rem] leading-snug text-muted-foreground">
-            No sources beyond the recording itself.
-          </p>
-        ) : (
-          <div className="mt-2.5 space-y-3">
-            {document.evidenceUsed.map((source) => (
-              <div key={source.source}>
-                <p className="text-[0.8rem] leading-snug font-medium text-foreground">
-                  {source.source}
-                </p>
-                <p className="mt-0.5 text-[0.74rem] leading-snug text-muted-foreground">
-                  {source.established}
-                </p>
-                <EvidenceList evidence={source.pointers} />
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </aside>
+    </section>
   );
 }
 
-export function BriefView({ detail }: { readonly detail: BriefDetailDto }) {
+export function BriefView({
+  detail,
+  runs,
+}: {
+  readonly detail: BriefDetailDto;
+  readonly runs?: ReadonlyArray<RunDto>;
+}) {
   const { brief, change } = detail;
   const document = brief.document;
-  const footer = {
+  const runLabels = runs === undefined ? undefined : runLabelsFrom(runs);
+  const tally = {
     total: document.questions.length,
     direct: document.questions.filter((q) => q.disposition === "direct-evidence").length,
   };
-  const needJudgment = footer.total - footer.direct;
+  const needJudgment = tally.total - tally.direct;
 
   return (
-    <figure className="min-w-0">
+    <section aria-label="The brief" className="min-w-0">
       <div className="overflow-hidden rounded-2xl border border-border bg-panel shadow-[var(--shadow-md)]">
-        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-rule bg-[var(--sw-sunken)] px-5 py-3 sm:px-7">
-          <span className="min-w-0 truncate font-mono text-[0.72rem] text-ink-2">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-rule bg-[var(--sw-sunken)] px-6 py-3 sm:px-8">
+          <span className="min-w-0 truncate font-mono text-[0.78rem] text-ink-2">
             {document.header.repository}
             {document.header.prRef === null ? null : (
               <>
@@ -268,39 +402,57 @@ export function BriefView({ detail }: { readonly detail: BriefDetailDto }) {
                 <span className="text-primary">{document.header.prRef}</span>
               </>
             )}{" "}
-            <span className="text-faint">· {document.header.issueRef}</span>
+            <span className="text-faint">· issue {shortRef(document.header.issueRef)}</span>
+            {document.header.headSha === null ? null : (
+              <span className="text-faint"> · {document.header.headSha.slice(0, 7)}</span>
+            )}
           </span>
           <span className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1">
             {document.header.checksCount === null ? null : (
-              <HeaderChip dot="bg-[var(--sw-green-dot)]">
+              <span className="inline-flex items-center gap-1.5 font-mono text-[0.72rem] text-muted-foreground">
+                {document.header.checksCount > 0 ? <Dot tone="green" /> : null}
                 Checks {document.header.checksCount}
-              </HeaderChip>
+              </span>
             )}
-            <HeaderChip
-              dot={document.header.freshness === "current" ? "bg-primary" : "bg-[var(--sw-amber)]"}
-            >
+            <span className="inline-flex items-center gap-1.5 font-mono text-[0.72rem] text-muted-foreground">
+              <Dot tone={document.header.freshness === "current" ? "accent" : "amber"} />
               Evidence {document.header.freshness}
-            </HeaderChip>
-            <span className="font-mono text-[0.68rem] text-faint">v{brief.currentVersion}</span>
+            </span>
+            <span className="font-mono text-[0.72rem] text-faint">v{brief.currentVersion}</span>
           </span>
         </div>
 
-        <div className="flex flex-col lg:flex-row">
-          <MainColumn document={document} />
-          <AttentionRail document={document} />
-        </div>
+        <section className="flex flex-col gap-x-12 gap-y-6 px-6 py-6 sm:px-8 lg:flex-row lg:justify-between">
+          <div className="min-w-0">
+            <SectionLabel>The issue</SectionLabel>
+            <p className="mt-2 max-w-[72ch] text-[0.9rem] leading-[1.6] text-foreground">
+              {document.issueRestated}
+            </p>
+            {document.reproduction === null ? null : (
+              <p className="mt-2 max-w-[85ch] font-mono text-[0.75rem] leading-[1.6] whitespace-pre-wrap text-muted-foreground">
+                {document.reproduction}
+              </p>
+            )}
+          </div>
+          <CausalProof document={document} />
+        </section>
 
-        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-rule px-5 py-3.5 sm:px-7">
-          <span className="font-mono text-[0.7rem] text-muted-foreground">
-            {footer.total} review questions · {footer.direct} have direct evidence · {needJudgment}{" "}
-            need judgment
+        <Attention document={document} runLabels={runLabels} />
+        <Questions document={document} runLabels={runLabels} />
+        <Account document={document} />
+        <EvidenceUsed document={document} runLabels={runLabels} />
+
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-rule bg-[var(--sw-sunken)] px-6 py-3.5 sm:px-8">
+          <span className="font-mono text-[0.75rem] text-muted-foreground">
+            {tally.total} review questions · {tally.direct} {tally.direct === 1 ? "has" : "have"}{" "}
+            direct evidence · {needJudgment} need judgment
           </span>
-          <span className="font-mono text-[0.68rem] text-faint">
+          <span className="font-mono text-[0.72rem] text-faint">
             branch {change.branch === "" ? "(workspace)" : change.branch} · compiled{" "}
             {new Date(brief.updatedAt).toLocaleString()}
           </span>
         </div>
       </div>
-    </figure>
+    </section>
   );
 }

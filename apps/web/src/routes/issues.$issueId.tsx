@@ -78,8 +78,8 @@ function IssuePage() {
           </p>
         ) : null
       ) : (
-        <div className="mb-8 max-w-5xl space-y-6">
-          <VersionedBrief brief={brief} versions={versions} />
+        <div className="mb-8 max-w-[72rem] space-y-6">
+          <VersionedBrief brief={brief} versions={versions} runs={runs} />
           <ReviewConversation
             issueId={issue.id}
             document={brief.brief.document}
@@ -89,14 +89,14 @@ function IssuePage() {
       )}
 
       {failure === null ? null : (
-        <div className="mb-8 max-w-5xl">
+        <div className="mb-8 max-w-[72rem]">
           <FailureBriefCard run={failure.run} brief={failure.brief} />
         </div>
       )}
 
-      <div className="grid max-w-5xl gap-6 lg:grid-cols-[1.4fr_1fr]">
+      <div className="grid max-w-[72rem] gap-6 lg:grid-cols-[1.4fr_1fr]">
         <section className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
-          <h2 className="font-sans text-sm font-semibold">The issue</h2>
+          <h2 className="font-sans text-sm font-semibold">The issue as filed</h2>
           {issue.body === "" ? (
             <p className="mt-3 text-[13px] text-muted-foreground">No body — the title is all.</p>
           ) : (
@@ -135,9 +135,11 @@ function IssuePage() {
 function VersionedBrief({
   brief,
   versions,
+  runs,
 }: {
   readonly brief: BriefDetailDto;
   readonly versions: ReadonlyArray<BriefVersionDto>;
+  readonly runs: ReadonlyArray<RunDto>;
 }) {
   const [viewing, setViewing] = useState<number | null>(null);
   const current = brief.brief.currentVersion;
@@ -181,6 +183,7 @@ function VersionedBrief({
             ? brief
             : { ...brief, brief: { ...brief.brief, document: selected.document } }
         }
+        runs={runs}
       />
     </div>
   );
