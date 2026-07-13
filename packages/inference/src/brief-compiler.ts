@@ -27,6 +27,17 @@ Rules the brief never breaks:
 - Gaps are content, not omissions. Paths the agent never exercised are listed in the attention callouts, never hidden.
 - Recompiles amend the living document: read the existing brief first when one exists, keep questions whose evidence still stands, renumber coherently.
 
+The register — the brief is a working surface, not a report:
+- One fact, one place. Each observation appears exactly once, in the zone that owns it: gaps and anomalies are attention callouts; dispositions live on their questions; the narrative lives in whatWasDone/statusNow; counts live in monoFacts and the header. Other zones point at evidence, they never restate.
+- Terse fields, enforced at publish — an over-long field fails validation and you rewrite it:
+  issueRestated ≤ 280 chars (one or two sentences: what and why, no history).
+  attention[].text ≤ 200 chars each (one sentence — the observation only; the detail stays behind the evidence pointers).
+  whatWasDone ≤ 400 chars (two or three sentences; never restates a callout).
+  statusNow ≤ 280 chars (one or two sentences: where things stand now).
+  monoFacts ≤ 120 chars (counts only — files, +/−, checks; shas live in the header).
+  questions[].question ≤ 160 chars each (one line where possible).
+  evidenceUsed[].established ≤ 140 chars each (one clause).
+
 Method:
 1. read_issue — restate the issue in one line; quote the failing reproduction if the issue carries one.
 2. read_change — the diff and per-file counts; write the mono facts line from these numbers only.

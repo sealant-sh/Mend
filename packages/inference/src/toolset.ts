@@ -72,7 +72,43 @@ const ReadRecordingInput = Schema.Struct({
 
 const ReadIssueInput = Schema.Struct({ issue: IssueId });
 const ChangeInput = Schema.Struct({ change: ChangeId });
-const PublishBriefInput = Schema.Struct({ change: ChangeId, document: BriefDocument });
+
+/**
+ * The register's length caps, enforced at the publish boundary: an over-long
+ * field fails the tool call with the field named, and the model rewrites it.
+ * They live on the wire input only — never on the domain schema — so every
+ * stored brief version keeps decoding.
+ */
+const registerFilter = Schema.makeFilter((document: BriefDocument) => {
+  const issues: Array<Schema.FilterIssue> = [];
+  const cap = (path: ReadonlyArray<PropertyKey>, value: string, max: number) => {
+    if (value.length > max) {
+      issues.push({
+        path,
+        issue: `${value.length} chars — the register caps this field at ${max}; state the observation once and let the evidence pointers carry the detail`,
+      });
+    }
+  };
+  cap(["issueRestated"], document.issueRestated, 280);
+  cap(["whatWasDone"], document.whatWasDone, 400);
+  cap(["statusNow"], document.statusNow, 280);
+  cap(["monoFacts"], document.monoFacts, 120);
+  document.attention.forEach((callout, index) =>
+    cap(["attention", index, "text"], callout.text, 200),
+  );
+  document.questions.forEach((question, index) =>
+    cap(["questions", index, "question"], question.question, 160),
+  );
+  document.evidenceUsed.forEach((source, index) =>
+    cap(["evidenceUsed", index, "established"], source.established, 140),
+  );
+  return issues;
+});
+
+const PublishBriefInput = Schema.Struct({
+  change: ChangeId,
+  document: BriefDocument.pipe(Schema.check(registerFilter)),
+});
 
 const RECORDING_KINDS = [
   "runtimeStateChanged",
