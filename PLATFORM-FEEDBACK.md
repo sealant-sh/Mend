@@ -7,6 +7,68 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-07-25 · 0.5.2 · Workspaces sourced from a caller-provided mount (persistent store worktrees)
+
+- **Needed:** the agent-workbench direction (`MEND-AGENT-WORKBENCH-PLAN.md` §8.1.A) keeps all
+  repositories in a Mend-managed central store on the machine (bare repo + one git worktree per
+  session) and runs every session in a managed workspace that mounts its worktree. This needs
+  workspace creation from a mount instead of a fresh clone: writes land on the store worktree and
+  persist after the workspace stops; the workspace never reprovisions or deletes the mounted source;
+  record/exec/control semantics stay identical to clone-based workspaces.
+- **Today:** `CreateOptions` only takes `repository` (a remote to clone) + `ref` — the workspace
+  owns its copy and the work product dies with the container unless pushed. There is no volume/mount
+  concept anywhere in the SDK surface.
+- **Suggested:** extend workspace creation with a mount source — e.g.
+  `workspaces.create({ mounts: [{ path, source }] })` or `source: { kind: "mount", path }` as an
+  alternative to `repository` — with the mounted directory treated as caller-owned (persists across
+  workspace stop/delete, never cleaned). This deliberately reuses the workspace noun; no new "host
+  attachment" primitive is wanted. Clone-based workspaces remain correct for independent
+  verification.
+
+## 2026-07-25 · 0.5.2 · Interactive session lifecycle is a Phase-3 stub, and too small for the workbench
+
+- **Needed:** the workbench's session surface (plan §8.1.B): PTY-backed interactive process with
+  client attach/detach, streaming from a durable sequence (reconnect after browser/product restart),
+  send input, resize, stop/signal, and lifecycle/waiting states. This is the M1 critical path —
+  `mend codex` is an interactive supervised PTY, not a one-shot prompt run.
+- **Today:** `harness.session()` exists but is marked Phase 3, and `InteractiveSession` is only
+  `{ send(input), output(): AsyncIterable<Uint8Array>, close() }` — no resize, no detach/reattach
+  semantics, no resume-from-sequence (unlike `run.record.stream({ from })`), no waiting-state
+  reporting, and it presumably requires the creating handle (see the 2026-07-08 re-fetched-handle
+  entry).
+- **Suggested:** grow `InteractiveSession` toward parity with the record surface: durable
+  sequence-based `output({ from })`, `resize(cols, rows)`, `signal(...)`, attachability from a
+  re-fetched workspace/run handle, and a lifecycle status (`running | waiting | idle | ...`) so a UI
+  can show "waiting for input" without parsing terminal bytes.
+
+## 2026-07-25 · 0.5.2 · Connected-account providers are a closed set (claude/codex/github)
+
+- **Needed:** the workbench is bring-your-own-agent — Codex and Claude Code first, but also OpenCode
+  and arbitrary commands. Whatever identity those harnesses need must ride the same reference-only
+  credential injection.
+- **Today:** `WorkspaceCredentialsOptions` is exactly `{ profile, claude, codex, github }`. An
+  OpenCode or custom harness has no slot, so it runs unauthenticated or the user bakes secrets into
+  dotfiles (which defeats the reference-only model). Noting early, not urgent: the MVP validates
+  with Codex and Claude Code, which are covered.
+- **Suggested:** let profiles (or a generic `accounts: { [provider: string]: true | string }`) carry
+  arbitrary named connected accounts with a declared injection shape (env var / file), so new
+  harness kinds don't each require an SDK field.
+
+## 2026-07-15 · 0.5.2 · Release artifact: compose.selfhost.yaml omits `SEALANT_CREDENTIALS_KEY`
+
+- **Needed:** inference on connected accounts working on a stock self-host install — Mend's brief
+  compilation and harness credentials both ride on it.
+- **Today:** `apps/api` reads `SEALANT_CREDENTIALS_KEY` (inference refuses to run without it, and
+  connected-account decryption falls back to a zero key), but the released `compose.selfhost.yaml`
+  never passes it to the api service — compose only interpolates `.env` into `${...}` it knows
+  about, so even an installer-written key never reaches the container. Found upgrading `~/.sealant`
+  to 0.5.2: the local compose only had the key because it was hand-patched; the fresh release
+  compose silently drops it. Re-patched locally (api env,
+  `SEALANT_CREDENTIALS_KEY: ${SEALANT_CREDENTIALS_KEY:-}`).
+- **Suggested:** add the env line to `compose.selfhost.yaml`'s api service (and have `install.sh`
+  generate the key, if it doesn't); a release smoke test that exercises one connected-accounts call
+  would have caught it.
+
 ## ✅ 2026-07-07 · 0.5.0 · Release artifact: api image cannot run inference
 
 **Shipped in 0.5.1** — [sealant#107](https://github.com/sealant-sh/sealant/pull/107): the builder
