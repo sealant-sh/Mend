@@ -80,8 +80,12 @@
   --diffs-bg-addition-emphasis-override: color-mix(in oklab, var(--sw-add-edge) 16%, transparent);
   --diffs-bg-deletion-emphasis-override: color-mix(in oklab, var(--sw-del-edge) 14%, transparent);
   --diffs-bg-hover-override: var(--sw-wash);
-  /* Selected lines must read as SELECTED at a glance — 10% cobalt washed out. */
-  --diffs-bg-selection-override: color-mix(in oklab, var(--sw-accent) 24%, transparent);
+  /* Line selection, per the library's documented trio (Styling docs): the
+     selection color, the row tint, and a deliberately STRONGER tint for the
+     gutter/number cells so selected numbers stay legible. */
+  --diffs-selection-color-override: var(--sw-accent);
+  --diffs-bg-selection-override: color-mix(in oklab, var(--sw-accent) 20%, transparent);
+  --diffs-bg-selection-number-override: color-mix(in oklab, var(--sw-accent) 42%, transparent);
   --diffs-bg-separator-override: var(--sw-sunken);
   --diffs-annotation-bg: transparent;
 

@@ -60,14 +60,6 @@ const EDGE_MARK_CSS = `
 [data-line-type="change-addition"] { box-shadow: inset 2px 0 0 var(--sw-add-edge, #2e7d46); }
 [data-line-type="change-deletion"] { box-shadow: inset 2px 0 0 var(--sw-del-edge, #c0362c); }
 ::selection { background: color-mix(in oklab, var(--sw-accent, #2052cc) 30%, transparent); }
-/* Selected lines wash cobalt over the gutter — the faint number ramp drowns.
-   Numbers on a selected line read at full ink. */
-[data-selected-line] {
-  --diffs-fg-number: var(--sw-ink, #1b1b1d);
-  --diffs-fg-number-override: var(--sw-ink, #1b1b1d);
-  --diffs-fg-number-addition-override: var(--sw-ink, #1b1b1d);
-  --diffs-fg-number-deletion-override: var(--sw-ink, #1b1b1d);
-}
 `;
 
 export interface FileStat {
@@ -235,9 +227,10 @@ export function WorkbenchDiff({
                           endLine: end > start ? end : null,
                         });
                       },
-                      onLineClick: (props) => {
-                        // Anchor to the new file; a deleted line has nothing to anchor to.
-                        if (props.lineType === "change-deletion") return;
+                      // The composer opens from the GUTTER (the documented
+                      // gesture surface) — clicking or dragging in the code
+                      // area is text selection, never a surprise composer.
+                      onLineNumberClick: (props) => {
                         setComposer({ file: file.name, line: props.lineNumber, endLine: null });
                       },
                     }}
