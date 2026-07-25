@@ -250,14 +250,50 @@ export class SessionEngine extends Context.Service<
         `if(t&&!fs.existsSync(h+"/.claude.json")){` +
         `fs.mkdirSync(h+"/.claude",{recursive:true});` +
         `fs.writeFileSync(h+"/.claude/.credentials.json",JSON.stringify({claudeAiOauth:{accessToken:t,refreshToken:"",expiresAt:9999999999999,scopes:["user:inference","user:profile"],subscriptionType:"max"}}),{mode:0o600});` +
-        `fs.writeFileSync(h+"/.claude.json",JSON.stringify({hasCompletedOnboarding:true}))}' 2>/dev/null; ` +
+        // Pre-answer the per-workspace dialogs: the user made the trust decision
+        // when they adopted the repo, and bypass-permissions is Mend's default
+        // stance (the workspace is the sandbox). /workspace/repo is where the
+        // platform mounts every session worktree.
+        `fs.writeFileSync(h+"/.claude.json",JSON.stringify({hasCompletedOnboarding:true,bypassPermissionsModeAccepted:true,projects:{"/workspace/repo":{hasTrustDialogAccepted:true,hasCompletedProjectOnboarding:true}}}))}' 2>/dev/null; ` +
+        // The workspace IS the sandbox: Claude Code refuses bypass-permissions
+        // as root unless the environment says so, and it is telling the truth.
+        `export IS_SANDBOX=1; ` +
         `exec "$@"`;
+
+      /**
+       * Permission prompts are the harness re-asking a question Mend already
+       * answers: the session runs in an isolated workspace on its own
+       * worktree, every byte is recorded, and nothing lands without review.
+       * Default every harness to its bypass mode; a caller that passes the
+       * flag itself (or a contrary one) is left alone.
+       */
+      const withPermissionDefaults = (
+        harness: string,
+        argv: ReadonlyArray<string>,
+      ): ReadonlyArray<string> => {
+        const [head, ...rest] = argv;
+        if (harness === "claude" && head === "claude" && !argv.includes("--permission-mode")) {
+          return argv.includes("--dangerously-skip-permissions")
+            ? argv
+            : ["claude", "--dangerously-skip-permissions", ...rest];
+        }
+        if (harness === "codex" && head === "codex" && !argv.includes("--sandbox")) {
+          return argv.includes("--dangerously-bypass-approvals-and-sandbox")
+            ? argv
+            : ["codex", "--dangerously-bypass-approvals-and-sandbox", ...rest];
+        }
+        return argv;
+      };
 
       const withHarnessBootstrap = (
         harness: string,
         argv: ReadonlyArray<string>,
-      ): ReadonlyArray<string> =>
-        harness === "claude" ? ["sh", "-c", CLAUDE_ONBOARDING_SEED, "sh", ...argv] : argv;
+      ): ReadonlyArray<string> => {
+        const shaped = withPermissionDefaults(harness, argv);
+        return harness === "claude"
+          ? ["sh", "-c", CLAUDE_ONBOARDING_SEED, "sh", ...shaped]
+          : shaped;
+      };
 
       const launch = Effect.fn("SessionEngine.launch")(function* (
         sessionId: SessionId,
