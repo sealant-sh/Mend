@@ -12,6 +12,7 @@ export class GitError extends Schema.TaggedErrorClass<GitError>()("GitError", {
 
 interface ExecFailure {
   readonly code?: number | string;
+  readonly stdout?: string;
   readonly stderr?: string;
   readonly message?: string;
 }
@@ -20,11 +21,14 @@ interface ExecFailure {
  * Run git with args in cwd; resolve with trimmed stdout. Identity is pinned so
  * checkpoint commits never depend on the machine's git config. Deliberately
  * `node:child_process` — the store must not grow platform dependencies.
+ * `okExitCodes` treats listed nonzero exits as success (`git diff --no-index`
+ * exits 1 when the files differ — that IS the result, not a failure).
  */
 export const git = (
   args: ReadonlyArray<string>,
   cwd: string,
   env?: Record<string, string>,
+  okExitCodes?: ReadonlyArray<number>,
 ): Effect.Effect<string, GitError> =>
   Effect.callback<string, GitError>((resume) => {
     const child = execFile(
@@ -48,12 +52,19 @@ export const git = (
           return;
         }
         const failure = error as ExecFailure;
+        const exitCode = typeof failure.code === "number" ? failure.code : null;
+        if (exitCode !== null && okExitCodes !== undefined && okExitCodes.includes(exitCode)) {
+          // The callback's stdout, not error.stdout — execFile only attaches
+          // output to the error in its promisified form.
+          resume(Effect.succeed(stdout.replace(/\n$/, "")));
+          return;
+        }
         resume(
           Effect.fail(
             new GitError({
               args: [...args],
               cwd,
-              exitCode: typeof failure.code === "number" ? failure.code : null,
+              exitCode,
               stderr: (failure.stderr ?? failure.message ?? "").trim(),
             }),
           ),

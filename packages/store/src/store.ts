@@ -188,11 +188,23 @@ export class Store extends Context.Service<
         return yield* git(["diff", a, b], dir);
       });
 
+      /** Untracked paths — invisible to `git diff <base>` but part of the change. */
+      const untrackedIn = (worktreePath: string) =>
+        git(["ls-files", "--others", "--exclude-standard"], worktreePath).pipe(
+          Effect.map((out) => (out === "" ? [] : out.split("\n"))),
+        );
+
       const diffWorktree = Effect.fn("Store.diffWorktree")(function* (
         worktreePath: string,
         base: string,
       ) {
-        return yield* git(["diff", base], worktreePath);
+        const tracked = yield* git(["diff", base], worktreePath);
+        const untracked = yield* untrackedIn(worktreePath);
+        const additions = yield* Effect.forEach(untracked, (file) =>
+          // Exit 1 means "the files differ" — for /dev/null vs a new file, that IS the diff.
+          git(["diff", "--no-index", "--", "/dev/null", file], worktreePath, undefined, [1]),
+        );
+        return [tracked, ...additions].filter((part) => part !== "").join("\n");
       });
 
       const changedFiles = Effect.fn("Store.changedFiles")(function* (
@@ -202,15 +214,38 @@ export class Store extends Context.Service<
       ) {
         const args = b === null ? ["diff", "--numstat", a] : ["diff", "--numstat", a, b];
         const out = yield* git(args, dir);
-        if (out === "") return [];
-        return out.split("\n").map((line) => {
-          const [additions = "0", deletions = "0", ...rest] = line.split("\t");
-          return {
-            path: rest.join("\t"),
-            additions: additions === "-" ? 0 : Number(additions),
-            deletions: deletions === "-" ? 0 : Number(deletions),
-          };
-        });
+        const tracked =
+          out === ""
+            ? []
+            : out.split("\n").map((line) => {
+                const [additions = "0", deletions = "0", ...rest] = line.split("\t");
+                return {
+                  path: rest.join("\t"),
+                  additions: additions === "-" ? 0 : Number(additions),
+                  deletions: deletions === "-" ? 0 : Number(deletions),
+                };
+              });
+        // A live-worktree comparison (b = null) also owns its untracked files.
+        if (b !== null) return tracked;
+        const untracked = yield* untrackedIn(dir);
+        const additions = yield* Effect.forEach(untracked, (file) =>
+          git(
+            ["diff", "--no-index", "--numstat", "--", "/dev/null", file],
+            dir,
+            undefined,
+            [1],
+          ).pipe(
+            Effect.map((line) => {
+              const [added = "0"] = line.split("\t");
+              return {
+                path: file,
+                additions: added === "-" ? 0 : Number(added),
+                deletions: 0,
+              };
+            }),
+          ),
+        );
+        return [...tracked, ...additions];
       });
 
       const headSha = Effect.fn("Store.headSha")(function* (dir: string) {

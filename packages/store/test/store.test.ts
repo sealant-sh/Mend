@@ -80,10 +80,13 @@ describe("Store", () => {
         expect(slice).toContain("extra.ts");
         expect(slice).not.toContain("answer");
 
-        // Full change: worktree vs base sees the tracked edit.
+        // Full change: worktree vs base sees the tracked edit AND the untracked file.
         const full = yield* store.diffWorktree(wt.path, wt.baseSha);
         expect(full).toContain("-export const answer = 41");
         expect(full).toContain("+export const answer = 42");
+        expect(full).toContain("extra.ts");
+        const liveFiles = yield* store.changedFiles(wt.path, wt.baseSha, null);
+        expect(liveFiles.map((f) => f.path).sort()).toEqual(["app.ts", "extra.ts"]);
 
         // Per-file counts across base → cp2 (includes the untracked file via the snapshot).
         const files = yield* store.changedFiles(wt.path, wt.baseSha, cp2.sha);
