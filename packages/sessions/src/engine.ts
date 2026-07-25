@@ -1,3 +1,6 @@
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+
 import {
   CheckpointsRepo,
   ProjectNotFoundError,
@@ -9,11 +12,13 @@ import {
 import { SealantRunId, SealantWorkspaceId, SessionId, type ProjectId } from "@mend/domain";
 import type { Checkpoint, CheckpointTrigger, Session } from "@mend/domain/workbench";
 import { SealantClient, SealantPlatformError } from "@mend/sealant";
-import { GitError, Store, worktreePathOf } from "@mend/store";
+import { GitError, Store, sessionStatePathOf, worktreePathOf } from "@mend/store";
 import type { Harness, Run as SdkRun, WorkspaceCredentialsOptions } from "@sealant/sdk";
 import { claudeCode, codex, opencode } from "@sealant/sdk";
 import { Effect, Layer, Stream } from "effect";
 import * as Context from "effect/Context";
+
+import { HARNESS_STATE, type HarnessStateManifest } from "./harness-state.ts";
 
 export interface ProvisionInput {
   readonly projectId: ProjectId;
@@ -244,17 +249,29 @@ export class SessionEngine extends Context.Service<
        * login is never clobbered. Filed as platform feedback: the claude
        * injection should be file-kind, like codex's `auth.json`.
        */
+      // A MERGE, not an exists-guard: a restored session brings back claude's
+      // own rewritten `.claude.json` (which knows nothing of these flags), so
+      // the seed must re-assert them on every launch while preserving whatever
+      // state came back. Pre-answered dialogs: onboarding, bypass acceptance,
+      // and the /workspace/repo trust — the user made the trust decision when
+      // they adopted the repo, and bypass is Mend's stance (the workspace is
+      // the sandbox).
       const CLAUDE_ONBOARDING_SEED =
         `node -e '` +
         `const fs=require("fs"),os=require("os"),h=os.homedir(),t=process.env.CLAUDE_CODE_OAUTH_TOKEN;` +
-        `if(t&&!fs.existsSync(h+"/.claude.json")){` +
         `fs.mkdirSync(h+"/.claude",{recursive:true});` +
-        `fs.writeFileSync(h+"/.claude/.credentials.json",JSON.stringify({claudeAiOauth:{accessToken:t,refreshToken:"",expiresAt:9999999999999,scopes:["user:inference","user:profile"],subscriptionType:"max"}}),{mode:0o600});` +
-        // Pre-answer the per-workspace dialogs: the user made the trust decision
-        // when they adopted the repo, and bypass-permissions is Mend's default
-        // stance (the workspace is the sandbox). /workspace/repo is where the
-        // platform mounts every session worktree.
-        `fs.writeFileSync(h+"/.claude.json",JSON.stringify({hasCompletedOnboarding:true,bypassPermissionsModeAccepted:true,projects:{"/workspace/repo":{hasTrustDialogAccepted:true,hasCompletedProjectOnboarding:true}}}))}' 2>/dev/null; ` +
+        `if(t&&!fs.existsSync(h+"/.claude/.credentials.json")){` +
+        `fs.writeFileSync(h+"/.claude/.credentials.json",JSON.stringify({claudeAiOauth:{accessToken:t,refreshToken:"",expiresAt:9999999999999,scopes:["user:inference","user:profile"],subscriptionType:"max"}}),{mode:0o600})}` +
+        `let c={};try{c=JSON.parse(fs.readFileSync(h+"/.claude.json","utf8"))}catch{}` +
+        `c.hasCompletedOnboarding=true;c.bypassPermissionsModeAccepted=true;` +
+        `c.projects=c.projects||{};` +
+        `c.projects["/workspace/repo"]=Object.assign({},c.projects["/workspace/repo"],{hasTrustDialogAccepted:true,hasCompletedProjectOnboarding:true});` +
+        `fs.writeFileSync(h+"/.claude.json",JSON.stringify(c));` +
+        // The bypass-acceptance dialog is actually gated on settings.json
+        // (verified: accepting it writes exactly this key), not .claude.json.
+        `let s={};try{s=JSON.parse(fs.readFileSync(h+"/.claude/settings.json","utf8"))}catch{}` +
+        `s.skipDangerousModePermissionPrompt=true;` +
+        `fs.writeFileSync(h+"/.claude/settings.json",JSON.stringify(s))' 2>/dev/null; ` +
         // The workspace IS the sandbox: Claude Code refuses bypass-permissions
         // as root unless the environment says so, and it is telling the truth.
         `export IS_SANDBOX=1; ` +
@@ -295,6 +312,86 @@ export class SessionEngine extends Context.Service<
           : shaped;
       };
 
+      // ─── the harness session store (automatic; see harness-state.ts) ──────
+
+      /**
+       * Pull the harness's raw native state out of the still-warm workspace
+       * into the central store, plus the primary transcript and the provider
+       * session id a native resume needs. Runs at every settle; must never
+       * break a settle path (callers go through `tryHarvest`).
+       */
+      const harvestHarnessState = Effect.fn("SessionEngine.harvestHarnessState")(function* (
+        sessionId: SessionId,
+      ) {
+        const session = yield* sessions.byId(sessionId);
+        const shape = HARNESS_STATE[session.harness];
+        if (shape === undefined || session.sealantWorkspaceId === null) return;
+        const project = yield* projects.byId(session.projectId);
+        const stateDir = sessionStatePathOf(project.storePath, session.id);
+        const workspace = yield* sealant.getWorkspace(session.sealantWorkspaceId);
+
+        const list = shape.paths.map((p) => `"${p}"`).join(" ");
+        const pack = yield* sealant.exec(workspace, [
+          "sh",
+          "-c",
+          `cd "$HOME" || exit 1; L=""; for p in ${list}; do [ -e "$p" ] && L="$L $p"; done; ` +
+            `[ -n "$L" ] || exit 3; tar -czf /tmp/mend-harness-state.tgz $L && ` +
+            `base64 -w0 /tmp/mend-harness-state.tgz`,
+        ]);
+        if (pack.exitCode !== 0 || pack.stdout.trim() === "") return;
+        yield* Effect.promise(() => fs.mkdir(stateDir, { recursive: true }));
+        yield* Effect.promise(() =>
+          fs.writeFile(
+            path.join(stateDir, "harness-state.tar.gz"),
+            Buffer.from(pack.stdout.trim(), "base64"),
+          ),
+        );
+
+        const located = yield* sealant.exec(workspace, ["sh", "-c", shape.latestTranscript]);
+        const transcriptFile = located.stdout.trim().split("\n")[0] ?? "";
+        let providerSessionId: string | null = null;
+        if (located.exitCode === 0 && transcriptFile !== "") {
+          providerSessionId = shape.providerSessionId(transcriptFile);
+          const native = yield* sealant.exec(workspace, ["cat", transcriptFile]);
+          if (native.exitCode === 0 && native.stdout !== "") {
+            yield* Effect.promise(() =>
+              fs.writeFile(path.join(stateDir, "transcript.native"), native.stdout),
+            );
+          }
+        }
+
+        const manifest: HarnessStateManifest = {
+          harness: session.harness,
+          providerSessionId,
+          capturedAt: new Date().toISOString(),
+        };
+        yield* Effect.promise(() =>
+          fs.writeFile(path.join(stateDir, "manifest.json"), JSON.stringify(manifest, null, 2)),
+        );
+        if (providerSessionId !== null) {
+          yield* sessions.setProviderSessionId(session.id, providerSessionId);
+        }
+      });
+
+      const tryHarvest = (sessionId: SessionId) =>
+        harvestHarnessState(sessionId).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("session engine: harness-state harvest failed").pipe(
+              Effect.annotateLogs({ sessionId, error: String(error) }),
+            ),
+          ),
+        );
+
+      const readManifest = (stateDir: string) =>
+        Effect.promise(async (): Promise<HarnessStateManifest | null> => {
+          try {
+            const raw = await fs.readFile(path.join(stateDir, "manifest.json"), "utf8");
+            return JSON.parse(raw) as HarnessStateManifest;
+          } catch {
+            return null;
+          }
+        });
+
       const launch = Effect.fn("SessionEngine.launch")(function* (
         sessionId: SessionId,
         argv: ReadonlyArray<string>,
@@ -323,8 +420,57 @@ export class SessionEngine extends Context.Service<
             ...(shape.credentials === undefined ? {} : { credentials: shape.credentials }),
           })
           .pipe(settleOnFailure);
+
+        // A relaunch restores the harness's own saved state into the fresh
+        // workspace before the harness starts, and — where the harness
+        // supports it — turns the launch into a NATIVE resume. Automatic:
+        // state was harvested at the previous settle, nothing was asked of
+        // the user. Cross-harness state never restores; that path goes
+        // through the transcript adapters instead.
+        const stateDir = sessionStatePathOf(project.storePath, session.id);
+        const manifest = yield* readManifest(stateDir);
+        let shapedArgv = argv;
+        if (manifest !== null && manifest.harness === session.harness) {
+          const tarName = `.mend-harness-state-${session.id.slice(0, 8)}.tgz`;
+          const staged = yield* Effect.promise(async () => {
+            try {
+              await fs.copyFile(
+                path.join(stateDir, "harness-state.tar.gz"),
+                path.join(worktree, tarName),
+              );
+              return true;
+            } catch {
+              return false;
+            }
+          });
+          if (staged) {
+            yield* sealant
+              .exec(workspace, [
+                "sh",
+                "-c",
+                `tar -xzf "/workspace/repo/${tarName}" -C "$HOME"; rm -f "/workspace/repo/${tarName}"`,
+              ])
+              .pipe(Effect.ignore);
+            // Belt: never leave the staging tarball in the worktree.
+            yield* Effect.promise(() => fs.rm(path.join(worktree, tarName), { force: true })).pipe(
+              Effect.ignore,
+            );
+          }
+          if (
+            session.harness === "claude" &&
+            manifest.providerSessionId !== null &&
+            shapedArgv[0] === "claude" &&
+            !shapedArgv.includes("--resume") &&
+            !shapedArgv.includes("-r") &&
+            !shapedArgv.includes("--continue")
+          ) {
+            const [, ...tail] = shapedArgv;
+            shapedArgv = ["claude", "--resume", manifest.providerSessionId, ...tail];
+          }
+        }
+
         const pty = yield* sealant
-          .openSession(workspace, withHarnessBootstrap(session.harness, argv))
+          .openSession(workspace, withHarnessBootstrap(session.harness, shapedArgv))
           .pipe(settleOnFailure);
         yield* sessions.setSealantIds(
           sessionId,
@@ -365,6 +511,7 @@ export class SessionEngine extends Context.Service<
             const settled = yield* sessions.byId(sessionId);
             yield* tryCheckpoint(settled, "turn-boundary", settled.lastSeenSequence);
             yield* refreshChangeHead(settled).pipe(Effect.ignore);
+            yield* tryHarvest(sessionId);
             return;
           }
         }).pipe(
@@ -394,6 +541,9 @@ export class SessionEngine extends Context.Service<
         yield* sessions.settle(sessionId, "stopped", null);
         yield* tryCheckpoint(session, "user-mark", session.lastSeenSequence);
         yield* refreshChangeHead(session).pipe(Effect.ignore);
+        // The workspace outlives the PTY, so state is still there to harvest;
+        // forked so a stop request answers immediately.
+        yield* Effect.forkIn(tryHarvest(sessionId), scope);
       });
 
       /** Re-attach to sessions that were live when the last process died. */

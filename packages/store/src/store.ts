@@ -64,6 +64,14 @@ export const worktreePathOf = (storePath: string, name: string) =>
   path.join(path.dirname(storePath), "worktrees", name);
 
 /**
+ * Where a session's harvested harness state lives (plan: the session store).
+ * Holds the raw native state tarball, the primary transcript, and the
+ * manifest — written automatically at settle, read automatically at relaunch.
+ */
+export const sessionStatePathOf = (storePath: string, sessionId: string) =>
+  path.join(path.dirname(storePath), "sessions", sessionId);
+
+/**
  * The central repository store (plan §5.2, §8.1.A): bare clone per project,
  * one git worktree per session, checkpoints as commits on hidden refs that
  * never touch the visible branch. Everything here is host-side plain git —
