@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -13,13 +12,13 @@ import * as path from "node:path";
  *   mend status                           active sessions
  *
  * The CLI talks to the Mend server API; the server owns the store, the
- * engine, and the database. Until the platform ships store mounts and the
- * interactive PTY surface (PLATFORM-FEEDBACK.md 2026-07-25), the harness is
- * spawned directly in the worktree and the session is NOT recorded — the CLI
- * says so out loud. Worktree isolation, checkpoints, the diff, and review all
- * work; evidence arrives when recording does.
+ * engine, and the database. Every launch — including `mend continue` — runs
+ * supervised: a platform workspace mounts the session's worktree, a platform
+ * PTY runs the harness, and the terminal here is one held WebSocket through
+ * the Mend server (attachTty). Worktree isolation, checkpoints, the record,
+ * the diff, and review all hang off that one path.
  *
- * Deliberately dependency-light: plain fetch + spawn, wire DTOs as plain
+ * Deliberately dependency-light: plain fetch + WebSocket, wire DTOs as plain
  * types (the server validates; the CLI renders).
  */
 
@@ -482,24 +481,29 @@ const continueSession = async (config: CliConfig, args: ReadonlyArray<string>) =
 
   await api<FollowUpDto>(config, "POST", `/sessions/${session.id}/follow-up/deliver`);
   say(`${green("✓")} delivered · session reopened`);
-  say(dim(`  launching ${session.harness} in the worktree…`));
-  say("");
+  say(`${cobalt("  watch")} · ${config.url}/sessions/${session.id}`);
 
-  const [command = "", ...rest] = build(followUp.instruction);
-  const child = spawn(command, rest, { cwd: worktree, stdio: "inherit" });
-  const exitCode: number = await new Promise((resolve) => {
-    child.on("exit", (code) => resolve(code ?? 0));
-    child.on("error", (error) => {
-      process.stderr.write(`mend: could not launch ${command}: ${error.message}\n`);
-      resolve(127);
-    });
-  });
-
-  const settled = await api<SessionDto>(config, "POST", `/sessions/${session.id}/stop`);
+  // Relaunch SUPERVISED, exactly like a fresh `mend <harness>`: a new
+  // workspace mounts the SAME worktree, the platform PTY runs the harness
+  // with the instruction as its opening prompt, and the record continues —
+  // the web session page shows the live terminal throughout.
+  const argv = build(followUp.instruction);
+  await withSpinner(
+    "provisioning workspace — the resumed run records like any other…",
+    api<SessionDto>(config, "POST", `/sessions/${session.id}/launch`, { argv }),
+  );
+  say(`${green("✓ recording")} · workspace mounts the worktree · detach: ${dim("Ctrl+]")}`);
   say("");
-  say(`${green("✓")} session ${settled.status} · checkpoint taken`);
+  await attachTty(config, session.id, 0n);
+  const settled = await api<{ readonly session: SessionDto }>(
+    config,
+    "GET",
+    `/sessions/${session.id}`,
+  );
+  say("");
+  say(`${green("✓")} session ${settled.session.status} · recorded`);
   say(`${cobalt("  review")} · ${config.url}/sessions/${session.id}`);
-  process.exit(exitCode);
+  process.exit(0);
 };
 
 // ─── status ─────────────────────────────────────────────────────────────────

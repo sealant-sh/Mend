@@ -65,14 +65,15 @@ export const TtyRoutes = HttpRouter.use((router) =>
         const resolved = yield* Effect.gen(function* () {
           const workspace = yield* sealant.getWorkspace(sealantWorkspaceId);
           const pty = yield* sealant.getSession(workspace, sealantSessionId);
+          // A settled session has no PTY to attach — that is a state, not a crash.
           const attachment = yield* Effect.tryPromise({
             try: () => pty.attach({ from }),
-            catch: (cause) => new Error(`attach failed: ${String(cause)}`),
-          }).pipe(Effect.orDie);
+            catch: () => new Error(`the session has no live PTY (it may have settled)`),
+          });
           return { ok: true as const, attachment };
         }).pipe(
-          Effect.catchTag("SealantPlatformError", (error) =>
-            Effect.succeed({ ok: false as const, message: error.message }),
+          Effect.catch((error) =>
+            Effect.succeed({ ok: false as const, message: String(error.message) }),
           ),
         );
         if (!resolved.ok) return HttpServerResponse.text(resolved.message, { status: 502 });

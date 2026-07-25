@@ -123,7 +123,9 @@ function SessionPage() {
                       run {session.sealantRunId} · live — the same session your terminal holds
                     </p>
                   </div>
-                  <SessionTerminal sessionId={session.id} />
+                  {/* Keyed on the PLATFORM session: `mend continue` reopens the
+                      session with a fresh PTY, and the pane must reconnect. */}
+                  <SessionTerminal key={session.sealantSessionId} sessionId={session.id} />
                 </div>
               </>
             ) : (
