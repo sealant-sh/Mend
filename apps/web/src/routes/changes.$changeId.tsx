@@ -42,6 +42,10 @@ function ChangePage() {
   const comments = useSuspenseQuery(changeCommentsQuery(changeId)).data;
   const followUp = useSuspenseQuery(pendingFollowUpQuery(change.sessionId)).data;
   const [sendOpen, setSendOpen] = useState(false);
+  const [focusFile, setFocusFile] = useState<{
+    readonly path: string;
+    readonly nonce: number;
+  } | null>(null);
   useWorkbenchEvents();
 
   const additions = files.reduce((sum, file) => sum + file.additions, 0);
@@ -86,28 +90,41 @@ function ChangePage() {
           </p>
         )}
 
-        <div className="mt-8 grid items-start gap-6 lg:grid-cols-[220px_1fr]">
-          <section>
+        <div className="mt-8 grid items-start gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
+          {/* The sidebar owns navigation AND the change-level comment surface —
+              both stay in the viewport; only the file list scrolls internally. */}
+          <section className="sticky top-6 flex max-h-[calc(100vh-10rem)] min-h-0 flex-col self-start">
             <p className="text-xs font-medium text-label">Files</p>
-            <div className="mt-3 flex flex-col gap-1">
+            <div className="mt-3 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
               {files.length === 0 ? (
                 <p className="font-mono text-xs text-faint">no changes yet</p>
               ) : (
                 files.map((file) => (
-                  <div key={file.path} className="rounded-lg px-2.5 py-1.5">
+                  <button
+                    key={file.path}
+                    type="button"
+                    onClick={() => setFocusFile({ path: file.path, nonce: Date.now() })}
+                    className="rounded-lg px-2.5 py-1.5 text-left transition-colors hover:bg-secondary"
+                  >
                     <p className="truncate font-mono text-[11.5px] text-ink-2">{file.path}</p>
                     <p className="font-mono text-[10.5px] text-faint">
                       +{file.additions} −{file.deletions}
                     </p>
-                  </div>
+                  </button>
                 ))
               )}
             </div>
+            <ChangeComments changeId={changeId} comments={comments} />
           </section>
 
           <div className="min-w-0">
-            <WorkbenchDiff diff={diff} changeId={changeId} comments={comments} stats={files} />
-            <ChangeComments changeId={changeId} comments={comments} />
+            <WorkbenchDiff
+              diff={diff}
+              changeId={changeId}
+              comments={comments}
+              stats={files}
+              focus={focusFile}
+            />
           </div>
         </div>
       </div>
@@ -148,11 +165,11 @@ function ChangeComments({
   };
 
   return (
-    <section className="mt-8 max-w-[760px]">
+    <section className="mt-6">
       <p className="text-xs font-medium text-label">Change-level comments</p>
-      <div className="mt-3 flex flex-col gap-3">
+      <div className="mt-3 flex max-h-56 flex-col gap-3 overflow-y-auto">
         {changeLevel.map((comment) => (
-          <div key={comment.id} className="rounded-xl bg-card p-4 shadow-xs">
+          <div key={comment.id} className="rounded-xl bg-card p-3 shadow-xs">
             <p className="font-mono text-[10.5px] text-label">
               {comment.authorKind === "mend" ? "Mend" : comment.authorName} ·{" "}
               {comment.sentToSessionId === null ? comment.state : "sent to session"}
@@ -160,12 +177,12 @@ function ChangeComments({
             <p className="mt-1.5 text-[13.5px] leading-relaxed text-ink-2">{comment.body}</p>
           </div>
         ))}
-        <div className="rounded-xl bg-card p-4 shadow-xs">
+        <div className="rounded-xl bg-card p-3 shadow-xs">
           <textarea
             value={body}
             onChange={(event) => setBody(event.target.value)}
             placeholder="Comment on the change as a whole…"
-            rows={3}
+            rows={2}
             className="w-full resize-y rounded-lg border border-input bg-background px-3 py-2 font-sans text-sm text-foreground placeholder:text-faint"
           />
           <div className="mt-2 flex justify-end">
@@ -173,7 +190,7 @@ function ChangeComments({
               type="button"
               disabled={pending || body.trim() === ""}
               onClick={submit}
-              className="rounded-xl bg-primary px-4 py-2 font-sans text-sm font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-opacity disabled:opacity-50"
+              className="rounded-xl bg-primary px-3.5 py-1.5 font-sans text-sm font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-opacity disabled:opacity-50"
             >
               Comment
             </button>

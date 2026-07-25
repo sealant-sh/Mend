@@ -80,7 +80,8 @@
   --diffs-bg-addition-emphasis-override: color-mix(in oklab, var(--sw-add-edge) 16%, transparent);
   --diffs-bg-deletion-emphasis-override: color-mix(in oklab, var(--sw-del-edge) 14%, transparent);
   --diffs-bg-hover-override: var(--sw-wash);
-  --diffs-bg-selection-override: color-mix(in oklab, var(--sw-accent) 10%, transparent);
+  /* Selected lines must read as SELECTED at a glance — 10% cobalt washed out. */
+  --diffs-bg-selection-override: color-mix(in oklab, var(--sw-accent) 24%, transparent);
   --diffs-bg-separator-override: var(--sw-sunken);
   --diffs-annotation-bg: transparent;
 

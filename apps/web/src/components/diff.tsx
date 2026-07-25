@@ -5,7 +5,7 @@ import {
   type SelectedLineRange,
 } from "@pierre/diffs";
 import { FileDiff } from "@pierre/diffs/react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { postChangeComment, type ReviewCommentDto } from "#/lib/api";
 import { queryClient } from "#/lib/queries";
@@ -66,16 +66,41 @@ export function WorkbenchDiff({
   changeId,
   comments,
   stats,
+  focus,
 }: {
   readonly diff: string;
   readonly changeId: string;
   readonly comments: ReadonlyArray<ReviewCommentDto>;
   readonly stats: ReadonlyArray<FileStat>;
+  /** Sidebar navigation: expand + scroll to this file (nonce re-triggers). */
+  readonly focus?: { readonly path: string; readonly nonce: number } | null;
 }) {
   const [composer, setComposer] = useState<CommentAnchor | null>(null);
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   const files = useMemo(() => parsePatchFiles(diff).flatMap((patch) => patch.files), [diff]);
   const statOf = useMemo(() => new Map(stats.map((stat) => [stat.path, stat])), [stats]);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const sectionsRef = useRef(new Map<string, HTMLElement>());
+
+  // Imperative by nature: the sidebar picked a file; expand it and bring its
+  // sticky header to the top of the scroll container.
+  useEffect(() => {
+    if (focus === undefined || focus === null) return;
+    setCollapsed((current) => {
+      if (!current.has(focus.path)) return current;
+      const next = new Set(current);
+      next.delete(focus.path);
+      return next;
+    });
+    const frame = requestAnimationFrame(() => {
+      const container = containerRef.current;
+      const section = sectionsRef.current.get(focus.path);
+      if (container !== null && section !== undefined) {
+        container.scrollTo({ top: section.offsetTop, behavior: "smooth" });
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [focus]);
 
   if (diff === "") {
     return (
@@ -114,7 +139,7 @@ export function WorkbenchDiff({
       </div>
 
       {/* THE scroll container: the diff scrolls in here, the page does not. */}
-      <div className="max-h-[calc(100vh-16rem)] overflow-y-auto">
+      <div ref={containerRef} className="relative max-h-[calc(100vh-16rem)] overflow-y-auto">
         {files.map((file) => {
           const isCollapsed = collapsed.has(file.name);
           const stat = statOf.get(file.name);
@@ -137,7 +162,13 @@ export function WorkbenchDiff({
             });
           }
           return (
-            <section key={file.name}>
+            <section
+              key={file.name}
+              ref={(element) => {
+                if (element === null) sectionsRef.current.delete(file.name);
+                else sectionsRef.current.set(file.name, element);
+              }}
+            >
               {/* Our file header: sticky within the scroll container, collapse toggle. */}
               <button
                 type="button"
