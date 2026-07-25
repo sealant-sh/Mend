@@ -193,11 +193,16 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
     `${green("✓")} base ${dim(session.baseSha.slice(0, 12))} · session ${dim(session.id.slice(0, 8))}`,
   );
   say(`${cobalt("  watch")} · ${config.url}/sessions/${session.id}`);
+
+  // Non-interactive commands run SUPERVISED: a workspace mounts the worktree,
+  // a platform PTY runs argv, and the record begins (SDK 0.7.0). Interactive
+  // harnesses stay on local spawn until the CLI proxies PTY input.
+  if (harness === "run") {
+    return supervisedRun(config, session, argv);
+  }
   say(
     amber("  recording: off") +
-      dim(
-        " — supervised launch lands with the platform mount/PTY work; worktree, checkpoints, and review are live",
-      ),
+      dim(" — interactive harnesses go supervised once the CLI proxies PTY input"),
   );
   say(dim(`  launching ${argv.join(" ")} in the worktree…`));
   say("");
@@ -219,6 +224,73 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
     `${cobalt("  review")} · ${config.url}/changes — worktree vs ${dim(session.baseSha.slice(0, 12))}`,
   );
   process.exit(exitCode);
+};
+
+// ─── supervised run: platform workspace + PTY + record ──────────────────────
+
+const supervisedRun = async (
+  config: CliConfig,
+  session: SessionDto,
+  argv: ReadonlyArray<string>,
+) => {
+  const launched = await api<SessionDto>(config, "POST", `/sessions/${session.id}/launch`, {
+    argv,
+  });
+  say(
+    `${green("✓ recording")} · run ${dim(launched.id.slice(0, 8))} · workspace mounts the worktree`,
+  );
+  say(dim(`  ${argv.join(" ")} — live record:`));
+  say("");
+
+  // Tail the record through the server's event stream until the session settles.
+  const headers: Record<string, string> = {};
+  if (config.token !== null) headers["authorization"] = `Bearer ${config.token}`;
+  const response = await fetch(`${config.url}/api/events`, { headers });
+  if (response.body === null) return fail("event stream unavailable");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let settled: string | null = null;
+  while (settled === null) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop() ?? "";
+    for (const part of parts) {
+      const data = part
+        .split("\n")
+        .filter((line) => line.startsWith("data: "))
+        .map((line) => line.slice(6))
+        .join("");
+      if (data === "") continue;
+      let event: { readonly type?: string; readonly sessionId?: string; readonly line?: string };
+      try {
+        event = JSON.parse(data) as typeof event;
+      } catch {
+        continue;
+      }
+      if (event.sessionId !== session.id) continue;
+      if (event.type === "session-progress" && event.line !== undefined) {
+        say(dim(`  ${event.line}`));
+      }
+      if (event.type === "session") {
+        const detail = await api<{ readonly session: SessionDto }>(
+          config,
+          "GET",
+          `/sessions/${session.id}`,
+        );
+        if (["completed", "failed", "stopped"].includes(detail.session.status)) {
+          settled = detail.session.status;
+        }
+      }
+    }
+  }
+  await reader.cancel().catch(() => undefined);
+  say("");
+  say(`${green("✓")} session ${settled ?? "settled"} · recorded · checkpoint taken`);
+  say(`${cobalt("  review")} · ${config.url}/sessions/${session.id}`);
+  process.exit(settled === "failed" ? 1 : 0);
 };
 
 // ─── continue: pick up a pending follow-up ──────────────────────────────────

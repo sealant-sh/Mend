@@ -145,6 +145,22 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         );
       }),
     )
+    .handle("launch", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const engine = yield* SessionEngine;
+        return yield* engine.launch(params.id, payload.argv).pipe(
+          Effect.catchTag("SessionNotFoundError", () =>
+            Effect.fail(new NotFound({ id: params.id })),
+          ),
+          Effect.catchTag("ProjectNotFoundError", () =>
+            Effect.fail(new NotFound({ id: params.id })),
+          ),
+          Effect.catchTag("SealantPlatformError", (error) =>
+            Effect.fail(new StoreFailure({ message: error.message })),
+          ),
+        );
+      }),
+    )
     .handle("followUpCreate", ({ params, payload }) =>
       Effect.gen(function* () {
         const sessions = yield* SessionsRepo;

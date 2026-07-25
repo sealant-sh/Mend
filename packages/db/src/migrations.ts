@@ -307,10 +307,17 @@ const followUps = Effect.gen(function* () {
   yield* sql`CREATE INDEX follow_ups_session_idx ON follow_ups (session_id, created_at)`;
 });
 
+/** The platform's PTY session id (SDK 0.7.0) — the durable reattach handle. */
+const sealantSession = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE agent_sessions ADD COLUMN sealant_session_id text`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
   "0003_brief_comments": briefComments,
   "0004_workbench": workbench,
   "0005_follow_ups": followUps,
+  "0006_sealant_session": sealantSession,
 };

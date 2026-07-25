@@ -3,6 +3,7 @@ import type {
   InferenceContinueOptions,
   InferenceRespondOptions,
   InferenceResponse,
+  InteractiveSession,
   Run,
   RunFileChange,
   RunOptions,
@@ -72,6 +73,16 @@ export class SealantClient extends Context.Service<
       prompt: string,
     ) => Effect.Effect<Run, SealantPlatformError>;
     readonly waitRun: (run: Run) => Effect.Effect<Run, SealantPlatformError>;
+    /** Open an interactive PTY session in a workspace (0.7.0) — a durable platform resource. */
+    readonly openSession: (
+      workspace: Workspace,
+      argv: ReadonlyArray<string>,
+    ) => Effect.Effect<InteractiveSession, SealantPlatformError>;
+    /** Reattach to a PTY session by id — works from any workspace handle. */
+    readonly getSession: (
+      workspace: Workspace,
+      sessionId: string,
+    ) => Effect.Effect<InteractiveSession, SealantPlatformError>;
     /**
      * Deterministic check run (0.5.0): commands executed verbatim, recorded
      * into a run record like any process. The exit code is a check datum, not
@@ -178,6 +189,15 @@ export class SealantClient extends Context.Service<
       );
 
       const waitRun = Effect.fn("SealantClient.waitRun")((run: Run) => wrap(() => run.wait()));
+
+      const openSession = Effect.fn("SealantClient.openSession")(
+        (workspace: Workspace, argv: ReadonlyArray<string>) =>
+          wrap(() => workspace.sessions.open(argv)),
+      );
+
+      const getSession = Effect.fn("SealantClient.getSession")(
+        (workspace: Workspace, sessionId: string) => wrap(() => workspace.sessions.get(sessionId)),
+      );
 
       // No idempotency on this path: `attemptId` is a workspace-attempt FK,
       // not a client key, and the wire op carries no idempotency header —
@@ -316,6 +336,8 @@ export class SealantClient extends Context.Service<
         startHarness,
         startHarnessInWorkspace,
         waitRun,
+        openSession,
+        getSession,
         exec,
         diffCommits,
         inferenceRespond,

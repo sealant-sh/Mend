@@ -30,6 +30,8 @@ const sealantDeadLayer = Layer.succeed(SealantClient, {
   startHarness: () => Effect.die("not in test"),
   startHarnessInWorkspace: () => Effect.die("not in test"),
   waitRun: () => Effect.die("not in test"),
+  openSession: () => Effect.die("not in test"),
+  getSession: () => Effect.die("not in test"),
   exec: () => Effect.die("not in test"),
   diffCommits: () => Effect.die("not in test"),
   inferenceRespond: () => Effect.die("not in test"),
@@ -90,6 +92,7 @@ const sessionsLayer = (world: World) => {
           contextSnapshotId: input.contextSnapshotId,
           sealantRunId: null,
           sealantWorkspaceId: null,
+          sealantSessionId: null,
           status: "starting",
           summary: null,
           lastSeenSequence: 0n,
@@ -113,6 +116,8 @@ const sessionsLayer = (world: World) => {
       Effect.succeed([...world.sessions.values()].filter((s) => s.settledAt === null)),
     setSealantIds: (id, sealantRunId, sealantWorkspaceId) =>
       Effect.sync(() => update(id, { sealantRunId, sealantWorkspaceId })),
+    setSealantSessionId: (id, sealantSessionId) =>
+      Effect.sync(() => update(id, { sealantSessionId })),
     setProviderSessionId: (id, providerSessionId) =>
       Effect.sync(() => update(id, { providerSessionId })),
     setStatus: (id, status) => Effect.sync(() => update(id, { status })),
@@ -343,6 +348,7 @@ describe("SessionEngine", () => {
       contextSnapshotId: null,
       sealantRunId: null,
       sealantWorkspaceId: null,
+      sealantSessionId: null,
       status: "running",
       summary: null,
       lastSeenSequence: 0n,

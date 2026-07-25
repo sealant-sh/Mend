@@ -49,6 +49,8 @@ export class Session extends Schema.Class<Session>("Session")({
   contextSnapshotId: Schema.NullOr(ContextSnapshotId),
   sealantRunId: Schema.NullOr(SealantRunId),
   sealantWorkspaceId: Schema.NullOr(SealantWorkspaceId),
+  /** The platform's interactive PTY session id (0.7.0) — the reattach handle. */
+  sealantSessionId: Schema.NullOr(Schema.String),
   status: SessionStatus,
   /** What the harness reported at settle, when anything. */
   summary: Schema.NullOr(Schema.String),

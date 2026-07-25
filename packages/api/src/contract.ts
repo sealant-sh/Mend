@@ -287,6 +287,11 @@ export class NewFollowUp extends Schema.Class<NewFollowUp>("NewFollowUp")({
   instruction: Schema.String,
 }) {}
 
+/** What to run in the session's PTY — argv[0] is the program. */
+export class LaunchRequest extends Schema.Class<LaunchRequest>("LaunchRequest")({
+  argv: Schema.Array(Schema.String),
+}) {}
+
 const sessionsGroup = HttpApiGroup.make("sessions")
   .add(HttpApiEndpoint.get("listActive", "/sessions", { success: Schema.Array(Session) }))
   .add(
@@ -316,6 +321,17 @@ const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       payload: CheckpointRequest,
       success: Checkpoint,
+      error: Schema.Union([NotFound, StoreFailure]),
+    }),
+  )
+  .add(
+    // The supervised launch (SDK 0.7.0): workspace mounts the worktree,
+    // a PTY session runs argv inside it, supervision attaches — the record
+    // begins here.
+    HttpApiEndpoint.post("launch", "/sessions/:id/launch", {
+      params: { id: SessionId },
+      payload: LaunchRequest,
+      success: Session,
       error: Schema.Union([NotFound, StoreFailure]),
     }),
   )

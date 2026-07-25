@@ -7,6 +7,48 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-07-25 · 0.7.0 · Mount allowlist env name drift: docs say one name, the server another
+
+- **Needed:** enable mount-sourced workspaces on a self-host install.
+- **Today:** the SDK's `WorkspaceMountSource` docs name `SEALANT_WORKSPACE_MOUNT_ALLOWED_ROOTS`; the
+  0.7.0 api rejects with "set `SEALANT_MOUNT_ALLOWED_STORE_ROOTS`". Setting both works.
+- **Suggested:** pick one (and add it to the released compose with a commented example).
+
+## 2026-07-25 · 0.7.0 · Session transport in the api is docker-exec only — and the failure is a process crash
+
+- **Needed:** `POST /v1/sessions` working on the released compose topology.
+- **Today:** the api's only wired transport is `SealantRuntimeDockerExecLive`
+  (`docker exec -i <container> socat - UNIX-CONNECT:/run/sealant/control.sock`), but the api image
+  has no docker binary and the compose gives it no socket — and the spawn failure escapes as an
+  unhandled `error` event that **kills the api process** (clients see "other side closed"). The
+  ssh-gateway already solves this exact reachability problem with the shared read-only
+  `/run/sealant/sockets` dir and no Docker access. Local unblock (patched into `~/.sealant`): mount
+  a static docker CLI + `/var/run/docker.sock` + `group_add` the docker gid into the api — which
+  grants the api host-root-equivalent power the gateway design deliberately avoids.
+- **Suggested:** a socket-dir transport for the api like the gateway's (unix-connect via
+  `/run/sealant/sockets`, no Docker), and guard the spawn path (`child.on("error")`) so a missing
+  binary is a 502, never a process exit.
+
+## 2026-07-25 · 0.7.0 · A PTY session's run never settles after the session exits
+
+- **Needed:** supervision keyed on `run.wait()` / the record settling when the session's process
+  exits — a session IS backed by a run, per the model.
+- **Today:** the record faithfully carries `exit code=0`, but the run keeps emitting
+  `runtimeHeartbeat` indefinitely and `run.wait()` never resolves; `GET /v1/sessions/:id` does
+  report `status: "exited"`. Mend works around it by polling session status and settling from there
+  (double-settle-guarded), keeping `run.wait()` as a backstop.
+- **Suggested:** settle the session's run when the PTY exits (or document that session runs are
+  workspace-lifetime and the session status is the authoritative lifecycle).
+
+## 2026-07-25 · 0.7.0 · ✅ What shipped works — mounts, PTY journal, and file events, verified live
+
+**Adopted immediately** — noting the wins so the trail is honest: `source: {kind:"mount"}`
+bind-mounted a store worktree
+(`sealantd::boot::mount: "caller-owned mount; clone skipped, contents are never touched"`), writes
+persisted after exit; `sessions.open` PTY ran with byte-exact sequence-keyed output; and the record
+carried **fileChange events** for the PTY's writes — the 2026-07-08 file-watch gap is fixed for
+mounted workspaces.
+
 ## 2026-07-25 · 0.5.2 · Workspaces sourced from a caller-provided mount (persistent store worktrees)
 
 - **Needed:** the agent-workbench direction (`MEND-AGENT-WORKBENCH-PLAN.md` §8.1.A) keeps all

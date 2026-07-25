@@ -8,9 +8,10 @@ import {
 } from "@mend/db";
 import { SealantRunId, SealantWorkspaceId, SessionId, type ProjectId } from "@mend/domain";
 import type { Checkpoint, CheckpointTrigger, Session } from "@mend/domain/workbench";
-import { SealantClient } from "@mend/sealant";
+import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import { GitError, Store, worktreePathOf } from "@mend/store";
-import type { Run as SdkRun } from "@sealant/sdk";
+import type { Harness, Run as SdkRun, WorkspaceCredentialsOptions } from "@sealant/sdk";
+import { claudeCode, codex, opencode } from "@sealant/sdk";
 import { Effect, Layer, Stream } from "effect";
 import * as Context from "effect/Context";
 
@@ -51,6 +52,15 @@ export class SessionEngine extends Context.Service<
       sealantRunId: SealantRunId,
       workspaceId: SealantWorkspaceId,
     ) => Effect.Effect<void, SessionNotFoundError>;
+    /**
+     * The supervised launch (SDK 0.7.0): a workspace mounting the session's
+     * worktree, an interactive PTY session running `argv` inside it, and
+     * supervision attached — the record begins here.
+     */
+    readonly launch: (
+      sessionId: SessionId,
+      argv: ReadonlyArray<string>,
+    ) => Effect.Effect<Session, SessionNotFoundError | ProjectNotFoundError | SealantPlatformError>;
     /** Snapshot the worktree now — review-open and user-mark come through here. */
     readonly checkpointNow: (
       sessionId: SessionId,
@@ -210,6 +220,82 @@ export class SessionEngine extends Context.Service<
         yield* Effect.forkIn(work, scope);
       });
 
+      /** Credentials ride connected accounts (references only); harness picks image behavior. */
+      const platformShape = (
+        harness: string,
+      ): { harness: Harness; credentials: WorkspaceCredentialsOptions | undefined } => {
+        switch (harness) {
+          case "codex":
+            return { harness: codex(), credentials: { codex: true } };
+          case "claude":
+            return { harness: claudeCode(), credentials: { claude: true } };
+          default:
+            return { harness: opencode(), credentials: undefined };
+        }
+      };
+
+      const launch = Effect.fn("SessionEngine.launch")(function* (
+        sessionId: SessionId,
+        argv: ReadonlyArray<string>,
+      ) {
+        const session = yield* sessions.byId(sessionId);
+        const project = yield* projects.byId(session.projectId);
+        const worktree = worktreePathOf(project.storePath, session.worktree);
+        const shape = platformShape(session.harness);
+        const workspace = yield* sealant.createWorkspace({
+          source: { kind: "mount", path: worktree },
+          harness: shape.harness,
+          name: `mend-${session.id.slice(0, 8)}`,
+          ...(shape.credentials === undefined ? {} : { credentials: shape.credentials }),
+        });
+        const pty = yield* sealant.openSession(workspace, argv);
+        yield* sessions.setSealantIds(
+          sessionId,
+          SealantRunId.make(pty.runId),
+          SealantWorkspaceId.make(workspace.id),
+        );
+        yield* sessions.setSealantSessionId(sessionId, pty.id);
+        yield* sessions.setStatus(sessionId, "running");
+        const sdkRun = yield* sealant.getRun(pty.runId);
+        yield* forkSupervision(session, sdkRun, 0n);
+
+        // The run heartbeats past the PTY's exit (the workspace stays warm), so
+        // settle on the SESSION's lifecycle: poll status until it leaves
+        // `running`, then settle + checkpoint — unless supervision already did.
+        const watchPty = Effect.gen(function* () {
+          for (;;) {
+            yield* Effect.sleep("2 seconds");
+            const status = yield* Effect.tryPromise({
+              try: () => pty.status(),
+              catch: () => new SealantPlatformError({ message: "session status failed" }),
+            });
+            if (status.status === "running") continue;
+            const current = yield* sessions.byId(sessionId);
+            if (current.settledAt !== null) return;
+            const outcome =
+              status.exitCode === undefined || status.exitCode === 0 ? "completed" : "failed";
+            yield* sessions.settle(
+              sessionId,
+              outcome,
+              status.exitCode === undefined ? null : `exited with code ${status.exitCode}`,
+            );
+            const settled = yield* sessions.byId(sessionId);
+            yield* tryCheckpoint(settled, "turn-boundary", settled.lastSeenSequence);
+            yield* refreshChangeHead(settled).pipe(Effect.ignore);
+            return;
+          }
+        }).pipe(
+          Effect.catchTag("SessionNotFoundError", () => Effect.void),
+          Effect.catchTag("SealantPlatformError", (error) =>
+            Effect.logWarning("session engine: pty watch failed").pipe(
+              Effect.annotateLogs({ sessionId, error: error.message }),
+            ),
+          ),
+        );
+        yield* Effect.forkIn(watchPty, scope);
+        return yield* sessions.byId(sessionId);
+      });
+
       const checkpointNow = Effect.fn("SessionEngine.checkpointNow")(function* (
         sessionId: SessionId,
         trigger: CheckpointTrigger,
@@ -263,7 +349,7 @@ export class SessionEngine extends Context.Service<
 
       yield* resume();
 
-      return { provision, attachRun, checkpointNow, stop };
+      return { provision, attachRun, launch, checkpointNow, stop };
     }),
   );
 }

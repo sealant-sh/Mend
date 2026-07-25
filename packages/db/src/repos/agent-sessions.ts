@@ -62,6 +62,8 @@ export class SessionsRepo extends Context.Service<
       sealantRunId: SealantRunId,
       workspaceId: SealantWorkspaceId,
     ) => Effect.Effect<void>;
+    /** The PTY session id — how a client reattaches to the live terminal. */
+    readonly setSealantSessionId: (id: SessionId, sealantSessionId: string) => Effect.Effect<void>;
     readonly setProviderSessionId: (id: SessionId, providerId: string) => Effect.Effect<void>;
     readonly setStatus: (id: SessionId, status: SessionStatus) => Effect.Effect<void>;
     readonly saveLastSeenSequence: (id: SessionId, sequence: bigint) => Effect.Effect<void>;
@@ -163,6 +165,15 @@ export class SessionsRepo extends Context.Service<
           WHERE id = ${id}`.pipe(Effect.orDie);
       });
 
+      const setSealantSessionId = Effect.fn("SessionsRepo.setSealantSessionId")(function* (
+        id: SessionId,
+        sealantSessionId: string,
+      ) {
+        yield* sql`
+          UPDATE agent_sessions SET sealant_session_id = ${sealantSessionId}, updated_at = now()
+          WHERE id = ${id}`.pipe(Effect.orDie);
+      });
+
       const setProviderSessionId = Effect.fn("SessionsRepo.setProviderSessionId")(function* (
         id: SessionId,
         providerId: string,
@@ -237,6 +248,7 @@ export class SessionsRepo extends Context.Service<
         listActive,
         listUnsettled,
         setSealantIds,
+        setSealantSessionId,
         setProviderSessionId,
         setStatus,
         saveLastSeenSequence,
