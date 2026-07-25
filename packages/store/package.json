@@ -1,12 +1,11 @@
 {
-  "name": "@mend/domain",
+  "name": "@mend/store",
   "version": "0.0.0",
   "private": true,
-  "description": "Mend domain models — workbench (project, session, change, checkpoint) plus the retiring queue-era set",
+  "description": "Mend's central repository store: bare clones, per-session worktrees, checkpoint refs — pure git on the host",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts",
-    "./workbench": "./src/workbench/index.ts"
+    ".": "./src/index.ts"
   },
   "scripts": {
     "lint": "oxlint . --no-error-on-unmatched-pattern",
@@ -14,6 +13,7 @@
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@mend/domain": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {

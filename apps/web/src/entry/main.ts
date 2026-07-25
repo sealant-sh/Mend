@@ -10,11 +10,16 @@ import {
   BriefCommentsRepo,
   BriefsRepo,
   ChangesRepo,
+  CheckpointsRepo,
   InferenceCallsRepo,
   IssuesRepo,
   MigratorLive,
   PgLive,
+  ProjectsRepo,
+  ReviewCommentsRepo,
   RunsRepo,
+  SessionChangesRepo,
+  SessionsRepo,
   SettingsRepo,
 } from "@mend/db";
 import {
@@ -29,6 +34,8 @@ import {
 } from "@mend/inference";
 import { Dispatcher, JobRunner, runStarterLayer, startRunToolLayer } from "@mend/jobs";
 import { SealantClient } from "@mend/sealant";
+import { SessionEngine } from "@mend/sessions";
+import { Store, StoreConfig } from "@mend/store";
 import { Config, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
@@ -50,7 +57,18 @@ const DatabaseLive = Layer.mergeAll(
   BriefCommentsRepo.layer,
   SettingsRepo.layer,
   InferenceCallsRepo.layer,
+  // Workbench repos (plan §5; docs/M0-INVENTORY.md).
+  ProjectsRepo.layer,
+  SessionsRepo.layer,
+  SessionChangesRepo.layer,
+  CheckpointsRepo.layer,
+  ReviewCommentsRepo.layer,
 ).pipe(Layer.provideMerge(MigratorLive.pipe(Layer.provideMerge(PgLive))));
+
+// ─── The central store (host-side git) + the session engine over it ────────
+const SessionEngineLive = SessionEngine.layer.pipe(
+  Layer.provide(Store.layer.pipe(Layer.provide(StoreConfig.layer))),
+);
 
 // ─── better-auth mounted under /api/auth ────────────────────────────────────
 const AuthRoutes = HttpRouter.use((router) =>
@@ -153,6 +171,8 @@ const WorkerLive = Layer.mergeAll(
     }),
   ),
   InferenceWorkersLive,
+  // Constructing the engine resumes supervision of unsettled sessions.
+  SessionEngineLive,
 ).pipe(
   Layer.provide(Dispatcher.layer),
   Layer.provide(BriefCompiler.layer),

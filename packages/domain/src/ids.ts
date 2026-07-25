@@ -30,3 +30,20 @@ export type Sha = typeof Sha.Type;
 
 export const BriefCommentId = Schema.String.pipe(Schema.brand("BriefCommentId"));
 export type BriefCommentId = typeof BriefCommentId.Type;
+
+// ── Workbench ids (MEND-AGENT-WORKBENCH-PLAN.md §5) ──────────────────────────
+
+export const ProjectId = Schema.String.pipe(Schema.brand("ProjectId"));
+export type ProjectId = typeof ProjectId.Type;
+
+export const SessionId = Schema.String.pipe(Schema.brand("SessionId"));
+export type SessionId = typeof SessionId.Type;
+
+export const CheckpointId = Schema.String.pipe(Schema.brand("CheckpointId"));
+export type CheckpointId = typeof CheckpointId.Type;
+
+export const ReviewCommentId = Schema.String.pipe(Schema.brand("ReviewCommentId"));
+export type ReviewCommentId = typeof ReviewCommentId.Type;
+
+export const ContextSnapshotId = Schema.String.pipe(Schema.brand("ContextSnapshotId"));
+export type ContextSnapshotId = typeof ContextSnapshotId.Type;

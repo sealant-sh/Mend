@@ -30,6 +30,8 @@
     "@mend/inference": "workspace:*",
     "@mend/jobs": "workspace:*",
     "@mend/sealant": "workspace:*",
+    "@mend/sessions": "workspace:*",
+    "@mend/store": "workspace:*",
     "@mend/ui": "workspace:*",
     "@tailwindcss/vite": "catalog:",
     "@tanstack/react-router": "catalog:",

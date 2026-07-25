@@ -1,14 +1,8 @@
 /**
- * @mend/domain — the product's objects and their cardinality.
- *
- * ```
- * issue  1 ── 0..n  runs       initial · follow-up · re-verification
- * run    1 ── 1     recording  the run audit is the view over one run
- * issue  1 ── 0..1  change     one branch per issue → 0..1 PR carrying it
- * change 1 ── 1     brief      living — recompiled after every run
- * ```
- *
- * Runs are many; the change and its PR are one; the brief is one, and current.
+ * @mend/domain — root barrel: the retiring queue-era model, kept compiling
+ * while its reusable pieces migrate (docs/M0-INVENTORY.md). The canonical
+ * workbench object model lives at `@mend/domain/workbench`
+ * (MEND-AGENT-WORKBENCH-PLAN.md §5) — new code imports from there.
  */
 export * from "./brief-comment.ts";
 export * from "./brief.ts";

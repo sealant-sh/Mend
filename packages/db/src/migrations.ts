@@ -193,8 +193,107 @@ const briefComments = Effect.gen(function* () {
   yield* sql`CREATE INDEX brief_comments_brief_idx ON brief_comments (brief_id, created_at)`;
 });
 
+/**
+ * The workbench object model (MEND-AGENT-WORKBENCH-PLAN.md §5): projects
+ * adopted into the central store, sessions in per-session worktrees,
+ * checkpoints, the session change, and review comments. Additive — the
+ * queue-era tables stay until their surfaces retire (docs/M0-INVENTORY.md).
+ * The product Session lives in `agent_sessions`: better-auth owns `"session"`.
+ */
+const workbench = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+
+  yield* sql`
+    CREATE TABLE projects (
+      id text PRIMARY KEY,
+      name text NOT NULL UNIQUE,
+      origin_url text,
+      store_path text NOT NULL UNIQUE,
+      default_branch text NOT NULL,
+      adopted_sha text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+
+  // Immutable manifest of exactly what a session received (plan §5.4).
+  yield* sql`
+    CREATE TABLE context_snapshots (
+      id text PRIMARY KEY,
+      pack_name text,
+      items jsonb NOT NULL DEFAULT '[]',
+      created_at timestamptz NOT NULL DEFAULT now()
+    )`;
+
+  yield* sql`
+    CREATE TABLE agent_sessions (
+      id text PRIMARY KEY,
+      project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      harness text NOT NULL,
+      provider_session_id text,
+      label text,
+      worktree text NOT NULL,
+      branch text NOT NULL,
+      base_sha text NOT NULL,
+      context_snapshot_id text REFERENCES context_snapshots(id) ON DELETE SET NULL,
+      sealant_run_id text,
+      sealant_workspace_id text,
+      status text NOT NULL DEFAULT 'starting',
+      summary text,
+      last_seen_sequence bigint NOT NULL DEFAULT 0,
+      started_at timestamptz,
+      settled_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`CREATE INDEX agent_sessions_project_idx ON agent_sessions (project_id, created_at)`;
+  yield* sql`CREATE INDEX agent_sessions_status_idx ON agent_sessions (status)`;
+
+  // One change per session (plan §5.6); git owns the diff, this row the identity.
+  yield* sql`
+    CREATE TABLE session_changes (
+      id text PRIMARY KEY,
+      project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      session_id text NOT NULL UNIQUE REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      branch text NOT NULL,
+      base_sha text NOT NULL,
+      head_sha text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+
+  // (hidden git ref, record seq) pairs — two checkpoints define a slice (§5.6).
+  yield* sql`
+    CREATE TABLE checkpoints (
+      id text PRIMARY KEY,
+      session_id text NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      ref text NOT NULL,
+      sha text NOT NULL,
+      seq bigint NOT NULL DEFAULT 0,
+      trigger text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`CREATE INDEX checkpoints_session_idx ON checkpoints (session_id, seq)`;
+
+  yield* sql`
+    CREATE TABLE review_comments (
+      id text PRIMARY KEY,
+      change_id text NOT NULL REFERENCES session_changes(id) ON DELETE CASCADE,
+      file text,
+      line integer,
+      author_kind text NOT NULL,
+      author_name text NOT NULL,
+      body text NOT NULL,
+      state text NOT NULL DEFAULT 'open',
+      sent_to_session_id text REFERENCES agent_sessions(id) ON DELETE SET NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`CREATE INDEX review_comments_change_idx ON review_comments (change_id, created_at)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
   "0003_brief_comments": briefComments,
+  "0004_workbench": workbench,
 };

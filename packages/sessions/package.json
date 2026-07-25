@@ -1,12 +1,11 @@
 {
-  "name": "@mend/domain",
+  "name": "@mend/sessions",
   "version": "0.0.0",
   "private": true,
-  "description": "Mend domain models — workbench (project, session, change, checkpoint) plus the retiring queue-era set",
+  "description": "The workbench session engine: worktree provisioning, run supervision with crash-resume, checkpointing",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts",
-    "./workbench": "./src/workbench/index.ts"
+    ".": "./src/index.ts"
   },
   "scripts": {
     "lint": "oxlint . --no-error-on-unmatched-pattern",
@@ -14,6 +13,11 @@
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@mend/db": "workspace:*",
+    "@mend/domain": "workspace:*",
+    "@mend/sealant": "workspace:*",
+    "@mend/store": "workspace:*",
+    "@sealant/sdk": "catalog:",
     "effect": "catalog:"
   },
   "devDependencies": {

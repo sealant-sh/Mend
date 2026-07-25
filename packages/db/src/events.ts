@@ -36,6 +36,35 @@ export const MendEvent = Schema.Union([
     briefId: Schema.String,
     issueId: Schema.String,
   }),
+  // ── Workbench events (plan §9.4) — same pointer discipline as above. ──
+  Schema.Struct({
+    type: Schema.Literals(["project"]),
+    projectId: Schema.String,
+  }),
+  Schema.Struct({
+    type: Schema.Literals(["session"]),
+    sessionId: Schema.String,
+    projectId: Schema.String,
+  }),
+  Schema.Struct({
+    type: Schema.Literals(["session-progress"]),
+    sessionId: Schema.String,
+    projectId: Schema.String,
+    sequence: Schema.String,
+    line: Schema.String,
+  }),
+  Schema.Struct({
+    type: Schema.Literals(["session-change"]),
+    changeId: Schema.String,
+    sessionId: Schema.String,
+    projectId: Schema.String,
+  }),
+  Schema.Struct({
+    type: Schema.Literals(["review-comment"]),
+    commentId: Schema.String,
+    changeId: Schema.String,
+    projectId: Schema.String,
+  }),
 ]);
 export type MendEvent = typeof MendEvent.Type;
 
