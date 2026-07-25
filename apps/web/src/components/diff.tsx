@@ -49,10 +49,25 @@ registerCustomCSSVariableTheme("evidence-review", {
   "token-link": "#3b5a92",
 });
 
-/** Injected into their shadow root: the EV edge-mark discipline — 2px edge, never a flood. */
+/**
+ * Injected into their shadow root: the EV edge-mark discipline (2px edge,
+ * never a flood) — and a visible ::selection. The page's selection style
+ * cannot pierce the shadow DOM, so without this, dragging over code selects
+ * invisibly: the worst of both worlds. Text selection (anywhere, for copying)
+ * and line selection (gutter drag, for range comments) now both paint.
+ */
 const EDGE_MARK_CSS = `
 [data-line-type="change-addition"] { box-shadow: inset 2px 0 0 var(--sw-add-edge, #2e7d46); }
 [data-line-type="change-deletion"] { box-shadow: inset 2px 0 0 var(--sw-del-edge, #c0362c); }
+::selection { background: color-mix(in oklab, var(--sw-accent, #2052cc) 30%, transparent); }
+/* Selected lines wash cobalt over the gutter — the faint number ramp drowns.
+   Numbers on a selected line read at full ink. */
+[data-selected-line] {
+  --diffs-fg-number: var(--sw-ink, #1b1b1d);
+  --diffs-fg-number-override: var(--sw-ink, #1b1b1d);
+  --diffs-fg-number-addition-override: var(--sw-ink, #1b1b1d);
+  --diffs-fg-number-deletion-override: var(--sw-ink, #1b1b1d);
+}
 `;
 
 export interface FileStat {
