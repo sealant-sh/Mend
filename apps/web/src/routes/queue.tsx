@@ -23,7 +23,7 @@ import {
   type MendEventDto,
 } from "#/lib/api";
 
-export const Route = createFileRoute("/")({
+export const Route = createFileRoute("/queue")({
   // Session lives in a cookie; the loader runs in the browser and the API
   // redirects to /login via 401. No SSR for authed surfaces in M1.
   ssr: false,
