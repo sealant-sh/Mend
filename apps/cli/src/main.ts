@@ -114,6 +114,25 @@ const api = async <T>(
 const worktreePathOf = (storePath: string, worktree: string) =>
   path.join(path.dirname(storePath), "worktrees", worktree);
 
+/** A live elapsed-time spinner around a slow await — provisioning is not a hang. */
+const withSpinner = async <T>(label: string, work: Promise<T>): Promise<T> => {
+  if (process.stdout.isTTY !== true) return work;
+  const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+  const started = Date.now();
+  let frame = 0;
+  const timer = setInterval(() => {
+    const seconds = Math.round((Date.now() - started) / 1000);
+    process.stdout.write(`\r  ${frames[frame % frames.length]} ${label} ${dim(`${seconds}s`)} `);
+    frame += 1;
+  }, 120);
+  try {
+    return await work;
+  } finally {
+    clearInterval(timer);
+    process.stdout.write("\r[2K");
+  }
+};
+
 // ─── adopt ──────────────────────────────────────────────────────────────────
 
 const adopt = async (config: CliConfig, args: ReadonlyArray<string>) => {
@@ -200,7 +219,10 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
   if (harness === "run") {
     return supervisedRun(config, session, argv);
   }
-  await api<SessionDto>(config, "POST", `/sessions/${session.id}/launch`, { argv });
+  await withSpinner(
+    "provisioning workspace — a first launch builds the harness image (can take minutes)…",
+    api<SessionDto>(config, "POST", `/sessions/${session.id}/launch`, { argv }),
+  );
   say(`${green("✓ recording")} · workspace mounts the worktree · detach: ${dim("Ctrl+]")}`);
   say("");
   await attachTty(config, session.id, 0n);
@@ -337,9 +359,10 @@ const supervisedRun = async (
   session: SessionDto,
   argv: ReadonlyArray<string>,
 ) => {
-  const launched = await api<SessionDto>(config, "POST", `/sessions/${session.id}/launch`, {
-    argv,
-  });
+  const launched = await withSpinner(
+    "provisioning workspace — a first launch builds the harness image (can take minutes)…",
+    api<SessionDto>(config, "POST", `/sessions/${session.id}/launch`, { argv }),
+  );
   say(
     `${green("✓ recording")} · run ${dim(launched.id.slice(0, 8))} · workspace mounts the worktree`,
   );

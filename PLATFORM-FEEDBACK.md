@@ -52,6 +52,14 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
   interactive inside the PTY) until this lands.
 - **Suggested:** accept the credentials key in the mount blueprint path — or if it is genuinely
   unsupported there, reject at CREATE time with a clear message instead of a failed build job.
+- **Root cause (found in Core source):** the 0.7.0 SDK folds `credentials` into `spec.credentials`
+  (`sdk/dist/internal/blueprint.js`); the api resolves it into `runtime.credentialRefs`
+  (`apps/api/src/routes/workspaces/workspaces.module.ts` ~L1146:
+  `body.credentials ?? resolvedSpec.credentials`) **but never removes `credentials` from
+  `resolvedSpec`** before persisting the spec for the build job — so the worker's strict
+  `parseWorkspaceBlueprint` (`packages/validators/src/workspaces/workspace-blueprint.ts`,
+  `z.strictObject`) rejects the root-level key. One-line fix: strip `resolvedSpec.credentials` after
+  resolving refs, plus a regression test for create-with-credentials reaching a green build.
 
 ## 2026-07-25 · 0.7.0 · ✅ What shipped works — mounts, PTY journal, and file events, verified live
 
