@@ -7,6 +7,7 @@ import { TextInput, View } from "react-native";
 import { EvButton } from "@/components/button";
 import { Panel } from "@/components/panel";
 import { Screen, ScreenHeader } from "@/components/screen";
+import { StatusWord } from "@/components/status";
 import { MonoText, UiText } from "@/components/typography";
 import { loadConfig, saveConfig } from "@/data/live";
 import { radius, useEvidenceTheme } from "@/theme/evidence";
@@ -16,6 +17,43 @@ export default function SettingsScreen() {
   const [url, setUrl] = useState("");
   const [token, setToken] = useState("");
   const [saved, setSaved] = useState(false);
+  const [check, setCheck] = useState<
+    | { readonly state: "idle" }
+    | { readonly state: "testing" }
+    | { readonly state: "ok"; readonly detail: string }
+    | { readonly state: "bad"; readonly detail: string }
+  >({ state: "idle" });
+
+  /** Test what's TYPED (not what's saved): health first, then an authed call. */
+  const testConnection = async () => {
+    setCheck({ state: "testing" });
+    const base = url.trim().replace(/\/$/, "");
+    try {
+      const health = await fetch(`${base}/api/health`);
+      if (!health.ok) {
+        setCheck({ state: "bad", detail: `server answered ${health.status} on /api/health` });
+        return;
+      }
+      const authed = await fetch(`${base}/api/projects`, {
+        headers: { authorization: `Bearer ${token.trim()}` },
+      });
+      if (authed.status === 401) {
+        setCheck({ state: "bad", detail: "reachable · token rejected (401)" });
+        return;
+      }
+      if (!authed.ok) {
+        setCheck({ state: "bad", detail: `reachable · projects answered ${authed.status}` });
+        return;
+      }
+      const projects = (await authed.json()) as ReadonlyArray<unknown>;
+      setCheck({
+        state: "ok",
+        detail: `connected · ${projects.length} project${projects.length === 1 ? "" : "s"}`,
+      });
+    } catch {
+      setCheck({ state: "bad", detail: "unreachable — check URL, port, firewall, same network" });
+    }
+  };
 
   useEffect(() => {
     void loadConfig().then((config) => {
@@ -64,6 +102,17 @@ export default function SettingsScreen() {
             secureTextEntry
             style={inputStyle}
           />
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+            <EvButton
+              variant="outline"
+              label={check.state === "testing" ? "Testing…" : "Test connection"}
+              onPress={() => void testConnection()}
+              style={{ flex: 1 }}
+            />
+            {check.state === "ok" && <StatusWord tone="observed" word="connected" />}
+            {check.state === "bad" && <StatusWord tone="breakage" word="failed" />}
+          </View>
+          {(check.state === "ok" || check.state === "bad") && <MonoText>{check.detail}</MonoText>}
           <EvButton
             label={saved ? "Saved" : "Save"}
             onPress={() => {
