@@ -405,6 +405,13 @@ export const listActiveSessions = () => request<ReadonlyArray<SessionDto>>("/api
 
 export const sessionDetail = (id: string) => request<SessionDetailDto>(`/api/sessions/${id}`);
 
+export const createSession = (projectId: string, harness: string) =>
+  post<SessionDto>(`/api/projects/${projectId}/sessions`, { harness, label: null, base: null });
+
+/** Fire the supervised launch. Resolves when the workspace is ready (a first launch can take minutes). */
+export const launchSession = (id: string, argv: ReadonlyArray<string>) =>
+  post<SessionDto>(`/api/sessions/${id}/launch`, { argv });
+
 export const stopSession = (id: string) => post<SessionDto>(`/api/sessions/${id}/stop`, {});
 
 export const checkpointSession = (id: string, trigger: "review-open" | "user-mark") =>

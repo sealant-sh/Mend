@@ -267,18 +267,29 @@ export class SessionEngine extends Context.Service<
         const project = yield* projects.byId(session.projectId);
         const worktree = worktreePathOf(project.storePath, session.worktree);
         const shape = platformShape(session.harness);
-        const workspace = yield* sealant.createWorkspace({
-          source: { kind: "mount", path: worktree },
-          harness: shape.harness,
-          name: `mend-${session.id.slice(0, 8)}`,
-          // Requires the platform at 0.7.1+ (sealant#114): 0.7.0 dropped every
-          // mount create that carried credentials at the worker's blueprint parse.
-          ...(shape.credentials === undefined ? {} : { credentials: shape.credentials }),
-        });
-        const pty = yield* sealant.openSession(
-          workspace,
-          withHarnessBootstrap(session.harness, argv),
-        );
+        // A failed provision settles the session — fire-and-forget launchers
+        // (the web) must never strand a row in "starting" with no error.
+        const settleOnFailure = <A>(effect: Effect.Effect<A, SealantPlatformError>) =>
+          effect.pipe(
+            Effect.tapError((error) =>
+              sessions
+                .settle(sessionId, "failed", `launch failed: ${error.message}`)
+                .pipe(Effect.ignore),
+            ),
+          );
+        const workspace = yield* sealant
+          .createWorkspace({
+            source: { kind: "mount", path: worktree },
+            harness: shape.harness,
+            name: `mend-${session.id.slice(0, 8)}`,
+            // Requires the platform at 0.7.1+ (sealant#114): 0.7.0 dropped every
+            // mount create that carried credentials at the worker's blueprint parse.
+            ...(shape.credentials === undefined ? {} : { credentials: shape.credentials }),
+          })
+          .pipe(settleOnFailure);
+        const pty = yield* sealant
+          .openSession(workspace, withHarnessBootstrap(session.harness, argv))
+          .pipe(settleOnFailure);
         yield* sessions.setSealantIds(
           sessionId,
           SealantRunId.make(pty.runId),

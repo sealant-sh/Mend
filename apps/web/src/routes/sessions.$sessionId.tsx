@@ -68,7 +68,9 @@ function SessionPage() {
             {session.summary}
           </p>
         )}
-        {session.sealantRunId === null && (
+        {/* Legacy note for settled pre-platform sessions only — a session that is
+            still ACTIVE without a run is provisioning, not unsupervised. */}
+        {session.sealantRunId === null && !ACTIVE.has(session.status) && (
           <p className="mt-3 font-mono text-xs text-warning">
             recording: off — launched before the platform&apos;s supervised path; worktree,
             checkpoints, and review are live
@@ -113,7 +115,22 @@ function SessionPage() {
 
         <div className="mt-9 grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
           <section className="min-w-0">
-            {session.sealantSessionId !== null && ACTIVE.has(session.status) ? (
+            {session.sealantSessionId === null && ACTIVE.has(session.status) ? (
+              <>
+                <p className="text-xs font-medium text-label">Terminal</p>
+                <div className="mt-3 overflow-hidden rounded-2xl bg-card shadow-sm">
+                  <div className="border-b border-rule-faint bg-secondary px-4 py-2">
+                    <p className="font-mono text-[11.5px] text-muted-foreground">
+                      provisioning workspace — a first launch builds the harness image (can take
+                      minutes)…
+                    </p>
+                  </div>
+                  <p className="p-4 font-mono text-xs text-faint">
+                    The terminal attaches here the moment the PTY is live.
+                  </p>
+                </div>
+              </>
+            ) : session.sealantSessionId !== null && ACTIVE.has(session.status) ? (
               <>
                 <p className="text-xs font-medium text-label">Terminal</p>
                 <div className="mt-3 overflow-hidden rounded-2xl bg-card shadow-sm">
