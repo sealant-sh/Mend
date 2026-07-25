@@ -127,6 +127,7 @@ const sessionsLayer = (world: World) => {
     settle: (id, outcome, summary) =>
       Effect.sync(() => update(id, { status: outcome, summary, settledAt: now() })),
     reopen: (id) => Effect.sync(() => update(id, { status: "running", settledAt: null })),
+    setHarness: (id, harness) => Effect.sync(() => update(id, { harness })),
   });
 };
 

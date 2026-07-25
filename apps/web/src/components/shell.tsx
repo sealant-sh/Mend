@@ -23,7 +23,6 @@ export function AppShell({ children }: { readonly children: ReactNode }) {
             <nav className="flex items-center gap-6" aria-label="Primary">
               <NavItem to="/">Now</NavItem>
               <NavItem to="/projects">Projects</NavItem>
-              <NavItem to="/queue">Queue</NavItem>
               <NavItem to="/settings">Settings</NavItem>
             </nav>
           </div>

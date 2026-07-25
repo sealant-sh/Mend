@@ -506,6 +506,63 @@ const continueSession = async (config: CliConfig, args: ReadonlyArray<string>) =
   process.exit(0);
 };
 
+// ─── resume: rejoin a session — same worktree, restored harness state ───────
+
+const ACTIVE_STATUSES = new Set(["starting", "running", "waiting", "idle"]);
+
+/**
+ * Sessions are continuous work, not runs: `mend resume` rejoins one on a
+ * fresh workspace — saved harness state restored, a claude resume is native
+ * (conversation intact). `--with <harness>` re-opens the same work in a
+ * DIFFERENT harness: the conversation crosses as a distilled opening prompt.
+ */
+const resumeCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const withFlag = args.indexOf("--with");
+  const withHarness =
+    withFlag !== -1 && args[withFlag + 1] !== undefined ? String(args[withFlag + 1]) : null;
+  const prefix = args.find((a, i) => !a.startsWith("--") && i !== withFlag + 1);
+
+  const project = await findProject(config, null);
+  const detail = await api<ProjectDetailDto>(config, "GET", `/projects/${project.id}`);
+  const match =
+    prefix !== undefined
+      ? detail.sessions.find((s) => s.id.startsWith(prefix))
+      : detail.sessions.find((s) => !ACTIVE_STATUSES.has(s.status));
+  if (match === undefined) {
+    return fail(
+      prefix !== undefined
+        ? `no session matches "${prefix}"`
+        : "no settled session to resume — mend status lists sessions",
+    );
+  }
+  if (ACTIVE_STATUSES.has(match.status)) {
+    return fail(
+      `session ${match.id.slice(0, 8)} is live — attach: mend attach ${match.id.slice(0, 8)}`,
+    );
+  }
+
+  say(
+    `${green("✓")} resuming ${match.harness} · ${dim(match.id.slice(0, 8))}${withHarness === null ? "" : ` ${dim("as")} ${withHarness}`}`,
+  );
+  say(`${cobalt("  watch")} · ${config.url}/sessions/${match.id}`);
+  await withSpinner(
+    "resuming — a fresh workspace restores the saved session state…",
+    api<SessionDto>(config, "POST", `/sessions/${match.id}/resume`, { harness: withHarness }),
+  );
+  say(`${green("✓ recording")} · same worktree, conversation restored · detach: ${dim("Ctrl+]")}`);
+  say("");
+  await attachTty(config, match.id, 0n);
+  const settled = await api<{ readonly session: SessionDto }>(
+    config,
+    "GET",
+    `/sessions/${match.id}`,
+  );
+  say("");
+  say(`${green("✓")} session ${settled.session.status} · recorded`);
+  say(`${cobalt("  review")} · ${config.url}/sessions/${match.id}`);
+  process.exit(0);
+};
+
 // ─── status ─────────────────────────────────────────────────────────────────
 
 const status = async (config: CliConfig) => {
@@ -530,6 +587,7 @@ const HELP = `mend — the agent workbench
   mend run -- <command...>              same, with an arbitrary command
   mend attach <session-id-prefix>       reattach this terminal to a running session
   mend continue [session-id]            resume a session with its pending review follow-up
+  mend resume [session-id] [--with h]   rejoin a settled session (state restored; --with switches harness)
   mend status                           active sessions
 
   server: MEND_URL (default http://localhost:3105) · auth: MEND_TOKEN
@@ -551,6 +609,8 @@ const main = async () => {
       return attach(config, rest);
     case "continue":
       return continueSession(config, rest);
+    case "resume":
+      return resumeCommand(config, rest);
     case "status":
       return status(config);
     case undefined:

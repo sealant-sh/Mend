@@ -292,6 +292,11 @@ export class LaunchRequest extends Schema.Class<LaunchRequest>("LaunchRequest")(
   argv: Schema.Array(Schema.String),
 }) {}
 
+/** Rejoin a settled session; `harness` null = the one it last ran with. */
+export class ResumeRequest extends Schema.Class<ResumeRequest>("ResumeRequest")({
+  harness: Schema.NullOr(Schema.String),
+}) {}
+
 const sessionsGroup = HttpApiGroup.make("sessions")
   .add(HttpApiEndpoint.get("listActive", "/sessions", { success: Schema.Array(Session) }))
   .add(
@@ -331,6 +336,17 @@ const sessionsGroup = HttpApiGroup.make("sessions")
     HttpApiEndpoint.post("launch", "/sessions/:id/launch", {
       params: { id: SessionId },
       payload: LaunchRequest,
+      success: Session,
+      error: Schema.Union([NotFound, StoreFailure]),
+    }),
+  )
+  .add(
+    // Sessions are continuous work: rejoin one on a fresh workspace — same
+    // worktree, restored harness state, native resume where the harness
+    // supports it; a different harness receives the distilled conversation.
+    HttpApiEndpoint.post("resume", "/sessions/:id/resume", {
+      params: { id: SessionId },
+      payload: ResumeRequest,
       success: Session,
       error: Schema.Union([NotFound, StoreFailure]),
     }),

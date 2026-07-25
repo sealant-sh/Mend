@@ -5,7 +5,7 @@ import { useCallback, useState } from "react";
 import { AppShell } from "#/components/shell";
 import { SessionStatusDot } from "#/components/status";
 import { SessionTerminal } from "#/components/terminal";
-import { checkpointSession, stopSession, type WorkbenchEventDto } from "#/lib/api";
+import { checkpointSession, resumeSession, stopSession, type WorkbenchEventDto } from "#/lib/api";
 import { pendingFollowUpQuery, queryClient, sessionDetailQuery } from "#/lib/queries";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 
@@ -24,7 +24,7 @@ function SessionPage() {
   const { session, checkpoints, change } = useSuspenseQuery(sessionDetailQuery(sessionId)).data;
   const followUp = useSuspenseQuery(pendingFollowUpQuery(sessionId)).data;
   const [lines, setLines] = useState<ReadonlyArray<string>>([]);
-  const [pending, setPending] = useState<"stop" | "checkpoint" | null>(null);
+  const [pending, setPending] = useState<"stop" | "checkpoint" | "resume" | null>(null);
 
   const onEvent = useCallback(
     (event: WorkbenchEventDto) => {
@@ -110,6 +110,30 @@ function SessionPage() {
             >
               {pending === "stop" ? "Stopping…" : "Stop"}
             </button>
+          )}
+          {!ACTIVE.has(session.status) && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-label">resume with:</span>
+              {(["claude", "codex", "opencode"] as const).map((harness) => (
+                <button
+                  key={harness}
+                  type="button"
+                  disabled={pending !== null}
+                  onClick={() => {
+                    setPending("resume");
+                    void resumeSession(sessionId, harness === session.harness ? null : harness)
+                      .catch(() => undefined)
+                      .finally(() => {
+                        void queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
+                        setPending(null);
+                      });
+                  }}
+                  className={`rounded-xl border px-3 py-1.5 font-mono text-xs shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-50 ${harness === session.harness ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] text-foreground" : "border-border text-muted-foreground"}`}
+                >
+                  {pending === "resume" ? "…" : harness}
+                </button>
+              ))}
+            </div>
           )}
         </div>
 

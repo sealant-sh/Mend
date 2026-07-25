@@ -76,6 +76,7 @@ export class SessionsRepo extends Context.Service<
     ) => Effect.Effect<void>;
     /** A delivered follow-up resumes the settled session — same row, same worktree, same change. */
     readonly reopen: (id: SessionId) => Effect.Effect<void>;
+    readonly setHarness: (id: SessionId, harness: string) => Effect.Effect<void>;
   }
 >()("@mend/db/SessionsRepo") {
   static readonly layer = Layer.effect(
@@ -233,6 +234,17 @@ export class SessionsRepo extends Context.Service<
         yield* notify(id);
       });
 
+      /** A session is a continuous piece of work; the harness is the tool currently driving it. */
+      const setHarness = Effect.fn("SessionsRepo.setHarness")(function* (
+        id: SessionId,
+        harness: string,
+      ) {
+        yield* sql`
+          UPDATE agent_sessions SET harness = ${harness}, updated_at = now()
+          WHERE id = ${id}`.pipe(Effect.orDie);
+        yield* notify(id);
+      });
+
       const reopen = Effect.fn("SessionsRepo.reopen")(function* (id: SessionId) {
         yield* sql`
           UPDATE agent_sessions
@@ -255,6 +267,7 @@ export class SessionsRepo extends Context.Service<
         notifyProgress,
         settle,
         reopen,
+        setHarness,
       };
     }),
   );

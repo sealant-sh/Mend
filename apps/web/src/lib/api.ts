@@ -415,6 +415,10 @@ export const launchSession = (id: string, argv: ReadonlyArray<string>) =>
 
 export const stopSession = (id: string) => post<SessionDto>(`/api/sessions/${id}/stop`, {});
 
+/** Rejoin a settled session; harness null = the one it last ran with. */
+export const resumeSession = (id: string, harness: string | null) =>
+  post<SessionDto>(`/api/sessions/${id}/resume`, { harness });
+
 export const checkpointSession = (id: string, trigger: "review-open" | "user-mark") =>
   post<CheckpointDto>(`/api/sessions/${id}/checkpoints`, { trigger });
 

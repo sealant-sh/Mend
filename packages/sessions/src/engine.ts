@@ -18,7 +18,12 @@ import { claudeCode, codex, opencode } from "@sealant/sdk";
 import { Effect, Layer, Stream } from "effect";
 import * as Context from "effect/Context";
 
-import { HARNESS_STATE, type HarnessStateManifest } from "./harness-state.ts";
+import {
+  HARNESS_STATE,
+  distillOpeningPrompt,
+  extractTranscript,
+  type HarnessStateManifest,
+} from "./harness-state.ts";
 
 export interface ProvisionInput {
   readonly projectId: ProjectId;
@@ -73,6 +78,18 @@ export class SessionEngine extends Context.Service<
     ) => Effect.Effect<Checkpoint, SessionNotFoundError | ProjectNotFoundError | GitError>;
     /** The user's stop: settle the row; the platform stop follows when the SDK ships it. */
     readonly stop: (sessionId: SessionId) => Effect.Effect<void, SessionNotFoundError>;
+    /**
+     * Rejoin a session as a continuous piece of work — harness- and
+     * machine-agnostic. Same worktree, same change, same conversation: the
+     * fresh workspace restores the saved harness state (a claude resume is
+     * NATIVE, memory intact); resuming WITH a different harness carries the
+     * conversation across as a distilled opening prompt (text is the
+     * interchange format — native state never crosses harnesses).
+     */
+    readonly resumeSession: (
+      sessionId: SessionId,
+      harness: string | null,
+    ) => Effect.Effect<Session, SessionNotFoundError | ProjectNotFoundError | SealantPlatformError>;
   }
 >()("@mend/sessions/SessionEngine") {
   static readonly layer = Layer.effect(
@@ -410,15 +427,30 @@ export class SessionEngine extends Context.Service<
                 .pipe(Effect.ignore),
             ),
           );
-        const workspace = yield* sealant
-          .createWorkspace({
+        const createWorkspace = (withCredentials: boolean) =>
+          sealant.createWorkspace({
             source: { kind: "mount", path: worktree },
             harness: shape.harness,
             name: `mend-${session.id.slice(0, 8)}`,
             // Requires the platform at 0.7.1+ (sealant#114): 0.7.0 dropped every
             // mount create that carried credentials at the worker's blueprint parse.
-            ...(shape.credentials === undefined ? {} : { credentials: shape.credentials }),
-          })
+            ...(withCredentials && shape.credentials !== undefined
+              ? { credentials: shape.credentials }
+              : {}),
+          });
+        // BYO harness means a missing connected account degrades to the
+        // harness's own interactive auth — it never blocks the launch.
+        const workspace = yield* createWorkspace(true)
+          .pipe(
+            Effect.catchIf(
+              (error) => error.message.toLowerCase().includes("connected account"),
+              (error) =>
+                Effect.logWarning("session engine: launching without injected credentials").pipe(
+                  Effect.annotateLogs({ sessionId, error: error.message }),
+                  Effect.andThen(createWorkspace(false)),
+                ),
+            ),
+          )
           .pipe(settleOnFailure);
 
         // A relaunch restores the harness's own saved state into the fresh
@@ -536,6 +568,78 @@ export class SessionEngine extends Context.Service<
         return checkpoint;
       });
 
+      /** Default argv per harness — what a resume launches. */
+      const HARNESS_ARGV: Record<string, ReadonlyArray<string>> = {
+        claude: ["claude"],
+        codex: ["codex"],
+        opencode: ["opencode"],
+      };
+
+      /** How a harness takes an opening prompt (the cross-harness handoff). */
+      const promptArgv = (harness: string, prompt: string): ReadonlyArray<string> | null => {
+        switch (harness) {
+          case "claude":
+            return ["claude", prompt];
+          case "codex":
+            return ["codex", prompt];
+          default:
+            return null;
+        }
+      };
+
+      const ACTIVE_STATUSES = new Set(["starting", "running", "waiting", "idle"]);
+
+      const resumeSession = Effect.fn("SessionEngine.resumeSession")(function* (
+        sessionId: SessionId,
+        harness: string | null,
+      ) {
+        const session = yield* sessions.byId(sessionId);
+        if (session.settledAt === null && ACTIVE_STATUSES.has(session.status)) {
+          return yield* new SealantPlatformError({
+            code: "session_active",
+            status: null,
+            message: "The session is already live — attach to it instead of resuming.",
+            cause: null,
+          });
+        }
+        const target = harness ?? session.harness;
+        const defaultArgv = HARNESS_ARGV[target];
+        if (defaultArgv === undefined) {
+          return yield* new SealantPlatformError({
+            code: "unknown_harness",
+            status: null,
+            message: `Unknown harness "${target}" — resumable harnesses: ${Object.keys(HARNESS_ARGV).join(", ")}.`,
+            cause: null,
+          });
+        }
+
+        const project = yield* projects.byId(session.projectId);
+        const stateDir = sessionStatePathOf(project.storePath, session.id);
+        const manifest = yield* readManifest(stateDir);
+        let argv = defaultArgv;
+        if (manifest !== null && manifest.harness !== target) {
+          // Crossing harnesses: the saved conversation rides as the opening
+          // prompt; the new harness's own state starts fresh.
+          const native = yield* Effect.promise(async () => {
+            try {
+              return await fs.readFile(path.join(stateDir, "transcript.native"), "utf8");
+            } catch {
+              return null;
+            }
+          });
+          if (native !== null) {
+            const turns = extractTranscript(manifest.harness, native);
+            if (turns.length > 0) {
+              argv =
+                promptArgv(target, distillOpeningPrompt(manifest.harness, turns)) ?? defaultArgv;
+            }
+          }
+        }
+        if (target !== session.harness) yield* sessions.setHarness(sessionId, target);
+        yield* sessions.reopen(sessionId);
+        return yield* launch(sessionId, argv);
+      });
+
       const stop = Effect.fn("SessionEngine.stop")(function* (sessionId: SessionId) {
         const session = yield* sessions.byId(sessionId);
         yield* sessions.settle(sessionId, "stopped", null);
@@ -582,7 +686,7 @@ export class SessionEngine extends Context.Service<
 
       yield* resume();
 
-      return { provision, attachRun, launch, checkpointNow, stop };
+      return { provision, attachRun, launch, checkpointNow, stop, resumeSession };
     }),
   );
 }
