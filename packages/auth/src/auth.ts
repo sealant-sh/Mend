@@ -67,7 +67,28 @@ export class Auth extends Context.Service<
         Effect.promise(() => auth.handler(request)),
       );
 
+      // A fixed operator token for dev/device testing: MEND_STATIC_TOKEN=xyz
+      // makes `Bearer xyz` authenticate as the FIRST user. Opt-in via env,
+      // never set in anything deployed.
+      const staticToken = yield* Config.string("MEND_STATIC_TOKEN").pipe(
+        Config.orElse(() => Config.succeed("")),
+      );
+
       const getSession = Effect.fn("Auth.getSession")(function* (headers: Headers) {
+        if (staticToken !== "" && headers.get("authorization") === `Bearer ${staticToken}`) {
+          const rows = yield* Effect.promise(() =>
+            pool.query('SELECT id, email, name FROM "user" ORDER BY "createdAt" ASC LIMIT 1'),
+          );
+          const row = rows.rows[0] as
+            | { readonly id: string; readonly email: string; readonly name: string }
+            | undefined;
+          if (row !== undefined) {
+            return Option.some<AuthSession>({
+              user: { id: row.id, email: row.email, name: row.name },
+              expiresAt: new Date(Date.now() + 86_400_000),
+            });
+          }
+        }
         const result = yield* Effect.promise(() => auth.api.getSession({ headers }));
         if (result === null) return Option.none<AuthSession>();
         return Option.some<AuthSession>({
