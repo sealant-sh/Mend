@@ -8,6 +8,7 @@ import {
   SpaceGrotesk_600SemiBold,
   SpaceGrotesk_700Bold,
 } from "@expo-google-fonts/space-grotesk";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useFonts } from "expo-font";
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
@@ -15,6 +16,8 @@ import { StatusBar } from "expo-status-bar";
 import { useEffect } from "react";
 
 import { fontFamilies, useEvidenceTheme } from "@/theme/evidence";
+
+const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 1 } } });
 
 SplashScreen.preventAutoHideAsync();
 
@@ -50,25 +53,27 @@ export default function RootLayout() {
   };
 
   return (
-    <ThemeProvider value={navTheme}>
-      <StatusBar style="auto" />
-      <Stack
-        screenOptions={{
-          headerStyle: { backgroundColor: colors.bg },
-          headerShadowVisible: false,
-          headerTintColor: colors.accent,
-          headerTitleStyle: {
-            fontFamily: fontFamilies.sans.semibold,
-            fontSize: 15,
-            color: colors.ink,
-          },
-        }}
-      >
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="project/[id]" options={{ title: "Project" }} />
-        <Stack.Screen name="session/[id]" options={{ title: "Session" }} />
-        <Stack.Screen name="review/[id]" options={{ title: "Review" }} />
-      </Stack>
-    </ThemeProvider>
+    <QueryClientProvider client={queryClient}>
+      <ThemeProvider value={navTheme}>
+        <StatusBar style="auto" />
+        <Stack
+          screenOptions={{
+            headerStyle: { backgroundColor: colors.bg },
+            headerShadowVisible: false,
+            headerTintColor: colors.accent,
+            headerTitleStyle: {
+              fontFamily: fontFamilies.sans.semibold,
+              fontSize: 15,
+              color: colors.ink,
+            },
+          }}
+        >
+          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+          <Stack.Screen name="project/[id]" options={{ title: "Project" }} />
+          <Stack.Screen name="session/[id]" options={{ title: "Session" }} />
+          <Stack.Screen name="review/[id]" options={{ title: "Review" }} />
+        </Stack>
+      </ThemeProvider>
+    </QueryClientProvider>
   );
 }

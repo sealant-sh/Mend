@@ -1,103 +1,93 @@
-// Session — the live run and its durable record (plan §6.3): the run-record
-// panel with evidence rows, a terminal peek, controls to answer, stop, or
-// open a terminal, and the link into review.
+// One session, live: status, the REAL terminal (the same /api/tty WebSocket
+// every surface uses, via the server's /tty-embed page), and the verbs —
+// stop while it runs, resume when it settled. A session is work you rejoin.
 
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { TextInput, View } from "react-native";
+import { useEffect, useState } from "react";
+import { View } from "react-native";
+import { WebView } from "react-native-webview";
 
 import { EvButton } from "@/components/button";
 import { Panel } from "@/components/panel";
-import { EvidenceRow, Seal, TerminalPeek } from "@/components/record";
-import { Screen, ScreenHeader, SectionLabel } from "@/components/screen";
-import { BodyText, MonoText } from "@/components/typography";
-import { changeStats, count, sessionById } from "@/data/mock";
-import { fontFamilies, radius, useEvidenceTheme } from "@/theme/evidence";
+import { Screen, ScreenHeader } from "@/components/screen";
+import { StatusWord } from "@/components/status";
+import { MonoText } from "@/components/typography";
+import { ACTIVE, loadConfig, toneOf, useSession, useSessionActions } from "@/data/live";
+import { radius, useEvidenceTheme } from "@/theme/evidence";
 
 export default function SessionScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const { colors } = useEvidenceTheme();
-  const session = sessionById(id);
-  if (!session) {
-    return (
-      <Screen>
-        <BodyText tone="muted">This session has no record here.</BodyText>
-      </Screen>
-    );
-  }
-  const live = session.state === "running" || session.state === "waiting";
+  const detail = useSession(id);
+  const { resume, stop } = useSessionActions();
+  const [base, setBase] = useState<{ url: string; token: string } | null>(null);
+  useEffect(() => {
+    void loadConfig().then((config) => setBase({ url: config.url, token: config.token }));
+  }, []);
+
+  const session = detail.data?.session;
+  const active = session !== undefined && ACTIVE.has(session.status);
+  const terminalReady = active && session?.sealantSessionId !== null && base !== null;
 
   return (
     <Screen>
       <ScreenHeader
-        eyebrow={`session · ${session.harness}`}
-        title={session.title}
-        meta={`${session.runId} · ${session.projectId} · started ${session.startedAt}${session.contextPack ? ` · context ${session.contextPack}` : ""}`}
+        eyebrow="session"
+        title={session?.harness ?? "session"}
+        meta={session === undefined ? "loading…" : `${session.branch} · ${session.status}`}
       />
-
-      <Panel lift={live}>
-        <Seal
-          runId={session.runId}
-          live={live}
-          status={{ word: session.statusWord, tone: session.statusTone }}
-        />
-        {session.events.map((event, i) => (
-          <EvidenceRow key={event.seq} event={event} first={i === 0} />
-        ))}
-        {session.terminal ? <TerminalPeek lines={session.terminal} /> : null}
-        <View style={{ paddingHorizontal: 16, paddingBottom: 10 }}>
-          <MonoText tone="faint" size={11}>
-            {live ? "streaming" : "settled"} · {session.eventCount} events
-          </MonoText>
-        </View>
-      </Panel>
-
-      {live ? (
-        <>
-          <SectionLabel>Send guidance</SectionLabel>
-          <View style={{ gap: 12 }}>
-            <TextInput
-              placeholder="Answer, steer, or add an instruction…"
-              placeholderTextColor={colors.faint}
-              multiline
-              style={{
-                minHeight: 72,
-                backgroundColor: colors.panel,
-                borderWidth: 1,
-                borderColor: colors.rule,
-                borderRadius: radius.lg,
-                paddingHorizontal: 14,
-                paddingVertical: 10,
-                fontFamily: fontFamilies.sans.regular,
-                fontSize: 14.5,
-                color: colors.ink,
-                textAlignVertical: "top",
-              }}
-            />
-            <EvButton label="Send to session" />
-            <View style={{ flexDirection: "row", gap: 12 }}>
-              <EvButton label="Open terminal" variant="outline" style={{ flex: 1 }} />
-              <EvButton label="Stop" variant="outline" style={{ flex: 1 }} />
-            </View>
-          </View>
-        </>
-      ) : null}
-
-      {session.change ? (
-        <>
-          <SectionLabel>Change</SectionLabel>
-          <View style={{ gap: 12 }}>
-            <MonoText tone="muted" size={12}>
-              {changeStats(session.change)} · {count(session.change.checksObserved, "check")}{" "}
-              observed
-            </MonoText>
+      {session !== undefined && (
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+          <StatusWord tone={toneOf(session.status)} word={session.status} />
+          {active ? (
             <EvButton
-              label="Review this change"
-              onPress={() => router.push({ pathname: "/review/[id]", params: { id: session.id } })}
+              variant="outline"
+              label={stop.isPending ? "stopping…" : "Stop"}
+              onPress={() => stop.mutate(session.id)}
+            />
+          ) : (
+            <EvButton
+              label={resume.isPending ? "resuming…" : "Resume"}
+              onPress={() => resume.mutate({ sessionId: session.id, harness: null })}
+            />
+          )}
+        </View>
+      )}
+      {terminalReady ? (
+        <Panel lift>
+          <View style={{ height: 480, borderRadius: radius.xl, overflow: "hidden" }}>
+            <WebView
+              source={{
+                uri: `${base.url}/tty-embed?session=${session.id}&token=${encodeURIComponent(base.token)}`,
+              }}
+              style={{ flex: 1, backgroundColor: colors.panel }}
+              keyboardDisplayRequiresUserAction={false}
             />
           </View>
-        </>
-      ) : null}
+        </Panel>
+      ) : (
+        <Panel>
+          <View style={{ padding: 16 }}>
+            <MonoText>
+              {session === undefined
+                ? "loading…"
+                : active
+                  ? "provisioning workspace — the terminal attaches when the PTY is live…"
+                  : (session.summary ?? "settled — resume to rejoin this work")}
+            </MonoText>
+          </View>
+        </Panel>
+      )}
+      {session !== undefined && detail.data?.change != null && !active && (
+        <EvButton
+          variant="outline"
+          label="Review the change"
+          onPress={() =>
+            router.push({ pathname: "/review/[id]", params: { id: detail.data?.change?.id ?? "" } })
+          }
+        />
+      )}
     </Screen>
   );
 }

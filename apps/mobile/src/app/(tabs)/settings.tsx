@@ -1,76 +1,80 @@
-// Settings — the machine, its private reachability, and the app itself.
-// Remote access should be boring (plan §4.7): show the tailnet facts plainly.
+// Settings — the machine this app steers: server URL + the bearer token the
+// CLI already uses (MEND_TOKEN). Stored on device; nothing else to set up.
 
-import { View } from "react-native";
+import { useEffect, useState } from "react";
+import { TextInput, View } from "react-native";
 
-import { Panel, PanelRow } from "@/components/panel";
+import { EvButton } from "@/components/button";
+import { Panel } from "@/components/panel";
 import { Screen, ScreenHeader } from "@/components/screen";
-import { StatusWord } from "@/components/status";
 import { MonoText, UiText } from "@/components/typography";
-import { machine } from "@/data/mock";
-
-function FactRow({
-  label,
-  value,
-  first = false,
-}: {
-  readonly label: string;
-  readonly value: string;
-  readonly first?: boolean;
-}) {
-  return (
-    <PanelRow first={first}>
-      <View
-        style={{
-          flexDirection: "row",
-          alignItems: "baseline",
-          justifyContent: "space-between",
-          gap: 12,
-        }}
-      >
-        <UiText tone="muted">{label}</UiText>
-        <MonoText tone="ink2" size={12} numberOfLines={1} style={{ flexShrink: 1 }}>
-          {value}
-        </MonoText>
-      </View>
-    </PanelRow>
-  );
-}
+import { loadConfig, saveConfig } from "@/data/live";
+import { radius, useEvidenceTheme } from "@/theme/evidence";
 
 export default function SettingsScreen() {
+  const { colors } = useEvidenceTheme();
+  const [url, setUrl] = useState("");
+  const [token, setToken] = useState("");
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    void loadConfig().then((config) => {
+      setUrl(config.url);
+      setToken(config.token);
+    });
+  }, []);
+
+  const inputStyle = {
+    borderWidth: 1,
+    borderColor: colors.rule,
+    borderRadius: radius.lg,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: colors.ink,
+    fontSize: 14,
+  };
+
   return (
     <Screen topInset>
-      <ScreenHeader eyebrow="this device" title="Settings" />
+      <ScreenHeader eyebrow="mend" title="Settings" meta="server · token" />
       <Panel>
-        <PanelRow first>
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 12,
+        <View style={{ padding: 16, gap: 12 }}>
+          <UiText>Server URL (reachable from this phone — tailnet or LAN)</UiText>
+          <TextInput
+            value={url}
+            onChangeText={(value) => {
+              setUrl(value);
+              setSaved(false);
             }}
-          >
-            <UiText weight="semibold" size={15}>
-              {machine.name}
-            </UiText>
-            <StatusWord
-              tone={machine.reachable ? "observed" : "breakage"}
-              word={machine.reachable ? "Reachable · tailnet" : "Unreachable"}
-            />
-          </View>
-        </PanelRow>
-        <FactRow label="Tailnet address" value={machine.tailnet} />
-        <FactRow label="Binding" value={machine.binding} />
+            placeholder="http://your-machine.tailnet:3105"
+            autoCapitalize="none"
+            autoCorrect={false}
+            style={inputStyle}
+          />
+          <UiText>Bearer token (same as MEND_TOKEN)</UiText>
+          <TextInput
+            value={token}
+            onChangeText={(value) => {
+              setToken(value);
+              setSaved(false);
+            }}
+            placeholder="token"
+            autoCapitalize="none"
+            autoCorrect={false}
+            secureTextEntry
+            style={inputStyle}
+          />
+          <EvButton
+            label={saved ? "Saved" : "Save"}
+            onPress={() => {
+              void saveConfig({ url: url.trim().replace(/\/$/, ""), token: token.trim() }).then(
+                () => setSaved(true),
+              );
+            }}
+          />
+          <MonoText>Sessions, terminal, and review all ride this one connection.</MonoText>
+        </View>
       </Panel>
-      <Panel>
-        <FactRow label="Appearance" value="system" first />
-        <FactRow label="Version" value="mend 0.0.0 · expo sdk 57" />
-        <FactRow label="Design" value="evidence review v3" />
-      </Panel>
-      <MonoText tone="faint" size={11} style={{ textAlign: "center" }}>
-        Paired over a private network. No public ingress.
-      </MonoText>
     </Screen>
   );
 }

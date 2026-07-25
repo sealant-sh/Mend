@@ -1,5 +1,5 @@
-// Now — a sparse attention inbox (plan §6.1): what is waiting for me, what is
-// ready to review, what is running, what recently finished. Not a kanban.
+// Now — a sparse attention inbox (plan §6.1), fed by the LIVE workbench API:
+// what is waiting for me, what runs, what recently settled. Not a kanban.
 
 import { useRouter } from "expo-router";
 import { View } from "react-native";
@@ -7,13 +7,10 @@ import { View } from "react-native";
 import { Panel } from "@/components/panel";
 import { Screen, ScreenHeader } from "@/components/screen";
 import { SessionRow } from "@/components/session-row";
-import { Eyebrow } from "@/components/typography";
-import type { Session } from "@/data/mock";
-import { machine, sessions } from "@/data/mock";
+import { Eyebrow, MonoText } from "@/components/typography";
+import { ACTIVE, toSession, useAllSessions } from "@/data/live";
 import { useEvidenceTheme } from "@/theme/evidence";
 
-// The group label sits inside the panel on the sunken bar, like the stage
-// bars in the reference mocks — a label on a surface, not a decorated chip.
 function GroupLabel({ label }: { readonly label: string }) {
   const { colors } = useEvidenceTheme();
   return (
@@ -25,28 +22,23 @@ function GroupLabel({ label }: { readonly label: string }) {
 
 export default function NowScreen() {
   const router = useRouter();
+  const all = useAllSessions();
+  const rows = (all.data ?? []).map(({ session, project }) => ({
+    dto: session,
+    view: toSession(session, project.name),
+  }));
 
-  const openSession = (session: Session) =>
-    router.push({ pathname: "/session/[id]", params: { id: session.id } });
-  const openReview = (session: Session) =>
-    router.push({ pathname: "/review/[id]", params: { id: session.id } });
+  const openSession = (id: string) => router.push({ pathname: "/session/[id]", params: { id } });
 
-  const groups: ReadonlyArray<{
-    readonly label: string;
-    readonly items: ReadonlyArray<Session>;
-    readonly open: (session: Session) => void;
-  }> = [
-    { label: "Needs you", items: sessions.filter((s) => s.state === "waiting"), open: openSession },
+  const groups = [
+    { label: "Needs you", items: rows.filter(({ dto }) => dto.status === "waiting") },
     {
-      label: "Ready to review",
-      items: sessions.filter((s) => s.state === "completed" && s.change?.reviewed === false),
-      open: openReview,
+      label: "Live",
+      items: rows.filter(({ dto }) => dto.status !== "waiting" && ACTIVE.has(dto.status)),
     },
-    { label: "Active", items: sessions.filter((s) => s.state === "running"), open: openSession },
     {
-      label: "Recently finished",
-      items: sessions.filter((s) => s.state === "completed" && s.change?.reviewed !== false),
-      open: openSession,
+      label: "Recently settled",
+      items: rows.filter(({ dto }) => !ACTIVE.has(dto.status)).slice(0, 8),
     },
   ];
 
@@ -55,14 +47,27 @@ export default function NowScreen() {
       <ScreenHeader
         eyebrow="mend"
         title="Now"
-        meta={`${machine.name} · ${machine.reachable ? "reachable" : "unreachable"} · ${sessions.length} sessions`}
+        meta={
+          all.isError
+            ? "server unreachable — check Settings"
+            : all.isLoading
+              ? "connecting…"
+              : `${rows.length} sessions`
+        }
       />
-      {groups.map(({ label, items, open }) =>
+      {all.isError && (
+        <Panel>
+          <View style={{ padding: 16 }}>
+            <MonoText>{String((all.error as Error | null)?.message ?? "error")}</MonoText>
+          </View>
+        </Panel>
+      )}
+      {groups.map(({ label, items }) =>
         items.length === 0 ? null : (
           <Panel key={label}>
             <GroupLabel label={label} />
-            {items.map((session) => (
-              <SessionRow key={session.id} session={session} onPress={() => open(session)} />
+            {items.map(({ view }) => (
+              <SessionRow key={view.id} session={view} onPress={() => openSession(view.id)} />
             ))}
           </Panel>
         ),

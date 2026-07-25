@@ -18,7 +18,7 @@ catalog:
   "@sealant/sdk": ^0.8.0
   "@tailwindcss/vite": ^4.1.18
   "@tanstack/devtools-vite": 0.8.0
-  "@tanstack/react-query": ^5.101.0
+  "@tanstack/react-query": ^5.101.4
   "@tanstack/react-router": 1.170.16
   "@tanstack/react-start": 1.168.26
   "@tanstack/router-plugin": ^1.132.0

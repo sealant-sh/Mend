@@ -23,7 +23,14 @@ const cssVar = (name: string, fallback: string): string => {
   return value === "" ? fallback : value;
 };
 
-export function SessionTerminal({ sessionId }: { readonly sessionId: string }) {
+export function SessionTerminal({
+  sessionId,
+  token,
+}: {
+  readonly sessionId: string;
+  /** Bearer for clients that cannot ride the cookie (the mobile WebView). */
+  readonly token?: string;
+}) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [state, setState] = useState<WireState>("connecting");
 
@@ -54,6 +61,7 @@ export function SessionTerminal({ sessionId }: { readonly sessionId: string }) {
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     url.searchParams.set("session", sessionId);
     url.searchParams.set("from", "0");
+    if (token !== undefined && token !== "") url.searchParams.set("token", token);
     const ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
 
