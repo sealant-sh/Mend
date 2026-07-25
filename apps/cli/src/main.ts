@@ -240,38 +240,42 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
 // ─── the terminal bridge: raw stdin/stdout against the platform PTY ─────────
 
 /**
- * Attach this terminal to the session's PTY through the Mend server: SSE
- * output frames → stdout, keystrokes → input POSTs, SIGWINCH → resize.
+ * Attach this terminal to the session's PTY through the Mend server over ONE
+ * WebSocket: binary frames are PTY bytes both ways, text frames carry control
+ * JSON (resize up, end down). Auth happens once at connect (?token=); after
+ * that a keystroke is a frame on an open socket — nothing else on the path.
  * Ctrl+] detaches — the session keeps running and can be reattached from
  * anywhere. Resolves when the session settles or the user detaches.
  */
 const attachTty = async (config: CliConfig, sessionId: string, from: bigint) => {
-  const headers: Record<string, string> = {};
-  if (config.token !== null) headers["authorization"] = `Bearer ${config.token}`;
+  const url = new URL(`${config.url}/api/tty`);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("session", sessionId);
+  url.searchParams.set("from", from.toString());
+  if (config.token !== null) url.searchParams.set("token", config.token);
 
-  const controller = new AbortController();
-  const response = await fetch(`${config.url}/api/tty?session=${sessionId}&from=${from}`, {
-    headers,
-    signal: controller.signal,
-  });
-  if (!response.ok || response.body === null) {
-    return fail(`tty stream unavailable (${response.status}): ${await response.text()}`);
+  const ws = new WebSocket(url);
+  ws.binaryType = "arraybuffer";
+  try {
+    await new Promise<void>((resolve, reject) => {
+      ws.addEventListener("open", () => resolve(), { once: true });
+      ws.addEventListener("error", () => reject(new Error("could not connect")), { once: true });
+    });
+  } catch {
+    return fail(`tty attach unavailable: could not connect to ${url.host}`);
   }
 
-  const postJson = (route: string, body: unknown) =>
-    fetch(`${config.url}/api${route}?session=${sessionId}`, {
-      method: "POST",
-      headers: { ...headers, "content-type": "application/json" },
-      body: JSON.stringify(body),
-    }).catch(() => undefined);
-
   const sendResize = () =>
-    postJson("/tty/resize", {
-      cols: process.stdout.columns ?? 80,
-      rows: process.stdout.rows ?? 24,
-    });
-  await sendResize();
-  process.stdout.on("resize", () => void sendResize());
+    ws.send(
+      JSON.stringify({
+        t: "resize",
+        cols: process.stdout.columns ?? 80,
+        rows: process.stdout.rows ?? 24,
+      }),
+    );
+  sendResize();
+  const onWinch = () => sendResize();
+  process.stdout.on("resize", onWinch);
 
   const rawTty = process.stdin.isTTY === true;
   if (rawTty) process.stdin.setRawMode(true);
@@ -281,51 +285,26 @@ const attachTty = async (config: CliConfig, sessionId: string, from: bigint) => 
     if (data.includes(0x1d)) {
       // Ctrl+] — detach, leave the session running.
       detached = true;
-      controller.abort();
+      ws.close();
       return;
     }
-    void postJson("/tty/input", { data: data.toString("base64") });
+    // Copy into a plain ArrayBuffer (WebSocket.send rejects pooled Buffer views).
+    ws.send(new Uint8Array(data).buffer);
   };
   process.stdin.on("data", onKeys);
 
-  try {
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const frames = buffer.split("\n\n");
-      buffer = frames.pop() ?? "";
-      for (const frame of frames) {
-        if (frame.startsWith("event: end")) {
-          controller.abort();
-          break;
-        }
-        const data = frame
-          .split("\n")
-          .filter((line) => line.startsWith("data: "))
-          .map((line) => line.slice(6))
-          .join("");
-        if (data === "") continue;
-        try {
-          const chunk = JSON.parse(data) as { readonly data?: string };
-          if (chunk.data !== undefined) {
-            process.stdout.write(Buffer.from(chunk.data, "base64"));
-          }
-        } catch {
-          // partial frame — ignore
-        }
-      }
-    }
-  } catch {
-    // aborted (detach or session end)
-  } finally {
-    process.stdin.off("data", onKeys);
-    if (rawTty) process.stdin.setRawMode(false);
-    process.stdin.pause();
-  }
+  ws.addEventListener("message", (event) => {
+    if (typeof event.data === "string") return; // control frames ({"t":"end"}) — close follows
+    process.stdout.write(Buffer.from(event.data as ArrayBuffer));
+  });
+
+  await new Promise<void>((resolve) => {
+    ws.addEventListener("close", () => resolve(), { once: true });
+  });
+  process.stdin.off("data", onKeys);
+  process.stdout.off("resize", onWinch);
+  if (rawTty) process.stdin.setRawMode(false);
+  process.stdin.pause();
   if (detached) {
     say("");
     say(

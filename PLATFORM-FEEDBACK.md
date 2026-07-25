@@ -51,6 +51,20 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
   0.7.0 api rejects with "set `SEALANT_MOUNT_ALLOWED_STORE_ROOTS`". Setting both works.
 - **Suggested:** pick one (and add it to the released compose with a commented example).
 
+## 2026-07-25 · 0.8.1 · ✅ Terminal data plane shipped: WS attach, held daemon connection, ~1ms echo
+
+**Adopted immediately.** The per-request session verbs made a keystroke cost auth + DB + 3 HTTP
+calls + a fresh `docker exec` spawn, with echo riding a 250ms journal poll — measured 100–300ms+ per
+keypress. Fixed at the source (sealant#116/#118, v0.8.0/v0.8.1): `GET /v1/sessions/:id/attach`
+upgrades to a WebSocket, auths once, holds ONE daemon connection, and bridges the daemon's reliable
+attach channel; SDK surface `session.attach({from})`. Mend's `/api/tty` is now a WS bridge over it
+and the CLI holds one socket. Measured through the full chain (CLI wire → Mend WS → SDK attach WS →
+api → held daemon connection → PTY `cat` → back): **median 1.0ms, p95 1.4ms, max 4ms, 10KB paste
+3.5ms** (n=30). The `docker exec` spawn moved to once per attach. Remaining follow-ups: the api
+still reaches the daemon via docker-exec (socket-dir transport needs `SEALANT_ALLOWED_PEER_UIDS`
+parsing in sealantd — currently unimplemented there — plus the worker passing the allowlist env),
+and the SSE/polling output route is now legacy for terminals.
+
 ## 2026-07-25 · 0.7.0 · Session transport in the api is docker-exec only — and the failure is a process crash
 
 - **Needed:** `POST /v1/sessions` working on the released compose topology.
