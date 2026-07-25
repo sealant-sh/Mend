@@ -267,7 +267,13 @@ export class SessionEngine extends Context.Service<
             yield* Effect.sleep("2 seconds");
             const status = yield* Effect.tryPromise({
               try: () => pty.status(),
-              catch: () => new SealantPlatformError({ message: "session status failed" }),
+              catch: (cause) =>
+                new SealantPlatformError({
+                  code: "session_status_failed",
+                  status: null,
+                  message: "session status failed",
+                  cause,
+                }),
             });
             if (status.status === "running") continue;
             const current = yield* sessions.byId(sessionId);
