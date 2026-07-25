@@ -119,6 +119,29 @@ export class Store extends Context.Service<
     Effect.gen(function* () {
       const config = yield* StoreConfig;
 
+      /**
+       * Dependency and artifact stores are never review content. This is
+       * git-level policy — `$GIT_COMMON_DIR/info/exclude`, which every linked
+       * worktree inherits — so diffs, status, and checkpoints all agree,
+       * without touching the project's own .gitignore. Found live: a workspace
+       * `pnpm install` dumped `.pnpm-store` (62k files) into the worktree of a
+       * repo that doesn't ignore it, and the review diff drowned.
+       */
+      const MEND_EXCLUDES = ["node_modules/", ".pnpm-store/", ".npm/", "__pycache__/", ".venv/"];
+      const ensureExcludes = (storePath: string) =>
+        Effect.sync(() => {
+          const file = path.join(storePath, "info", "exclude");
+          fs.mkdirSync(path.dirname(file), { recursive: true });
+          const current = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+          const missing = MEND_EXCLUDES.filter((entry) => !current.includes(entry));
+          if (missing.length > 0) {
+            fs.appendFileSync(
+              file,
+              `\n# mend: dependency stores are not review content\n${missing.join("\n")}\n`,
+            );
+          }
+        });
+
       const adopt = Effect.fn("Store.adopt")(function* (name: string, source: string) {
         const projectDir = path.join(config.root, name);
         const storePath = path.join(projectDir, "repo.git");
@@ -132,6 +155,7 @@ export class Store extends Context.Service<
             ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
             storePath,
           );
+          yield* ensureExcludes(storePath);
           const defaultBranch = yield* git(["symbolic-ref", "--short", "HEAD"], storePath);
           const head = yield* git(["rev-parse", "HEAD"], storePath);
           return { storePath, defaultBranch, headSha: sha(head) };
@@ -146,6 +170,8 @@ export class Store extends Context.Service<
         sessionId: SessionId,
         base: string | null,
       ) {
+        // Idempotent: stores adopted before the exclude policy get it here.
+        yield* ensureExcludes(storePath);
         const baseRef = base ?? (yield* git(["symbolic-ref", "--short", "HEAD"], storePath));
         const baseSha = yield* git(["rev-parse", `${baseRef}^{commit}`], storePath);
         const name = `session-${sessionId}`;
@@ -202,13 +228,28 @@ export class Store extends Context.Service<
           Effect.map((out) => (out === "" ? [] : out.split("\n"))),
         );
 
+      /**
+       * Rendering an untracked file costs one `git diff --no-index` spawn, so
+       * an unreviewable explosion (a dependency store dumped into the worktree
+       * escaped every ignore rule once: 62k files, one spawn each — the review
+       * page "hung") is capped hard. The excluded tail is a count the caller
+       * can surface; it is never silently dropped git-side.
+       */
+      const UNTRACKED_RENDER_LIMIT = 200;
+
       const diffWorktree = Effect.fn("Store.diffWorktree")(function* (
         worktreePath: string,
         base: string,
       ) {
         const tracked = yield* git(["diff", base], worktreePath);
         const untracked = yield* untrackedIn(worktreePath);
-        const additions = yield* Effect.forEach(untracked, (file) =>
+        const rendered = untracked.slice(0, UNTRACKED_RENDER_LIMIT);
+        if (untracked.length > rendered.length) {
+          yield* Effect.logWarning("store: untracked files over render limit").pipe(
+            Effect.annotateLogs({ worktreePath, untracked: untracked.length }),
+          );
+        }
+        const additions = yield* Effect.forEach(rendered, (file) =>
           // Exit 1 means "the files differ" — for /dev/null vs a new file, that IS the diff.
           git(["diff", "--no-index", "--", "/dev/null", file], worktreePath, undefined, [1]),
         );
@@ -236,7 +277,9 @@ export class Store extends Context.Service<
         // A live-worktree comparison (b = null) also owns its untracked files.
         if (b !== null) return tracked;
         const untracked = yield* untrackedIn(dir);
-        const additions = yield* Effect.forEach(untracked, (file) =>
+        const rendered = untracked.slice(0, UNTRACKED_RENDER_LIMIT);
+        const elided = untracked.length - rendered.length;
+        const additions = yield* Effect.forEach(rendered, (file) =>
           git(
             ["diff", "--no-index", "--numstat", "--", "/dev/null", file],
             dir,
@@ -253,7 +296,18 @@ export class Store extends Context.Service<
             }),
           ),
         );
-        return [...tracked, ...additions];
+        // The elided tail still COUNTS — an honest row instead of silence.
+        return elided > 0
+          ? [
+              ...tracked,
+              ...additions,
+              {
+                path: `… ${elided} more untracked files (not rendered)`,
+                additions: 0,
+                deletions: 0,
+              },
+            ]
+          : [...tracked, ...additions];
       });
 
       const headSha = Effect.fn("Store.headSha")(function* (dir: string) {
