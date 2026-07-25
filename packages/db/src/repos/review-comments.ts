@@ -19,6 +19,7 @@ export interface NewReviewComment {
   readonly changeId: ChangeId;
   readonly file: string | null;
   readonly line: number | null;
+  readonly endLine: number | null;
   readonly authorKind: CommentAuthor;
   readonly authorName: string;
   readonly body: string;
@@ -68,8 +69,8 @@ export class ReviewCommentsRepo extends Context.Service<
       const create = Effect.fn("ReviewCommentsRepo.create")(function* (comment: NewReviewComment) {
         const id = crypto.randomUUID();
         const rows = yield* sql`
-          INSERT INTO review_comments (id, change_id, file, line, author_kind, author_name, body, state)
-          VALUES (${id}, ${comment.changeId}, ${comment.file}, ${comment.line},
+          INSERT INTO review_comments (id, change_id, file, line, end_line, author_kind, author_name, body, state)
+          VALUES (${id}, ${comment.changeId}, ${comment.file}, ${comment.line}, ${comment.endLine},
                   ${comment.authorKind}, ${comment.authorName}, ${comment.body}, ${comment.state})
           RETURNING *`.pipe(Effect.orDie);
         const created = yield* decodeRow(rows[0]);

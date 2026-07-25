@@ -313,6 +313,12 @@ const sealantSession = Effect.gen(function* () {
   yield* sql`ALTER TABLE agent_sessions ADD COLUMN sealant_session_id text`;
 });
 
+/** A comment can anchor to a RANGE of lines; `end_line` null = single line. */
+const reviewCommentSpans = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE review_comments ADD COLUMN end_line integer`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -320,4 +326,5 @@ export const migrations = {
   "0004_workbench": workbench,
   "0005_follow_ups": followUps,
   "0006_sealant_session": sealantSession,
+  "0007_review_comment_spans": reviewCommentSpans,
 };

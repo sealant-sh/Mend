@@ -251,6 +251,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
           changeId: params.id,
           file: payload.file,
           line: payload.line,
+          endLine: payload.endLine ?? null,
           authorKind: "reviewer",
           authorName: user.user.name === "" ? user.user.email : user.user.name,
           body: payload.body,

@@ -381,6 +381,8 @@ export class NewReviewCommentRequest extends Schema.Class<NewReviewCommentReques
 )({
   file: Schema.NullOr(Schema.String),
   line: Schema.NullOr(Schema.Int),
+  /** Inclusive range end; omitted/null = single-line anchor. */
+  endLine: Schema.optional(Schema.NullOr(Schema.Int)),
   body: Schema.String,
 }) {}
 

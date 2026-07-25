@@ -2,6 +2,7 @@ import {
   parsePatchFiles,
   registerCustomCSSVariableTheme,
   type DiffLineAnnotation,
+  type SelectedLineRange,
 } from "@pierre/diffs";
 import { FileDiff } from "@pierre/diffs/react";
 import { useMemo, useState } from "react";
@@ -11,16 +12,23 @@ import { queryClient } from "#/lib/queries";
 
 /**
  * The workbench diff, rendered by @pierre/diffs (Shiki highlighting, their
- * renderer's performance) and skinned by us: the surrounding chrome is
- * Evidence Review, and review comments ride the library's annotation
- * framework — one annotation per anchored comment, plus one for the open
- * composer. Line numbers anchor to the new file; deletions are not
- * commentable (their lines no longer exist to anchor to).
+ * renderer's performance) and skinned by us. The reading surface is ONE
+ * scroll container — the page never grows with the diff — with our own
+ * sticky, collapsible file header per file (Pierre's header is disabled).
+ * Review comments ride the library's annotation framework; commenting
+ * anchors to a single line (click) or a line RANGE (drag across gutter
+ * lines), always on the new file — deletions have nothing to anchor to.
  */
 
 type Annotation =
   | { readonly kind: "comment"; readonly comment: ReviewCommentDto }
-  | { readonly kind: "composer"; readonly file: string; readonly line: number };
+  | { readonly kind: "composer"; readonly anchor: CommentAnchor };
+
+interface CommentAnchor {
+  readonly file: string;
+  readonly line: number;
+  readonly endLine: number | null;
+}
 
 /**
  * The Evidence Review syntax theme: token colors come from `--diffs-*` CSS
@@ -47,19 +55,27 @@ const EDGE_MARK_CSS = `
 [data-line-type="change-deletion"] { box-shadow: inset 2px 0 0 var(--sw-del-edge, #c0362c); }
 `;
 
+export interface FileStat {
+  readonly path: string;
+  readonly additions: number;
+  readonly deletions: number;
+}
+
 export function WorkbenchDiff({
   diff,
   changeId,
   comments,
+  stats,
 }: {
   readonly diff: string;
   readonly changeId: string;
   readonly comments: ReadonlyArray<ReviewCommentDto>;
+  readonly stats: ReadonlyArray<FileStat>;
 }) {
-  const [composer, setComposer] = useState<{ readonly file: string; readonly line: number } | null>(
-    null,
-  );
+  const [composer, setComposer] = useState<CommentAnchor | null>(null);
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   const files = useMemo(() => parsePatchFiles(diff).flatMap((patch) => patch.files), [diff]);
+  const statOf = useMemo(() => new Map(stats.map((stat) => [stat.path, stat])), [stats]);
 
   if (diff === "") {
     return (
@@ -71,64 +87,146 @@ export function WorkbenchDiff({
     );
   }
 
+  const toggle = (name: string) =>
+    setCollapsed((current) => {
+      const next = new Set(current);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  const allCollapsed = files.length > 0 && files.every((file) => collapsed.has(file.name));
+
   return (
-    <div className="flex flex-col gap-4">
-      {files.map((file) => {
-        const annotations: Array<DiffLineAnnotation<Annotation>> = comments
-          .filter((comment) => comment.file === file.name && comment.line !== null)
-          .map((comment) => ({
-            side: "additions",
-            lineNumber: comment.line ?? 0,
-            metadata: { kind: "comment", comment },
-          }));
-        if (composer !== null && composer.file === file.name) {
-          annotations.push({
-            side: "additions",
-            lineNumber: composer.line,
-            metadata: { kind: "composer", file: composer.file, line: composer.line },
-          });
-        }
-        return (
-          <div key={file.name} className="ev-diff overflow-hidden rounded-2xl bg-card shadow-sm">
-            <FileDiff<Annotation>
-              fileDiff={file}
-              lineAnnotations={annotations}
-              options={{
-                diffStyle: "unified",
-                theme: { light: "evidence-review", dark: "evidence-review" },
-                unsafeCSS: EDGE_MARK_CSS,
-                lineHoverHighlight: "line",
-                onLineClick: (props) => {
-                  // Anchor to the new file; a deleted line has nothing to anchor to.
-                  if (props.lineType === "change-deletion") return;
-                  setComposer({ file: file.name, line: props.lineNumber });
-                },
-              }}
-              renderAnnotation={(annotation) =>
-                annotation.metadata.kind === "comment" ? (
-                  <InlineComment comment={annotation.metadata.comment} />
-                ) : (
-                  <InlineComposer
-                    changeId={changeId}
-                    file={annotation.metadata.file}
-                    line={annotation.metadata.line}
-                    onDone={() => setComposer(null)}
+    <div className="overflow-hidden rounded-2xl bg-card shadow-sm">
+      <div className="flex items-center justify-between border-b border-rule-faint bg-secondary px-4 py-2">
+        <p className="font-mono text-[11.5px] text-muted-foreground">
+          {files.length} file{files.length === 1 ? "" : "s"} changed
+        </p>
+        <button
+          type="button"
+          onClick={() =>
+            setCollapsed(allCollapsed ? new Set() : new Set(files.map((file) => file.name)))
+          }
+          className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+        >
+          {allCollapsed ? "Expand all" : "Collapse all"}
+        </button>
+      </div>
+
+      {/* THE scroll container: the diff scrolls in here, the page does not. */}
+      <div className="max-h-[calc(100vh-16rem)] overflow-y-auto">
+        {files.map((file) => {
+          const isCollapsed = collapsed.has(file.name);
+          const stat = statOf.get(file.name);
+          const fileComments = comments.filter(
+            (comment) => comment.file === file.name && comment.line !== null,
+          );
+          const annotations: Array<DiffLineAnnotation<Annotation>> = fileComments.map(
+            (comment) => ({
+              side: "additions",
+              // The card renders at the END of its range, under the last line.
+              lineNumber: comment.endLine ?? comment.line ?? 0,
+              metadata: { kind: "comment", comment },
+            }),
+          );
+          if (composer !== null && composer.file === file.name) {
+            annotations.push({
+              side: "additions",
+              lineNumber: composer.endLine ?? composer.line,
+              metadata: { kind: "composer", anchor: composer },
+            });
+          }
+          return (
+            <section key={file.name}>
+              {/* Our file header: sticky within the scroll container, collapse toggle. */}
+              <button
+                type="button"
+                onClick={() => toggle(file.name)}
+                className="sticky top-0 z-10 flex w-full items-center gap-2 border-y border-rule-faint bg-secondary px-4 py-2 text-left first:border-t-0"
+              >
+                <span
+                  className={`text-[10px] text-muted-foreground transition-transform ${isCollapsed ? "" : "rotate-90"}`}
+                >
+                  ▶
+                </span>
+                <span className="min-w-0 flex-1 truncate font-mono text-xs text-ink-2">
+                  {file.name}
+                </span>
+                {fileComments.length > 0 && (
+                  <span className="font-mono text-[11px] text-info">
+                    {fileComments.length} comment{fileComments.length === 1 ? "" : "s"}
+                  </span>
+                )}
+                {stat !== undefined && (
+                  <span className="font-mono text-[11px]">
+                    <span className="text-success">+{stat.additions}</span>{" "}
+                    <span className="text-danger">−{stat.deletions}</span>
+                  </span>
+                )}
+              </button>
+              {!isCollapsed && (
+                <div className="ev-diff">
+                  <FileDiff<Annotation>
+                    fileDiff={file}
+                    lineAnnotations={annotations}
+                    options={{
+                      diffStyle: "unified",
+                      theme: { light: "evidence-review", dark: "evidence-review" },
+                      unsafeCSS: EDGE_MARK_CSS,
+                      lineHoverHighlight: "line",
+                      disableFileHeader: true,
+                      enableLineSelection: true,
+                      // Drag across line numbers → range comment composer.
+                      onLineSelectionEnd: (range: SelectedLineRange | null) => {
+                        if (range === null) return;
+                        const [start, end] =
+                          range.start <= range.end
+                            ? [range.start, range.end]
+                            : [range.end, range.start];
+                        setComposer({
+                          file: file.name,
+                          line: start,
+                          endLine: end > start ? end : null,
+                        });
+                      },
+                      onLineClick: (props) => {
+                        // Anchor to the new file; a deleted line has nothing to anchor to.
+                        if (props.lineType === "change-deletion") return;
+                        setComposer({ file: file.name, line: props.lineNumber, endLine: null });
+                      },
+                    }}
+                    renderAnnotation={(annotation) =>
+                      annotation.metadata.kind === "comment" ? (
+                        <InlineComment comment={annotation.metadata.comment} />
+                      ) : (
+                        <InlineComposer
+                          changeId={changeId}
+                          anchor={annotation.metadata.anchor}
+                          onDone={() => setComposer(null)}
+                        />
+                      )
+                    }
                   />
-                )
-              }
-            />
-          </div>
-        );
-      })}
+                </div>
+              )}
+            </section>
+          );
+        })}
+      </div>
     </div>
   );
 }
+
+/** "12" or "12–18" — one label for both anchor shapes. */
+export const lineLabel = (line: number | null, endLine: number | null) =>
+  line === null ? null : endLine === null || endLine === line ? `${line}` : `${line}–${endLine}`;
 
 function InlineComment({ comment }: { readonly comment: ReviewCommentDto }) {
   return (
     <div className="mx-4 my-2 rounded-xl border border-border bg-background p-3 font-sans shadow-xs">
       <p className="font-mono text-[10.5px] text-label">
-        {comment.authorKind === "mend" ? "Mend" : comment.authorName} · line {comment.line} ·{" "}
+        {comment.authorKind === "mend" ? "Mend" : comment.authorName} · line{" "}
+        {lineLabel(comment.line, comment.endLine)} ·{" "}
         {comment.sentToSessionId === null ? comment.state : "sent to session"}
       </p>
       <p className="mt-1 text-[13.5px] leading-relaxed text-ink-2">{comment.body}</p>
@@ -138,13 +236,11 @@ function InlineComment({ comment }: { readonly comment: ReviewCommentDto }) {
 
 function InlineComposer({
   changeId,
-  file,
-  line,
+  anchor,
   onDone,
 }: {
   readonly changeId: string;
-  readonly file: string;
-  readonly line: number;
+  readonly anchor: CommentAnchor;
   readonly onDone: () => void;
 }) {
   const [body, setBody] = useState("");
@@ -153,7 +249,12 @@ function InlineComposer({
   const submit = () => {
     if (body.trim() === "") return;
     setPending(true);
-    void postChangeComment(changeId, { file, line, body: body.trim() })
+    void postChangeComment(changeId, {
+      file: anchor.file,
+      line: anchor.line,
+      endLine: anchor.endLine,
+      body: body.trim(),
+    })
       .then(() => queryClient.invalidateQueries({ queryKey: ["change", changeId] }))
       .then(onDone)
       .finally(() => setPending(false));
@@ -162,7 +263,7 @@ function InlineComposer({
   return (
     <div className="mx-4 my-2 rounded-xl border border-[color-mix(in_oklab,var(--sw-accent)_35%,transparent)] bg-background p-3 font-sans shadow-xs">
       <p className="font-mono text-[10.5px] text-label">
-        comment · {file}:{line}
+        comment · {anchor.file}:{lineLabel(anchor.line, anchor.endLine)}
       </p>
       <textarea
         autoFocus

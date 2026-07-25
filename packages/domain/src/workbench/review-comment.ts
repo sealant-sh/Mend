@@ -26,6 +26,8 @@ export class ReviewComment extends Schema.Class<ReviewComment>("ReviewComment")(
   /** Anchor: null file = change-level; null line = file-level. */
   file: Schema.NullOr(Schema.String),
   line: Schema.NullOr(Schema.Int),
+  /** Inclusive range end; null = the comment anchors to `line` alone. */
+  endLine: Schema.NullOr(Schema.Int),
   authorKind: CommentAuthor,
   authorName: Schema.String,
   body: Schema.String,

@@ -362,6 +362,7 @@ export interface ReviewCommentDto {
   readonly changeId: string;
   readonly file: string | null;
   readonly line: number | null;
+  readonly endLine: number | null;
   readonly authorKind: "reviewer" | "mend";
   readonly authorName: string;
   readonly body: string;
@@ -424,7 +425,12 @@ export const changeComments = (id: string) =>
 
 export const postChangeComment = (
   id: string,
-  input: { readonly file: string | null; readonly line: number | null; readonly body: string },
+  input: {
+    readonly file: string | null;
+    readonly line: number | null;
+    readonly endLine?: number | null;
+    readonly body: string;
+  },
 ) => post<ReviewCommentDto>(`/api/changes/${id}/comments`, input);
 
 export interface FollowUpDto {

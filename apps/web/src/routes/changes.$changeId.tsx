@@ -106,7 +106,7 @@ function ChangePage() {
           </section>
 
           <div className="min-w-0">
-            <WorkbenchDiff diff={diff} changeId={changeId} comments={comments} />
+            <WorkbenchDiff diff={diff} changeId={changeId} comments={comments} stats={files} />
             <ChangeComments changeId={changeId} comments={comments} />
           </div>
         </div>
@@ -195,7 +195,7 @@ const assembleInstruction = (
       const anchor =
         comment.file === null
           ? "the change as a whole"
-          : `${comment.file}${comment.line === null ? "" : `:${comment.line}`}`;
+          : `${comment.file}${comment.line === null ? "" : `:${comment.line}${comment.endLine === null || comment.endLine === comment.line ? "" : `-${comment.endLine}`}`}`;
       return `${index + 1}. ${anchor} — ${comment.body}`;
     })
     .join("\n");
