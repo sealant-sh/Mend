@@ -7,6 +7,29 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-07-25 · 0.7.1 · Worker needs `SEALANT_CREDENTIALS_KEY` too — released compose only gives it to the api
+
+- **Needed:** a claude-harness workspace with connected-account credentials, on a self-host install.
+- **Today:** in 0.7.x the worker decrypts credential refs at build time, but the released compose
+  sets `SEALANT_CREDENTIALS_KEY` only on the api. The build fails with
+  `credentials-key-unconfigured` (an excellent, actionable error — keep that). Local compose patched
+  to pass the same key to the worker.
+- **Suggested:** add the key to the worker service in the released compose.
+
+## 2026-07-25 · 0.7.1 · Sealantd's secret scrub ate the platform's own credential injections (fixed in sealantd 0.6.1)
+
+- **Needed:** the injected `CLAUDE_CODE_OAUTH_TOKEN` visible inside harness/PTY processes.
+- **Today:** Core injects connected-account credentials as container env
+  (`planCredentialInjections`), but sealantd's boot passthrough dropped every secret-looking key
+  before spawning harness children — so builds succeeded and the harness still launched
+  credential-less. Codex only worked because its injection is a file (`~/.codex/auth.json`). Fixed
+  at the source in sealantd#38 (v0.6.1): the documented contract keys survive the scrub, plus a
+  generic `SEALANT_HARNESS_ENV_KEYS` declaration for future providers. Local worker pinned via
+  `SEALANT_SEALANTD_IMAGE` until Core bumps its default (`buildkit-builder.ts` pins 0.6.0).
+- **Suggested for Core:** bump the sealantd pin to 0.6.1, and set `SEALANT_HARNESS_ENV_KEYS` in the
+  runtime adapter whenever it plans env-kind credential injections, so the next provider needs no
+  daemon release.
+
 ## 2026-07-25 · 0.7.0 · Mount allowlist env name drift: docs say one name, the server another
 
 - **Needed:** enable mount-sourced workspaces on a self-host install.
