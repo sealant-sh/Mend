@@ -24,7 +24,11 @@ import {
   extractTranscript,
   type HarnessStateManifest,
 } from "./harness-state.ts";
-import { convertNativeSession, type ConvertedNativeSession } from "./native-convert.ts";
+import {
+  convertNativeSession,
+  ingestNativeSession,
+  type ConvertedNativeSession,
+} from "./native-convert.ts";
 
 export interface ProvisionInput {
   readonly projectId: ProjectId;
@@ -375,6 +379,21 @@ export class SessionEngine extends Context.Service<
             yield* Effect.promise(() =>
               fs.writeFile(path.join(stateDir, "transcript.native"), native.stdout),
             );
+            // The harness-agnostic record IS the durable artifact; native
+            // files are views. Adapters re-emit any supported harness from it.
+            const canonical = ingestNativeSession(
+              session.harness,
+              native.stdout,
+              "/workspace/repo",
+            );
+            if (canonical !== null) {
+              yield* Effect.promise(() =>
+                fs.writeFile(
+                  path.join(stateDir, "session.canonical.json"),
+                  JSON.stringify(canonical, null, 2),
+                ),
+              );
+            }
           }
         }
 

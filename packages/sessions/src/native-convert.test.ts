@@ -82,3 +82,64 @@ describe("native session conversion", () => {
     ).toBeNull();
   });
 });
+
+// ─── the round-trip invariant: ingest(emit(ingest(x))) ≡ ingest(x) ──────────
+
+import * as fs from "node:fs";
+
+import { emitNativeSession, ingestNativeSession } from "./native-convert.ts";
+
+const roundTrip = (sourceHarness: string, native: string, via: string) => {
+  const canonical = ingestNativeSession(sourceHarness, native, "/workspace/repo");
+  expect(canonical).not.toBeNull();
+  if (canonical === null) return;
+  const emitted = emitNativeSession(canonical, via, "2026-07-26T00:00:00.000Z");
+  expect(emitted).not.toBeNull();
+  const reingested = ingestNativeSession(via, emitted?.files[0]?.content ?? "", "/workspace/repo");
+  expect(reingested?.events).toEqual(canonical.events);
+};
+
+describe("round-trip invariant", () => {
+  it("claude fixture survives claude → codex → canonical", () => {
+    roundTrip("claude", claudeJsonl, "codex");
+  });
+
+  it("claude fixture survives claude → claude-emit → canonical", () => {
+    roundTrip("claude", claudeJsonl, "claude");
+  });
+});
+
+// Real-session corpus: runs only where local session files exist (dev machine),
+// asserting the invariant against sessions actual harnesses wrote.
+const codexCorpus = (() => {
+  try {
+    const days = fs.globSync(`${process.env["HOME"]}/.codex/sessions/*/*/*/rollout-*.jsonl`);
+    return days.sort().at(-1) ?? null;
+  } catch {
+    return null;
+  }
+})();
+const claudeCorpus = (() => {
+  try {
+    const files = fs.globSync(`${process.env["HOME"]}/.mend/store/*/sessions/*/transcript.native`);
+    return files.sort().at(-1) ?? null;
+  } catch {
+    return null;
+  }
+})();
+
+describe.skipIf(codexCorpus === null)("corpus: real codex rollout", () => {
+  it("survives codex → claude → canonical and codex → codex → canonical", () => {
+    const native = fs.readFileSync(codexCorpus ?? "", "utf8");
+    roundTrip("codex", native, "claude");
+    roundTrip("codex", native, "codex");
+  });
+});
+
+describe.skipIf(claudeCorpus === null)("corpus: real harvested claude session", () => {
+  it("survives claude → codex → canonical and claude → claude → canonical", () => {
+    const native = fs.readFileSync(claudeCorpus ?? "", "utf8");
+    roundTrip("claude", native, "codex");
+    roundTrip("claude", native, "claude");
+  });
+});

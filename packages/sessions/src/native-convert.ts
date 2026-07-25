@@ -1,50 +1,51 @@
 /**
- * TRUE cross-harness session conversion: the saved native session of harness A
- * rewritten as a native session of harness B, so B's OWN resume machinery
- * opens it — full history in B's UI and in the model's context, as if B had
- * run it. No distillation, no summary prompt.
+ * The harness-agnostic session record (the hub) and its per-harness adapters
+ * (the spokes). Every harness's real on-disk session ingests into ONE
+ * canonical shape; every supported harness can be emitted FROM that shape as
+ * a fully native session its own resume machinery opens. Cross-harness resume
+ * is ingest(A) → emit(B); the testable invariant is the round-trip:
+ * ingest(emit(ingest(x))) ≡ ingest(x) at the canonical level.
  *
- * Fidelity is tiered and honest:
- *  - user/assistant messages: byte-exact text, 1:1
- *  - shell activity: mapped to the target's real shell item (claude `Bash` ↔
- *    codex `exec_command`) — semantically identical
- *  - other tool calls: structured passthrough (name + arguments + output kept
- *    verbatim under the source harness's tool name) — the model reads exactly
- *    what happened; the target UI shows a generic tool call
- *  - provider-internal blobs (codex encrypted reasoning, claude thinking
- *    signatures): cannot be fabricated for another provider; dropped
+ * Fidelity is tiered and stated per event kind:
+ *  - user/assistant text: byte-exact
+ *  - reasoning: the readable summary/thinking TEXT crosses; provider-encrypted
+ *    blobs cannot be fabricated for another provider and are dropped
+ *  - shell: mapped to each harness's real shell item (Bash ↔ exec_command)
+ *  - other tools: structured passthrough — name, arguments, output verbatim
  *
- * Formats verified against the real implementations (reference clones):
- *  - codex: codex-rs/protocol models.rs + rollout recorder (lenient parser,
- *    requires one session_meta line; resume falls back to a file scan)
- *  - claude: observed session JSONL from harvested state (this store)
+ * Formats come from the implementations, not guesses: openai/codex reference
+ * clone (protocol models + rollout recorder — lenient parser, one
+ * session_meta required, resume falls back to a file scan) and real harvested
+ * claude session files from this store.
  */
 
-export interface ConvertedNativeSession {
-  /** The target harness's own session id — what its native resume addresses. */
-  readonly providerSessionId: string;
-  /** Files to place under the workspace `$HOME`, exactly as the harness would have written them. */
-  readonly files: ReadonlyArray<{ readonly path: string; readonly content: string }>;
-  /** argv that opens the converted session natively in the target harness. */
-  readonly resumeArgv: ReadonlyArray<string>;
+export interface CanonicalSession {
+  readonly version: 1;
+  /** Harness that actually produced the events. */
+  readonly sourceHarness: string;
+  readonly cwd: string;
+  readonly events: ReadonlyArray<CanonicalEvent>;
 }
 
-// ---------------------------------------------------------------------------
-// Normalized intermediate: everything either side can express.
-// ---------------------------------------------------------------------------
-
-type Item =
+export type CanonicalEvent =
   | { readonly kind: "user"; readonly text: string }
   | { readonly kind: "assistant"; readonly text: string }
+  | { readonly kind: "reasoning"; readonly text: string }
   | {
       readonly kind: "tool";
+      /** Source harness's tool name; "shell" for plain command execution. */
       readonly name: string;
       readonly args: string;
       readonly output: string;
-      /** True when this is plain shell execution — both harnesses have a native form. */
-      readonly shell: boolean;
+      /** Set when the tool is plain shell execution — every harness has a native form. */
       readonly command: string | null;
     };
+
+export interface ConvertedNativeSession {
+  readonly providerSessionId: string;
+  readonly files: ReadonlyArray<{ readonly path: string; readonly content: string }>;
+  readonly resumeArgv: ReadonlyArray<string>;
+}
 
 const asText = (content: unknown): string => {
   if (typeof content === "string") return content;
@@ -53,7 +54,10 @@ const asText = (content: unknown): string => {
       .map((part) => {
         const p = part as { readonly type?: string; readonly text?: string };
         return typeof p.text === "string" &&
-          (p.type === "text" || p.type === "input_text" || p.type === "output_text")
+          (p.type === "text" ||
+            p.type === "input_text" ||
+            p.type === "output_text" ||
+            p.type === "summary_text")
           ? p.text
           : "";
       })
@@ -63,16 +67,19 @@ const asText = (content: unknown): string => {
   return "";
 };
 
-/** Claude session JSONL → normalized items (tool_use pairs matched to their results). */
-const readClaude = (jsonl: string): Item[] => {
-  const items: Item[] = [];
-  const pendingTools = new Map<string, { name: string; args: string; command: string | null }>();
+const IMPORT_PREFIX = "imported_";
+
+// ─── ingest: native → canonical ─────────────────────────────────────────────
+
+const ingestClaude = (jsonl: string): CanonicalEvent[] => {
+  const events: CanonicalEvent[] = [];
+  const pending = new Map<string, { name: string; args: string; command: string | null }>();
   for (const line of jsonl.split("\n")) {
     if (line.trim() === "") continue;
     let entry: {
       readonly type?: string;
       readonly isMeta?: boolean;
-      readonly message?: { readonly role?: string; readonly content?: unknown };
+      readonly message?: { readonly content?: unknown };
     };
     try {
       entry = JSON.parse(line) as typeof entry;
@@ -86,26 +93,32 @@ const readClaude = (jsonl: string): Item[] => {
         const p = part as {
           readonly type?: string;
           readonly text?: string;
+          readonly thinking?: string;
           readonly id?: string;
           readonly name?: string;
           readonly input?: unknown;
         };
         if (p.type === "text" && typeof p.text === "string" && p.text.trim() !== "") {
-          items.push({ kind: "assistant", text: p.text });
+          events.push({ kind: "assistant", text: p.text });
+        }
+        if (p.type === "thinking" && typeof p.thinking === "string" && p.thinking.trim() !== "") {
+          events.push({ kind: "reasoning", text: p.thinking });
         }
         if (p.type === "tool_use" && typeof p.id === "string") {
           const input = p.input as { readonly command?: string } | undefined;
-          pendingTools.set(p.id, {
-            name: p.name ?? "tool",
-            args: JSON.stringify(p.input ?? {}),
-            command: p.name === "Bash" && typeof input?.command === "string" ? input.command : null,
+          const shell = p.name === "Bash" && typeof input?.command === "string";
+          pending.set(p.id, {
+            name: shell ? "shell" : (p.name ?? "tool"),
+            // Shell canonicalizes to `command`; args carry nothing extra.
+            args: shell ? "" : JSON.stringify(p.input ?? {}),
+            command: shell ? (input?.command ?? null) : null,
           });
         }
       }
     }
     if (entry.type === "user") {
       if (typeof content === "string") {
-        if (content.trim() !== "") items.push({ kind: "user", text: content });
+        if (content.trim() !== "") events.push({ kind: "user", text: content });
         continue;
       }
       if (!Array.isArray(content)) continue;
@@ -117,66 +130,62 @@ const readClaude = (jsonl: string): Item[] => {
           readonly content?: unknown;
         };
         if (p.type === "text" && typeof p.text === "string" && p.text.trim() !== "") {
-          items.push({ kind: "user", text: p.text });
+          events.push({ kind: "user", text: p.text });
         }
         if (p.type === "tool_result" && typeof p.tool_use_id === "string") {
-          const call = pendingTools.get(p.tool_use_id);
+          const call = pending.get(p.tool_use_id);
           if (call !== undefined) {
-            pendingTools.delete(p.tool_use_id);
-            items.push({
-              kind: "tool",
-              name: call.name,
-              args: call.args,
-              output: asText(p.content),
-              shell: call.command !== null,
-              command: call.command,
-            });
+            pending.delete(p.tool_use_id);
+            events.push({ kind: "tool", ...call, output: asText(p.content) });
           }
         }
       }
     }
   }
-  return items;
+  return events;
 };
 
-/** Codex rollout JSONL → normalized items. */
-const readCodex = (jsonl: string): Item[] => {
-  const items: Item[] = [];
-  const pendingCalls = new Map<string, { name: string; args: string; command: string | null }>();
+const ingestCodex = (jsonl: string): CanonicalEvent[] => {
+  const events: CanonicalEvent[] = [];
+  const pending = new Map<string, { name: string; args: string; command: string | null }>();
   for (const line of jsonl.split("\n")) {
     if (line.trim() === "") continue;
-    let entry: {
-      readonly type?: string;
-      readonly payload?: {
-        readonly type?: string;
-        readonly role?: string;
-        readonly content?: unknown;
-        readonly name?: string;
-        readonly arguments?: string;
-        readonly call_id?: string;
-        readonly output?: unknown;
-      };
-    };
+    let entry: { readonly type?: string; readonly payload?: Record<string, unknown> };
     try {
       entry = JSON.parse(line) as typeof entry;
     } catch {
       continue;
     }
-    if (entry.type !== "response_item") continue;
-    const p = entry.payload;
-    if (p === undefined) continue;
+    if (entry.type !== "response_item" || entry.payload === undefined) continue;
+    const p = entry.payload as {
+      readonly type?: string;
+      readonly role?: string;
+      readonly content?: unknown;
+      readonly summary?: unknown;
+      readonly name?: string;
+      readonly arguments?: string;
+      readonly input?: string;
+      readonly call_id?: string;
+      readonly output?: unknown;
+    };
     if (p.type === "message" && (p.role === "user" || p.role === "assistant")) {
       const text = asText(p.content).trim();
-      // Codex wraps environment/instruction blocks as user items; keep real turns only.
-      if (text !== "" && !text.startsWith("<")) {
-        items.push({ kind: p.role, text });
-      }
+      // Codex wraps environment/instruction blocks as user items; keep real turns.
+      if (text !== "" && !text.startsWith("<")) events.push({ kind: p.role, text });
     }
-    if (p.type === "function_call" && typeof p.call_id === "string") {
+    if (p.type === "reasoning") {
+      const text = asText(p.summary).trim();
+      if (text !== "") events.push({ kind: "reasoning", text });
+    }
+    if (
+      (p.type === "function_call" || p.type === "custom_tool_call") &&
+      typeof p.call_id === "string"
+    ) {
+      const rawArgs = p.arguments ?? p.input ?? "{}";
       let command: string | null = null;
       if (p.name === "exec_command" || p.name === "shell") {
         try {
-          const parsed = JSON.parse(p.arguments ?? "{}") as {
+          const parsed = JSON.parse(rawArgs) as {
             readonly cmd?: string;
             readonly command?: ReadonlyArray<string> | string;
           };
@@ -192,50 +201,56 @@ const readCodex = (jsonl: string): Item[] => {
           command = null;
         }
       }
-      pendingCalls.set(p.call_id, {
-        name: p.name ?? "tool",
-        args: p.arguments ?? "{}",
-        command,
-      });
+      const name =
+        command !== null
+          ? "shell"
+          : (p.name ?? "tool").startsWith(IMPORT_PREFIX)
+            ? (p.name ?? "tool").slice(IMPORT_PREFIX.length)
+            : (p.name ?? "tool");
+      pending.set(p.call_id, { name, args: command !== null ? "" : rawArgs, command });
     }
-    if (p.type === "function_call_output" && typeof p.call_id === "string") {
-      const call = pendingCalls.get(p.call_id);
+    if (
+      (p.type === "function_call_output" || p.type === "custom_tool_call_output") &&
+      typeof p.call_id === "string"
+    ) {
+      const call = pending.get(p.call_id);
       if (call !== undefined) {
-        pendingCalls.delete(p.call_id);
+        pending.delete(p.call_id);
         const output =
           typeof p.output === "string"
             ? p.output
             : ((p.output as { readonly content?: string } | undefined)?.content ??
               JSON.stringify(p.output ?? ""));
-        items.push({
-          kind: "tool",
-          name: call.name,
-          args: call.args,
-          output,
-          shell: call.command !== null,
-          command: call.command,
-        });
+        events.push({ kind: "tool", ...call, output });
       }
     }
   }
-  return items;
+  return events;
 };
 
-// ---------------------------------------------------------------------------
-// Writers: normalized items → the target harness's native files.
-// ---------------------------------------------------------------------------
+/** Parse a harness's native session file into the canonical record. */
+export const ingestNativeSession = (
+  harness: string,
+  nativeJsonl: string,
+  cwd: string,
+): CanonicalSession | null => {
+  const events =
+    harness === "claude"
+      ? ingestClaude(nativeJsonl)
+      : harness === "codex"
+        ? ingestCodex(nativeJsonl)
+        : null;
+  if (events === null || events.length === 0) return null;
+  return { version: 1, sourceHarness: harness, cwd, events };
+};
 
-/** RFC-4122-ish v4 uuid from a counter — deterministic enough for tests, unique enough for stores. */
+// ─── emit: canonical → native ───────────────────────────────────────────────
+
 const uuid = () => crypto.randomUUID();
-
 const CODEX_CLI_VERSION = "0.145.0";
 const CLAUDE_VERSION = "2.1.220";
 
-const writeCodex = (
-  items: ReadonlyArray<Item>,
-  cwd: string,
-  now: string,
-): ConvertedNativeSession => {
+const emitCodex = (session: CanonicalSession, now: string): ConvertedNativeSession => {
   const sessionId = uuid();
   const stamp = now.replace(/\.\d+Z$/, "Z");
   const lines: string[] = [];
@@ -246,37 +261,49 @@ const writeCodex = (
     session_id: sessionId,
     id: sessionId,
     timestamp: stamp,
-    cwd,
+    cwd: session.cwd,
     originator: "codex-tui",
     cli_version: CODEX_CLI_VERSION,
     source: "cli",
   });
   let call = 0;
-  for (const item of items) {
-    if (item.kind === "user") {
+  for (const event of session.events) {
+    if (event.kind === "user") {
       push("response_item", {
         type: "message",
         role: "user",
-        content: [{ type: "input_text", text: item.text }],
+        content: [{ type: "input_text", text: event.text }],
       });
-      push("event_msg", { type: "user_message", message: item.text });
-    } else if (item.kind === "assistant") {
+      push("event_msg", { type: "user_message", message: event.text });
+    } else if (event.kind === "assistant") {
       push("response_item", {
         type: "message",
         role: "assistant",
-        content: [{ type: "output_text", text: item.text }],
+        content: [{ type: "output_text", text: event.text }],
       });
-      push("event_msg", { type: "agent_message", message: item.text });
+      push("event_msg", { type: "agent_message", message: event.text });
+    } else if (event.kind === "reasoning") {
+      push("response_item", {
+        type: "reasoning",
+        summary: [{ type: "summary_text", text: event.text }],
+        encrypted_content: null,
+      });
     } else {
       call += 1;
       const callId = `call_mend${String(call).padStart(6, "0")}`;
-      const name = item.shell ? "exec_command" : `imported_${item.name}`;
-      const args = item.shell ? JSON.stringify({ cmd: item.command, workdir: cwd }) : item.args;
-      push("response_item", { type: "function_call", name, arguments: args, call_id: callId });
+      const shell = event.command !== null;
+      push("response_item", {
+        type: "function_call",
+        name: shell ? "exec_command" : `${IMPORT_PREFIX}${event.name}`,
+        arguments: shell
+          ? JSON.stringify({ cmd: event.command, workdir: session.cwd })
+          : event.args,
+        call_id: callId,
+      });
       push("response_item", {
         type: "function_call_output",
         call_id: callId,
-        output: item.output,
+        output: event.output,
       });
     }
   }
@@ -296,67 +323,76 @@ const writeCodex = (
   };
 };
 
-const writeClaude = (
-  items: ReadonlyArray<Item>,
-  cwd: string,
-  now: string,
-): ConvertedNativeSession => {
+const safeParse = (raw: string): unknown => {
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return { raw };
+  }
+};
+
+const emitClaude = (session: CanonicalSession, now: string): ConvertedNativeSession => {
   const sessionId = uuid();
   const lines: string[] = [];
   let parentUuid: string | null = null;
-  const base = () => ({
-    parentUuid,
-    isSidechain: false,
-    userType: "external",
-    entrypoint: "cli",
-    cwd,
-    sessionId,
-    version: CLAUDE_VERSION,
-    gitBranch: "",
-    timestamp: now,
-  });
   const push = (entry: Record<string, unknown>) => {
     const id = uuid();
-    lines.push(JSON.stringify({ ...base(), ...entry, uuid: id }));
+    lines.push(
+      JSON.stringify({
+        parentUuid,
+        isSidechain: false,
+        userType: "external",
+        entrypoint: "cli",
+        cwd: session.cwd,
+        sessionId,
+        version: CLAUDE_VERSION,
+        gitBranch: "",
+        timestamp: now,
+        ...entry,
+        uuid: id,
+      }),
+    );
     parentUuid = id;
   };
+  const assistant = (content: ReadonlyArray<unknown>, stopReason: string, n: number) =>
+    push({
+      type: "assistant",
+      message: {
+        id: `msg_mend_${n}`,
+        type: "message",
+        role: "assistant",
+        model: "imported",
+        content,
+        stop_reason: stopReason,
+        stop_sequence: null,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      },
+    });
 
-  let message = 0;
-  for (const item of items) {
-    message += 1;
-    if (item.kind === "user") {
-      push({ type: "user", message: { role: "user", content: item.text } });
-    } else if (item.kind === "assistant") {
-      push({
-        type: "assistant",
-        message: {
-          id: `msg_mend_${message}`,
-          type: "message",
-          role: "assistant",
-          model: "imported",
-          content: [{ type: "text", text: item.text }],
-          stop_reason: "end_turn",
-          stop_sequence: null,
-          usage: { input_tokens: 0, output_tokens: 0 },
-        },
-      });
+  let n = 0;
+  for (const event of session.events) {
+    n += 1;
+    if (event.kind === "user") {
+      push({ type: "user", message: { role: "user", content: event.text } });
+    } else if (event.kind === "assistant") {
+      assistant([{ type: "text", text: event.text }], "end_turn", n);
+    } else if (event.kind === "reasoning") {
+      assistant([{ type: "thinking", thinking: event.text, signature: "" }], "end_turn", n);
     } else {
-      const toolUseId = `toolu_mend_${message}`;
-      const name = item.shell ? "Bash" : item.name;
-      const input = item.shell ? { command: item.command } : safeParse(item.args);
-      push({
-        type: "assistant",
-        message: {
-          id: `msg_mend_${message}`,
-          type: "message",
-          role: "assistant",
-          model: "imported",
-          content: [{ type: "tool_use", id: toolUseId, name, input }],
-          stop_reason: "tool_use",
-          stop_sequence: null,
-          usage: { input_tokens: 0, output_tokens: 0 },
-        },
-      });
+      const toolUseId = `toolu_mend_${n}`;
+      const shell = event.command !== null;
+      assistant(
+        [
+          {
+            type: "tool_use",
+            id: toolUseId,
+            name: shell ? "Bash" : event.name,
+            input: shell ? { command: event.command } : safeParse(event.args),
+          },
+        ],
+        "tool_use",
+        n,
+      );
       push({
         type: "user",
         message: {
@@ -365,7 +401,7 @@ const writeClaude = (
             {
               type: "tool_result",
               tool_use_id: toolUseId,
-              content: [{ type: "text", text: item.output }],
+              content: [{ type: "text", text: event.output }],
             },
           ],
         },
@@ -373,8 +409,7 @@ const writeClaude = (
     }
   }
 
-  // Claude keys the project dir by the cwd with separators dashed.
-  const projectDir = cwd.replace(/[/.]/g, "-");
+  const projectDir = session.cwd.replace(/[/.]/g, "-");
   return {
     providerSessionId: sessionId,
     files: [
@@ -387,32 +422,25 @@ const writeClaude = (
   };
 };
 
-const safeParse = (raw: string): unknown => {
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch {
-    return { raw };
-  }
+/** Emit the canonical record as a TARGET harness's own native session. */
+export const emitNativeSession = (
+  session: CanonicalSession,
+  targetHarness: string,
+  now: string,
+): ConvertedNativeSession | null => {
+  if (targetHarness === "codex") return emitCodex(session, now);
+  if (targetHarness === "claude") return emitClaude(session, now);
+  return null;
 };
 
-/**
- * Convert a saved native session so the TARGET harness opens it natively.
- * Returns null when either side of the pair is unsupported.
- */
+/** ingest(A) → emit(B): the cross-harness open. Null when either side is unsupported. */
 export const convertNativeSession = (
   sourceHarness: string,
   targetHarness: string,
   nativeJsonl: string,
   options: { readonly cwd: string; readonly now: string },
 ): ConvertedNativeSession | null => {
-  const items =
-    sourceHarness === "claude"
-      ? readClaude(nativeJsonl)
-      : sourceHarness === "codex"
-        ? readCodex(nativeJsonl)
-        : null;
-  if (items === null || items.length === 0) return null;
-  if (targetHarness === "codex") return writeCodex(items, options.cwd, options.now);
-  if (targetHarness === "claude") return writeClaude(items, options.cwd, options.now);
-  return null;
+  const canonical = ingestNativeSession(sourceHarness, nativeJsonl, options.cwd);
+  if (canonical === null) return null;
+  return emitNativeSession(canonical, targetHarness, options.now);
 };
