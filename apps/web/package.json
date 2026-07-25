@@ -33,6 +33,7 @@
     "@mend/sessions": "workspace:*",
     "@mend/store": "workspace:*",
     "@mend/ui": "workspace:*",
+    "@pierre/diffs": "^1.2.12",
     "@tailwindcss/vite": "catalog:",
     "@tanstack/react-query": "catalog:",
     "@tanstack/react-router": "catalog:",
