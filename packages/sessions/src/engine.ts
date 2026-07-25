@@ -329,10 +329,18 @@ export class SessionEngine extends Context.Service<
         argv: ReadonlyArray<string>,
       ): ReadonlyArray<string> => {
         const shaped = withPermissionDefaults(harness, argv);
-        return harness === "claude"
-          ? ["sh", "-c", CLAUDE_ONBOARDING_SEED, "sh", ...shaped]
-          : shaped;
+        if (harness === "claude") return ["sh", "-c", CLAUDE_ONBOARDING_SEED, "sh", ...shaped];
+        if (harness === "codex") return ["sh", "-c", CODEX_TRUST_SEED, "sh", ...shaped];
+        return shaped;
       };
+
+      // Codex's per-project trust prompt, pre-answered the same way: the user
+      // made the trust decision when they adopted the repo.
+      const CODEX_TRUST_SEED =
+        `mkdir -p "$HOME/.codex"; ` +
+        `grep -q 'workspace/repo' "$HOME/.codex/config.toml" 2>/dev/null || ` +
+        `printf '[projects."/workspace/repo"]\ntrust_level = "trusted"\n' >> "$HOME/.codex/config.toml"; ` +
+        `exec "$@"`;
 
       // ─── the harness session store (automatic; see harness-state.ts) ──────
 
