@@ -1,7 +1,8 @@
 # Developing Mend
 
-How to run Mend locally against a Sealant. Product decisions live in `MEND-PLAN.md` / `PRODUCT.md`;
-architecture in `ARCHITECTURE.md`; this file is just the mechanics.
+How to run Mend locally against a Sealant. Product decisions live in `MEND-AGENT-WORKBENCH-PLAN.md`
+(canonical direction + decision log); the retired queue-era docs are in `docs/archive/`. This file
+is just the mechanics.
 
 ## Prerequisites
 

@@ -1,12 +1,17 @@
 # Mend Quick Context
 
-Mend (by Sealant) is a `pnpm` + `turbo` monorepo. **Code is now cheap. Trust is not.** Mend takes an
-issue from your tracker (GitHub, Linear, or Jira), has a coding agent fix it in a recorded
-workspace, then reviews the change against that recording — delivering a PR whose review (**the
-brief**) is already done. Read `MEND-PLAN.md` first; it is the product source of truth.
+Mend (by Sealant) is a `pnpm` + `turbo` monorepo. **Code is now cheap. Trust is not.** Mend is a
+**local-first workbench for developers who use coding agents heavily**: adopt a repository into
+Mend's central store, run your own agent (`mend codex`, `mend claude`, an arbitrary command) in a
+recorded per-session git worktree, review the accumulated local change with evidence beside every
+claim, send review comments back to the same session, and steer it all from any device over a
+private network. No issue tracker or PR required. Read `MEND-AGENT-WORKBENCH-PLAN.md` first; it is
+the canonical product direction and carries the decision log. The retired issue-to-PR/queue
+documents live in `docs/archive/` — do not implement against them.
 
-- `apps/marketing`: TanStack Start marketing site (Cloudflare Workers via wrangler).
-- `apps/web`: TanStack Start product web app — the queue surface.
+- `apps/marketing`: TanStack Start marketing site (Cloudflare Workers via wrangler). Still pitches
+  the old direction; refresh pending.
+- `apps/web`: TanStack Start product web app — Now · projects · sessions · review.
 - `packages/*`: shared libraries (`ui` design tokens, domain packages as they appear).
 - `tooling/*`: shared configs (`typescript`).
 
@@ -18,18 +23,25 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
 
 ## Product Language Contract
 
-- The primary product nouns are `issue` (the task in, from GitHub/Linear/Jira), `run` (the durable
-  execution record), `harness` (the agent that does the work), `the brief` (the review Mend compiles
-  from the recording), and `the run audit` (the deep view: milestones · full trace · sources).
-  Interface-side inference deliberately has **no product noun** — write "Mend uses inference" (it
-  compiles the brief, sums up runs, interprets reviewer comments; never edits code; runs on the
-  user's Sealant-connected subscriptions through first-party tools only). The queue stages are
-  `triage → queued → mending → review → merged`. Cardinality: runs are many; the change and its PR
-  are one; the brief is one per change, living.
-- Platform nouns follow Sealant: `workspace` (the live environment), `run`, `harness`.
+- The primary product nouns are `project` (a repository adopted into the machine's central store),
+  `session` (one supervised coding-agent process in its own git worktree; bring-your-own harness),
+  `change` (the reviewable object: session worktree versus its base), `checkpoint` (a hidden git ref
+  stamped with the record sequence; any two checkpoints define a reviewable slice), `context pack` /
+  `context snapshot` (explicit, versioned selection; every session receives an immutable snapshot),
+  and `handoff` (the editable end-of-session summary promoted into durable context). Interface-side
+  inference deliberately has **no product noun** — write "Mend uses inference"; the machine review
+  pass is phrased "Mend reads the change" (draft comments and proposed checks, never verdicts; every
+  finding links to the record or ships a runnable check). Cardinality: sessions are many per
+  project, one worktree each; one change per session; landing a change (merge/commit/PR) is
+  publication, optional by definition.
+- The queue is gone: no triage/queued/mending stages, no issue intake, no kanban. Issues and PRs are
+  optional references attached to work, never its identity.
+- Platform nouns follow Sealant: `workspace` (the live environment; sessions run in workspaces that
+  mount their worktree), `run` (a session is backed by a run and its durable record), `harness`.
 - Evidence, not verdicts: status words describe what was observed ("Completed · observed"), never a
-  judgment ("safe to merge"). Mend performs the review; the human makes the merge decision.
-- Full vocabulary table and voice rules: `MEND-PLAN.md` §9 and §11.
+  judgment ("safe to merge"). Mend reports; the human decides.
+- Full vocabulary and voice rules: `MEND-AGENT-WORKBENCH-PLAN.md` §5 (product model) and §16 (UX
+  rules); design language in `DESIGN.md`.
 
 ## Agent Defaults
 

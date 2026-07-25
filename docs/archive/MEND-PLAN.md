@@ -1,3 +1,8 @@
+> **SUPERSEDED · 2026-07-25** — This document describes the retired issue-to-PR / queue direction.
+> The canonical direction is [`MEND-AGENT-WORKBENCH-PLAN.md`](../../MEND-AGENT-WORKBENCH-PLAN.md) at
+> the repo root; where they conflict, the plan wins. Kept as design history — do not implement
+> against this. Reusable pieces are mapped in the plan §10.
+
 # MEND-PLAN
 
 The product definition. Decisions here were made deliberately; change them deliberately.
