@@ -5,7 +5,8 @@
   "description": "Evidence Review design tokens, vendored from the Sealant platform token sheet",
   "type": "module",
   "exports": {
-    "./styles/globals.css": "./src/styles/globals.css"
+    "./styles/globals.css": "./src/styles/globals.css",
+    "./tokens": "./src/tokens.ts"
   },
   "scripts": {
     "lint": "oxlint . --no-error-on-unmatched-pattern",

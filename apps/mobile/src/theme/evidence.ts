@@ -1,0 +1,39 @@
+// The Evidence Review theme for React Native. Colors, radii, spacing, and
+// type all come from @mend/ui/tokens — the same authority as the web sheet.
+
+import type { EvidenceColors, EvidenceScheme } from "@mend/ui/tokens";
+import { evidenceColors, shadows } from "@mend/ui/tokens";
+import { useSyncExternalStore } from "react";
+import { Appearance } from "react-native";
+
+export { fontFamilies, radius, spacing, typeScale } from "@mend/ui/tokens";
+export type { EvidenceColors, EvidenceScheme };
+
+export type EvidenceShadows = { readonly [K in keyof (typeof shadows)["light"]]: string };
+
+export interface EvidenceTheme {
+  readonly scheme: EvidenceScheme;
+  readonly colors: EvidenceColors;
+  readonly shadow: EvidenceShadows;
+}
+
+function subscribe(onChange: () => void): () => void {
+  const subscription = Appearance.addChangeListener(onChange);
+  return () => subscription.remove();
+}
+
+function getScheme(): EvidenceScheme {
+  return Appearance.getColorScheme() === "dark" ? "dark" : "light";
+}
+
+// useSyncExternalStore rather than RN's useColorScheme: on the statically
+// rendered web build the latter keeps the server's "light" snapshot after
+// hydration; this re-reads the real scheme on client mount.
+export function useEvidenceScheme(): EvidenceScheme {
+  return useSyncExternalStore(subscribe, getScheme, () => "light");
+}
+
+export function useEvidenceTheme(): EvidenceTheme {
+  const scheme = useEvidenceScheme();
+  return { scheme, colors: evidenceColors[scheme], shadow: shadows[scheme] };
+}
