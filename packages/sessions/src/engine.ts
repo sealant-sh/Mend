@@ -234,6 +234,31 @@ export class SessionEngine extends Context.Service<
         }
       };
 
+      /**
+       * Interactive Claude Code ignores the platform's env-injected credential
+       * during onboarding: `claude -p` honors `CLAUDE_CODE_OAUTH_TOKEN`, but
+       * the TUI's first-run flow still demands a login until `~/.claude.json`
+       * marks onboarding complete and `~/.claude/.credentials.json` exists.
+       * Seed both from the injected env before exec'ing the real argv — only
+       * when the token is present and no state file exists yet, so a real
+       * login is never clobbered. Filed as platform feedback: the claude
+       * injection should be file-kind, like codex's `auth.json`.
+       */
+      const CLAUDE_ONBOARDING_SEED =
+        `node -e '` +
+        `const fs=require("fs"),os=require("os"),h=os.homedir(),t=process.env.CLAUDE_CODE_OAUTH_TOKEN;` +
+        `if(t&&!fs.existsSync(h+"/.claude.json")){` +
+        `fs.mkdirSync(h+"/.claude",{recursive:true});` +
+        `fs.writeFileSync(h+"/.claude/.credentials.json",JSON.stringify({claudeAiOauth:{accessToken:t,refreshToken:"",expiresAt:9999999999999,scopes:["user:inference","user:profile"],subscriptionType:"max"}}),{mode:0o600});` +
+        `fs.writeFileSync(h+"/.claude.json",JSON.stringify({hasCompletedOnboarding:true}))}' 2>/dev/null; ` +
+        `exec "$@"`;
+
+      const withHarnessBootstrap = (
+        harness: string,
+        argv: ReadonlyArray<string>,
+      ): ReadonlyArray<string> =>
+        harness === "claude" ? ["sh", "-c", CLAUDE_ONBOARDING_SEED, "sh", ...argv] : argv;
+
       const launch = Effect.fn("SessionEngine.launch")(function* (
         sessionId: SessionId,
         argv: ReadonlyArray<string>,
@@ -250,7 +275,10 @@ export class SessionEngine extends Context.Service<
           // mount create that carried credentials at the worker's blueprint parse.
           ...(shape.credentials === undefined ? {} : { credentials: shape.credentials }),
         });
-        const pty = yield* sealant.openSession(workspace, argv);
+        const pty = yield* sealant.openSession(
+          workspace,
+          withHarnessBootstrap(session.harness, argv),
+        );
         yield* sessions.setSealantIds(
           sessionId,
           SealantRunId.make(pty.runId),

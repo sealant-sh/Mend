@@ -30,6 +30,20 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
   runtime adapter whenever it plans env-kind credential injections, so the next provider needs no
   daemon release.
 
+## 2026-07-25 · 0.7.1 · Env-injected claude credential doesn't authenticate the interactive TUI
+
+- **Needed:** `mend claude` dropping the user into an authenticated Claude Code TUI.
+- **Today:** with sealantd 0.6.1 the injected `CLAUDE_CODE_OAUTH_TOKEN` reaches the harness and
+  headless `claude -p` authenticates with it — but the interactive TUI's first-run onboarding
+  ignores the env var and still shows "Select login method". Verified fix: seed
+  `~/.claude/.credentials.json` (claudeAiOauth shape, accessToken from the env) plus
+  `~/.claude.json` `{"hasCompletedOnboarding":true}` before launch — the TUI then opens straight to
+  the trust-folder dialog, authenticated. Mend's session engine now wraps claude launches in exactly
+  that seed (guarded: only when the token is present and no state file exists).
+- **Suggested:** make the claude injection file-kind like codex's `auth.json` — write both files in
+  `planCredentialInjections` — so every consumer gets an authenticated TUI without knowing Claude
+  Code's onboarding internals.
+
 ## 2026-07-25 · 0.7.0 · Mount allowlist env name drift: docs say one name, the server another
 
 - **Needed:** enable mount-sourced workspaces on a self-host install.
