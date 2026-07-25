@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { NodeHttpServer, NodeRuntime } from "@effect/platform-node";
-import { EventsRoutes, MendApiLive } from "@mend/api";
+import { EventsRoutes, MendApiLive, TtyRoutes } from "@mend/api";
 import { Auth } from "@mend/auth";
 import {
   BriefCommentsRepo,
@@ -128,7 +128,7 @@ const ServerLive = Layer.unwrap(
   Effect.gen(function* () {
     const port = yield* Config.int("PORT").pipe(Config.orElse(() => Config.succeed(3105)));
     return HttpRouter.serve(
-      Layer.mergeAll(MendApiLive, AuthRoutes, EventsRoutes, WebAppRoutes),
+      Layer.mergeAll(MendApiLive, AuthRoutes, EventsRoutes, TtyRoutes, WebAppRoutes),
     ).pipe(Layer.provide(NodeHttpServer.layer(createServer, { port })));
   }),
 );

@@ -194,36 +194,140 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
   );
   say(`${cobalt("  watch")} · ${config.url}/sessions/${session.id}`);
 
-  // Non-interactive commands run SUPERVISED: a workspace mounts the worktree,
-  // a platform PTY runs argv, and the record begins (SDK 0.7.0). Interactive
-  // harnesses stay on local spawn until the CLI proxies PTY input.
+  // Everything runs SUPERVISED (SDK 0.7.0): a workspace mounts the worktree,
+  // a platform PTY runs argv, the record begins. Commands tail the record;
+  // interactive harnesses get the full terminal bridge.
   if (harness === "run") {
     return supervisedRun(config, session, argv);
   }
-  say(
-    amber("  recording: off") +
-      dim(" — interactive harnesses go supervised once the CLI proxies PTY input"),
-  );
-  say(dim(`  launching ${argv.join(" ")} in the worktree…`));
+  await api<SessionDto>(config, "POST", `/sessions/${session.id}/launch`, { argv });
+  say(`${green("✓ recording")} · workspace mounts the worktree · detach: ${dim("Ctrl+]")}`);
   say("");
+  await attachTty(config, session.id, 0n);
+  const settled = await api<{ readonly session: SessionDto }>(
+    config,
+    "GET",
+    `/sessions/${session.id}`,
+  );
+  say("");
+  say(`${green("✓")} session ${settled.session.status} · recorded`);
+  say(`${cobalt("  review")} · ${config.url}/sessions/${session.id}`);
+  process.exit(0);
+};
 
-  const [command = "", ...rest] = argv;
-  const child = spawn(command, rest, { cwd: worktree, stdio: "inherit" });
-  const exitCode: number = await new Promise((resolve) => {
-    child.on("exit", (code) => resolve(code ?? 0));
-    child.on("error", (error) => {
-      process.stderr.write(`mend: could not launch ${command}: ${error.message}\n`);
-      resolve(127);
-    });
+// ─── the terminal bridge: raw stdin/stdout against the platform PTY ─────────
+
+/**
+ * Attach this terminal to the session's PTY through the Mend server: SSE
+ * output frames → stdout, keystrokes → input POSTs, SIGWINCH → resize.
+ * Ctrl+] detaches — the session keeps running and can be reattached from
+ * anywhere. Resolves when the session settles or the user detaches.
+ */
+const attachTty = async (config: CliConfig, sessionId: string, from: bigint) => {
+  const headers: Record<string, string> = {};
+  if (config.token !== null) headers["authorization"] = `Bearer ${config.token}`;
+
+  const controller = new AbortController();
+  const response = await fetch(`${config.url}/api/tty?session=${sessionId}&from=${from}`, {
+    headers,
+    signal: controller.signal,
   });
+  if (!response.ok || response.body === null) {
+    return fail(`tty stream unavailable (${response.status}): ${await response.text()}`);
+  }
 
-  const settled = await api<SessionDto>(config, "POST", `/sessions/${session.id}/stop`);
-  say("");
-  say(`${green("✓")} session ${settled.status} · checkpoint taken`);
+  const postJson = (route: string, body: unknown) =>
+    fetch(`${config.url}/api${route}?session=${sessionId}`, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }).catch(() => undefined);
+
+  const sendResize = () =>
+    postJson("/tty/resize", {
+      cols: process.stdout.columns ?? 80,
+      rows: process.stdout.rows ?? 24,
+    });
+  await sendResize();
+  process.stdout.on("resize", () => void sendResize());
+
+  const rawTty = process.stdin.isTTY === true;
+  if (rawTty) process.stdin.setRawMode(true);
+  process.stdin.resume();
+  let detached = false;
+  const onKeys = (data: Buffer) => {
+    if (data.includes(0x1d)) {
+      // Ctrl+] — detach, leave the session running.
+      detached = true;
+      controller.abort();
+      return;
+    }
+    void postJson("/tty/input", { data: data.toString("base64") });
+  };
+  process.stdin.on("data", onKeys);
+
+  try {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const frames = buffer.split("\n\n");
+      buffer = frames.pop() ?? "";
+      for (const frame of frames) {
+        if (frame.startsWith("event: end")) {
+          controller.abort();
+          break;
+        }
+        const data = frame
+          .split("\n")
+          .filter((line) => line.startsWith("data: "))
+          .map((line) => line.slice(6))
+          .join("");
+        if (data === "") continue;
+        try {
+          const chunk = JSON.parse(data) as { readonly data?: string };
+          if (chunk.data !== undefined) {
+            process.stdout.write(Buffer.from(chunk.data, "base64"));
+          }
+        } catch {
+          // partial frame — ignore
+        }
+      }
+    }
+  } catch {
+    // aborted (detach or session end)
+  } finally {
+    process.stdin.off("data", onKeys);
+    if (rawTty) process.stdin.setRawMode(false);
+    process.stdin.pause();
+  }
+  if (detached) {
+    say("");
+    say(
+      `${amber("detached")} — the session keeps running; reattach: mend attach ${sessionId.slice(0, 8)}`,
+    );
+    process.exit(0);
+  }
+};
+
+/** Reattach a terminal to a running session (full scrollback replay, then live). */
+const attach = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const prefix = args.find((a) => !a.startsWith("--"));
+  if (prefix === undefined) return fail("usage: mend attach <session-id-prefix>");
+  const sessions = await api<ReadonlyArray<SessionDto>>(config, "GET", "/sessions");
+  const match = sessions.find((s) => s.id.startsWith(prefix));
+  if (match === undefined) return fail(`no active session matches "${prefix}"`);
   say(
-    `${cobalt("  review")} · ${config.url}/changes — worktree vs ${dim(session.baseSha.slice(0, 12))}`,
+    `${green("✓")} attaching to ${match.harness} · ${dim(match.id.slice(0, 8))} · detach: ${dim("Ctrl+]")}`,
   );
-  process.exit(exitCode);
+  say("");
+  await attachTty(config, match.id, 0n);
+  say("");
+  say(`${green("✓")} session settled`);
+  process.exit(0);
 };
 
 // ─── supervised run: platform workspace + PTY + record ──────────────────────
@@ -418,6 +522,7 @@ const HELP = `mend — the agent workbench
   mend adopt [source] [--name <name>]   adopt a repository into the store (default: cwd)
   mend codex|claude|opencode            new session worktree + launch the harness in it
   mend run -- <command...>              same, with an arbitrary command
+  mend attach <session-id-prefix>       reattach this terminal to a running session
   mend continue [session-id]            resume a session with its pending review follow-up
   mend status                           active sessions
 
@@ -436,6 +541,8 @@ const main = async () => {
     case "opencode":
     case "run":
       return launch(config, command, rest);
+    case "attach":
+      return attach(config, rest);
     case "continue":
       return continueSession(config, rest);
     case "status":
