@@ -60,7 +60,69 @@ const EDGE_MARK_CSS = `
 [data-line-type="change-addition"] { box-shadow: inset 2px 0 0 var(--sw-add-edge, #2e7d46); }
 [data-line-type="change-deletion"] { box-shadow: inset 2px 0 0 var(--sw-del-edge, #c0362c); }
 ::selection { background: color-mix(in oklab, var(--sw-accent, #2052cc) 30%, transparent); }
+/* The library's selection vars style BACKGROUNDS only; the selected-number
+   FOREGROUND derives from the (purple) modified ramp — unreadable on our
+   cobalt band. Ink, explicitly (matches the source's own selector). */
+[data-gutter-buffer][data-selected-line],
+[data-column-number][data-selected-line],
+[data-column-number][data-editor-active-line] {
+  color: var(--sw-ink, #1b1b1d);
+}
 `;
+
+/**
+ * Map the user's TEXT selection (anywhere in the code) to the line range it
+ * spans, reading the shadow DOM selection the way the library's own editor
+ * does: `ShadowRoot.getSelection()` on Blink/WebKit, `getComposedRanges`
+ * where spec'd. Rows carry their new-file line number as `data-line`;
+ * deletion rows are skipped (nothing to anchor to).
+ */
+const selectedLineSpan = (wrapper: HTMLElement): { start: number; end: number } | null => {
+  const host = wrapper.querySelector("diffs-container");
+  const shadowRoot = host?.shadowRoot ?? null;
+  if (shadowRoot === null) return null;
+
+  const shadowSelection = (
+    shadowRoot as ShadowRoot & { getSelection?: () => Selection | null }
+  ).getSelection?.();
+  let startNode: Node | null = null;
+  let endNode: Node | null = null;
+  let collapsed = true;
+  if (shadowSelection != null && shadowSelection.rangeCount > 0) {
+    const range = shadowSelection.getRangeAt(0);
+    startNode = range.startContainer;
+    endNode = range.endContainer;
+    collapsed = range.collapsed;
+  } else {
+    const selection = document.getSelection() as
+      | (Selection & {
+          getComposedRanges?: (options: {
+            shadowRoots: ReadonlyArray<ShadowRoot>;
+          }) => ReadonlyArray<StaticRange>;
+        })
+      | null;
+    const range = selection?.getComposedRanges?.({ shadowRoots: [shadowRoot] })[0];
+    if (range === undefined) return null;
+    startNode = range.startContainer;
+    endNode = range.endContainer;
+    collapsed = range.collapsed;
+  }
+  if (collapsed || startNode === null || endNode === null) return null;
+
+  const rowOf = (node: Node): HTMLElement | null => {
+    const element = node instanceof Element ? node : node.parentElement;
+    const row = element?.closest("[data-line]") ?? null;
+    if (row === null || row.getAttribute("data-line-type") === "change-deletion") return null;
+    return row instanceof HTMLElement ? row : null;
+  };
+  const startRow = rowOf(startNode);
+  const endRow = rowOf(endNode);
+  if (startRow === null || endRow === null) return null;
+  const a = Number(startRow.getAttribute("data-line"));
+  const b = Number(endRow.getAttribute("data-line"));
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  return { start: Math.min(a, b), end: Math.max(a, b) };
+};
 
 export interface FileStat {
   readonly path: string;
@@ -203,7 +265,24 @@ export function WorkbenchDiff({
                 )}
               </button>
               {!isCollapsed && (
-                <div className="ev-diff">
+                // Selecting TEXT is also a comment gesture: on release, the
+                // spanned lines become the composer's anchor (copy still
+                // works — the selection is left intact).
+                <div
+                  className="ev-diff"
+                  onMouseUp={(event) => {
+                    const wrapper = event.currentTarget;
+                    window.setTimeout(() => {
+                      const span = selectedLineSpan(wrapper);
+                      if (span === null) return;
+                      setComposer({
+                        file: file.name,
+                        line: span.start,
+                        endLine: span.end > span.start ? span.end : null,
+                      });
+                    }, 0);
+                  }}
+                >
                   <FileDiff<Annotation>
                     fileDiff={file}
                     lineAnnotations={annotations}
