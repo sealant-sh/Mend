@@ -221,6 +221,109 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
   process.exit(exitCode);
 };
 
+// ─── continue: pick up a pending follow-up ──────────────────────────────────
+
+interface FollowUpDto {
+  readonly id: string;
+  readonly sessionId: string;
+  readonly instruction: string;
+  readonly status: string;
+}
+
+interface ProjectDetailDto {
+  readonly project: ProjectDto;
+  readonly sessions: ReadonlyArray<SessionDto>;
+}
+
+/** How each harness takes an instruction as its opening prompt. */
+const CONTINUE_COMMANDS: Record<string, (instruction: string) => ReadonlyArray<string>> = {
+  codex: (instruction) => ["codex", instruction],
+  claude: (instruction) => ["claude", instruction],
+  opencode: (instruction) => ["opencode", "run", instruction],
+};
+
+/**
+ * The second half of the review loop (plan §7.3): find the session with a
+ * pending follow-up, deliver it (which reopens the session), and relaunch the
+ * harness in the same worktree with the instruction as its prompt.
+ */
+const continueSession = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const explicitSession = args.find((a) => !a.startsWith("--")) ?? null;
+
+  let sessionId = explicitSession;
+  let followUp: FollowUpDto | null = null;
+  if (sessionId !== null) {
+    followUp = await api<FollowUpDto | null>(config, "GET", `/sessions/${sessionId}/follow-up`);
+    if (followUp === null) return fail(`session ${sessionId} has no pending follow-up`);
+  } else {
+    // Search the cwd's project, newest sessions first.
+    const project = await findProject(config, null);
+    const detail = await api<ProjectDetailDto>(config, "GET", `/projects/${project.id}`);
+    for (const candidate of detail.sessions) {
+      const pending = await api<FollowUpDto | null>(
+        config,
+        "GET",
+        `/sessions/${candidate.id}/follow-up`,
+      );
+      if (pending !== null) {
+        sessionId = candidate.id;
+        followUp = pending;
+        break;
+      }
+    }
+    if (sessionId === null || followUp === null) {
+      return fail("no session with a pending follow-up — send one from the review first");
+    }
+  }
+
+  const detail = await api<{ readonly session: SessionDto }>(
+    config,
+    "GET",
+    `/sessions/${sessionId}`,
+  );
+  const session = detail.session;
+  const projects = await api<ReadonlyArray<ProjectDto>>(config, "GET", "/projects");
+  const project = projects.find((p) => p.id === session.projectId);
+  if (project === undefined) return fail(`project ${session.projectId} not found`);
+  const worktree = worktreePathOf(project.storePath, session.worktree);
+
+  const build = CONTINUE_COMMANDS[session.harness];
+  say(`${green("✓")} follow-up for session ${dim(session.id.slice(0, 8))} · ${session.branch}`);
+  say(dim("  instruction:"));
+  for (const line of followUp.instruction.split("\n").slice(0, 6)) say(dim(`  │ ${line}`));
+  if (followUp.instruction.split("\n").length > 6) say(dim("  │ …"));
+
+  if (build === undefined) {
+    say("");
+    say(
+      `${amber("  cannot relaunch")} ${dim(`— harness "${session.harness}" has no known resume command.`)}`,
+    );
+    say(dim(`  run it yourself in ${worktree}; the follow-up stays pending.`));
+    process.exit(1);
+  }
+
+  await api<FollowUpDto>(config, "POST", `/sessions/${session.id}/follow-up/deliver`);
+  say(`${green("✓")} delivered · session reopened`);
+  say(dim(`  launching ${session.harness} in the worktree…`));
+  say("");
+
+  const [command = "", ...rest] = build(followUp.instruction);
+  const child = spawn(command, rest, { cwd: worktree, stdio: "inherit" });
+  const exitCode: number = await new Promise((resolve) => {
+    child.on("exit", (code) => resolve(code ?? 0));
+    child.on("error", (error) => {
+      process.stderr.write(`mend: could not launch ${command}: ${error.message}\n`);
+      resolve(127);
+    });
+  });
+
+  const settled = await api<SessionDto>(config, "POST", `/sessions/${session.id}/stop`);
+  say("");
+  say(`${green("✓")} session ${settled.status} · checkpoint taken`);
+  say(`${cobalt("  review")} · ${config.url}/sessions/${session.id}`);
+  process.exit(exitCode);
+};
+
 // ─── status ─────────────────────────────────────────────────────────────────
 
 const status = async (config: CliConfig) => {
@@ -243,6 +346,7 @@ const HELP = `mend — the agent workbench
   mend adopt [source] [--name <name>]   adopt a repository into the store (default: cwd)
   mend codex|claude|opencode            new session worktree + launch the harness in it
   mend run -- <command...>              same, with an arbitrary command
+  mend continue [session-id]            resume a session with its pending review follow-up
   mend status                           active sessions
 
   server: MEND_URL (default http://localhost:3105) · auth: MEND_TOKEN
@@ -260,6 +364,8 @@ const main = async () => {
     case "opencode":
     case "run":
       return launch(config, command, rest);
+    case "continue":
+      return continueSession(config, rest);
     case "status":
       return status(config);
     case undefined:

@@ -16,6 +16,7 @@ import {
 import {
   Change as SessionChange,
   Checkpoint,
+  FollowUp,
   Project,
   ReviewComment,
   Session,
@@ -281,6 +282,11 @@ export class CheckpointRequest extends Schema.Class<CheckpointRequest>("Checkpoi
   trigger: Schema.Literals(["review-open", "user-mark"]),
 }) {}
 
+/** The instruction exactly as the user edited it in the send-review dialog. */
+export class NewFollowUp extends Schema.Class<NewFollowUp>("NewFollowUp")({
+  instruction: Schema.String,
+}) {}
+
 const sessionsGroup = HttpApiGroup.make("sessions")
   .add(HttpApiEndpoint.get("listActive", "/sessions", { success: Schema.Array(Session) }))
   .add(
@@ -311,6 +317,31 @@ const sessionsGroup = HttpApiGroup.make("sessions")
       payload: CheckpointRequest,
       success: Checkpoint,
       error: Schema.Union([NotFound, StoreFailure]),
+    }),
+  )
+  .add(
+    // The review bundle, as the user approved it. Creating it marks the
+    // change's unsent open comments as sent with this follow-up.
+    HttpApiEndpoint.post("followUpCreate", "/sessions/:id/follow-up", {
+      params: { id: SessionId },
+      payload: NewFollowUp,
+      success: FollowUp,
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("followUpPending", "/sessions/:id/follow-up", {
+      params: { id: SessionId },
+      success: Schema.NullOr(FollowUp),
+      error: NotFound,
+    }),
+  )
+  .add(
+    // `mend continue` picks the bundle up: marks it delivered and reopens the session.
+    HttpApiEndpoint.post("followUpDeliver", "/sessions/:id/follow-up/deliver", {
+      params: { id: SessionId },
+      success: FollowUp,
+      error: NotFound,
     }),
   )
   .middleware(AuthMiddleware);

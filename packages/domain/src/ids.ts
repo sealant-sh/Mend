@@ -47,3 +47,6 @@ export type ReviewCommentId = typeof ReviewCommentId.Type;
 
 export const ContextSnapshotId = Schema.String.pipe(Schema.brand("ContextSnapshotId"));
 export type ContextSnapshotId = typeof ContextSnapshotId.Type;
+
+export const FollowUpId = Schema.String.pipe(Schema.brand("FollowUpId"));
+export type FollowUpId = typeof FollowUpId.Type;

@@ -291,9 +291,26 @@ const workbench = Effect.gen(function* () {
   yield* sql`CREATE INDEX review_comments_change_idx ON review_comments (change_id, created_at)`;
 });
 
+/** The review-to-agent loop (plan §7.3): assembled follow-up instructions. */
+const followUps = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE follow_ups (
+      id text PRIMARY KEY,
+      session_id text NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      change_id text NOT NULL REFERENCES session_changes(id) ON DELETE CASCADE,
+      instruction text NOT NULL,
+      status text NOT NULL DEFAULT 'pending',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      delivered_at timestamptz
+    )`;
+  yield* sql`CREATE INDEX follow_ups_session_idx ON follow_ups (session_id, created_at)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
   "0003_brief_comments": briefComments,
   "0004_workbench": workbench,
+  "0005_follow_ups": followUps,
 };

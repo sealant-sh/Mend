@@ -17,6 +17,7 @@
 export * from "./change.ts";
 export * from "./checkpoint.ts";
 export * from "./context.ts";
+export * from "./follow-up.ts";
 export * from "./project.ts";
 export * from "./review-comment.ts";
 export * from "./session.ts";

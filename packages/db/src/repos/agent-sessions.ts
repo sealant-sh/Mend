@@ -72,6 +72,8 @@ export class SessionsRepo extends Context.Service<
       outcome: SessionOutcome,
       summary: string | null,
     ) => Effect.Effect<void>;
+    /** A delivered follow-up resumes the settled session — same row, same worktree, same change. */
+    readonly reopen: (id: SessionId) => Effect.Effect<void>;
   }
 >()("@mend/db/SessionsRepo") {
   static readonly layer = Layer.effect(
@@ -220,6 +222,14 @@ export class SessionsRepo extends Context.Service<
         yield* notify(id);
       });
 
+      const reopen = Effect.fn("SessionsRepo.reopen")(function* (id: SessionId) {
+        yield* sql`
+          UPDATE agent_sessions
+          SET status = 'running', settled_at = NULL, updated_at = now()
+          WHERE id = ${id}`.pipe(Effect.orDie);
+        yield* notify(id);
+      });
+
       return {
         create,
         byId,
@@ -232,6 +242,7 @@ export class SessionsRepo extends Context.Service<
         saveLastSeenSequence,
         notifyProgress,
         settle,
+        reopen,
       };
     }),
   );

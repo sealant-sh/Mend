@@ -5,7 +5,7 @@ import { useCallback, useState } from "react";
 import { AppShell } from "#/components/shell";
 import { SessionStatusDot } from "#/components/status";
 import { checkpointSession, stopSession, type WorkbenchEventDto } from "#/lib/api";
-import { queryClient, sessionDetailQuery } from "#/lib/queries";
+import { pendingFollowUpQuery, queryClient, sessionDetailQuery } from "#/lib/queries";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 
 export const Route = createFileRoute("/sessions/$sessionId")({
@@ -21,6 +21,7 @@ const ACTIVE = new Set(["starting", "running", "waiting", "idle"]);
 function SessionPage() {
   const { sessionId } = Route.useParams();
   const { session, checkpoints, change } = useSuspenseQuery(sessionDetailQuery(sessionId)).data;
+  const followUp = useSuspenseQuery(pendingFollowUpQuery(sessionId)).data;
   const [lines, setLines] = useState<ReadonlyArray<string>>([]);
   const [pending, setPending] = useState<"stop" | "checkpoint" | null>(null);
 
@@ -70,6 +71,12 @@ function SessionPage() {
           <p className="mt-3 font-mono text-xs text-warning">
             recording: off — launched before the platform&apos;s supervised path; worktree,
             checkpoints, and review are live
+          </p>
+        )}
+        {followUp !== null && (
+          <p className="mt-3 font-mono text-xs text-warning">
+            follow-up pending — resume this session with{" "}
+            <span className="text-ink-2">mend continue</span> in a terminal
           </p>
         )}
 

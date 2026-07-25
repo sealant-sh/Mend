@@ -365,6 +365,7 @@ export interface ReviewCommentDto {
   readonly authorName: string;
   readonly body: string;
   readonly state: "draft" | "open" | "addressed" | "dismissed";
+  readonly sentToSessionId: string | null;
   readonly createdAt: string;
 }
 
@@ -417,3 +418,20 @@ export const postChangeComment = (
   id: string,
   input: { readonly file: string | null; readonly line: number | null; readonly body: string },
 ) => post<ReviewCommentDto>(`/api/changes/${id}/comments`, input);
+
+export interface FollowUpDto {
+  readonly id: string;
+  readonly sessionId: string;
+  readonly changeId: string;
+  readonly instruction: string;
+  readonly status: "pending" | "delivered" | "superseded";
+  readonly createdAt: string;
+  readonly deliveredAt: string | null;
+}
+
+/** The review bundle, exactly as edited in the send dialog. */
+export const createFollowUp = (sessionId: string, instruction: string) =>
+  post<FollowUpDto>(`/api/sessions/${sessionId}/follow-up`, { instruction });
+
+export const pendingFollowUp = (sessionId: string) =>
+  request<FollowUpDto | null>(`/api/sessions/${sessionId}/follow-up`);

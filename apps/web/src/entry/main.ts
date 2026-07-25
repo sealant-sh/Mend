@@ -11,6 +11,7 @@ import {
   BriefsRepo,
   ChangesRepo,
   CheckpointsRepo,
+  FollowUpsRepo,
   InferenceCallsRepo,
   IssuesRepo,
   MigratorLive,
@@ -63,6 +64,7 @@ const DatabaseLive = Layer.mergeAll(
   SessionChangesRepo.layer,
   CheckpointsRepo.layer,
   ReviewCommentsRepo.layer,
+  FollowUpsRepo.layer,
 ).pipe(Layer.provideMerge(MigratorLive.pipe(Layer.provideMerge(PgLive))));
 
 // ─── The central store (host-side git) + the session engine over it ────────

@@ -1,10 +1,12 @@
 import {
   CheckpointsRepo,
+  FollowUpsRepo,
   ProjectsRepo,
   ReviewCommentsRepo,
   SessionChangesRepo,
   SessionsRepo,
 } from "@mend/db";
+import { FollowUp } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
 import { Store, worktreePathOf } from "@mend/store";
 import { Effect } from "effect";
@@ -141,6 +143,44 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             Effect.fail(new StoreFailure({ message: error.stderr })),
           ),
         );
+      }),
+    )
+    .handle("followUpCreate", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        const changes = yield* SessionChangesRepo;
+        const followUps = yield* FollowUpsRepo;
+        const comments = yield* ReviewCommentsRepo;
+        yield* sessions
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        const change = yield* changes.bySession(params.id);
+        if (change === null) return yield* new NotFound({ id: params.id });
+        const followUp = yield* followUps.create(params.id, change.id, payload.instruction);
+        // The bundle carries the open comments — record where they went.
+        const open = yield* comments.listForChange(change.id);
+        yield* Effect.forEach(
+          open.filter((comment) => comment.state === "open" && comment.sentToSessionId === null),
+          (comment) => comments.markSent(comment.id, params.id),
+        );
+        return followUp;
+      }),
+    )
+    .handle("followUpPending", ({ params }) =>
+      Effect.gen(function* () {
+        const followUps = yield* FollowUpsRepo;
+        return yield* followUps.pendingForSession(params.id);
+      }),
+    )
+    .handle("followUpDeliver", ({ params }) =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        const followUps = yield* FollowUpsRepo;
+        const pending = yield* followUps.pendingForSession(params.id);
+        if (pending === null) return yield* new NotFound({ id: params.id });
+        yield* followUps.markDelivered(pending.id);
+        yield* sessions.reopen(params.id);
+        return new FollowUp({ ...pending, status: "delivered", deliveredAt: new Date() });
       }),
     ),
 );

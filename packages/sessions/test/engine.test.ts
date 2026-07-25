@@ -121,6 +121,7 @@ const sessionsLayer = (world: World) => {
     notifyProgress: () => Effect.void,
     settle: (id, outcome, summary) =>
       Effect.sync(() => update(id, { status: outcome, summary, settledAt: now() })),
+    reopen: (id) => Effect.sync(() => update(id, { status: "running", settledAt: null })),
   });
 };
 

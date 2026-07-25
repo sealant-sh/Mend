@@ -5,6 +5,7 @@ import {
   changeDiff,
   listActiveSessions,
   listProjects,
+  pendingFollowUp,
   projectDetail,
   sessionDetail,
 } from "#/lib/api";
@@ -56,4 +57,10 @@ export const changeCommentsQuery = (id: string) =>
   queryOptions({
     queryKey: ["change", id, "comments"],
     queryFn: () => changeComments(id),
+  });
+
+export const pendingFollowUpQuery = (sessionId: string) =>
+  queryOptions({
+    queryKey: ["session", sessionId, "follow-up"],
+    queryFn: () => pendingFollowUp(sessionId),
   });
