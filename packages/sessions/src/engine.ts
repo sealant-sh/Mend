@@ -24,6 +24,7 @@ import {
   extractTranscript,
   type HarnessStateManifest,
 } from "./harness-state.ts";
+import { convertNativeSession, type ConvertedNativeSession } from "./native-convert.ts";
 
 export interface ProvisionInput {
   readonly projectId: ProjectId;
@@ -409,9 +410,10 @@ export class SessionEngine extends Context.Service<
           }
         });
 
-      const launch = Effect.fn("SessionEngine.launch")(function* (
+      const launchInternal = Effect.fn("SessionEngine.launchInternal")(function* (
         sessionId: SessionId,
         argv: ReadonlyArray<string>,
+        nativeImport: ConvertedNativeSession | null,
       ) {
         const session = yield* sessions.byId(sessionId);
         const project = yield* projects.byId(session.projectId);
@@ -499,6 +501,30 @@ export class SessionEngine extends Context.Service<
             const [, ...tail] = shapedArgv;
             shapedArgv = ["claude", "--resume", manifest.providerSessionId, ...tail];
           }
+        }
+
+        if (nativeImport !== null) {
+          // Cross-harness open: place the CONVERTED native session into the
+          // fresh workspace's $HOME so the target harness resumes it as its
+          // own — full history, its own session id, no distillation.
+          const importDir = path.join(worktree, ".mend-native-import");
+          yield* Effect.promise(async () => {
+            for (const file of nativeImport.files) {
+              const target = path.join(importDir, file.path);
+              await fs.mkdir(path.dirname(target), { recursive: true });
+              await fs.writeFile(target, file.content);
+            }
+          });
+          yield* sealant
+            .exec(workspace, [
+              "sh",
+              "-c",
+              'cp -a /workspace/repo/.mend-native-import/. "$HOME"/ && rm -rf /workspace/repo/.mend-native-import',
+            ])
+            .pipe(Effect.ignore);
+          yield* Effect.promise(() => fs.rm(importDir, { recursive: true, force: true })).pipe(
+            Effect.ignore,
+          );
         }
 
         const pty = yield* sealant
@@ -617,9 +643,8 @@ export class SessionEngine extends Context.Service<
         const stateDir = sessionStatePathOf(project.storePath, session.id);
         const manifest = yield* readManifest(stateDir);
         let argv = defaultArgv;
+        let nativeImport: ConvertedNativeSession | null = null;
         if (manifest !== null && manifest.harness !== target) {
-          // Crossing harnesses: the saved conversation rides as the opening
-          // prompt; the new harness's own state starts fresh.
           const native = yield* Effect.promise(async () => {
             try {
               return await fs.readFile(path.join(stateDir, "transcript.native"), "utf8");
@@ -628,16 +653,29 @@ export class SessionEngine extends Context.Service<
             }
           });
           if (native !== null) {
-            const turns = extractTranscript(manifest.harness, native);
-            if (turns.length > 0) {
-              argv =
-                promptArgv(target, distillOpeningPrompt(manifest.harness, turns)) ?? defaultArgv;
+            // TRUE cross-harness open: convert the saved native session into
+            // the TARGET harness's own format and resume it natively — full
+            // history, as if the target had run it. Distilled-prompt handoff
+            // remains only for pairs conversion cannot express.
+            nativeImport = convertNativeSession(manifest.harness, target, native, {
+              cwd: "/workspace/repo",
+              now: new Date().toISOString(),
+            });
+            if (nativeImport !== null) {
+              argv = nativeImport.resumeArgv;
+              yield* sessions.setProviderSessionId(sessionId, nativeImport.providerSessionId);
+            } else {
+              const turns = extractTranscript(manifest.harness, native);
+              if (turns.length > 0) {
+                argv =
+                  promptArgv(target, distillOpeningPrompt(manifest.harness, turns)) ?? defaultArgv;
+              }
             }
           }
         }
         if (target !== session.harness) yield* sessions.setHarness(sessionId, target);
         yield* sessions.reopen(sessionId);
-        return yield* launch(sessionId, argv);
+        return yield* launchInternal(sessionId, argv, nativeImport);
       });
 
       const stop = Effect.fn("SessionEngine.stop")(function* (sessionId: SessionId) {
@@ -685,6 +723,9 @@ export class SessionEngine extends Context.Service<
       });
 
       yield* resume();
+
+      const launch = (sessionId: SessionId, argv: ReadonlyArray<string>) =>
+        launchInternal(sessionId, argv, null);
 
       return { provision, attachRun, launch, checkpointNow, stop, resumeSession };
     }),
