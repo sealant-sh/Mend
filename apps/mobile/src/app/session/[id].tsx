@@ -5,9 +5,9 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useState } from "react";
 import { View } from "react-native";
-import { WebView } from "react-native-webview";
 
 import { EvButton } from "@/components/button";
+import { GhosttyTerminal } from "@/components/ghostty-terminal";
 import { Panel } from "@/components/panel";
 import { Screen, ScreenHeader } from "@/components/screen";
 import { StatusWord } from "@/components/status";
@@ -57,13 +57,7 @@ export default function SessionScreen() {
       {terminalReady ? (
         <Panel lift>
           <View style={{ height: 480, borderRadius: radius.xl, overflow: "hidden" }}>
-            <WebView
-              source={{
-                uri: `${base.url}/tty-embed?session=${session.id}&token=${encodeURIComponent(base.token)}`,
-              }}
-              style={{ flex: 1, backgroundColor: colors.panel }}
-              keyboardDisplayRequiresUserAction={false}
-            />
+            <GhosttyTerminal serverUrl={base.url} token={base.token} sessionId={session.id} />
           </View>
         </Panel>
       ) : (

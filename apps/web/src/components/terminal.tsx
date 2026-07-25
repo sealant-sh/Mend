@@ -1,8 +1,5 @@
-import { FitAddon } from "@xterm/addon-fit";
-import { Terminal } from "@xterm/xterm";
+import { FitAddon, init as initGhostty, Terminal } from "ghostty-web";
 import { useEffect, useRef, useState } from "react";
-
-import "@xterm/xterm/css/xterm.css";
 
 /**
  * The session's real terminal, live in the browser over the same `/api/tty`
@@ -38,83 +35,98 @@ export function SessionTerminal({
     const element = containerRef.current;
     if (element === null) return;
 
-    const term = new Terminal({
-      fontFamily: cssVar("--font-mono", "JetBrains Mono, monospace"),
-      fontSize: 12.5,
-      lineHeight: 1.4,
-      cursorBlink: true,
-      scrollback: 10_000,
-      theme: {
-        background: cssVar("--sw-panel", "#ffffff"),
-        foreground: cssVar("--sw-ink", "#1b1b1d"),
-        cursor: cssVar("--sw-accent", "#2052cc"),
-        cursorAccent: cssVar("--sw-panel", "#ffffff"),
-        selectionBackground: "rgba(32, 82, 204, 0.18)",
-      },
+    // ghostty-web loads its wasm once; everything below waits on it.
+    let cancelled = false;
+    let teardown: (() => void) | null = null;
+    void initGhostty().then(() => {
+      if (cancelled) return;
+      teardown = attach();
     });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.open(element);
-    fit.fit();
 
-    const url = new URL("/api/tty", window.location.origin);
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    url.searchParams.set("session", sessionId);
-    url.searchParams.set("from", "0");
-    if (token !== undefined && token !== "") url.searchParams.set("token", token);
-    const ws = new WebSocket(url);
-    ws.binaryType = "arraybuffer";
+    const attach = () => {
+      const term = new Terminal({
+        fontFamily: cssVar("--font-mono", "JetBrains Mono, monospace"),
+        fontSize: 12.5,
+        lineHeight: 1.4,
+        cursorBlink: true,
+        scrollback: 10_000,
+        theme: {
+          background: cssVar("--sw-panel", "#ffffff"),
+          foreground: cssVar("--sw-ink", "#1b1b1d"),
+          cursor: cssVar("--sw-accent", "#2052cc"),
+          cursorAccent: cssVar("--sw-panel", "#ffffff"),
+          selectionBackground: "rgba(32, 82, 204, 0.18)",
+        },
+      });
+      const fit = new FitAddon();
+      term.loadAddon(fit);
+      term.open(element);
+      fit.fit();
 
-    const sendResize = () => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ t: "resize", cols: term.cols, rows: term.rows }));
-      }
+      const url = new URL("/api/tty", window.location.origin);
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      url.searchParams.set("session", sessionId);
+      url.searchParams.set("from", "0");
+      if (token !== undefined && token !== "") url.searchParams.set("token", token);
+      const ws = new WebSocket(url);
+      ws.binaryType = "arraybuffer";
+
+      const sendResize = () => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ t: "resize", cols: term.cols, rows: term.rows }));
+        }
+      };
+
+      let settled = false;
+      ws.addEventListener("open", () => {
+        setState("live");
+        sendResize();
+        term.focus();
+      });
+      ws.addEventListener("message", (event) => {
+        if (typeof event.data === "string") {
+          try {
+            const frame = JSON.parse(event.data) as { readonly t?: string };
+            if (frame.t === "end") {
+              settled = true;
+              setState("settled");
+            }
+          } catch {
+            // Unknown text frame — ignore.
+          }
+          return;
+        }
+        term.write(new Uint8Array(event.data as ArrayBuffer));
+      });
+      ws.addEventListener("close", () => {
+        setState((current) => {
+          if (settled || current === "settled") return "settled";
+          return current === "connecting" ? "unavailable" : "disconnected";
+        });
+      });
+
+      const encoder = new TextEncoder();
+      const onData = term.onData((data) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(new Uint8Array(encoder.encode(data)).buffer);
+        }
+      });
+      const onResize = term.onResize(() => sendResize());
+      const observer = new ResizeObserver(() => fit.fit());
+      observer.observe(element);
+
+      return () => {
+        observer.disconnect();
+        onData.dispose();
+        onResize.dispose();
+        ws.close();
+        term.dispose();
+      };
     };
 
-    let settled = false;
-    ws.addEventListener("open", () => {
-      setState("live");
-      sendResize();
-      term.focus();
-    });
-    ws.addEventListener("message", (event) => {
-      if (typeof event.data === "string") {
-        try {
-          const frame = JSON.parse(event.data) as { readonly t?: string };
-          if (frame.t === "end") {
-            settled = true;
-            setState("settled");
-          }
-        } catch {
-          // Unknown text frame — ignore.
-        }
-        return;
-      }
-      term.write(new Uint8Array(event.data as ArrayBuffer));
-    });
-    ws.addEventListener("close", () => {
-      setState((current) => {
-        if (settled || current === "settled") return "settled";
-        return current === "connecting" ? "unavailable" : "disconnected";
-      });
-    });
-
-    const encoder = new TextEncoder();
-    const onData = term.onData((data) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(new Uint8Array(encoder.encode(data)).buffer);
-      }
-    });
-    const onResize = term.onResize(() => sendResize());
-    const observer = new ResizeObserver(() => fit.fit());
-    observer.observe(element);
-
     return () => {
-      observer.disconnect();
-      onData.dispose();
-      onResize.dispose();
-      ws.close();
-      term.dispose();
+      cancelled = true;
+      teardown?.();
     };
   }, [sessionId]);
 
