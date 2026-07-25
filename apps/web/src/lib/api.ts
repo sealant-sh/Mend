@@ -276,3 +276,144 @@ export const moveIssue = (id: string, stage: "triage" | "queued", position: numb
   post<IssueDto>(`/api/issues/${id}/move`, { stage, position });
 
 export const sealantConnection = () => request<SealantConnectionDto>("/api/sealant/connection");
+
+// ─── Workbench (MEND-AGENT-WORKBENCH-PLAN.md §5–§7) ─────────────────────────
+
+export type SessionStatusDto =
+  | "starting"
+  | "running"
+  | "waiting"
+  | "idle"
+  | "completed"
+  | "failed"
+  | "stopped";
+
+export interface ProjectDto {
+  readonly id: string;
+  readonly name: string;
+  readonly originUrl: string | null;
+  readonly storePath: string;
+  readonly defaultBranch: string;
+  readonly adoptedSha: string | null;
+  readonly createdAt: string;
+}
+
+export interface SessionDto {
+  readonly id: string;
+  readonly projectId: string;
+  readonly harness: string;
+  readonly label: string | null;
+  readonly worktree: string;
+  readonly branch: string;
+  readonly baseSha: string;
+  readonly sealantRunId: string | null;
+  readonly status: SessionStatusDto;
+  readonly summary: string | null;
+  readonly startedAt: string | null;
+  readonly settledAt: string | null;
+  readonly createdAt: string;
+}
+
+export interface ProjectDetailDto {
+  readonly project: ProjectDto;
+  readonly sessions: ReadonlyArray<SessionDto>;
+}
+
+export interface CheckpointDto {
+  readonly id: string;
+  readonly sessionId: string;
+  readonly ref: string;
+  readonly sha: string;
+  readonly seq: string;
+  readonly trigger: string;
+  readonly createdAt: string;
+}
+
+export interface SessionChangeDto {
+  readonly id: string;
+  readonly projectId: string;
+  readonly sessionId: string;
+  readonly branch: string;
+  readonly baseSha: string;
+  readonly headSha: string | null;
+}
+
+export interface SessionDetailDto {
+  readonly session: SessionDto;
+  readonly checkpoints: ReadonlyArray<CheckpointDto>;
+  readonly change: SessionChangeDto | null;
+}
+
+export interface ChangedFileDto {
+  readonly path: string;
+  readonly additions: number;
+  readonly deletions: number;
+}
+
+export interface ChangeDiffDto {
+  readonly change: SessionChangeDto;
+  readonly diff: string;
+  readonly files: ReadonlyArray<ChangedFileDto>;
+}
+
+export interface ReviewCommentDto {
+  readonly id: string;
+  readonly changeId: string;
+  readonly file: string | null;
+  readonly line: number | null;
+  readonly authorKind: "reviewer" | "mend";
+  readonly authorName: string;
+  readonly body: string;
+  readonly state: "draft" | "open" | "addressed" | "dismissed";
+  readonly createdAt: string;
+}
+
+/** A workbench SSE event — pointers only; clients re-read through the API. */
+export interface WorkbenchEventDto {
+  readonly type: string;
+  readonly projectId?: string;
+  readonly sessionId?: string;
+  readonly changeId?: string;
+  readonly sequence?: string;
+  readonly line?: string;
+}
+
+export const listProjects = () => request<ReadonlyArray<ProjectDto>>("/api/projects");
+
+export const projectDetail = (id: string) => request<ProjectDetailDto>(`/api/projects/${id}`);
+
+/** Adoption can fail for reasons worth reading (422 carries git's own words). */
+export const adoptProject = async (name: string, source: string): Promise<ProjectDto> => {
+  const response = await fetch("/api/projects", {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name, source }),
+  });
+  if (response.status === 401) throw redirect({ to: "/login" });
+  if (!response.ok) {
+    const body: { readonly message?: string } = await response.json().catch(() => ({}));
+    throw new Error(body.message ?? `adoption failed (${response.status})`);
+  }
+  const body: ProjectDto = await response.json();
+  return body;
+};
+
+export const listActiveSessions = () => request<ReadonlyArray<SessionDto>>("/api/sessions");
+
+export const sessionDetail = (id: string) => request<SessionDetailDto>(`/api/sessions/${id}`);
+
+export const stopSession = (id: string) => post<SessionDto>(`/api/sessions/${id}/stop`, {});
+
+export const checkpointSession = (id: string, trigger: "review-open" | "user-mark") =>
+  post<CheckpointDto>(`/api/sessions/${id}/checkpoints`, { trigger });
+
+export const changeDiff = (id: string) => request<ChangeDiffDto>(`/api/changes/${id}/diff`);
+
+export const changeComments = (id: string) =>
+  request<ReadonlyArray<ReviewCommentDto>>(`/api/changes/${id}/comments`);
+
+export const postChangeComment = (
+  id: string,
+  input: { readonly file: string | null; readonly line: number | null; readonly body: string },
+) => post<ReviewCommentDto>(`/api/changes/${id}/comments`, input);

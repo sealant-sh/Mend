@@ -1,4 +1,4 @@
-import type { RunStatus } from "#/lib/api";
+import type { RunStatus, SessionStatusDto } from "#/lib/api";
 
 /** Dot + word, never a glowing badge (DESIGN.md §4). */
 export function StatusDot({
@@ -39,6 +39,42 @@ export function StatusDot({
       <span className={`font-sans text-[13px] font-medium ${text}`}>{word}</span>
     </span>
   );
+}
+
+/**
+ * Session lifecycle as dot + word (plan §16.4). `recorded` keeps the words
+ * honest: "recording"/"observed" are claims about the record and are only
+ * made when a Sealant run stands behind the session.
+ */
+export function SessionStatusDot({
+  status,
+  recorded,
+}: {
+  readonly status: SessionStatusDto;
+  readonly recorded: boolean;
+}) {
+  switch (status) {
+    case "starting":
+      return <StatusDot tone="hollow" word="Starting" />;
+    case "running":
+      return (
+        <StatusDot
+          tone="accent"
+          word={recorded ? "Running · recording" : "Running · unrecorded"}
+          pulse
+        />
+      );
+    case "waiting":
+      return <StatusDot tone="amber" word="Waiting for input" />;
+    case "idle":
+      return <StatusDot tone="hollow" word="Idle" />;
+    case "completed":
+      return <StatusDot tone="green" word={recorded ? "Completed · observed" : "Completed"} />;
+    case "failed":
+      return <StatusDot tone="red" word="Failed" />;
+    case "stopped":
+      return <StatusDot tone="hollow" word="Stopped" />;
+  }
 }
 
 export function RunStatusDot({ status }: { readonly status: RunStatus }) {

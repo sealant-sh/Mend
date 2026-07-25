@@ -34,6 +34,7 @@
     "@mend/store": "workspace:*",
     "@mend/ui": "workspace:*",
     "@tailwindcss/vite": "catalog:",
+    "@tanstack/react-query": "catalog:",
     "@tanstack/react-router": "catalog:",
     "@tanstack/react-start": "catalog:",
     "@tanstack/router-plugin": "catalog:",
