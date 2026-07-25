@@ -71,57 +71,37 @@ const EDGE_MARK_CSS = `
 `;
 
 /**
- * Map the user's TEXT selection (anywhere in the code) to the line range it
- * spans, reading the shadow DOM selection the way the library's own editor
- * does: `ShadowRoot.getSelection()` on Blink/WebKit, `getComposedRanges`
- * where spec'd. Rows carry their new-file line number as `data-line`;
- * deletion rows are skipped (nothing to anchor to).
+ * Map a drag to the line range it spans by GEOMETRY — the drag's vertical
+ * extent against each row's rectangle. Selection APIs proved unreliable for
+ * this: a drag starting on a `user-select: none` region (hunk separators,
+ * gutters, padding) never creates a browser selection at all, which is
+ * exactly the "sometimes it works" failure mode. Geometry always answers.
+ * Rows vote if the drag's y-span touches them; deletions abstain.
  */
-const selectedLineSpan = (wrapper: HTMLElement): { start: number; end: number } | null => {
+const draggedLineSpan = (
+  wrapper: HTMLElement,
+  fromY: number,
+  toY: number,
+): { start: number; end: number } | null => {
   const host = wrapper.querySelector("diffs-container");
   const shadowRoot = host?.shadowRoot ?? null;
   if (shadowRoot === null) return null;
-
-  const shadowSelection = (
-    shadowRoot as ShadowRoot & { getSelection?: () => Selection | null }
-  ).getSelection?.();
-  let startNode: Node | null = null;
-  let endNode: Node | null = null;
-  let collapsed = true;
-  if (shadowSelection != null && shadowSelection.rangeCount > 0) {
-    const range = shadowSelection.getRangeAt(0);
-    startNode = range.startContainer;
-    endNode = range.endContainer;
-    collapsed = range.collapsed;
-  } else {
-    const selection = document.getSelection() as
-      | (Selection & {
-          getComposedRanges?: (options: {
-            shadowRoots: ReadonlyArray<ShadowRoot>;
-          }) => ReadonlyArray<StaticRange>;
-        })
-      | null;
-    const range = selection?.getComposedRanges?.({ shadowRoots: [shadowRoot] })[0];
-    if (range === undefined) return null;
-    startNode = range.startContainer;
-    endNode = range.endContainer;
-    collapsed = range.collapsed;
+  const top = Math.min(fromY, toY);
+  const bottom = Math.max(fromY, toY);
+  let start = Number.POSITIVE_INFINITY;
+  let end = Number.NEGATIVE_INFINITY;
+  for (const row of shadowRoot.querySelectorAll("[data-line]")) {
+    if (row.getAttribute("data-line-type") === "change-deletion") continue;
+    const rect = row.getBoundingClientRect();
+    if (rect.bottom < top || rect.top > bottom) continue;
+    const line = Number(row.getAttribute("data-line"));
+    if (Number.isFinite(line)) {
+      start = Math.min(start, line);
+      end = Math.max(end, line);
+    }
   }
-  if (collapsed || startNode === null || endNode === null) return null;
-
-  const rowOf = (node: Node): HTMLElement | null => {
-    const element = node instanceof Element ? node : node.parentElement;
-    const row = element?.closest("[data-line]") ?? null;
-    if (row === null || row.getAttribute("data-line-type") === "change-deletion") return null;
-    return row instanceof HTMLElement ? row : null;
-  };
-  const startRow = rowOf(startNode);
-  const endRow = rowOf(endNode);
-  if (startRow === null || endRow === null) return null;
-  const a = Number(startRow.getAttribute("data-line"));
-  const b = Number(endRow.getAttribute("data-line"));
-  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
-  return { start: Math.min(a, b), end: Math.max(a, b) };
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return { start, end };
 };
 
 export interface FileStat {
@@ -146,10 +126,50 @@ export function WorkbenchDiff({
 }) {
   const [composer, setComposer] = useState<CommentAnchor | null>(null);
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+  const [selection, setSelection] = useState<{
+    readonly file: string;
+    readonly start: number;
+    readonly end: number;
+  } | null>(null);
   const files = useMemo(() => parsePatchFiles(diff).flatMap((patch) => patch.files), [diff]);
   const statOf = useMemo(() => new Map(stats.map((stat) => [stat.path, stat])), [stats]);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sectionsRef = useRef(new Map<string, HTMLElement>());
+  const dragRef = useRef<{
+    file: string;
+    x: number;
+    y: number;
+    wrapper: HTMLElement;
+  } | null>(null);
+
+  // The release can land anywhere — past the card edge, on the scrollbar, on
+  // another panel — so the drag completes at the WINDOW, not the wrapper.
+  useEffect(() => {
+    const onWindowMouseUp = (event: MouseEvent) => {
+      const origin = dragRef.current;
+      dragRef.current = null;
+      if (origin === null) return;
+      if (Math.abs(event.clientY - origin.y) < 5 && Math.abs(event.clientX - origin.x) < 5) {
+        return; // a click, not a drag — clicks belong to the gutter handlers
+      }
+      const span = draggedLineSpan(origin.wrapper, origin.y, event.clientY);
+      if (span === null) return;
+      setSelection({ file: origin.file, start: span.start, end: span.end });
+      setComposer({
+        file: origin.file,
+        line: span.start,
+        endLine: span.end > span.start ? span.end : null,
+      });
+    };
+    window.addEventListener("mouseup", onWindowMouseUp);
+    return () => window.removeEventListener("mouseup", onWindowMouseUp);
+  }, []);
+  // NOTE on consistency: during a TEXT drag nothing re-renders (a mid-drag
+  // React render destroys the browser's in-progress selection — learned the
+  // hard way), so the drag paints natively; on release the span is computed
+  // by INTERSECTING the range with the rows and the wash is pinned through
+  // the library's controlled `selectedLines` until the composer closes.
+  // Gutter drags carry no native selection, so mirroring them live is safe.
 
   // Imperative by nature: the sidebar picked a file; expand it and bring its
   // sticky header to the top of the scroll container.
@@ -265,27 +285,29 @@ export function WorkbenchDiff({
                 )}
               </button>
               {!isCollapsed && (
-                // Selecting TEXT is also a comment gesture: on release, the
-                // spanned lines become the composer's anchor (copy still
-                // works — the selection is left intact).
+                // Selecting TEXT is also a comment gesture: the wash follows
+                // the drag live (controlled `selectedLines`), and on release
+                // the spanned lines become the composer's anchor. Copy still
+                // works — the selection is left intact.
                 <div
                   className="ev-diff"
-                  onMouseUp={(event) => {
-                    const wrapper = event.currentTarget;
-                    window.setTimeout(() => {
-                      const span = selectedLineSpan(wrapper);
-                      if (span === null) return;
-                      setComposer({
-                        file: file.name,
-                        line: span.start,
-                        endLine: span.end > span.start ? span.end : null,
-                      });
-                    }, 0);
+                  onMouseDown={(event) => {
+                    dragRef.current = {
+                      file: file.name,
+                      x: event.clientX,
+                      y: event.clientY,
+                      wrapper: event.currentTarget,
+                    };
                   }}
                 >
                   <FileDiff<Annotation>
                     fileDiff={file}
                     lineAnnotations={annotations}
+                    selectedLines={
+                      selection !== null && selection.file === file.name
+                        ? { start: selection.start, end: selection.end }
+                        : null
+                    }
                     options={{
                       diffStyle: "unified",
                       theme: { light: "evidence-review", dark: "evidence-review" },
@@ -293,6 +315,16 @@ export function WorkbenchDiff({
                       lineHoverHighlight: "line",
                       disableFileHeader: true,
                       enableLineSelection: true,
+                      // Controlled selection: the gutter drag's wash renders
+                      // from state, so it must be mirrored while dragging.
+                      onLineSelectionChange: (range: SelectedLineRange | null) => {
+                        if (range === null) return;
+                        setSelection({
+                          file: file.name,
+                          start: Math.min(range.start, range.end),
+                          end: Math.max(range.start, range.end),
+                        });
+                      },
                       // Drag across line numbers → range comment composer.
                       onLineSelectionEnd: (range: SelectedLineRange | null) => {
                         if (range === null) return;
@@ -300,16 +332,19 @@ export function WorkbenchDiff({
                           range.start <= range.end
                             ? [range.start, range.end]
                             : [range.end, range.start];
+                        setSelection({ file: file.name, start, end });
                         setComposer({
                           file: file.name,
                           line: start,
                           endLine: end > start ? end : null,
                         });
                       },
-                      // The composer opens from the GUTTER (the documented
-                      // gesture surface) — clicking or dragging in the code
-                      // area is text selection, never a surprise composer.
                       onLineNumberClick: (props) => {
+                        setSelection({
+                          file: file.name,
+                          start: props.lineNumber,
+                          end: props.lineNumber,
+                        });
                         setComposer({ file: file.name, line: props.lineNumber, endLine: null });
                       },
                     }}
@@ -320,7 +355,10 @@ export function WorkbenchDiff({
                         <InlineComposer
                           changeId={changeId}
                           anchor={annotation.metadata.anchor}
-                          onDone={() => setComposer(null)}
+                          onDone={() => {
+                            setComposer(null);
+                            setSelection(null);
+                          }}
                         />
                       )
                     }
