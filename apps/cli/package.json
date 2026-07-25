@@ -1,0 +1,22 @@
+{
+  "name": "@mend/cli",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The mend CLI: adopt a repository into the store, launch your agent in a session worktree",
+  "bin": {
+    "mend": "./src/main.ts"
+  },
+  "type": "module",
+  "scripts": {
+    "lint": "oxlint . --no-error-on-unmatched-pattern",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsgo -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@mend/typescript": "workspace:*",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
