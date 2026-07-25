@@ -66,9 +66,10 @@ const DatabaseLive = Layer.mergeAll(
 ).pipe(Layer.provideMerge(MigratorLive.pipe(Layer.provideMerge(PgLive))));
 
 // ─── The central store (host-side git) + the session engine over it ────────
-const SessionEngineLive = SessionEngine.layer.pipe(
-  Layer.provide(Store.layer.pipe(Layer.provide(StoreConfig.layer))),
-);
+// One instance each: the API handlers and the worker share them (memoized —
+// same layer reference, provided once at MainLive).
+const StoreLive = Store.layer.pipe(Layer.provide(StoreConfig.layer));
+const SessionEngineLive = SessionEngine.layer;
 
 // ─── better-auth mounted under /api/auth ────────────────────────────────────
 const AuthRoutes = HttpRouter.use((router) =>
@@ -201,6 +202,9 @@ const MainLive = Layer.unwrap(
     return parts.pipe(
       // Shared by the API (enqueue on comment) and the workers (one instance).
       Layer.provide(JobRunner.pgBossLayer),
+      // The session engine and store serve both the API handlers and the worker.
+      Layer.provide(SessionEngineLive),
+      Layer.provide(StoreLive),
       Layer.provide(Auth.layer),
       Layer.provide(SealantClient.layerFromEnv),
       Layer.provide(DatabaseLive),

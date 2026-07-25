@@ -5,11 +5,21 @@ import {
   BriefComment,
   BriefVersion,
   Change,
+  ChangeId,
   Issue,
   IssueId,
+  ProjectId,
   Run,
   RunId,
+  SessionId,
 } from "@mend/domain";
+import {
+  Change as SessionChange,
+  Checkpoint,
+  Project,
+  ReviewComment,
+  Session,
+} from "@mend/domain/workbench";
 import { SealantConnection } from "@mend/sealant";
 import { Schema } from "effect";
 import * as Context from "effect/Context";
@@ -214,10 +224,151 @@ const runsGroup = HttpApiGroup.make("runs")
   )
   .middleware(AuthMiddleware);
 
+// ─── Workbench (MEND-AGENT-WORKBENCH-PLAN.md §5–§7) ─────────────────────────
+
+/** A store or git operation that could not complete — the observed reason, verbatim. */
+export class StoreFailure extends Schema.TaggedErrorClass<StoreFailure>()(
+  "StoreFailure",
+  { message: Schema.String },
+  { httpApiStatus: 422 },
+) {}
+
+/** Adoption: clone `source` (URL or local path) into the store under `name`. */
+export class AdoptProject extends Schema.Class<AdoptProject>("AdoptProject")({
+  name: Schema.String,
+  source: Schema.String,
+}) {}
+
+export class ProjectDetail extends Schema.Class<ProjectDetail>("ProjectDetail")({
+  project: Project,
+  sessions: Schema.Array(Session),
+}) {}
+
+const projectsGroup = HttpApiGroup.make("projects")
+  .add(HttpApiEndpoint.get("list", "/projects", { success: Schema.Array(Project) }))
+  .add(
+    HttpApiEndpoint.post("adopt", "/projects", {
+      payload: AdoptProject,
+      success: Project,
+      error: StoreFailure,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("detail", "/projects/:id", {
+      params: { id: ProjectId },
+      success: ProjectDetail,
+      error: NotFound,
+    }),
+  )
+  .middleware(AuthMiddleware);
+
+/** Provisioning a session: the worktree exists after this; launching is separate. */
+export class NewWorkbenchSession extends Schema.Class<NewWorkbenchSession>("NewWorkbenchSession")({
+  harness: Schema.String,
+  label: Schema.NullOr(Schema.String),
+  /** Branch or sha to base the worktree on; null = the project's default branch. */
+  base: Schema.NullOr(Schema.String),
+}) {}
+
+export class SessionDetail extends Schema.Class<SessionDetail>("SessionDetail")({
+  session: Session,
+  checkpoints: Schema.Array(Checkpoint),
+  change: Schema.NullOr(SessionChange),
+}) {}
+
+/** The API takes only the human-initiated triggers; the engine owns the rest. */
+export class CheckpointRequest extends Schema.Class<CheckpointRequest>("CheckpointRequest")({
+  trigger: Schema.Literals(["review-open", "user-mark"]),
+}) {}
+
+const sessionsGroup = HttpApiGroup.make("sessions")
+  .add(HttpApiEndpoint.get("listActive", "/sessions", { success: Schema.Array(Session) }))
+  .add(
+    HttpApiEndpoint.post("create", "/projects/:id/sessions", {
+      params: { id: ProjectId },
+      payload: NewWorkbenchSession,
+      success: Session,
+      error: Schema.Union([NotFound, StoreFailure]),
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("detail", "/sessions/:id", {
+      params: { id: SessionId },
+      success: SessionDetail,
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("stop", "/sessions/:id/stop", {
+      params: { id: SessionId },
+      success: Session,
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("checkpoint", "/sessions/:id/checkpoints", {
+      params: { id: SessionId },
+      payload: CheckpointRequest,
+      success: Checkpoint,
+      error: Schema.Union([NotFound, StoreFailure]),
+    }),
+  )
+  .middleware(AuthMiddleware);
+
+export class ChangedFileView extends Schema.Class<ChangedFileView>("ChangedFileView")({
+  path: Schema.String,
+  additions: Schema.Int,
+  deletions: Schema.Int,
+}) {}
+
+/** The change and its live diff — git is the source of truth, read at request time. */
+export class ChangeDiff extends Schema.Class<ChangeDiff>("ChangeDiff")({
+  change: SessionChange,
+  diff: Schema.String,
+  files: Schema.Array(ChangedFileView),
+}) {}
+
+/** A reviewer's comment: file/line anchor (both null = change-level), and the words. */
+export class NewReviewCommentRequest extends Schema.Class<NewReviewCommentRequest>(
+  "NewReviewCommentRequest",
+)({
+  file: Schema.NullOr(Schema.String),
+  line: Schema.NullOr(Schema.Int),
+  body: Schema.String,
+}) {}
+
+const sessionChangesGroup = HttpApiGroup.make("sessionChanges")
+  .add(
+    HttpApiEndpoint.get("diff", "/changes/:id/diff", {
+      params: { id: ChangeId },
+      success: ChangeDiff,
+      error: Schema.Union([NotFound, StoreFailure]),
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("comments", "/changes/:id/comments", {
+      params: { id: ChangeId },
+      success: Schema.Array(ReviewComment),
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("comment", "/changes/:id/comments", {
+      params: { id: ChangeId },
+      payload: NewReviewCommentRequest,
+      success: ReviewComment,
+      error: NotFound,
+    }),
+  )
+  .middleware(AuthMiddleware);
+
 export const MendApi = HttpApi.make("mend")
   .add(healthGroup)
   .add(sealantGroup)
   .add(issuesGroup)
   .add(briefsGroup)
   .add(runsGroup)
+  .add(projectsGroup)
+  .add(sessionsGroup)
+  .add(sessionChangesGroup)
   .prefix("/api");

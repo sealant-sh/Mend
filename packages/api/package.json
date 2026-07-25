@@ -19,6 +19,8 @@
     "@mend/domain": "workspace:*",
     "@mend/jobs": "workspace:*",
     "@mend/sealant": "workspace:*",
+    "@mend/sessions": "workspace:*",
+    "@mend/store": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {
