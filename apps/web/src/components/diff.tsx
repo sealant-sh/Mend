@@ -1,4 +1,8 @@
-import { parsePatchFiles, type DiffLineAnnotation } from "@pierre/diffs";
+import {
+  parsePatchFiles,
+  registerCustomCSSVariableTheme,
+  type DiffLineAnnotation,
+} from "@pierre/diffs";
 import { FileDiff } from "@pierre/diffs/react";
 import { useMemo, useState } from "react";
 
@@ -17,6 +21,31 @@ import { queryClient } from "#/lib/queries";
 type Annotation =
   | { readonly kind: "comment"; readonly comment: ReviewCommentDto }
   | { readonly kind: "composer"; readonly file: string; readonly line: number };
+
+/**
+ * The Evidence Review syntax theme: token colors come from `--diffs-*` CSS
+ * variables (defined in styles.css against our tokens), so one registration
+ * serves light and dark and the palette lives with the rest of the design
+ * system. The defaults below only cover a variable failing to resolve.
+ */
+registerCustomCSSVariableTheme("evidence-review", {
+  foreground: "#3b3b40",
+  background: "transparent",
+  "token-comment": "#9a9aa2",
+  "token-keyword": "#7a4f33",
+  "token-string": "#55705e",
+  "token-string-expression": "#55705e",
+  "token-constant": "#6f5a8e",
+  "token-function": "#1b1b1d",
+  "token-punctuation": "#6e6e76",
+  "token-link": "#3b5a92",
+});
+
+/** Injected into their shadow root: the EV edge-mark discipline — 2px edge, never a flood. */
+const EDGE_MARK_CSS = `
+[data-line-type="change-addition"] { box-shadow: inset 2px 0 0 var(--sw-add-edge, #2e7d46); }
+[data-line-type="change-deletion"] { box-shadow: inset 2px 0 0 var(--sw-del-edge, #c0362c); }
+`;
 
 export function WorkbenchDiff({
   diff,
@@ -60,13 +89,14 @@ export function WorkbenchDiff({
           });
         }
         return (
-          <div key={file.name} className="overflow-hidden rounded-2xl bg-card shadow-sm">
+          <div key={file.name} className="ev-diff overflow-hidden rounded-2xl bg-card shadow-sm">
             <FileDiff<Annotation>
               fileDiff={file}
               lineAnnotations={annotations}
               options={{
                 diffStyle: "unified",
-                theme: { light: "pierre-light", dark: "pierre-dark" },
+                theme: { light: "evidence-review", dark: "evidence-review" },
+                unsafeCSS: EDGE_MARK_CSS,
                 lineHoverHighlight: "line",
                 onLineClick: (props) => {
                   // Anchor to the new file; a deleted line has nothing to anchor to.
