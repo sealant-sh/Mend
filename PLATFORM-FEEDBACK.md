@@ -40,6 +40,19 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
 - **Suggested:** settle the session's run when the PTY exits (or document that session runs are
   workspace-lifetime and the session status is the authoritative lifecycle).
 
+## 2026-07-25 · 0.7.0 · Mount + credentials: the worker's blueprint parser rejects the combination
+
+- **Needed:** `mend claude` / `mend codex` — a mount-sourced workspace with the caller's connected
+  account attached, exactly as the SDK documents ("Credentials and dotfiles options compose
+  unchanged" on `WorkspaceMountSource`).
+- **Today:** `workspaces.create({ source: { kind: "mount" }, credentials: { claude: true } })`
+  queues a build job the worker kills at `parseWorkspaceBlueprint` — ZodError
+  `Unrecognized key: "credentials"` — and the workspace reaches `failed` before ready. Without
+  `credentials` the same create works. Mend currently omits credentials on launch (harness auth is
+  interactive inside the PTY) until this lands.
+- **Suggested:** accept the credentials key in the mount blueprint path — or if it is genuinely
+  unsupported there, reject at CREATE time with a clear message instead of a failed build job.
+
 ## 2026-07-25 · 0.7.0 · ✅ What shipped works — mounts, PTY journal, and file events, verified live
 
 **Adopted immediately** — noting the wins so the trail is honest: `source: {kind:"mount"}`

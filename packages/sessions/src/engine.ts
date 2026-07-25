@@ -246,7 +246,11 @@ export class SessionEngine extends Context.Service<
           source: { kind: "mount", path: worktree },
           harness: shape.harness,
           name: `mend-${session.id.slice(0, 8)}`,
-          ...(shape.credentials === undefined ? {} : { credentials: shape.credentials }),
+          // Deliberately NOT passing shape.credentials: the 0.7.0 worker's
+          // blueprint parser rejects `credentials` on mount-sourced workspaces
+          // ("Unrecognized key") and the whole build fails — see
+          // PLATFORM-FEEDBACK.md. Harness auth is interactive in the PTY until
+          // that lands; restore `credentials: shape.credentials` then.
         });
         const pty = yield* sealant.openSession(workspace, argv);
         yield* sessions.setSealantIds(
