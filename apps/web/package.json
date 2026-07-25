@@ -43,6 +43,7 @@
     "@xterm/xterm": "^6.0.0",
     "better-auth": "catalog:",
     "effect": "catalog:",
+    "ghostty-web": "^0.4.0",
     "lucide-react": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
