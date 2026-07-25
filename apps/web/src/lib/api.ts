@@ -307,6 +307,7 @@ export interface SessionDto {
   readonly branch: string;
   readonly baseSha: string;
   readonly sealantRunId: string | null;
+  readonly sealantSessionId: string | null;
   readonly status: SessionStatusDto;
   readonly summary: string | null;
   readonly startedAt: string | null;

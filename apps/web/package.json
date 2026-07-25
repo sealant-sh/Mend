@@ -39,6 +39,8 @@
     "@tanstack/react-router": "catalog:",
     "@tanstack/react-start": "catalog:",
     "@tanstack/router-plugin": "catalog:",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "better-auth": "catalog:",
     "effect": "catalog:",
     "lucide-react": "catalog:",

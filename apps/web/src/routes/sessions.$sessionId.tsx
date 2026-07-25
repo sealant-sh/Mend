@@ -4,6 +4,7 @@ import { useCallback, useState } from "react";
 
 import { AppShell } from "#/components/shell";
 import { SessionStatusDot } from "#/components/status";
+import { SessionTerminal } from "#/components/terminal";
 import { checkpointSession, stopSession, type WorkbenchEventDto } from "#/lib/api";
 import { pendingFollowUpQuery, queryClient, sessionDetailQuery } from "#/lib/queries";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
@@ -110,33 +111,50 @@ function SessionPage() {
           )}
         </div>
 
-        <div className="mt-9 grid gap-6 lg:grid-cols-[1fr_320px]">
-          <section>
-            <p className="text-xs font-medium text-label">Live record</p>
-            <div className="mt-3 overflow-hidden rounded-2xl bg-card shadow-sm">
-              <div className="border-b border-rule-faint bg-secondary px-4 py-2">
-                <p className="font-mono text-[11.5px] text-muted-foreground">
-                  {session.sealantRunId === null
-                    ? "no record — the session was not supervised"
-                    : `run ${session.sealantRunId} · streaming`}
-                </p>
-              </div>
-              <div className="max-h-[480px] overflow-y-auto p-4">
-                {lines.length === 0 ? (
-                  <p className="font-mono text-xs text-faint">
-                    {session.sealantRunId === null
-                      ? "Progress appears here once sessions launch supervised."
-                      : "Waiting for record entries…"}
-                  </p>
-                ) : (
-                  lines.map((line, index) => (
-                    <p key={index} className="font-mono text-xs leading-6 text-ink-2">
-                      {line}
+        <div className="mt-9 grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+          <section className="min-w-0">
+            {session.sealantSessionId !== null && ACTIVE.has(session.status) ? (
+              <>
+                <p className="text-xs font-medium text-label">Terminal</p>
+                <div className="mt-3 overflow-hidden rounded-2xl bg-card shadow-sm">
+                  <div className="flex items-center gap-2 border-b border-rule-faint bg-secondary px-4 py-2">
+                    <span className="size-1.5 animate-pulse rounded-full bg-[var(--sw-red)]" />
+                    <p className="font-mono text-[11.5px] text-muted-foreground">
+                      run {session.sealantRunId} · live — the same session your terminal holds
                     </p>
-                  ))
-                )}
-              </div>
-            </div>
+                  </div>
+                  <SessionTerminal sessionId={session.id} />
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="text-xs font-medium text-label">Record</p>
+                <div className="mt-3 overflow-hidden rounded-2xl bg-card shadow-sm">
+                  <div className="border-b border-rule-faint bg-secondary px-4 py-2">
+                    <p className="font-mono text-[11.5px] text-muted-foreground">
+                      {session.sealantRunId === null
+                        ? "no record — the session was not supervised"
+                        : `run ${session.sealantRunId}`}
+                    </p>
+                  </div>
+                  <div className="max-h-[480px] overflow-y-auto p-4">
+                    {lines.length === 0 ? (
+                      <p className="font-mono text-xs text-faint">
+                        {session.sealantRunId === null
+                          ? "Progress appears here once sessions launch supervised."
+                          : "The session is settled — open the change for the reviewed diff."}
+                      </p>
+                    ) : (
+                      lines.map((line, index) => (
+                        <p key={index} className="font-mono text-xs leading-6 text-ink-2">
+                          {line}
+                        </p>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
           </section>
 
           <section>
