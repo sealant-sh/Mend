@@ -11,7 +11,9 @@
     "lint": "oxlint .",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsgo -p tsconfig.json --noEmit",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "ios:release": "expo run:ios --device --configuration Release",
+    "ios:clean": "expo prebuild --clean && expo run:ios --device --configuration Release"
   },
   "dependencies": {
     "@expo-google-fonts/inter": "^0.4.2",
