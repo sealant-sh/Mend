@@ -1,17 +1,17 @@
-// One session as a CONVERSATION (the t3/ChatGPT shape): the canonical record
-// rendered as messages — user turns, assistant prose, tool activity as quiet
-// mono rows — polled live from the running workspace. The composer writes
-// straight into the PTY (text + Enter). The raw terminal stays one tap away.
+// One session as a CONVERSATION — EV-styled: the page header pattern up top,
+// panels that lift off the warm canvas for turns, tool activity as sunken
+// mono strips, and the composer as a proper panel surface. Review is one
+// primary action away; the raw terminal stays the escape hatch.
 
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useRef, useState } from "react";
-import { FlatList, TextInput, View } from "react-native";
+import { FlatList, StyleSheet, TextInput, View } from "react-native";
 import { KeyboardStickyView, useKeyboardState } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { EvButton } from "@/components/button";
 import { StatusWord } from "@/components/status";
-import { MonoText, UiText } from "@/components/typography";
+import { DisplayTitle, Eyebrow, MonoText, UiText } from "@/components/typography";
 import {
   ACTIVE,
   loadConfig,
@@ -23,10 +23,10 @@ import {
 } from "@/data/live";
 import { radius, spacing, useEvidenceTheme } from "@/theme/evidence";
 
-const COMPOSER_HEIGHT = 64;
+const COMPOSER_HEIGHT = 68;
 
 function EventRow({ event }: { readonly event: TranscriptEventDto }) {
-  const { colors } = useEvidenceTheme();
+  const { colors, shadow } = useEvidenceTheme();
   if (event.kind === "user" && event.text !== null) {
     return (
       <View
@@ -35,11 +35,12 @@ function EventRow({ event }: { readonly event: TranscriptEventDto }) {
           maxWidth: "85%",
           backgroundColor: colors.wash,
           borderRadius: radius.xl,
+          borderBottomRightRadius: 6,
           paddingHorizontal: 14,
           paddingVertical: 10,
         }}
       >
-        <UiText>{event.text}</UiText>
+        <UiText size={14.5}>{event.text}</UiText>
       </View>
     );
   }
@@ -48,32 +49,44 @@ function EventRow({ event }: { readonly event: TranscriptEventDto }) {
       <View
         style={{
           alignSelf: "flex-start",
-          maxWidth: "95%",
+          maxWidth: "94%",
           backgroundColor: colors.panel,
           borderRadius: radius.xl,
+          borderBottomLeftRadius: 6,
+          borderWidth: StyleSheet.hairlineWidth,
+          borderColor: colors.softRule,
+          boxShadow: shadow.sm,
           paddingHorizontal: 14,
-          paddingVertical: 10,
+          paddingVertical: 11,
         }}
       >
-        <UiText>{event.text}</UiText>
+        <UiText size={14.5}>{event.text}</UiText>
       </View>
     );
   }
   if (event.kind === "reasoning" && event.text !== null) {
     return (
-      <MonoText style={{ color: colors.faint, fontSize: 11 }} numberOfLines={2}>
+      <MonoText tone="faint" size={11} numberOfLines={2} style={{ paddingHorizontal: 6 }}>
         {event.text}
       </MonoText>
     );
   }
   if (event.kind === "tool") {
     return (
-      <View style={{ gap: 2 }}>
-        <MonoText style={{ color: colors.ink2, fontSize: 11.5 }}>
+      <View
+        style={{
+          backgroundColor: colors.sunken,
+          borderRadius: radius.md,
+          paddingHorizontal: 12,
+          paddingVertical: 8,
+          gap: 3,
+        }}
+      >
+        <MonoText size={11.5} style={{ color: colors.ink2 }}>
           {event.command !== null ? `$ ${event.command}` : `⚙ ${event.name ?? "tool"}`}
         </MonoText>
         {event.output !== null && event.output !== "" && (
-          <MonoText style={{ color: colors.faint, fontSize: 10.5 }} numberOfLines={3}>
+          <MonoText tone="faint" size={10.5} numberOfLines={3}>
             {event.output}
           </MonoText>
         )}
@@ -90,6 +103,7 @@ export default function SessionScreen() {
   const insets = useSafeAreaInsets();
   const detail = useSession(id);
   const session = detail.data?.session;
+  const change = detail.data?.change ?? null;
   const active = session !== undefined && ACTIVE.has(session.status);
   const transcript = useTranscript(id, active);
   const { resume, stop } = useSessionActions();
@@ -102,8 +116,6 @@ export default function SessionScreen() {
     void loadConfig().then((config) => setBase({ url: config.url, token: config.token }));
   }, []);
 
-  // One quiet socket for the composer: text in, PTY does the rest. Output is
-  // ignored here — the transcript poll renders the conversation.
   useEffect(() => {
     if (base === null || !active || session === undefined) return;
     const url = new URL(`${base.url}/api/tty`);
@@ -132,48 +144,69 @@ export default function SessionScreen() {
     isVisible: state.isVisible,
   }));
   const bottomPad =
-    (keyboard.isVisible ? keyboard.height : insets.bottom) + (active ? COMPOSER_HEIGHT : 12);
+    (keyboard.isVisible ? keyboard.height : insets.bottom) +
+    (active ? COMPOSER_HEIGHT : spacing.md);
   const events = transcript.data?.events ?? [];
 
   return (
     <>
-      <Stack.Screen options={{ title: session?.harness ?? "session" }} />
+      <Stack.Screen options={{ headerShown: false }} />
       <View style={{ flex: 1, backgroundColor: colors.bg }}>
         <View
           style={{
-            flexDirection: "row",
-            alignItems: "center",
-            gap: 12,
-            paddingHorizontal: 16,
-            paddingVertical: 10,
+            paddingTop: insets.top + spacing.sm,
+            paddingHorizontal: 20,
+            paddingBottom: spacing.sm,
+            gap: 10,
           }}
         >
+          <Eyebrow>session</Eyebrow>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+            <DisplayTitle>{session?.harness ?? "…"}</DisplayTitle>
+            <View style={{ flex: 1 }} />
+            {session !== undefined && (
+              <StatusWord tone={toneOf(session.status)} word={session.status} />
+            )}
+          </View>
           {session !== undefined && (
-            <StatusWord tone={toneOf(session.status)} word={session.status} />
+            <MonoText tone="faint" size={11.5}>
+              {session.branch.replace(/^mend\/session\//, "")}
+            </MonoText>
           )}
-          <View style={{ flex: 1 }} />
-          {session !== undefined && active && (
-            <EvButton
-              variant="ghost"
-              label={stop.isPending ? "stopping…" : "Stop"}
-              onPress={() => stop.mutate(session.id)}
-            />
-          )}
-          {session !== undefined && !active && (
-            <EvButton
-              label={resume.isPending ? "resuming…" : "Resume"}
-              onPress={() => resume.mutate({ sessionId: session.id, harness: null })}
-            />
-          )}
-          {session !== undefined && (
-            <EvButton
-              variant="outline"
-              label="Terminal"
-              onPress={() =>
-                router.push({ pathname: "/terminal/[id]", params: { id: session.id } })
-              }
-            />
-          )}
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            {change !== null && (
+              <EvButton
+                label="Review"
+                onPress={() => router.push({ pathname: "/review/[id]", params: { id: change.id } })}
+                style={{ flex: 1 }}
+              />
+            )}
+            {session !== undefined && !active && (
+              <EvButton
+                variant={change === null ? "primary" : "outline"}
+                label={resume.isPending ? "resuming…" : "Resume"}
+                onPress={() => resume.mutate({ sessionId: session.id, harness: null })}
+                style={{ flex: 1 }}
+              />
+            )}
+            {session !== undefined && (
+              <EvButton
+                variant="outline"
+                label="Terminal"
+                onPress={() =>
+                  router.push({ pathname: "/terminal/[id]", params: { id: session.id } })
+                }
+                style={{ flex: 1 }}
+              />
+            )}
+            {session !== undefined && active && (
+              <EvButton
+                variant="ghost"
+                label={stop.isPending ? "…" : "Stop"}
+                onPress={() => stop.mutate(session.id)}
+              />
+            )}
+          </View>
         </View>
         <FlatList
           ref={listRef}
@@ -181,13 +214,14 @@ export default function SessionScreen() {
           keyExtractor={(_, index) => String(index)}
           renderItem={({ item }) => <EventRow event={item} />}
           contentContainerStyle={{
-            paddingHorizontal: 16,
+            paddingHorizontal: 20,
+            paddingTop: spacing.sm,
             paddingBottom: bottomPad,
-            gap: spacing.sm,
+            gap: 10,
           }}
           onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
           ListEmptyComponent={
-            <MonoText style={{ color: colors.faint }}>
+            <MonoText tone="faint">
               {transcript.isLoading
                 ? "reading the conversation…"
                 : active
@@ -204,11 +238,13 @@ export default function SessionScreen() {
             <View
               style={{
                 flexDirection: "row",
+                alignItems: "flex-end",
                 gap: 8,
-                padding: 10,
+                paddingHorizontal: 12,
+                paddingTop: 10,
                 paddingBottom: keyboard.isVisible ? 10 : insets.bottom + 6,
                 backgroundColor: colors.panel,
-                borderTopWidth: 1,
+                borderTopWidth: StyleSheet.hairlineWidth,
                 borderTopColor: colors.softRule,
               }}
             >
@@ -220,13 +256,14 @@ export default function SessionScreen() {
                 multiline
                 style={{
                   flex: 1,
-                  minHeight: 40,
+                  minHeight: 42,
                   maxHeight: 120,
-                  borderWidth: 1,
+                  backgroundColor: colors.bg,
+                  borderWidth: StyleSheet.hairlineWidth,
                   borderColor: colors.rule,
                   borderRadius: radius.lg,
-                  paddingHorizontal: 12,
-                  paddingVertical: 9,
+                  paddingHorizontal: 13,
+                  paddingVertical: 10,
                   color: colors.ink,
                   fontSize: 15,
                 }}
