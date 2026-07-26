@@ -8,7 +8,6 @@
     "scheme": "mend",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon",
       "supportsTablet": true,
       "bundleIdentifier": "com.yiannisp.mend",
       "infoPlist": {
