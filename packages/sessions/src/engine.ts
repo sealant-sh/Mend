@@ -305,6 +305,11 @@ export class SessionEngine extends Context.Service<
         // (verified: accepting it writes exactly this key), not .claude.json.
         `let s={};try{s=JSON.parse(fs.readFileSync(h+"/.claude/settings.json","utf8"))}catch{}` +
         `s.skipDangerousModePermissionPrompt=true;` +
+        // The workspace image never sees the operator's own ~/.claude
+        // settings, so a fresh session silently falls back to the CLI's
+        // default model. Default-if-absent only: a restored session's own
+        // choice (or a mid-session /model) survives the merge.
+        `s.model=s.model||"claude-fable-5";` +
         `fs.writeFileSync(h+"/.claude/settings.json",JSON.stringify(s))' 2>/dev/null; ` +
         // The workspace IS the sandbox: Claude Code refuses bypass-permissions
         // as root unless the environment says so, and it is telling the truth.

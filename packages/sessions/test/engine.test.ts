@@ -31,6 +31,7 @@ const sealantDeadLayer = Layer.succeed(SealantClient, {
   startHarnessInWorkspace: () => Effect.die("not in test"),
   waitRun: () => Effect.die("not in test"),
   openSession: () => Effect.die("not in test"),
+  stopWorkspace: () => Effect.die("not in test"),
   getSession: () => Effect.die("not in test"),
   exec: () => Effect.die("not in test"),
   diffCommits: () => Effect.die("not in test"),
