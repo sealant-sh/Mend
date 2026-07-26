@@ -51,10 +51,13 @@ export function GhosttyTerminal({
   serverUrl,
   token,
   sessionId,
+  registerSend,
 }: {
   readonly serverUrl: string;
   readonly token: string;
   readonly sessionId: string;
+  /** Hands the caller a raw-bytes sender (the accessory key bar uses it). */
+  readonly registerSend?: (send: (data: string) => void) => void;
 }) {
   const Native = nativeTerminalView();
   const { scheme, colors } = useEvidenceTheme();
@@ -71,6 +74,11 @@ export function GhosttyTerminal({
     const ws = new WebSocket(url.toString());
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
+    registerSend?.((data) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(new TextEncoder().encode(data).buffer as ArrayBuffer);
+      }
+    });
     const decoder = new TextDecoder();
     ws.onmessage = (event) => {
       if (typeof event.data === "string") return; // control frames ({"t":"end"})

@@ -14,6 +14,7 @@ import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { useEffect } from "react";
+import { KeyboardProvider } from "react-native-keyboard-controller";
 
 import { fontFamilies, useEvidenceTheme } from "@/theme/evidence";
 
@@ -53,27 +54,29 @@ export default function RootLayout() {
   };
 
   return (
-    <QueryClientProvider client={queryClient}>
-      <ThemeProvider value={navTheme}>
-        <StatusBar style="auto" />
-        <Stack
-          screenOptions={{
-            headerStyle: { backgroundColor: colors.bg },
-            headerShadowVisible: false,
-            headerTintColor: colors.accent,
-            headerTitleStyle: {
-              fontFamily: fontFamilies.sans.semibold,
-              fontSize: 15,
-              color: colors.ink,
-            },
-          }}
-        >
-          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-          <Stack.Screen name="project/[id]" options={{ title: "Project" }} />
-          <Stack.Screen name="session/[id]" options={{ title: "Session" }} />
-          <Stack.Screen name="review/[id]" options={{ title: "Review" }} />
-        </Stack>
-      </ThemeProvider>
-    </QueryClientProvider>
+    <KeyboardProvider>
+      <QueryClientProvider client={queryClient}>
+        <ThemeProvider value={navTheme}>
+          <StatusBar style="auto" />
+          <Stack
+            screenOptions={{
+              headerStyle: { backgroundColor: colors.bg },
+              headerShadowVisible: false,
+              headerTintColor: colors.accent,
+              headerTitleStyle: {
+                fontFamily: fontFamilies.sans.semibold,
+                fontSize: 15,
+                color: colors.ink,
+              },
+            }}
+          >
+            <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+            <Stack.Screen name="project/[id]" options={{ title: "Project" }} />
+            <Stack.Screen name="session/[id]" options={{ title: "Session" }} />
+            <Stack.Screen name="review/[id]" options={{ title: "Review" }} />
+          </Stack>
+        </ThemeProvider>
+      </QueryClientProvider>
+    </KeyboardProvider>
   );
 }

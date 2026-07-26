@@ -55,11 +55,10 @@ export default function SessionScreen() {
         </View>
       )}
       {terminalReady ? (
-        <Panel lift>
-          <View style={{ height: 480, borderRadius: radius.xl, overflow: "hidden" }}>
-            <GhosttyTerminal serverUrl={base.url} token={base.token} sessionId={session.id} />
-          </View>
-        </Panel>
+        <EvButton
+          label="Open terminal"
+          onPress={() => router.push({ pathname: "/terminal/[id]", params: { id: session.id } })}
+        />
       ) : (
         <Panel>
           <View style={{ padding: 16 }}>
