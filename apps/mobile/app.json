@@ -3,13 +3,13 @@
     "name": "Mend",
     "slug": "mend",
     "version": "0.0.0",
-    "orientation": "portrait",
+    "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "mend",
     "userInterfaceStyle": "automatic",
     "ios": {
       "icon": "./assets/expo.icon",
-      "supportsTablet": false,
+      "supportsTablet": true,
       "bundleIdentifier": "com.yiannisp.mend",
       "infoPlist": {
         "NSAppTransportSecurity": {
