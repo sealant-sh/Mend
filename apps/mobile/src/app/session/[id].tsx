@@ -135,7 +135,7 @@ export default function SessionScreen() {
   const send = () => {
     const socket = wsRef.current;
     if (socket === null || socket.readyState !== WebSocket.OPEN || draft.trim() === "") return;
-    socket.send(new TextEncoder().encode(`${draft}\r`).buffer as ArrayBuffer);
+    socket.send(JSON.stringify({ t: "input", data: `${draft}\r` }));
     setDraft("");
   };
 

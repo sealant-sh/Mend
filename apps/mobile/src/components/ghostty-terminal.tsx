@@ -76,13 +76,15 @@ export function GhosttyTerminal({
     wsRef.current = ws;
     registerSend?.((data) => {
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(new TextEncoder().encode(data).buffer as ArrayBuffer);
+        ws.send(JSON.stringify({ t: "input", data }));
       }
     });
-    const decoder = new TextDecoder();
+    const decoder = typeof TextDecoder === "undefined" ? null : new TextDecoder();
     ws.onmessage = (event) => {
       if (typeof event.data === "string") return; // control frames ({"t":"end"})
-      const chunk = decoder.decode(new Uint8Array(event.data as ArrayBuffer), { stream: true });
+      const bytes = new Uint8Array(event.data as ArrayBuffer);
+      const chunk =
+        decoder !== null ? decoder.decode(bytes, { stream: true }) : String.fromCharCode(...bytes);
       setBuffer((current) => current + chunk);
     };
     return () => {
@@ -126,7 +128,7 @@ export function GhosttyTerminal({
         onInput={(event) => {
           const socket = wsRef.current;
           if (socket !== null && socket.readyState === WebSocket.OPEN) {
-            socket.send(new TextEncoder().encode(event.nativeEvent.data).buffer as ArrayBuffer);
+            socket.send(JSON.stringify({ t: "input", data: event.nativeEvent.data }));
           }
         }}
         onResize={(event) => {

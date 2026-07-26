@@ -111,6 +111,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
                     readonly t?: string;
                     readonly cols?: number;
                     readonly rows?: number;
+                    readonly data?: string;
                   };
                   if (
                     frame.t === "resize" &&
@@ -118,6 +119,11 @@ export const TtyRoutes = HttpRouter.use((router) =>
                     typeof frame.rows === "number"
                   ) {
                     attachment.resize(frame.cols, frame.rows);
+                  }
+                  // Text-frame input: native clients (Hermes) send this —
+                  // binary encoding is unreliable there, and the SDK encodes.
+                  if (frame.t === "input" && typeof frame.data === "string") {
+                    attachment.send(frame.data);
                   }
                 } catch {
                   // Unknown text frame — ignore.
