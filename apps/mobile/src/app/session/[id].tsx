@@ -108,9 +108,15 @@ export default function SessionScreen() {
   const transcript = useTranscript(id, active);
   const { resume, stop } = useSessionActions();
   const [draft, setDraft] = useState("");
+  const [pendingSends, setPendingSends] = useState<ReadonlyArray<string>>([]);
+  const [working, setWorking] = useState(false);
+  const workingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastInvalidate = useRef(0);
   const [base, setBase] = useState<{ url: string; token: string } | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const listRef = useRef<FlatList<TranscriptEventDto> | null>(null);
+  const transcriptRef = useRef<(() => Promise<unknown>) | null>(null);
+  transcriptRef.current = transcript.refetch;
 
   useEffect(() => {
     void loadConfig().then((config) => setBase({ url: config.url, token: config.token }));
@@ -126,16 +132,34 @@ export default function SessionScreen() {
     const ws = new WebSocket(url.toString());
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
+    // PTY bytes are the live signal: the harness is doing something. Surface
+    // it immediately (working indicator) and pull the transcript at most
+    // once a second while activity flows — turns land as they happen.
+    ws.onmessage = (event) => {
+      if (typeof event.data === "string") return;
+      setWorking(true);
+      if (workingTimer.current !== null) clearTimeout(workingTimer.current);
+      workingTimer.current = setTimeout(() => setWorking(false), 2_500);
+      const now = Date.now();
+      if (now - lastInvalidate.current > 1_000) {
+        lastInvalidate.current = now;
+        void transcriptRef.current?.();
+      }
+    };
     return () => {
       wsRef.current = null;
+      if (workingTimer.current !== null) clearTimeout(workingTimer.current);
       ws.close();
     };
   }, [base, active, session?.id]);
 
   const send = () => {
     const socket = wsRef.current;
-    if (socket === null || socket.readyState !== WebSocket.OPEN || draft.trim() === "") return;
+    const text = draft.trim();
+    if (socket === null || socket.readyState !== WebSocket.OPEN || text === "") return;
     socket.send(JSON.stringify({ t: "input", data: `${draft}\r` }));
+    setPendingSends((current) => [...current, text]);
+    setWorking(true);
     setDraft("");
   };
 
@@ -146,7 +170,29 @@ export default function SessionScreen() {
   const bottomPad =
     (keyboard.isVisible ? keyboard.height : insets.bottom) +
     (active ? COMPOSER_HEIGHT : spacing.md);
-  const events = transcript.data?.events ?? [];
+  const serverEvents = transcript.data?.events ?? [];
+  // Optimistic reconcile: a pending send disappears once the transcript
+  // carries it (compare against the tail's user turns).
+  useEffect(() => {
+    if (pendingSends.length === 0) return;
+    const tail = new Set(
+      serverEvents
+        .slice(-12)
+        .filter((event) => event.kind === "user")
+        .map((event) => (event.text ?? "").trim()),
+    );
+    setPendingSends((current) => current.filter((text) => !tail.has(text)));
+  }, [serverEvents.length]);
+  const events: ReadonlyArray<TranscriptEventDto> = [
+    ...serverEvents,
+    ...pendingSends.map((text) => ({
+      kind: "user",
+      text,
+      name: null,
+      command: null,
+      output: null,
+    })),
+  ];
 
   return (
     <>
@@ -223,6 +269,13 @@ export default function SessionScreen() {
             gap: 10,
           }}
           onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
+          ListFooterComponent={
+            working && active ? (
+              <MonoText tone="faint" size={11.5} style={{ paddingHorizontal: 6, paddingTop: 4 }}>
+                ▍ working…
+              </MonoText>
+            ) : null
+          }
           ListEmptyComponent={
             <MonoText tone="faint">
               {transcript.isLoading

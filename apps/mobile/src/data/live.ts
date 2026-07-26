@@ -195,7 +195,7 @@ export const useTranscript = (sessionId: string, live: boolean) =>
         "GET",
         `/sessions/${sessionId}/transcript`,
       ),
-    refetchInterval: live ? 3_000 : false,
+    refetchInterval: live ? 1_500 : false,
   });
 
 // ─── actions ────────────────────────────────────────────────────────────────
