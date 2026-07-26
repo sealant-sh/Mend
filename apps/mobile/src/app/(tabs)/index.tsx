@@ -52,7 +52,7 @@ export default function NowScreen() {
             ? "server unreachable — check Settings"
             : all.isLoading
               ? "connecting…"
-              : `${rows.length} sessions`
+              : `${(groups[0]?.items.length ?? 0) === 0 ? "nothing waiting on you" : `${groups[0]?.items.length} waiting`} · ${groups[1]?.items.length ?? 0} live`
         }
       />
       {all.isError && (

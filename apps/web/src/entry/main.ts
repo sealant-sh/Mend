@@ -38,7 +38,12 @@ import { SealantClient } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import { Store, StoreConfig } from "@mend/store";
 import { Config, Effect, Layer, Schema } from "effect";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import {
+  HttpMiddleware,
+  HttpRouter,
+  HttpServerRequest,
+  HttpServerResponse,
+} from "effect/unstable/http";
 
 /**
  * The composition boundary (ARCHITECTURE.md §2): every service is wired here
@@ -127,8 +132,11 @@ const WebAppRoutes = HttpRouter.use((router) =>
 const ServerLive = Layer.unwrap(
   Effect.gen(function* () {
     const port = yield* Config.int("PORT").pipe(Config.orElse(() => Config.succeed(3105)));
+    // Self-host posture: the instance lives behind the operator's perimeter,
+    // and clients are many-origin by design (phone app, Expo web dev, LAN).
     return HttpRouter.serve(
       Layer.mergeAll(MendApiLive, AuthRoutes, EventsRoutes, TtyRoutes, WebAppRoutes),
+      { middleware: HttpMiddleware.cors({ allowedOrigins: () => true, credentials: true }) },
     ).pipe(Layer.provide(NodeHttpServer.layer(createServer, { port })));
   }),
 );

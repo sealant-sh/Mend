@@ -2,7 +2,7 @@
 // edge-colored add/del lines, hunk headers in accent. Line comments and the
 // send-review flow stay on the laptop for now.
 
-import { useLocalSearchParams } from "expo-router";
+import { Stack, useLocalSearchParams } from "expo-router";
 import { ScrollView, View } from "react-native";
 
 import { Panel } from "@/components/panel";
@@ -52,7 +52,8 @@ export default function ReviewScreen() {
   const stats = diff.data?.files ?? [];
 
   return (
-    <Screen>
+    <Screen topInset>
+      <Stack.Screen options={{ headerShown: false }} />
       <ScreenHeader
         eyebrow="review"
         title="The change"

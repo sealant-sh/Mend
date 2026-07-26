@@ -100,7 +100,7 @@ export const toSession = (dto: SessionDto, projectName: string) => ({
       ? "Codex"
       : "OpenCode") as "Claude Code" | "Codex" | "OpenCode",
   projectId: projectName,
-  title: dto.label ?? dto.branch.replace(/^mend\/session\//, "session "),
+  title: dto.label ?? `session ${dto.id.slice(0, 8)}`,
   state: (ACTIVE.has(dto.status)
     ? dto.status === "waiting"
       ? "waiting"

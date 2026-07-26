@@ -170,7 +170,10 @@ export default function SessionScreen() {
           </View>
           {session !== undefined && (
             <MonoText tone="faint" size={11.5}>
-              {session.branch.replace(/^mend\/session\//, "")}
+              {session.id.slice(0, 8)}
+              {session.settledAt === null
+                ? ""
+                : ` · settled ${new Date(session.settledAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}
             </MonoText>
           )}
           <View style={{ flexDirection: "row", gap: 8 }}>

@@ -47,7 +47,6 @@ export function SessionTerminal({
       const term = new Terminal({
         fontFamily: cssVar("--font-mono", "JetBrains Mono, monospace"),
         fontSize: 12.5,
-        lineHeight: 1.4,
         cursorBlink: true,
         scrollback: 10_000,
         theme: {
