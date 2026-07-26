@@ -292,6 +292,20 @@ export class LaunchRequest extends Schema.Class<LaunchRequest>("LaunchRequest")(
   argv: Schema.Array(Schema.String),
 }) {}
 
+/** One conversation event of the canonical session record (chat surfaces render these). */
+export class TranscriptEvent extends Schema.Class<TranscriptEvent>("TranscriptEvent")({
+  kind: Schema.String,
+  text: Schema.NullOr(Schema.String),
+  name: Schema.NullOr(Schema.String),
+  command: Schema.NullOr(Schema.String),
+  output: Schema.NullOr(Schema.String),
+}) {}
+
+export class SessionTranscript extends Schema.Class<SessionTranscript>("SessionTranscript")({
+  sourceHarness: Schema.String,
+  events: Schema.Array(TranscriptEvent),
+}) {}
+
 /** Rejoin a settled session; `harness` null = the one it last ran with. */
 export class ResumeRequest extends Schema.Class<ResumeRequest>("ResumeRequest")({
   harness: Schema.NullOr(Schema.String),
@@ -344,6 +358,13 @@ const sessionsGroup = HttpApiGroup.make("sessions")
     // Sessions are continuous work: rejoin one on a fresh workspace — same
     // worktree, restored harness state, native resume where the harness
     // supports it; a different harness receives the distilled conversation.
+    HttpApiEndpoint.get("transcript", "/sessions/:id/transcript", {
+      params: { id: SessionId },
+      success: SessionTranscript,
+      error: NotFound,
+    }),
+  )
+  .add(
     HttpApiEndpoint.post("resume", "/sessions/:id/resume", {
       params: { id: SessionId },
       payload: ResumeRequest,

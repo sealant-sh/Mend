@@ -179,6 +179,25 @@ export const useChangeDiff = (changeId: string | null) =>
       }>("GET", `/changes/${changeId}/diff`),
   });
 
+export interface TranscriptEventDto {
+  readonly kind: string;
+  readonly text: string | null;
+  readonly name: string | null;
+  readonly command: string | null;
+  readonly output: string | null;
+}
+
+export const useTranscript = (sessionId: string, live: boolean) =>
+  useQuery({
+    queryKey: ["transcript", sessionId],
+    queryFn: () =>
+      api<{ readonly sourceHarness: string; readonly events: ReadonlyArray<TranscriptEventDto> }>(
+        "GET",
+        `/sessions/${sessionId}/transcript`,
+      ),
+    refetchInterval: live ? 3_000 : false,
+  });
+
 // ─── actions ────────────────────────────────────────────────────────────────
 
 export const useSessionActions = () => {

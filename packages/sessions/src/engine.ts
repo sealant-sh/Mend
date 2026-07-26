@@ -95,6 +95,18 @@ export class SessionEngine extends Context.Service<
       sessionId: SessionId,
       harness: string | null,
     ) => Effect.Effect<Session, SessionNotFoundError | ProjectNotFoundError | SealantPlatformError>;
+    /**
+     * The session's conversation as the canonical record — read LIVE from the
+     * running workspace's harness state (or from the store once settled).
+     * The chat surfaces render this; the terminal stays the raw view.
+     */
+    readonly transcript: (sessionId: SessionId) => Effect.Effect<
+      {
+        readonly sourceHarness: string;
+        readonly events: ReadonlyArray<import("./native-convert.ts").CanonicalEvent>;
+      },
+      SessionNotFoundError
+    >;
   }
 >()("@mend/sessions/SessionEngine") {
   static readonly layer = Layer.effect(
@@ -642,6 +654,44 @@ export class SessionEngine extends Context.Service<
 
       const ACTIVE_STATUSES = new Set(["starting", "running", "waiting", "idle"]);
 
+      const transcript = Effect.fn("SessionEngine.transcript")(function* (sessionId: SessionId) {
+        const session = yield* sessions.byId(sessionId);
+        const shape = HARNESS_STATE[session.harness];
+        let native: string | null = null;
+        if (
+          shape !== undefined &&
+          ACTIVE_STATUSES.has(session.status) &&
+          session.sealantWorkspaceId !== null
+        ) {
+          native = yield* Effect.gen(function* () {
+            const workspace = yield* sealant.getWorkspace(session.sealantWorkspaceId ?? "");
+            const located = yield* sealant.exec(workspace, ["sh", "-c", shape.latestTranscript]);
+            const file = located.stdout.trim().split("\n")[0] ?? "";
+            if (located.exitCode !== 0 || file === "") return null;
+            const read = yield* sealant.exec(workspace, ["cat", file]);
+            return read.exitCode === 0 && read.stdout !== "" ? read.stdout : null;
+          }).pipe(Effect.catch(() => Effect.succeed(null)));
+        }
+        if (native === null) {
+          const project = yield* projects
+            .byId(session.projectId)
+            .pipe(Effect.catch(() => Effect.succeed(null)));
+          if (project !== null) {
+            const stateDir = sessionStatePathOf(project.storePath, session.id);
+            native = yield* Effect.promise(async () => {
+              try {
+                return await fs.readFile(path.join(stateDir, "transcript.native"), "utf8");
+              } catch {
+                return null;
+              }
+            });
+          }
+        }
+        if (native === null) return { sourceHarness: session.harness, events: [] };
+        const canonical = ingestNativeSession(session.harness, native, "/workspace/repo");
+        return { sourceHarness: session.harness, events: canonical?.events ?? [] };
+      });
+
       const resumeSession = Effect.fn("SessionEngine.resumeSession")(function* (
         sessionId: SessionId,
         harness: string | null,
@@ -754,7 +804,7 @@ export class SessionEngine extends Context.Service<
       const launch = (sessionId: SessionId, argv: ReadonlyArray<string>) =>
         launchInternal(sessionId, argv, null);
 
-      return { provision, attachRun, launch, checkpointNow, stop, resumeSession };
+      return { provision, attachRun, launch, checkpointNow, stop, resumeSession, transcript };
     }),
   );
 }

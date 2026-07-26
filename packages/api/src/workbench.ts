@@ -21,6 +21,8 @@ import {
   ProjectDetail,
   SessionDetail,
   StoreFailure,
+  SessionTranscript,
+  TranscriptEvent,
 } from "./contract.ts";
 
 /**
@@ -143,6 +145,31 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             Effect.fail(new StoreFailure({ message: error.stderr })),
           ),
         );
+      }),
+    )
+    .handle("transcript", ({ params }) =>
+      Effect.gen(function* () {
+        const engine = yield* SessionEngine;
+        const result = yield* engine
+          .transcript(params.id)
+          .pipe(
+            Effect.catchTag("SessionNotFoundError", () =>
+              Effect.fail(new NotFound({ id: params.id })),
+            ),
+          );
+        return new SessionTranscript({
+          sourceHarness: result.sourceHarness,
+          events: result.events.map(
+            (event) =>
+              new TranscriptEvent({
+                kind: event.kind,
+                text: "text" in event ? event.text : null,
+                name: event.kind === "tool" ? event.name : null,
+                command: event.kind === "tool" ? event.command : null,
+                output: event.kind === "tool" ? event.output : null,
+              }),
+          ),
+        });
       }),
     )
     .handle("resume", ({ params, payload }) =>
