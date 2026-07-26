@@ -79,6 +79,8 @@ export class SealantClient extends Context.Service<
       argv: ReadonlyArray<string>,
     ) => Effect.Effect<InteractiveSession, SealantPlatformError>;
     /** Reattach to a PTY session by id — works from any workspace handle. */
+    /** Stop the workspace: remove its container, settle it "stopped". */
+    readonly stopWorkspace: (workspace: Workspace) => Effect.Effect<void, SealantPlatformError>;
     readonly getSession: (
       workspace: Workspace,
       sessionId: string,
@@ -193,6 +195,10 @@ export class SealantClient extends Context.Service<
       const openSession = Effect.fn("SealantClient.openSession")(
         (workspace: Workspace, argv: ReadonlyArray<string>) =>
           wrap(() => workspace.sessions.open(argv)),
+      );
+
+      const stopWorkspace = Effect.fn("SealantClient.stopWorkspace")((workspace: Workspace) =>
+        wrap(() => workspace.stop()),
       );
 
       const getSession = Effect.fn("SealantClient.getSession")(
@@ -337,6 +343,7 @@ export class SealantClient extends Context.Service<
         startHarnessInWorkspace,
         waitRun,
         openSession,
+        stopWorkspace,
         getSession,
         exec,
         diffCommits,

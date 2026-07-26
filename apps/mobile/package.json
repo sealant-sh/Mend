@@ -8,12 +8,12 @@
     "android": "expo start --android",
     "dev": "expo start",
     "ios": "expo start --ios",
+    "ios:clean": "expo prebuild --clean && expo run:ios --device --configuration Release",
+    "ios:release": "expo run:ios --device --configuration Release",
     "lint": "oxlint .",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsgo -p tsconfig.json --noEmit",
-    "web": "expo start --web",
-    "ios:release": "expo run:ios --device --configuration Release",
-    "ios:clean": "expo prebuild --clean && expo run:ios --device --configuration Release"
+    "web": "expo start --web"
   },
   "dependencies": {
     "@expo-google-fonts/inter": "^0.4.2",

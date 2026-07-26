@@ -430,6 +430,21 @@ export class SessionEngine extends Context.Service<
         }
       });
 
+      /** Containers die when the work settles — after harvest, best-effort. */
+      const stopWorkspaceQuietly = (sessionId: SessionId) =>
+        Effect.gen(function* () {
+          const session = yield* sessions.byId(sessionId);
+          if (session.sealantWorkspaceId === null) return;
+          const workspace = yield* sealant.getWorkspace(session.sealantWorkspaceId);
+          yield* sealant.stopWorkspace(workspace);
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("session engine: workspace stop failed").pipe(
+              Effect.annotateLogs({ sessionId, error: String(error) }),
+            ),
+          ),
+        );
+
       const tryHarvest = (sessionId: SessionId) =>
         harvestHarnessState(sessionId).pipe(
           Effect.catch((error) =>
@@ -473,6 +488,8 @@ export class SessionEngine extends Context.Service<
             source: { kind: "mount", path: worktree },
             harness: shape.harness,
             name: `mend-${session.id.slice(0, 8)}`,
+            // Belt for every path that forgets to stop: the platform reaper.
+            ttl: "12h",
             // Requires the platform at 0.7.1+ (sealant#114): 0.7.0 dropped every
             // mount create that carried credentials at the worker's blueprint parse.
             ...(withCredentials && shape.credentials !== undefined
@@ -609,6 +626,7 @@ export class SessionEngine extends Context.Service<
             yield* tryCheckpoint(settled, "turn-boundary", settled.lastSeenSequence);
             yield* refreshChangeHead(settled).pipe(Effect.ignore);
             yield* tryHarvest(sessionId);
+            yield* stopWorkspaceQuietly(sessionId);
             return;
           }
         }).pipe(
@@ -760,9 +778,12 @@ export class SessionEngine extends Context.Service<
         yield* sessions.settle(sessionId, "stopped", null);
         yield* tryCheckpoint(session, "user-mark", session.lastSeenSequence);
         yield* refreshChangeHead(session).pipe(Effect.ignore);
-        // The workspace outlives the PTY, so state is still there to harvest;
-        // forked so a stop request answers immediately.
-        yield* Effect.forkIn(tryHarvest(sessionId), scope);
+        // The workspace outlives the PTY just long enough to harvest, then
+        // dies; forked so a stop request answers immediately.
+        yield* Effect.forkIn(
+          tryHarvest(sessionId).pipe(Effect.andThen(stopWorkspaceQuietly(sessionId))),
+          scope,
+        );
       });
 
       /** Re-attach to sessions that were live when the last process died. */
