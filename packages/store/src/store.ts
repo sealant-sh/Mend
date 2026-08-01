@@ -75,6 +75,12 @@ export interface ChangedFile {
 
 const sha = (value: string) => Sha.make(value);
 
+/** Untracked paths — invisible to `git diff <base>` but part of the change. */
+const untrackedIn = (worktreePath: string) =>
+  git(["ls-files", "--others", "--exclude-standard"], worktreePath).pipe(
+    Effect.map((out) => (out === "" ? [] : out.split("\n"))),
+  );
+
 /** Where a named worktree lives relative to its project's bare repo. */
 export const worktreePathOf = (storePath: string, name: string) =>
   path.join(path.dirname(storePath), "worktrees", name);
@@ -255,12 +261,6 @@ export class Store extends Context.Service<
       const diffRange = Effect.fn("Store.diffRange")(function* (dir: string, a: string, b: string) {
         return yield* git(["diff", a, b], dir);
       });
-
-      /** Untracked paths — invisible to `git diff <base>` but part of the change. */
-      const untrackedIn = (worktreePath: string) =>
-        git(["ls-files", "--others", "--exclude-standard"], worktreePath).pipe(
-          Effect.map((out) => (out === "" ? [] : out.split("\n"))),
-        );
 
       /**
        * Rendering an untracked file costs one `git diff --no-index` spawn, so

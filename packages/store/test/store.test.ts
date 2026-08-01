@@ -86,11 +86,11 @@ describe("Store", () => {
         expect(full).toContain("+export const answer = 42");
         expect(full).toContain("extra.ts");
         const liveFiles = yield* store.changedFiles(wt.path, wt.baseSha, null);
-        expect(liveFiles.map((f) => f.path).sort()).toEqual(["app.ts", "extra.ts"]);
+        expect(liveFiles.map((f) => f.path).toSorted()).toEqual(["app.ts", "extra.ts"]);
 
         // Per-file counts across base → cp2 (includes the untracked file via the snapshot).
         const files = yield* store.changedFiles(wt.path, wt.baseSha, cp2.sha);
-        const paths = files.map((f) => f.path).sort();
+        const paths = files.map((f) => f.path).toSorted();
         expect(paths).toEqual(["app.ts", "extra.ts"]);
 
         // Worktree removal leaves the checkpoint refs intact in the bare repo.

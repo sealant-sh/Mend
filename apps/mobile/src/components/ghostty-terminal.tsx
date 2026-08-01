@@ -122,12 +122,12 @@ export function GhosttyTerminal({
       pending = "";
       setBuffer((current) => trimBuffer(current + chunk));
     };
-    ws.onmessage = (event) => {
+    ws.addEventListener("message", (event) => {
       if (typeof event.data === "string") return; // control frames ({"t":"end"})
       const bytes = new Uint8Array(event.data as ArrayBuffer);
       pending += decoder !== null ? decoder.decode(bytes, { stream: true }) : decodeLatin1(bytes);
       flushHandle ??= requestAnimationFrame(flush);
-    };
+    });
     return () => {
       wsRef.current = null;
       if (flushHandle !== null) cancelAnimationFrame(flushHandle);

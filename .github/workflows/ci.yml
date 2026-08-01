@@ -18,8 +18,10 @@ jobs:
       # --lockfile=false: CI must never write pnpm-lock.yaml (AGENTS.md);
       # switch to --frozen-lockfile once the lockfile is refreshed by a human.
       - run: pnpm install --lockfile=false
+      # Build first: the vite builds generate the gitignored routeTree.gen.ts
+      # files that typecheck needs — CI was red for weeks on exactly this.
+      - run: pnpm build
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm format:check
-      - run: pnpm build
       - run: pnpm test

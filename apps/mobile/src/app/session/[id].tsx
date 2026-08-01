@@ -149,7 +149,7 @@ export default function SessionScreen() {
     // PTY bytes are the live signal: the harness is doing something. Surface
     // it immediately (working indicator) and pull the transcript at most
     // once a second while activity flows — turns land as they happen.
-    ws.onmessage = (event) => {
+    ws.addEventListener("message", (event) => {
       if (typeof event.data === "string") return;
       setWorking(true);
       if (workingTimer.current !== null) clearTimeout(workingTimer.current);
@@ -159,7 +159,7 @@ export default function SessionScreen() {
         lastInvalidate.current = now;
         void transcriptRef.current?.();
       }
-    };
+    });
     return () => {
       wsRef.current = null;
       if (workingTimer.current !== null) clearTimeout(workingTimer.current);
