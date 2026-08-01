@@ -262,10 +262,15 @@ export class SessionsRepo extends Context.Service<
         outcome: SessionOutcome,
         summary: string | null,
       ) {
+        // First settle wins. Two supervisors watch every session (run-wait and
+        // the PTY status poll), and the loser used to overwrite a deliberate
+        // "stopped" with "failed · harness exited with code -1" — every user
+        // stop read as a crash. `reopen` clears settled_at, so a resumed
+        // session settles again normally.
         yield* sql`
           UPDATE agent_sessions
           SET status = ${outcome}, summary = ${summary}, settled_at = now(), updated_at = now()
-          WHERE id = ${id}`.pipe(Effect.orDie);
+          WHERE id = ${id} AND settled_at IS NULL`.pipe(Effect.orDie);
         yield* notify(id);
       });
 

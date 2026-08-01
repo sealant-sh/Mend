@@ -10,7 +10,9 @@ const config = defineConfig({
   server: {
     port: 3101,
     proxy: {
-      "/api": "http://localhost:3105",
+      // ws: the terminal rides a WebSocket (/api/tty); the shorthand form
+      // proxies only HTTP and leaves the upgrade hanging forever in dev.
+      "/api": { target: "http://localhost:3105", ws: true },
     },
   },
   plugins: [
