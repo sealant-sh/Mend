@@ -148,6 +148,12 @@ const sessionsLayer = (world: World) => {
     listActive: () => Effect.succeed([]),
     listUnsettled: () =>
       Effect.succeed([...world.sessions.values()].filter((s) => s.settledAt === null)),
+    listRecentlySettled: () =>
+      Effect.succeed(
+        [...world.sessions.values()].filter(
+          (s) => s.settledAt !== null && s.sealantWorkspaceId !== null,
+        ),
+      ),
     setSealantIds: (id, sealantRunId, sealantWorkspaceId) =>
       Effect.sync(() => update(id, { sealantRunId, sealantWorkspaceId })),
     setSealantSessionId: (id, sealantSessionId) =>

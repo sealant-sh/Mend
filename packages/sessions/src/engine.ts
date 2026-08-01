@@ -18,7 +18,7 @@ import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import { GitError, Store, sessionStatePathOf, worktreePathOf } from "@mend/store";
 import type { Harness, Run as SdkRun, WorkspaceCredentialsOptions } from "@sealant/sdk";
 import { claudeCode, codex, opencode } from "@sealant/sdk";
-import { Effect, Layer, Stream } from "effect";
+import { Duration, Effect, Layer, Schedule, Stream } from "effect";
 import * as Context from "effect/Context";
 
 import {
@@ -93,6 +93,22 @@ const withPermissionDefaults = (
   }
   return argv;
 };
+
+/**
+ * "Could not reach the platform" is not "the run is over". Only a
+ * control-plane answer that the run no longer exists settles a session from
+ * the supervision path; everything else — a wrong SEALANT_BASE_URL, a control
+ * plane mid-upgrade, a network blip — leaves the session alone and retries,
+ * so a misconfigured or briefly-blind server can never destroy live work it
+ * didn't start.
+ */
+const runIsGone = (error: SealantPlatformError) => error.status === 404 || error.status === 410;
+
+const SUPERVISE_RETRY = Schedule.exponential("1 second").pipe(
+  Schedule.modifyDelay((_, delay) =>
+    Effect.succeed(Duration.min(Duration.fromInputUnsafe(delay), Duration.seconds(30))),
+  ),
+);
 
 export interface ProvisionInput {
   readonly projectId: ProjectId;
@@ -269,20 +285,41 @@ export class SessionEngine extends Context.Service<
         const seq = current.lastSeenSequence;
         yield* tryCheckpoint(current, "turn-boundary", seq);
         yield* refreshChangeHead(current).pipe(Effect.ignore);
+        yield* sweepWorkspace(session.id);
       });
 
-      const forkSupervision = (session: Session, sdkRun: SdkRun, from: bigint) =>
-        Effect.forkIn(
-          supervise(session, sdkRun, from).pipe(
-            Effect.catchTag("SealantPlatformError", (error) =>
-              sessions.settle(session.id, "failed", error.message),
-            ),
-            Effect.catchDefect((defect) =>
-              sessions.settle(session.id, "failed", `supervision died: ${String(defect)}`),
+      /** Supervise a session's run for as long as this process lives. */
+      const superviseExisting = (sessionId: SessionId, sealantRunId: SealantRunId) =>
+        Effect.gen(function* () {
+          const current = yield* sessions.byId(sessionId);
+          if (current.settledAt !== null) return;
+          const sdkRun = yield* sealant.getRun(sealantRunId);
+          yield* supervise(current, sdkRun, current.lastSeenSequence);
+        }).pipe(
+          Effect.tapError((error) =>
+            Effect.logWarning("session engine: supervision interrupted; retrying").pipe(
+              Effect.annotateLogs({ sessionId, error: error.message }),
             ),
           ),
-          scope,
+          Effect.retry({
+            while: (error) => error instanceof SealantPlatformError && !runIsGone(error),
+            schedule: SUPERVISE_RETRY,
+          }),
+          Effect.catchTag("SealantPlatformError", (error) =>
+            sessions
+              .settle(sessionId, "failed", error.message)
+              .pipe(Effect.andThen(sweepWorkspace(sessionId))),
+          ),
+          Effect.catchTag("SessionNotFoundError", () => Effect.void),
+          Effect.catchDefect((defect) =>
+            sessions
+              .settle(sessionId, "failed", `supervision died: ${String(defect)}`)
+              .pipe(Effect.andThen(sweepWorkspace(sessionId))),
+          ),
         );
+
+      const forkSupervision = (sessionId: SessionId, sealantRunId: SealantRunId) =>
+        Effect.forkIn(superviseExisting(sessionId, sealantRunId), scope);
 
       const provision = Effect.fn("SessionEngine.provision")(function* (input: ProvisionInput) {
         const project = yield* projects.byId(input.projectId);
@@ -308,21 +345,10 @@ export class SessionEngine extends Context.Service<
         sealantRunId: SealantRunId,
         workspaceId: SealantWorkspaceId,
       ) {
-        const session = yield* sessions.byId(sessionId);
+        yield* sessions.byId(sessionId);
         yield* sessions.setSealantIds(sessionId, sealantRunId, workspaceId);
         yield* sessions.setStatus(sessionId, "running");
-        const work = Effect.gen(function* () {
-          const sdkRun = yield* sealant.getRun(sealantRunId);
-          yield* supervise(session, sdkRun, 0n);
-        }).pipe(
-          Effect.catchTag("SealantPlatformError", (error) =>
-            sessions.settle(sessionId, "failed", error.message),
-          ),
-          Effect.catchDefect((defect) =>
-            sessions.settle(sessionId, "failed", `supervision died: ${String(defect)}`),
-          ),
-        );
-        yield* Effect.forkIn(work, scope);
+        yield* forkSupervision(sessionId, sealantRunId);
       });
 
       /**
@@ -486,6 +512,10 @@ export class SessionEngine extends Context.Service<
           ),
         );
 
+      /** The tail of every settle path: harvest, then reap. Both halves quiet. */
+      const sweepWorkspace = (sessionId: SessionId) =>
+        tryHarvest(sessionId).pipe(Effect.andThen(stopWorkspaceQuietly(sessionId)));
+
       const launchInternal = Effect.fn("SessionEngine.launchInternal")(function* (
         sessionId: SessionId,
         argv: ReadonlyArray<string>,
@@ -528,6 +558,12 @@ export class SessionEngine extends Context.Service<
                 .pipe(Effect.ignore),
             ),
           );
+        // A relaunch is about to overwrite the row's workspace pointer; stop
+        // the previous workspace first or it becomes unaddressable and leaks
+        // until the platform TTL.
+        if (session.sealantWorkspaceId !== null) {
+          yield* stopWorkspaceQuietly(sessionId);
+        }
         const createWorkspace = (withCredentials: boolean) =>
           sealant.createWorkspace({
             source: { kind: "mount", path: worktree },
@@ -701,7 +737,12 @@ export class SessionEngine extends Context.Service<
 
         const pty = yield* sealant
           .openSession(workspace, withHarnessBootstrap(session.harness, shapedArgv))
-          .pipe(settleOnFailure);
+          .pipe(
+            // The workspace exists but its id is not on the row yet — reap it
+            // here or it burns until the platform TTL.
+            Effect.tapError(() => sealant.stopWorkspace(workspace).pipe(Effect.ignore)),
+            settleOnFailure,
+          );
         yield* sessions.setSealantIds(
           sessionId,
           SealantRunId.make(pty.runId),
@@ -709,13 +750,16 @@ export class SessionEngine extends Context.Service<
         );
         yield* sessions.setSealantSessionId(sessionId, pty.id);
         yield* sessions.setStatus(sessionId, "running");
-        const sdkRun = yield* sealant.getRun(pty.runId);
-        yield* forkSupervision(session, sdkRun, 0n);
+        yield* forkSupervision(sessionId, SealantRunId.make(pty.runId));
 
         // The run heartbeats past the PTY's exit (the workspace stays warm), so
         // settle on the SESSION's lifecycle: poll status until it leaves
         // `running`, then settle + checkpoint — unless supervision already did.
         const watchPty = Effect.gen(function* () {
+          // A status error is blindness, not an exit: keep polling. Only an
+          // answered poll that says "not running" settles anything — so a
+          // control-plane restart mid-session never reads as a crash.
+          let blindPolls = 0;
           for (;;) {
             yield* Effect.sleep("2 seconds");
             const status = yield* Effect.tryPromise({
@@ -727,7 +771,17 @@ export class SessionEngine extends Context.Service<
                   message: "session status failed",
                   cause,
                 }),
-            });
+            }).pipe(Effect.catchTag("SealantPlatformError", () => Effect.succeed(null)));
+            if (status === null) {
+              blindPolls += 1;
+              if (blindPolls % 30 === 0) {
+                yield* Effect.logWarning("session engine: pty status unreachable").pipe(
+                  Effect.annotateLogs({ sessionId, blindPolls }),
+                );
+              }
+              continue;
+            }
+            blindPolls = 0;
             if (status.status === "running") continue;
             const current = yield* sessions.byId(sessionId);
             if (current.settledAt !== null) return;
@@ -741,18 +795,10 @@ export class SessionEngine extends Context.Service<
             const settled = yield* sessions.byId(sessionId);
             yield* tryCheckpoint(settled, "turn-boundary", settled.lastSeenSequence);
             yield* refreshChangeHead(settled).pipe(Effect.ignore);
-            yield* tryHarvest(sessionId);
-            yield* stopWorkspaceQuietly(sessionId);
+            yield* sweepWorkspace(sessionId);
             return;
           }
-        }).pipe(
-          Effect.catchTag("SessionNotFoundError", () => Effect.void),
-          Effect.catchTag("SealantPlatformError", (error) =>
-            Effect.logWarning("session engine: pty watch failed").pipe(
-              Effect.annotateLogs({ sessionId, error: error.message }),
-            ),
-          ),
-        );
+        }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void));
         yield* Effect.forkIn(watchPty, scope);
         return yield* sessions.byId(sessionId);
       });
@@ -883,11 +929,9 @@ export class SessionEngine extends Context.Service<
         yield* tryCheckpoint(session, "user-mark", session.lastSeenSequence);
         yield* refreshChangeHead(session).pipe(Effect.ignore);
         // The workspace outlives the PTY just long enough to harvest, then
-        // dies; forked so a stop request answers immediately.
-        yield* Effect.forkIn(
-          tryHarvest(sessionId).pipe(Effect.andThen(stopWorkspaceQuietly(sessionId))),
-          scope,
-        );
+        // dies; forked so a stop request answers immediately. If this process
+        // dies first, the next boot's leftover sweep finishes the job.
+        yield* Effect.forkIn(sweepWorkspace(sessionId), scope);
       });
 
       /** Re-attach to sessions that were live when the last process died. */
@@ -902,19 +946,7 @@ export class SessionEngine extends Context.Service<
             );
             continue;
           }
-          const sealantRunId = session.sealantRunId;
-          const work = Effect.gen(function* () {
-            const sdkRun = yield* sealant.getRun(sealantRunId);
-            yield* supervise(session, sdkRun, session.lastSeenSequence);
-          }).pipe(
-            Effect.catchTag("SealantPlatformError", (error) =>
-              sessions.settle(session.id, "failed", error.message),
-            ),
-            Effect.catchDefect((defect) =>
-              sessions.settle(session.id, "failed", `supervision died: ${String(defect)}`),
-            ),
-          );
-          yield* Effect.forkIn(work, scope);
+          yield* forkSupervision(session.id, session.sealantRunId);
           yield* Effect.logInfo("session engine: re-attached").pipe(
             Effect.annotateLogs({
               sessionId: session.id,
@@ -924,7 +956,36 @@ export class SessionEngine extends Context.Service<
         }
       });
 
+      /**
+       * Settle-time sweeps are forked fibers; a process restart kills them and
+       * the workspace outlives its session. Every boot finishes the job for
+       * recently settled sessions whose workspace is still alive — a late
+       * harvest rescues any transcript the dead fiber missed, then the reap
+       * lands. The platform TTL remains the belt for anything older.
+       */
+      const sweepLeftovers = Effect.fn("SessionEngine.sweepLeftovers")(function* () {
+        const settled = yield* sessions.listRecentlySettled();
+        for (const session of settled) {
+          if (session.sealantWorkspaceId === null) continue;
+          const workspaceId = session.sealantWorkspaceId;
+          const sweepIfAlive = Effect.gen(function* () {
+            const workspace = yield* sealant.getWorkspace(workspaceId);
+            const status = yield* Effect.promise(() => workspace.status());
+            if (status !== "queued" && status !== "running" && status !== "ready") return;
+            yield* Effect.logInfo("session engine: reaping leftover workspace").pipe(
+              Effect.annotateLogs({ sessionId: session.id, workspaceId }),
+            );
+            yield* sweepWorkspace(session.id);
+          }).pipe(
+            Effect.catch(() => Effect.void),
+            Effect.catchDefect(() => Effect.void),
+          );
+          yield* Effect.forkIn(sweepIfAlive, scope);
+        }
+      });
+
       yield* resume();
+      yield* Effect.forkIn(sweepLeftovers(), scope);
 
       const launch = (sessionId: SessionId, argv: ReadonlyArray<string>) =>
         launchInternal(sessionId, argv, null);

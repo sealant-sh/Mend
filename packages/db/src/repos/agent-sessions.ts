@@ -62,6 +62,8 @@ export class SessionsRepo extends Context.Service<
     readonly listActive: () => Effect.Effect<ReadonlyArray<Session>>;
     /** Sessions to re-attach to after a crash/restart. */
     readonly listUnsettled: () => Effect.Effect<ReadonlyArray<Session>>;
+    /** Recently settled sessions — the boot sweep reaps any workspace that outlived them. */
+    readonly listRecentlySettled: () => Effect.Effect<ReadonlyArray<Session>>;
     readonly setSealantIds: (
       id: SessionId,
       sealantRunId: SealantRunId,
@@ -166,6 +168,16 @@ export class SessionsRepo extends Context.Service<
           SELECT * FROM agent_sessions
           WHERE settled_at IS NULL AND status <> 'starting'
           ORDER BY created_at ASC`.pipe(Effect.orDie);
+        return yield* Effect.forEach(rows, decodeRow);
+      });
+
+      const listRecentlySettled = Effect.fn("SessionsRepo.listRecentlySettled")(function* () {
+        const rows = yield* sql`
+          SELECT * FROM agent_sessions
+          WHERE settled_at IS NOT NULL
+            AND settled_at > now() - interval '24 hours'
+            AND sealant_workspace_id IS NOT NULL
+          ORDER BY settled_at DESC`.pipe(Effect.orDie);
         return yield* Effect.forEach(rows, decodeRow);
       });
 
@@ -299,6 +311,7 @@ export class SessionsRepo extends Context.Service<
         listForProject,
         listActive,
         listUnsettled,
+        listRecentlySettled,
         setSealantIds,
         setSealantSessionId,
         setProviderSessionId,
