@@ -1,34 +1,35 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { MotionConfig } from "framer-motion";
 
-import { BriefSection } from "#/sections/brief-section";
 import { Evidence } from "#/sections/evidence";
 import { FinalCta } from "#/sections/final-cta";
 import { Hero } from "#/sections/hero";
 import { Mobile } from "#/sections/mobile";
-import { OpenSource } from "#/sections/opensource";
-import { HowItWorks } from "#/sections/queue";
-import { Sources } from "#/sections/sources";
+import { WhatsNext } from "#/sections/next";
+import { Review } from "#/sections/review";
+import { Sessions } from "#/sections/sessions";
 import { Why } from "#/sections/why";
 
 export const Route = createFileRoute("/")({
   component: MarketingPage,
 });
 
-// Ordered per MEND-PLAN §11: the problem and the product (hero) → why this
-// exists → the brief, walked → the source trail → mobile → where the
-// recording comes from (Sealant) → the loop → open source → the ask.
+// One causal story: the claim (the session lives on your host) → the trap it
+// replaces → the mechanics → the review → the phone → where the record comes
+// from → what's planned → the ask. Everything before "What's next" runs today.
 function MarketingPage() {
   return (
-    <main className="overflow-x-clip">
-      <Hero />
-      <Why />
-      <BriefSection />
-      <Sources />
-      <Mobile />
-      <Evidence />
-      <HowItWorks />
-      <OpenSource />
-      <FinalCta />
-    </main>
+    <MotionConfig reducedMotion="user">
+      <main className="overflow-x-clip">
+        <Hero />
+        <Why />
+        <Sessions />
+        <Review />
+        <Mobile />
+        <Evidence />
+        <WhatsNext />
+        <FinalCta />
+      </main>
+    </MotionConfig>
   );
 }

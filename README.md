@@ -16,9 +16,9 @@ Adopt a repository into Mend's store, run your own harness (`mend codex`, `mend 
 `mend run -- <cmd>`) in a per-session git worktree under Sealant supervision, then review the
 accumulated change properly — a first-class diff where every hunk can answer _why did this change?_
 from the recording, comments send back to the same session as an editable follow-up, and "Mend read
-this change" drafts evidence-linked findings a diff-only reviewer cannot make. Steer all of it from
-a phone over your tailnet. No issue tracker and no pull request required; publication is optional
-output, not the point.
+this change" will draft evidence-linked findings a diff-only reviewer cannot make. Steer the working
+session loop from a phone over your tailnet. No issue tracker and no pull request required;
+publication is optional output, not the point.
 
 Mend is open-source, self-hosted, and built on the public
 [`@sealant/sdk`](https://www.npmjs.com/package/@sealant/sdk) — no private hooks into the
@@ -29,10 +29,10 @@ direction, including the milestone plan and the decision log.
 
 ## Status
 
-**In development — direction reset 2026-07-25.** Mend pivoted from an issue-to-PR queue product to
-the agent workbench described in the plan. The queue-era surfaces (board, brief, run audit) are
+**In development — marketing refreshed 2026-08-01.** Mend pivoted from an issue-to-PR queue product
+to the agent workbench described in the plan. The queue-era surfaces (board, brief, run audit) are
 being reframed into the session and review workbench; the retired product documents live in
-`docs/archive/`. The marketing site still pitches the old flow and will be refreshed.
+`docs/archive/`. The marketing site follows the workbench direction and labels planned capabilities.
 
 ## Monorepo
 

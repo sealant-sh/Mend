@@ -1,9 +1,9 @@
 // Shared marketing primitives, in the Evidence Review idiom shared with the
 // Sealant platform site: warm canvas, one cobalt accent, quiet mono trust
-// lines, light sunken code panels. The hero/feature visual is the Mend
-// Exhibit (see mend-exhibit.tsx) — a reviewed change with its run as evidence.
+// lines, light sunken code panels. The recurring exhibits put the change,
+// session record, and product state beside the claim they support.
 
-import { motion, useReducedMotion, type Variants } from "framer-motion";
+import { motion, type Variants } from "framer-motion";
 import { ArrowRight, ArrowUpRight, Check, Copy } from "lucide-react";
 import { type ComponentType, type ReactNode, useState } from "react";
 
@@ -21,6 +21,11 @@ export const riseChild: Variants = {
   show: { opacity: 1, y: 0, transition: { duration: 0.6, ease: [0.22, 1, 0.36, 1] } },
 };
 
+// Reduced-motion handling lives in the page-level MotionConfig
+// (reducedMotion="user"): the y-shift is dropped, the fade stays, and the
+// SSR markup never diverges from the client. Never branch on
+// useReducedMotion here — a plain-div branch strands the server-rendered
+// opacity:0 style and hides the section entirely.
 export function Reveal({
   children,
   className,
@@ -30,8 +35,6 @@ export function Reveal({
   className?: string;
   delay?: number;
 }) {
-  const reduce = useReducedMotion();
-  if (reduce) return <div className={className}>{children}</div>;
   return (
     <motion.div
       className={className}
@@ -178,7 +181,7 @@ export function CloneCommand({ className = "" }: { className?: string }) {
 export function TrustLine({ className = "" }: { className?: string }) {
   return (
     <p className={`font-mono text-xs text-faint ${className}`}>
-      Open-source · self-hosted · built on @sealant/sdk
+      Open-source · local-first · built on @sealant/sdk
     </p>
   );
 }
@@ -206,6 +209,23 @@ export function BuildingNow({
     <span className={`flex shrink-0 items-center gap-1.5 ${className}`}>
       <span className="size-1.5 rounded-full bg-warning-dot" aria-hidden="true" />
       <span className="font-mono text-xs text-warning">{word}</span>
+    </span>
+  );
+}
+
+// A capability exercised in the current development build. Green is earned:
+// use this only for behavior the product actually runs today.
+export function AvailableNow({
+  word = "Available now",
+  className = "",
+}: {
+  word?: string;
+  className?: string;
+}) {
+  return (
+    <span className={`flex shrink-0 items-center gap-1.5 ${className}`}>
+      <span className="size-1.5 rounded-full bg-success-dot" aria-hidden="true" />
+      <span className="font-mono text-xs text-success">{word}</span>
     </span>
   );
 }
