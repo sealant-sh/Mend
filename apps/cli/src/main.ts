@@ -88,7 +88,8 @@ const api = async <T>(
     response = await fetch(`${config.url}/api${route}`, {
       method,
       headers,
-      body: body === undefined ? null : JSON.stringify(body),
+      // Spread, not `body: null` — fresh oxlint rejects a body key on GETs.
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
   } catch {
     return fail(`cannot reach the Mend server at ${config.url} — is it running?`);
@@ -204,8 +205,6 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
     label: null,
     base: null,
   });
-  const worktree = worktreePathOf(project.storePath, session.worktree);
-
   say(`${green("✓")} worktree ${session.worktree} ${dim(`· branch ${session.branch}`)}`);
   say(
     `${green("✓")} base ${dim(session.baseSha.slice(0, 12))} · session ${dim(session.id.slice(0, 8))}`,

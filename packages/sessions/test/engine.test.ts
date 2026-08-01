@@ -7,7 +7,11 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   CheckpointsRepo,
   ProjectNotFoundError,
+  ProjectMountNotFoundError,
+  ProjectMountsRepo,
   ProjectsRepo,
+  ReferenceNotFoundError,
+  ReferencesRepo,
   SessionChangesRepo,
   SessionNotFoundError,
   SessionsRepo,
@@ -15,7 +19,14 @@ import {
   type NewSession,
 } from "@mend/db";
 import { ChangeId, CheckpointId, ProjectId, SessionId, Sha } from "@mend/domain";
-import { Change, Checkpoint, Project, Session } from "@mend/domain/workbench";
+import {
+  Change,
+  Checkpoint,
+  Project,
+  Session,
+  type SessionExtraMount,
+  type SessionReferenceMount,
+} from "@mend/domain/workbench";
 import { SealantClient } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import { Store, StoreConfig } from "@mend/store";
@@ -58,6 +69,26 @@ const makeWorld = (): World => ({
   checkpoints: [],
 });
 
+/** No declared mounts in these worlds. */
+const projectMountsEmptyLayer = Layer.succeed(ProjectMountsRepo, {
+  create: () => Effect.die("not in test"),
+  byId: (id) => Effect.fail(new ProjectMountNotFoundError({ mountId: id })),
+  listForProject: () => Effect.succeed([]),
+  remove: () => Effect.void,
+});
+
+/** No references in these worlds — launches mount nothing extra. */
+const referencesEmptyLayer = Layer.succeed(ReferencesRepo, {
+  create: () => Effect.die("not in test"),
+  byId: (id) => Effect.fail(new ReferenceNotFoundError({ referenceId: id })),
+  byName: () => Effect.succeed(null),
+  list: () => Effect.succeed([]),
+  remove: () => Effect.void,
+  setHead: () => Effect.void,
+  listForProject: () => Effect.succeed([]),
+  setForProject: () => Effect.void,
+});
+
 const projectsLayer = (world: World) =>
   Layer.succeed(ProjectsRepo, {
     create: () => Effect.die("not in test"),
@@ -91,6 +122,8 @@ const sessionsLayer = (world: World) => {
           branch: input.branch,
           baseSha: input.baseSha,
           contextSnapshotId: input.contextSnapshotId,
+          referenceMounts: [],
+          extraMounts: [],
           sealantRunId: null,
           sealantWorkspaceId: null,
           sealantSessionId: null,
@@ -119,6 +152,10 @@ const sessionsLayer = (world: World) => {
       Effect.sync(() => update(id, { sealantRunId, sealantWorkspaceId })),
     setSealantSessionId: (id, sealantSessionId) =>
       Effect.sync(() => update(id, { sealantSessionId })),
+    setReferenceMounts: (id: string, mounts: ReadonlyArray<SessionReferenceMount>) =>
+      Effect.sync(() => update(id, { referenceMounts: mounts })),
+    setExtraMounts: (id: string, mounts: ReadonlyArray<SessionExtraMount>) =>
+      Effect.sync(() => update(id, { extraMounts: mounts })),
     setProviderSessionId: (id, providerSessionId) =>
       Effect.sync(() => update(id, { providerSessionId })),
     setStatus: (id, status) => Effect.sync(() => update(id, { status })),
@@ -238,6 +275,8 @@ const withEngine = <A, E>(
     Layer.provide(sessionsLayer(world)),
     Layer.provide(changesLayer(world)),
     Layer.provide(checkpointsLayer(world)),
+    Layer.provide(referencesEmptyLayer),
+    Layer.provide(projectMountsEmptyLayer),
   );
   return Effect.runPromise(
     work(world, tmp).pipe(
@@ -348,6 +387,8 @@ describe("SessionEngine", () => {
       branch: "mend/session/x",
       baseSha: Sha.make("0000000000000000000000000000000000000000"),
       contextSnapshotId: null,
+      referenceMounts: [],
+      extraMounts: [],
       sealantRunId: null,
       sealantWorkspaceId: null,
       sealantSessionId: null,
@@ -371,6 +412,8 @@ describe("SessionEngine", () => {
       Layer.provide(sessionsLayer(world)),
       Layer.provide(changesLayer(world)),
       Layer.provide(checkpointsLayer(world)),
+      Layer.provide(referencesEmptyLayer),
+      Layer.provide(projectMountsEmptyLayer),
     );
     // Constructing the engine runs resume().
     await Effect.runPromise(

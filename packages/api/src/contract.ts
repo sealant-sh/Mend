@@ -9,6 +9,8 @@ import {
   Issue,
   IssueId,
   ProjectId,
+  ProjectMountId,
+  ReferenceId,
   Run,
   RunId,
   SessionId,
@@ -18,6 +20,8 @@ import {
   Checkpoint,
   FollowUp,
   Project,
+  ProjectMount,
+  Reference,
   ReviewComment,
   Session,
 } from "@mend/domain/workbench";
@@ -263,6 +267,101 @@ const projectsGroup = HttpApiGroup.make("projects")
   )
   .middleware(AuthMiddleware);
 
+/** Add a reference: clone `source` shallow into the store, pinned to `ref` when given. */
+export class AddReference extends Schema.Class<AddReference>("AddReference")({
+  name: Schema.String,
+  source: Schema.String,
+  /** Branch or tag to hold the clone at; null = the remote's default branch. */
+  ref: Schema.NullOr(Schema.String),
+}) {}
+
+/** The project's selection, replaced as a set — what its sessions will mount. */
+export class ProjectReferenceSelection extends Schema.Class<ProjectReferenceSelection>(
+  "ProjectReferenceSelection",
+)({
+  referenceIds: Schema.Array(ReferenceId),
+}) {}
+
+/**
+ * References (plan §17, decided 2026-08-01): a global list of read-only
+ * dependency clones, selected per project, mounted at `/workspace/ref/<name>`.
+ */
+const referencesGroup = HttpApiGroup.make("references")
+  .add(HttpApiEndpoint.get("list", "/references", { success: Schema.Array(Reference) }))
+  .add(
+    HttpApiEndpoint.post("add", "/references", {
+      payload: AddReference,
+      success: Reference,
+      error: StoreFailure,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.delete("remove", "/references/:id", {
+      params: { id: ReferenceId },
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("refresh", "/references/:id/refresh", {
+      params: { id: ReferenceId },
+      success: Reference,
+      error: Schema.Union([NotFound, StoreFailure]),
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("forProject", "/projects/:id/references", {
+      params: { id: ProjectId },
+      success: Schema.Array(Reference),
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put("selectForProject", "/projects/:id/references", {
+      params: { id: ProjectId },
+      payload: ProjectReferenceSelection,
+      success: Schema.Array(Reference),
+      error: NotFound,
+    }),
+  )
+  .middleware(AuthMiddleware);
+
+/** Declare a host folder the project's sessions can see; read-only unless chosen otherwise. */
+export class AddProjectMount extends Schema.Class<AddProjectMount>("AddProjectMount")({
+  name: Schema.String,
+  hostPath: Schema.String,
+  readOnly: Schema.Boolean,
+}) {}
+
+/**
+ * Per-project extra mounts (plan §17, decided 2026-08-01): host folders
+ * mounted at `/workspace/home/<name>` in the project's sessions. The review
+ * scope is unchanged — mounts widen what the agent can see, never what Mend
+ * reviews.
+ */
+const projectMountsGroup = HttpApiGroup.make("projectMounts")
+  .add(
+    HttpApiEndpoint.get("list", "/projects/:id/mounts", {
+      params: { id: ProjectId },
+      success: Schema.Array(ProjectMount),
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("add", "/projects/:id/mounts", {
+      params: { id: ProjectId },
+      payload: AddProjectMount,
+      success: ProjectMount,
+      error: Schema.Union([NotFound, StoreFailure]),
+    }),
+  )
+  .add(
+    HttpApiEndpoint.delete("remove", "/projects/:id/mounts/:mountId", {
+      params: { id: ProjectId, mountId: ProjectMountId },
+      error: NotFound,
+    }),
+  )
+  .middleware(AuthMiddleware);
+
 /** Provisioning a session: the worktree exists after this; launching is separate. */
 export class NewWorkbenchSession extends Schema.Class<NewWorkbenchSession>("NewWorkbenchSession")({
   harness: Schema.String,
@@ -482,6 +581,8 @@ export const MendApi = HttpApi.make("mend")
   .add(briefsGroup)
   .add(runsGroup)
   .add(projectsGroup)
+  .add(projectMountsGroup)
+  .add(referencesGroup)
   .add(sessionsGroup)
   .add(sessionChangesGroup)
   .add(devicesGroup)

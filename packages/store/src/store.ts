@@ -30,6 +30,22 @@ export class AdoptError extends Schema.TaggedErrorClass<AdoptError>()("AdoptErro
   cause: GitError,
 }) {}
 
+/** Named to dodge the JS global `ReferenceError`; same shape as `AdoptError`. */
+export class ReferenceCloneError extends Schema.TaggedErrorClass<ReferenceCloneError>()(
+  "ReferenceCloneError",
+  {
+    name: Schema.String,
+    source: Schema.String,
+    cause: GitError,
+  },
+) {}
+
+export interface ReferenceClone {
+  /** Absolute path of the working clone: `<root>/_references/<name>`. */
+  readonly path: string;
+  readonly headSha: Sha;
+}
+
 export interface AdoptedRepo {
   /** Absolute path of the bare repo: `<root>/<name>/repo.git`. */
   readonly storePath: string;
@@ -58,6 +74,12 @@ export interface ChangedFile {
 }
 
 const sha = (value: string) => Sha.make(value);
+
+/** Untracked paths — invisible to `git diff <base>` but part of the change. */
+const untrackedIn = (worktreePath: string) =>
+  git(["ls-files", "--others", "--exclude-standard"], worktreePath).pipe(
+    Effect.map((out) => (out === "" ? [] : out.split("\n"))),
+  );
 
 /** Where a named worktree lives relative to its project's bare repo. */
 export const worktreePathOf = (storePath: string, name: string) =>
@@ -112,6 +134,24 @@ export class Store extends Context.Service<
       b: string | null,
     ) => Effect.Effect<ReadonlyArray<ChangedFile>, GitError>;
     readonly headSha: (dir: string) => Effect.Effect<Sha, GitError>;
+    /**
+     * Clone `source` shallow into `_references/<name>` as read-only source
+     * material (plan §17, decided 2026-08-01). `ref` pins a branch or tag;
+     * null follows the remote's default branch. A working clone, not bare —
+     * the point is an agent reading files.
+     */
+    readonly cloneReference: (
+      name: string,
+      source: string,
+      ref: string | null,
+    ) => Effect.Effect<ReferenceClone, ReferenceCloneError>;
+    /** Re-fetch the pinned ref (or the clone's branch) shallow and hard-reset to it. */
+    readonly refreshReference: (
+      clonePath: string,
+      ref: string | null,
+    ) => Effect.Effect<ReferenceClone, GitError>;
+    /** Delete the clone directory. Selection rows are the caller's concern. */
+    readonly removeReference: (clonePath: string) => Effect.Effect<void>;
   }
 >()("@mend/store/Store") {
   static readonly layer = Layer.effect(
@@ -222,12 +262,6 @@ export class Store extends Context.Service<
         return yield* git(["diff", a, b], dir);
       });
 
-      /** Untracked paths — invisible to `git diff <base>` but part of the change. */
-      const untrackedIn = (worktreePath: string) =>
-        git(["ls-files", "--others", "--exclude-standard"], worktreePath).pipe(
-          Effect.map((out) => (out === "" ? [] : out.split("\n"))),
-        );
-
       /**
        * Rendering an untracked file costs one `git diff --no-index` spawn, so
        * an unreviewable explosion (a dependency store dumped into the worktree
@@ -315,7 +349,61 @@ export class Store extends Context.Service<
         return sha(head);
       });
 
+      // `_references/` cannot collide with a project dir: adopted names go
+      // through the API's name check, which rejects a leading underscore.
+      const cloneReference = Effect.fn("Store.cloneReference")(function* (
+        name: string,
+        source: string,
+        ref: string | null,
+      ) {
+        const referencesRoot = path.join(config.root, "_references");
+        const clonePath = path.join(referencesRoot, name);
+        const attempt = Effect.gen(function* () {
+          yield* Effect.sync(() => fs.mkdirSync(referencesRoot, { recursive: true }));
+          yield* git(
+            [
+              "clone",
+              "--depth",
+              "1",
+              ...(ref === null ? [] : ["--branch", ref]),
+              source,
+              clonePath,
+            ],
+            referencesRoot,
+            { GIT_TERMINAL_PROMPT: "0" },
+          );
+          const head = yield* git(["rev-parse", "HEAD"], clonePath);
+          return { path: clonePath, headSha: sha(head) };
+        });
+        return yield* attempt.pipe(
+          Effect.catch((cause) => Effect.fail(new ReferenceCloneError({ name, source, cause }))),
+        );
+      });
+
+      const refreshReference = Effect.fn("Store.refreshReference")(function* (
+        clonePath: string,
+        ref: string | null,
+      ) {
+        // No pin = follow whatever branch the clone is on. FETCH_HEAD + hard
+        // reset handles branches and tags uniformly, force-pushes included —
+        // a reference clone has no local work to protect.
+        const target = ref ?? (yield* git(["symbolic-ref", "--short", "HEAD"], clonePath));
+        yield* git(["fetch", "--depth", "1", "origin", target], clonePath, {
+          GIT_TERMINAL_PROMPT: "0",
+        });
+        yield* git(["reset", "--hard", "FETCH_HEAD"], clonePath);
+        const head = yield* git(["rev-parse", "HEAD"], clonePath);
+        return { path: clonePath, headSha: sha(head) };
+      });
+
+      const removeReference = Effect.fn("Store.removeReference")(function* (clonePath: string) {
+        yield* Effect.sync(() => fs.rmSync(clonePath, { recursive: true, force: true }));
+      });
+
       return {
+        cloneReference,
+        refreshReference,
+        removeReference,
         adopt,
         createWorktree,
         removeWorktree,

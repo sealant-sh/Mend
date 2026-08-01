@@ -32,7 +32,13 @@ import {
   TracePage,
   Unauthorized,
 } from "./contract.ts";
-import { ProjectsGroupLive, SessionChangesGroupLive, SessionsGroupLive } from "./workbench.ts";
+import {
+  ProjectMountsGroupLive,
+  ProjectsGroupLive,
+  ReferencesGroupLive,
+  SessionChangesGroupLive,
+  SessionsGroupLive,
+} from "./workbench.ts";
 
 /** Resolves the better-auth session (cookie or bearer) and provides CurrentUser. */
 export const AuthMiddlewareLive = Layer.effect(AuthMiddleware)(
@@ -384,6 +390,8 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
   Layer.provide(BriefsGroupLive),
   Layer.provide(RunsGroupLive),
   Layer.provide(ProjectsGroupLive),
+  Layer.provide(ProjectMountsGroupLive),
+  Layer.provide(ReferencesGroupLive),
   Layer.provide(SessionsGroupLive),
   Layer.provide(SessionChangesGroupLive),
   Layer.provide(DevicesGroupLive),

@@ -7,6 +7,46 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-08-01 · 0.8.1 · Plural mounts with read-only — the plan's original shape, plus `:ro`
+
+**Implemented at the source** — [sealant#120](https://github.com/sealant-sh/sealant/pull/120)
+(pending review/release): `CreateOptions.mounts` → `spec.sources.mounts` → `-v host:container:ro`,
+same allowlist, container paths checked against the working directory and `/run/sealant`, recorded
+on the attempt snapshot. No sealantd change needed (the daemon verifies only its primary mount
+contract). The PR also fixes the 2026-07-25 allowlist env-name drift (the SDK doc now names
+`SEALANT_MOUNT_ALLOWED_STORE_ROOTS`).
+
+- **Needed:** two decided features (plan §17, 2026-08-01) — per-project extra mounts (sibling repos,
+  experiments folders) and reference clones of dependency sources — both mount additional host
+  directories into a workspace beside the primary worktree, read-only by default. Read-only is
+  load-bearing: it keeps the reviewable change exactly worktree-versus-base and lets one shared
+  reference clone serve many concurrent workspaces.
+- **Today:** `CreateOptions` takes exactly one `source: { kind: "mount", path }`, always read-write,
+  at the working directory. No `mounts` array anywhere in the blueprint (`workspace-blueprint.ts`
+  has a single-source union; `sources.inputs` is git-URL build inputs, not runtime binds), and the
+  docker adapter never emits `:ro` (`workspaceMountArgs`, docker-runtime-adapter.ts). Plan §8.1.A
+  originally asked for `mounts: [{ path, source }]` plural; the singular shipped.
+- **Suggested:** `mounts: [{ hostPath, mountPath, readOnly }]` for additional mounts (primary source
+  semantics unchanged), `:ro` in the docker adapter, allowlist coverage for the extra roots, and the
+  full mount set recorded on the workspace so a consumer can state what the agent could see. Full
+  shape: plan §8.1.G.
+
+## 2026-08-01 · 0.8.1 · `openForward` exists in the daemon but has no API/SDK surface
+
+- **Needed:** dev-server preview (plan §8.1.H / §17, 2026-08-01): a browser on the host or on a
+  paired device reaches a server listening inside a workspace container. Mend terminates a host
+  listener on private interfaces and needs a byte pipe to `container:port`.
+- **Today:** the primitive is fully built in sealantd — `openForward`/`closeForward`
+  (`sealant-protocol` command.rs, `sealant-network` forward.rs: direct-tcpip from inside the
+  container, raw conduit bypassing the telemetry bus) — but its only consumer is the SSH gateway's
+  `direct-tcpip` handler. Zero surface in the Core HTTP API or `@sealant/sdk`; workspace containers
+  run on the default bridge with no published ports, so there is no other sanctioned path in.
+- **Suggested:** a public SDK surface, e.g. `workspace.forward(port)` returning a duplex byte stream
+  (WS-bridged like `session.attach`). Two follow-ons that complete the feature: sealantd observing
+  listening sockets (it is PID 1) and emitting typed listen/unlisten record events so ports are
+  discovered by observation, and a record event when a forward opens (the fact, not the bytes) so
+  reachability stays on the evidence trail.
+
 ## 2026-07-25 · 0.7.1 · Worker needs `SEALANT_CREDENTIALS_KEY` too — released compose only gives it to the api
 
 - **Needed:** a claude-harness workspace with connected-account credentials, on a self-host install.

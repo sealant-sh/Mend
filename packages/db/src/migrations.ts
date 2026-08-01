@@ -331,6 +331,63 @@ const pushDevices = Effect.gen(function* () {
     )`;
 });
 
+/**
+ * References (plan §17, decided 2026-08-01): read-only clones of dependency
+ * sources in the store, selected per project, mounted at `/workspace/ref/<name>`.
+ * Table is `reference_repos` — `references` is a reserved word; the product
+ * noun stays `reference`. The session records what it actually mounted
+ * (`reference_mounts`), SHAs as observed at launch.
+ */
+const references = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE reference_repos (
+      id text PRIMARY KEY,
+      name text NOT NULL UNIQUE,
+      origin_url text NOT NULL,
+      path text NOT NULL UNIQUE,
+      pinned_ref text,
+      head_sha text,
+      refreshed_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`
+    CREATE TABLE project_references (
+      project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      reference_id text NOT NULL REFERENCES reference_repos(id) ON DELETE CASCADE,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (project_id, reference_id)
+    )`;
+  yield* sql`
+    ALTER TABLE agent_sessions ADD COLUMN reference_mounts jsonb NOT NULL DEFAULT '[]'`;
+});
+
+/**
+ * Per-project extra mounts (plan §17, decided 2026-08-01): host folders a
+ * project's sessions see at `/workspace/home/<name>`, read-only by default.
+ * The session records what it actually mounted (`extra_mounts`) so the review
+ * surface can state what the agent could see; the reviewable change itself
+ * stays worktree-versus-base.
+ */
+const projectMounts = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE project_mounts (
+      id text PRIMARY KEY,
+      project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name text NOT NULL,
+      host_path text NOT NULL,
+      read_only boolean NOT NULL DEFAULT true,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE (project_id, name),
+      UNIQUE (project_id, host_path)
+    )`;
+  yield* sql`
+    ALTER TABLE agent_sessions ADD COLUMN extra_mounts jsonb NOT NULL DEFAULT '[]'`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -339,5 +396,8 @@ export const migrations = {
   "0005_follow_ups": followUps,
   "0006_sealant_session": sealantSession,
   "0007_review_comment_spans": reviewCommentSpans,
+  // 0008 went to push devices on main while these were in flight — renumbered.
   "0008_push_devices": pushDevices,
+  "0009_references": references,
+  "0010_project_mounts": projectMounts,
 };

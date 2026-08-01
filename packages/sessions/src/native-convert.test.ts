@@ -114,7 +114,7 @@ describe("round-trip invariant", () => {
 const codexCorpus = (() => {
   try {
     const days = fs.globSync(`${process.env["HOME"]}/.codex/sessions/*/*/*/rollout-*.jsonl`);
-    return days.sort().at(-1) ?? null;
+    return days.toSorted().at(-1) ?? null;
   } catch {
     return null;
   }
@@ -122,7 +122,7 @@ const codexCorpus = (() => {
 const claudeCorpus = (() => {
   try {
     const files = fs.globSync(`${process.env["HOME"]}/.mend/store/*/sessions/*/transcript.native`);
-    return files.sort().at(-1) ?? null;
+    return files.toSorted().at(-1) ?? null;
   } catch {
     return null;
   }

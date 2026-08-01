@@ -3,14 +3,17 @@ import * as path from "node:path";
 
 import {
   CheckpointsRepo,
+  ProjectMountsRepo,
   ProjectNotFoundError,
   ProjectsRepo,
+  ReferencesRepo,
   SessionChangesRepo,
   SessionNotFoundError,
   SessionsRepo,
 } from "@mend/db";
 import { SealantRunId, SealantWorkspaceId, SessionId, type ProjectId } from "@mend/domain";
 import type { Checkpoint, CheckpointTrigger, Session } from "@mend/domain/workbench";
+import { SessionExtraMount, SessionReferenceMount } from "@mend/domain/workbench";
 import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import { GitError, Store, sessionStatePathOf, worktreePathOf } from "@mend/store";
 import type { Harness, Run as SdkRun, WorkspaceCredentialsOptions } from "@sealant/sdk";
@@ -29,6 +32,67 @@ import {
   ingestNativeSession,
   type ConvertedNativeSession,
 } from "./native-convert.ts";
+
+const readManifest = (stateDir: string) =>
+  Effect.promise(async (): Promise<HarnessStateManifest | null> => {
+    try {
+      const raw = await fs.readFile(path.join(stateDir, "manifest.json"), "utf8");
+      return JSON.parse(raw) as HarnessStateManifest;
+    } catch {
+      return null;
+    }
+  });
+
+/** How a harness takes an opening prompt (the cross-harness handoff). */
+const promptArgv = (harness: string, prompt: string): ReadonlyArray<string> | null => {
+  switch (harness) {
+    case "claude":
+      return ["claude", prompt];
+    case "codex":
+      return ["codex", prompt];
+    default:
+      return null;
+  }
+};
+
+/** Credentials ride connected accounts (references only); harness picks image behavior. */
+const platformShape = (
+  harness: string,
+): { harness: Harness; credentials: WorkspaceCredentialsOptions | undefined } => {
+  switch (harness) {
+    case "codex":
+      return { harness: codex(), credentials: { codex: true } };
+    case "claude":
+      return { harness: claudeCode(), credentials: { claude: true } };
+    default:
+      return { harness: opencode(), credentials: undefined };
+  }
+};
+
+/**
+ * Permission prompts are the harness re-asking a question Mend already
+ * answers: the session runs in an isolated workspace on its own
+ * worktree, every byte is recorded, and nothing lands without review.
+ * Default every harness to its bypass mode; a caller that passes the
+ * flag itself (or a contrary one) is left alone.
+ */
+const withPermissionDefaults = (
+  harness: string,
+  argv: ReadonlyArray<string>,
+): ReadonlyArray<string> => {
+  const [head, ...rest] = argv;
+  if (harness === "claude" && head === "claude" && !argv.includes("--permission-mode")) {
+    return argv.includes("--dangerously-skip-permissions")
+      ? argv
+      : ["claude", "--dangerously-skip-permissions", ...rest];
+  }
+  if (harness === "codex" && head === "codex" && !argv.includes("--sandbox")) {
+    return argv.includes("--dangerously-bypass-approvals-and-sandbox")
+      ? argv
+      : ["codex", "--dangerously-bypass-approvals-and-sandbox", ...rest];
+  }
+  return argv;
+};
 
 export interface ProvisionInput {
   readonly projectId: ProjectId;
@@ -117,6 +181,8 @@ export class SessionEngine extends Context.Service<
       const projects = yield* ProjectsRepo;
       const changes = yield* SessionChangesRepo;
       const checkpoints = yield* CheckpointsRepo;
+      const references = yield* ReferencesRepo;
+      const projectMounts = yield* ProjectMountsRepo;
       const store = yield* Store;
       const scope = yield* Effect.scope;
 
@@ -259,20 +325,6 @@ export class SessionEngine extends Context.Service<
         yield* Effect.forkIn(work, scope);
       });
 
-      /** Credentials ride connected accounts (references only); harness picks image behavior. */
-      const platformShape = (
-        harness: string,
-      ): { harness: Harness; credentials: WorkspaceCredentialsOptions | undefined } => {
-        switch (harness) {
-          case "codex":
-            return { harness: codex(), credentials: { codex: true } };
-          case "claude":
-            return { harness: claudeCode(), credentials: { claude: true } };
-          default:
-            return { harness: opencode(), credentials: undefined };
-        }
-      };
-
       /**
        * Interactive Claude Code ignores the platform's env-injected credential
        * during onboarding: `claude -p` honors `CLAUDE_CODE_OAUTH_TOKEN`, but
@@ -315,31 +367,6 @@ export class SessionEngine extends Context.Service<
         // as root unless the environment says so, and it is telling the truth.
         `export IS_SANDBOX=1; ` +
         `exec "$@"`;
-
-      /**
-       * Permission prompts are the harness re-asking a question Mend already
-       * answers: the session runs in an isolated workspace on its own
-       * worktree, every byte is recorded, and nothing lands without review.
-       * Default every harness to its bypass mode; a caller that passes the
-       * flag itself (or a contrary one) is left alone.
-       */
-      const withPermissionDefaults = (
-        harness: string,
-        argv: ReadonlyArray<string>,
-      ): ReadonlyArray<string> => {
-        const [head, ...rest] = argv;
-        if (harness === "claude" && head === "claude" && !argv.includes("--permission-mode")) {
-          return argv.includes("--dangerously-skip-permissions")
-            ? argv
-            : ["claude", "--dangerously-skip-permissions", ...rest];
-        }
-        if (harness === "codex" && head === "codex" && !argv.includes("--sandbox")) {
-          return argv.includes("--dangerously-bypass-approvals-and-sandbox")
-            ? argv
-            : ["codex", "--dangerously-bypass-approvals-and-sandbox", ...rest];
-        }
-        return argv;
-      };
 
       const withHarnessBootstrap = (
         harness: string,
@@ -459,16 +486,6 @@ export class SessionEngine extends Context.Service<
           ),
         );
 
-      const readManifest = (stateDir: string) =>
-        Effect.promise(async (): Promise<HarnessStateManifest | null> => {
-          try {
-            const raw = await fs.readFile(path.join(stateDir, "manifest.json"), "utf8");
-            return JSON.parse(raw) as HarnessStateManifest;
-          } catch {
-            return null;
-          }
-        });
-
       const launchInternal = Effect.fn("SessionEngine.launchInternal")(function* (
         sessionId: SessionId,
         argv: ReadonlyArray<string>,
@@ -478,6 +495,29 @@ export class SessionEngine extends Context.Service<
         const project = yield* projects.byId(session.projectId);
         const worktree = worktreePathOf(project.storePath, session.worktree);
         const shape = platformShape(session.harness);
+        // What rides beside the worktree (plan §17, 2026-08-01): selected
+        // references read-only at /workspace/ref/<name>, and the project's
+        // declared host folders at /workspace/home/<name> — read-only unless
+        // deliberately chosen otherwise. Resolved at launch; the session
+        // records exactly what it received.
+        const selectedReferences = yield* references
+          .listForProject(project.id)
+          .pipe(Effect.orElseSucceed(() => []));
+        const declaredMounts = yield* projectMounts
+          .listForProject(project.id)
+          .pipe(Effect.orElseSucceed(() => []));
+        const workspaceMounts = [
+          ...selectedReferences.map((reference) => ({
+            hostPath: reference.path,
+            mountPath: `/workspace/ref/${reference.name}`,
+          })),
+          ...declaredMounts.map((mount) => ({
+            hostPath: mount.hostPath,
+            mountPath: `/workspace/home/${mount.name}`,
+            // Omitted = the blueprint default (read-only). Only rw is explicit.
+            ...(mount.readOnly ? {} : { readOnly: false }),
+          })),
+        ];
         // A failed provision settles the session — fire-and-forget launchers
         // (the web) must never strand a row in "starting" with no error.
         const settleOnFailure = <A>(effect: Effect.Effect<A, SealantPlatformError>) =>
@@ -491,6 +531,7 @@ export class SessionEngine extends Context.Service<
         const createWorkspace = (withCredentials: boolean) =>
           sealant.createWorkspace({
             source: { kind: "mount", path: worktree },
+            ...(workspaceMounts.length === 0 ? {} : { mounts: workspaceMounts }),
             harness: shape.harness,
             name: `mend-${session.id.slice(0, 8)}`,
             // Belt for every path that forgets to stop: the platform reaper.
@@ -588,6 +629,76 @@ export class SessionEngine extends Context.Service<
           );
         }
 
+        if (selectedReferences.length > 0) {
+          yield* sessions.setReferenceMounts(
+            sessionId,
+            selectedReferences.map(
+              (reference) =>
+                new SessionReferenceMount({
+                  name: reference.name,
+                  mountPath: `/workspace/ref/${reference.name}`,
+                  sha: reference.headSha,
+                }),
+            ),
+          );
+        }
+        if (declaredMounts.length > 0) {
+          yield* sessions.setExtraMounts(
+            sessionId,
+            declaredMounts.map(
+              (mount) =>
+                new SessionExtraMount({
+                  name: mount.name,
+                  hostPath: mount.hostPath,
+                  mountPath: `/workspace/home/${mount.name}`,
+                  readOnly: mount.readOnly,
+                }),
+            ),
+          );
+        }
+        if (workspaceMounts.length > 0) {
+          // Tell the harness the mounts exist — appended to its global memory
+          // file in the workspace $HOME (never the worktree: the note is not
+          // review content). After state restore, which rewrites $HOME.
+          const referencesSection =
+            selectedReferences.length === 0
+              ? ""
+              : `Read-only clones of dependency sources — read the actual source here ` +
+                `before guessing a dependency's API:\n\n` +
+                selectedReferences
+                  .map((reference) => `- /workspace/ref/${reference.name}`)
+                  .join("\n") +
+                `\n\n`;
+          const foldersSection =
+            declaredMounts.length === 0
+              ? ""
+              : `Project folders from the user's machine:\n\n` +
+                declaredMounts
+                  .map((mount) =>
+                    mount.readOnly
+                      ? `- /workspace/home/${mount.name} (read-only)`
+                      : `- /workspace/home/${mount.name} (read-write — writes land on the ` +
+                        `user's folder directly and are not part of the reviewed change)`,
+                  )
+                  .join("\n") +
+                `\n\n`;
+          const note =
+            `\n<!-- mend:mounts -->\n## Mend mounts\n\nMounted beside the repo:\n\n` +
+            referencesSection +
+            foldersSection;
+          yield* sealant
+            .exec(workspace, [
+              "sh",
+              "-c",
+              `mkdir -p "$HOME/.claude" "$HOME/.codex"; ` +
+                `for f in "$HOME/.claude/CLAUDE.md" "$HOME/.codex/AGENTS.md"; do ` +
+                `grep -Eq "mend:(mounts|references)" "$f" 2>/dev/null || printf '%s' "$1" >> "$f"; done`,
+              "sh",
+              note,
+            ])
+            .pipe(Effect.ignore);
+        }
+
         const pty = yield* sealant
           .openSession(workspace, withHarnessBootstrap(session.harness, shapedArgv))
           .pipe(settleOnFailure);
@@ -661,18 +772,6 @@ export class SessionEngine extends Context.Service<
         claude: ["claude"],
         codex: ["codex"],
         opencode: ["opencode"],
-      };
-
-      /** How a harness takes an opening prompt (the cross-harness handoff). */
-      const promptArgv = (harness: string, prompt: string): ReadonlyArray<string> | null => {
-        switch (harness) {
-          case "claude":
-            return ["claude", prompt];
-          case "codex":
-            return ["codex", prompt];
-          default:
-            return null;
-        }
       };
 
       const ACTIVE_STATUSES = new Set(["starting", "running", "waiting", "idle"]);

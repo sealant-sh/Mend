@@ -63,10 +63,11 @@ export default function SettingsScreen() {
   };
 
   useEffect(() => {
-    void loadConfig().then((config) => {
+    void (async () => {
+      const config = await loadConfig();
       setUrl(config.url);
       setToken(config.token);
-    });
+    })();
   }, []);
 
   const inputStyle = {

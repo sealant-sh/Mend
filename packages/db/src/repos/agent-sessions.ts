@@ -7,7 +7,12 @@ import {
   SessionId,
   type Sha,
 } from "@mend/domain";
-import { Session, type SessionStatus } from "@mend/domain/workbench";
+import {
+  Session,
+  type SessionExtraMount,
+  type SessionReferenceMount,
+  type SessionStatus,
+} from "@mend/domain/workbench";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -65,6 +70,16 @@ export class SessionsRepo extends Context.Service<
     /** The PTY session id — how a client reattaches to the live terminal. */
     readonly setSealantSessionId: (id: SessionId, sealantSessionId: string) => Effect.Effect<void>;
     readonly setProviderSessionId: (id: SessionId, providerId: string) => Effect.Effect<void>;
+    /** What launch actually mounted beside the worktree — recorded once, at launch. */
+    readonly setReferenceMounts: (
+      id: SessionId,
+      mounts: ReadonlyArray<SessionReferenceMount>,
+    ) => Effect.Effect<void>;
+    /** The project folders launch actually bound — recorded once, at launch. */
+    readonly setExtraMounts: (
+      id: SessionId,
+      mounts: ReadonlyArray<SessionExtraMount>,
+    ) => Effect.Effect<void>;
     readonly setStatus: (id: SessionId, status: SessionStatus) => Effect.Effect<void>;
     readonly saveLastSeenSequence: (id: SessionId, sequence: bigint) => Effect.Effect<void>;
     /** Live progress pointer for the Now feed and session page (plan §9.4). */
@@ -184,6 +199,26 @@ export class SessionsRepo extends Context.Service<
           WHERE id = ${id}`.pipe(Effect.orDie);
       });
 
+      const setReferenceMounts = Effect.fn("SessionsRepo.setReferenceMounts")(function* (
+        id: SessionId,
+        mounts: ReadonlyArray<SessionReferenceMount>,
+      ) {
+        yield* sql`
+          UPDATE agent_sessions
+          SET reference_mounts = ${JSON.stringify(mounts)}, updated_at = now()
+          WHERE id = ${id}`.pipe(Effect.orDie);
+      });
+
+      const setExtraMounts = Effect.fn("SessionsRepo.setExtraMounts")(function* (
+        id: SessionId,
+        mounts: ReadonlyArray<SessionExtraMount>,
+      ) {
+        yield* sql`
+          UPDATE agent_sessions
+          SET extra_mounts = ${JSON.stringify(mounts)}, updated_at = now()
+          WHERE id = ${id}`.pipe(Effect.orDie);
+      });
+
       const setStatus = Effect.fn("SessionsRepo.setStatus")(function* (
         id: SessionId,
         status: SessionStatus,
@@ -227,10 +262,15 @@ export class SessionsRepo extends Context.Service<
         outcome: SessionOutcome,
         summary: string | null,
       ) {
+        // First settle wins. Two supervisors watch every session (run-wait and
+        // the PTY status poll), and the loser used to overwrite a deliberate
+        // "stopped" with "failed · harness exited with code -1" — every user
+        // stop read as a crash. `reopen` clears settled_at, so a resumed
+        // session settles again normally.
         yield* sql`
           UPDATE agent_sessions
           SET status = ${outcome}, summary = ${summary}, settled_at = now(), updated_at = now()
-          WHERE id = ${id}`.pipe(Effect.orDie);
+          WHERE id = ${id} AND settled_at IS NULL`.pipe(Effect.orDie);
         yield* notify(id);
       });
 
@@ -262,6 +302,8 @@ export class SessionsRepo extends Context.Service<
         setSealantIds,
         setSealantSessionId,
         setProviderSessionId,
+        setReferenceMounts,
+        setExtraMounts,
         setStatus,
         saveLastSeenSequence,
         notifyProgress,
