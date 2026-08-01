@@ -110,7 +110,7 @@ function SessionScreen() {
           <span className="text-[0.74rem] text-faint">No — migration ended in June.</span>
         </div>
         <p className="mt-2 text-center font-mono text-[0.6rem] text-faint">
-          same PTY, same bytes — over your tailnet
+          attached over your tailnet
         </p>
       </div>
     </div>
@@ -167,24 +167,22 @@ function ReviewScreen() {
 
 export function Mobile() {
   return (
-    <section id="anywhere" className="bg-[var(--sw-bg)] py-24 lg:py-32">
+    <section id="phone" className="bg-[var(--sw-bg)] py-24 lg:py-32">
       <Container>
-        <div className="flex flex-wrap items-end justify-between gap-6">
-          <SectionHead
-            eyebrow={<Eyebrow>Any device</Eyebrow>}
-            title="Yes, from your phone."
-            intro={
-              <p>
-                The development app already connects to a real Mend host: see what is running, start
-                or resume an agent, message the live session, open its terminal, and read the local
-                diff. The phone is a control and review surface, not a cramped IDE.
-              </p>
-            }
-          />
-          <Reveal className="pb-1">
-            <AvailableNow word="Working today" />
-          </Reveal>
-        </div>
+        <SectionHead
+          eyebrow={<Eyebrow>Any device</Eyebrow>}
+          title="The same session, from your phone."
+          intro={
+            <p>
+              The development app connects to a real Mend host: see what is running, start or resume
+              an agent, message a live session, open its terminal, read the local diff. A control
+              and review surface — not an IDE on a small screen.
+            </p>
+          }
+        />
+        <Reveal className="mt-6">
+          <AvailableNow word="Working today" />
+        </Reveal>
 
         <Reveal className="mt-14">
           <div className="flex flex-wrap items-start justify-center gap-8 lg:gap-12">
@@ -205,9 +203,8 @@ export function Mobile() {
 
         <Reveal className="mt-10">
           <p className="mx-auto max-w-[68ch] text-center leading-relaxed text-muted-foreground">
-            Today the app connects to a Mend URL over your LAN or tailnet with an operator token. QR
-            pairing plus scoped, revocable device access is planned before the remote setup is
-            called finished.
+            The app reaches the Mend host over your LAN or tailnet with an operator token. Nothing
+            is exposed publicly.
           </p>
         </Reveal>
       </Container>

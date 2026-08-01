@@ -1,13 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { MotionConfig } from "framer-motion";
 
-import { BrowserSection } from "#/sections/browser";
-import { ContextSection } from "#/sections/context";
 import { Evidence } from "#/sections/evidence";
 import { FinalCta } from "#/sections/final-cta";
 import { Hero } from "#/sections/hero";
 import { Mobile } from "#/sections/mobile";
-import { OpenSource } from "#/sections/opensource";
+import { WhatsNext } from "#/sections/next";
 import { Review } from "#/sections/review";
 import { Sessions } from "#/sections/sessions";
 import { Why } from "#/sections/why";
@@ -16,10 +14,9 @@ export const Route = createFileRoute("/")({
   component: MarketingPage,
 });
 
-// One causal story, not a feature bag: the ownership thesis → what traps work
-// today → add one word to the agent CLI → the whole session (including its
-// planned dev server) becomes reachable → review the local change → prove it
-// on a phone → explain the record → planned context → trust posture → the ask.
+// One causal story: the claim (the session lives on your host) → the trap it
+// replaces → the mechanics → the review → the phone → where the record comes
+// from → what's planned → the ask. Everything before "What's next" runs today.
 function MarketingPage() {
   return (
     <MotionConfig reducedMotion="user">
@@ -27,12 +24,10 @@ function MarketingPage() {
         <Hero />
         <Why />
         <Sessions />
-        <BrowserSection />
         <Review />
         <Mobile />
         <Evidence />
-        <ContextSection />
-        <OpenSource />
+        <WhatsNext />
         <FinalCta />
       </main>
     </MotionConfig>

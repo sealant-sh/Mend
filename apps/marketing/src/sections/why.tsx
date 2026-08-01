@@ -50,8 +50,6 @@ function FoilTerminal() {
           <p className="text-muted-foreground"> M src/auth/session.ts</p>
           <p className="text-muted-foreground"> M src/invoice.ts</p>
           <p className="text-muted-foreground">?? src/auth/legacy-shim.ts</p>
-          <p className="mt-2 text-faint"># the laptop is at home · the dev server is on :3000</p>
-          <p className="text-faint"># claude's conversation does not exist in codex</p>
         </div>
         <dl className="border-t border-rule-faint px-5 py-3">
           {(
@@ -72,7 +70,7 @@ function FoilTerminal() {
         </dl>
       </div>
       <figcaption className="mt-3 text-center font-mono text-[0.62rem] tracking-[0.04em] text-faint uppercase">
-        A working day, today — the work belongs to the terminal pile
+        A working day, today
       </figcaption>
     </figure>
   );
@@ -86,12 +84,12 @@ export function Why() {
           <div className="min-w-0">
             <SectionHead
               eyebrow={<Eyebrow>Why</Eyebrow>}
-              title="The session is the work. Today, it's trapped in pieces."
+              title="A session is stuck to whatever machine started it."
               intro={
                 <p>
-                  A coding session spans a checkout, a terminal, a provider history, a running app,
-                  and the change itself. Today those pieces are scattered across the machine and
-                  harness you happened to start with.
+                  A coding session is a checkout, a terminal, a provider history, a running app, and
+                  the change itself. Each piece is owned by the laptop or harness that happened to
+                  open it, and none of them knows about the others.
                 </p>
               }
             />
