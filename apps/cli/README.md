@@ -1,0 +1,44 @@
+# mend
+
+The CLI for [Mend](https://github.com/sealant-sh/Mend) — a local-first workbench for developers who
+use coding agents heavily. Adopt a repository into Mend's central store, run your agent (Claude
+Code, Codex, or any command) in a recorded per-session git worktree, detach, and reattach from any
+terminal.
+
+```sh
+npm install -g @sealant/mend
+```
+
+Requires Node 22+ and a running Mend server.
+
+## Commands
+
+```
+mend adopt [source] [--name <name>]   adopt a repository into the store (default: cwd)
+mend codex|claude|opencode            new session worktree + launch the harness in it
+mend run -- <command...>              same, with an arbitrary command
+mend attach <session-id-prefix>       reattach this terminal to a running session
+mend continue [session-id]            resume a session with its pending review follow-up
+mend resume [session-id] [--with h]   rejoin a settled session (state restored; --with switches harness)
+mend status                           active sessions
+```
+
+## Configuration
+
+| Source             | What                                              |
+| ------------------ | ------------------------------------------------- |
+| `MEND_URL`         | The Mend server (default `http://localhost:3105`) |
+| `MEND_TOKEN`       | Bearer token for that server                      |
+| `~/.mend/cli.json` | `{ "url": ..., "token": ... }` — env vars win     |
+
+## How it works
+
+Every session runs in its own git worktree over the adopted repository, inside a recorded workspace.
+The terminal you see is a held WebSocket to that workspace's PTY: `Ctrl+]` detaches and the session
+keeps running; `mend attach` reconnects with full scrollback — from this machine or any other that
+can reach the server. When a session settles, Mend harvests the harness's own state into the store,
+so `mend resume` restores it natively (a Claude session resumes with its memory intact, even across
+machines), and `--with` carries the conversation into a different harness.
+
+The reviewable object is the session's accumulated local change — worktree versus base — in the Mend
+web app, with the session record beside it. No issue tracker or pull request required.

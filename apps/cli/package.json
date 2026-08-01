@@ -1,14 +1,37 @@
 {
-  "name": "@mend/cli",
-  "version": "0.0.0",
-  "private": true,
-  "description": "The mend CLI: adopt a repository into the store, launch your agent in a session worktree",
-  "bin": {
-    "mend": "./src/main.ts"
+  "name": "@sealant/mend",
+  "version": "0.1.0",
+  "description": "The mend CLI: adopt a repository into Mend's store, launch your coding agent in a recorded session worktree, detach and reattach from any terminal",
+  "keywords": [
+    "claude-code",
+    "codex",
+    "coding-agent",
+    "mend",
+    "sealant",
+    "session",
+    "worktree"
+  ],
+  "homepage": "https://github.com/sealant-sh/Mend",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sealant-sh/Mend.git",
+    "directory": "apps/cli"
   },
+  "bin": {
+    "mend": "./dist/main.js"
+  },
+  "files": [
+    "dist"
+  ],
   "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
+    "build": "tsc src/main.ts --outDir dist --module nodenext --target es2022 --types node --skipLibCheck",
     "lint": "oxlint . --no-error-on-unmatched-pattern",
+    "prepack": "pnpm run build",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
@@ -18,5 +41,8 @@
     "@types/node": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }
