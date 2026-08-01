@@ -430,6 +430,9 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     ),
 );
 
+const toFailure = (error: { readonly stderr: string }) =>
+  new StoreFailure({ message: error.stderr });
+
 export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionChanges", (handlers) =>
   handlers
     .handle("diff", ({ params }) =>
@@ -448,8 +451,6 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
           .byId(change.projectId)
           .pipe(Effect.mapError(() => new NotFound({ id: change.projectId })));
         const worktree = worktreePathOf(project.storePath, session.worktree);
-        const toFailure = (error: { readonly stderr: string }) =>
-          new StoreFailure({ message: error.stderr });
         const diff = yield* store
           .diffWorktree(worktree, change.baseSha)
           .pipe(Effect.mapError(toFailure));

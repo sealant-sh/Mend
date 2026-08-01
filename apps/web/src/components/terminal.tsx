@@ -39,8 +39,9 @@ export function SessionTerminal({
     let cancelled = false;
     let teardown: (() => void) | null = null;
     void initGhostty().then(() => {
-      if (cancelled) return;
+      if (cancelled) return null;
       teardown = attach();
+      return null;
     });
 
     const attach = () => {

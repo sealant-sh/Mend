@@ -177,6 +177,7 @@ function MountsSection({ projectId }: { readonly projectId: string }) {
       .then(async () => {
         await invalidate();
         form.reset();
+        return null;
       })
       .catch((error: unknown) => {
         setAddError(error instanceof Error ? error.message : String(error));
@@ -318,6 +319,7 @@ function ReferencesSection({ projectId }: { readonly projectId: string }) {
         await selectProjectReferences(projectId, [...selectedIds, created.id]);
         await invalidate();
         form.reset();
+        return null;
       })
       .catch((error: unknown) => {
         setAddError(error instanceof Error ? error.message : String(error));

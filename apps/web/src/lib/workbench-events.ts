@@ -13,7 +13,7 @@ import { queryClient } from "#/lib/queries";
 export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void) => {
   useEffect(() => {
     const source = new EventSource("/api/events");
-    source.onmessage = (message: MessageEvent<string>) => {
+    source.addEventListener("message", (message: MessageEvent<string>) => {
       let event: WorkbenchEventDto;
       try {
         event = JSON.parse(message.data) as WorkbenchEventDto;
@@ -46,7 +46,7 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
           break;
       }
       onEvent?.(event);
-    };
+    });
     return () => source.close();
   }, [onEvent]);
 };
