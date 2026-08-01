@@ -53,3 +53,6 @@ export type FollowUpId = typeof FollowUpId.Type;
 
 export const ReferenceId = Schema.String.pipe(Schema.brand("ReferenceId"));
 export type ReferenceId = typeof ReferenceId.Type;
+
+export const ProjectMountId = Schema.String.pipe(Schema.brand("ProjectMountId"));
+export type ProjectMountId = typeof ProjectMountId.Type;

@@ -351,6 +351,31 @@ const references = Effect.gen(function* () {
     ALTER TABLE agent_sessions ADD COLUMN reference_mounts jsonb NOT NULL DEFAULT '[]'`;
 });
 
+/**
+ * Per-project extra mounts (plan §17, decided 2026-08-01): host folders a
+ * project's sessions see at `/workspace/home/<name>`, read-only by default.
+ * The session records what it actually mounted (`extra_mounts`) so the review
+ * surface can state what the agent could see; the reviewable change itself
+ * stays worktree-versus-base.
+ */
+const projectMounts = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE project_mounts (
+      id text PRIMARY KEY,
+      project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name text NOT NULL,
+      host_path text NOT NULL,
+      read_only boolean NOT NULL DEFAULT true,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE (project_id, name),
+      UNIQUE (project_id, host_path)
+    )`;
+  yield* sql`
+    ALTER TABLE agent_sessions ADD COLUMN extra_mounts jsonb NOT NULL DEFAULT '[]'`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -360,4 +385,5 @@ export const migrations = {
   "0006_sealant_session": sealantSession,
   "0007_review_comment_spans": reviewCommentSpans,
   "0008_references": references,
+  "0009_project_mounts": projectMounts,
 };

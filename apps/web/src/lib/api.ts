@@ -460,6 +460,48 @@ export const selectProjectReferences = (projectId: string, referenceIds: Readonl
     body: JSON.stringify({ referenceIds }),
   });
 
+export interface ProjectMountDto {
+  readonly id: string;
+  readonly projectId: string;
+  readonly name: string;
+  readonly hostPath: string;
+  readonly readOnly: boolean;
+  readonly createdAt: string;
+}
+
+export const projectMounts = (projectId: string) =>
+  request<ReadonlyArray<ProjectMountDto>>(`/api/projects/${projectId}/mounts`);
+
+/** Declaring a mount can fail for reasons worth reading (422 carries the check that refused). */
+export const addProjectMount = async (
+  projectId: string,
+  input: { readonly name: string; readonly hostPath: string; readonly readOnly: boolean },
+): Promise<ProjectMountDto> => {
+  const response = await fetch(`/api/projects/${projectId}/mounts`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (response.status === 401) throw redirect({ to: "/login" });
+  if (!response.ok) {
+    const body: { readonly message?: string } = await response.json().catch(() => ({}));
+    throw new Error(body.message ?? `mount failed (${response.status})`);
+  }
+  const body: ProjectMountDto = await response.json();
+  return body;
+};
+
+/** 204 on success — no body to parse. */
+export const removeProjectMount = async (projectId: string, mountId: string): Promise<void> => {
+  const response = await fetch(`/api/projects/${projectId}/mounts/${mountId}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (response.status === 401) throw redirect({ to: "/login" });
+  if (!response.ok) throw new Error(`DELETE mount ${mountId} responded ${response.status}`);
+};
+
 export const listActiveSessions = () => request<ReadonlyArray<SessionDto>>("/api/sessions");
 
 export const sessionDetail = (id: string) => request<SessionDetailDto>(`/api/sessions/${id}`);

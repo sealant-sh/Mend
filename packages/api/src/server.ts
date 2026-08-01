@@ -25,6 +25,7 @@ import {
   Unauthorized,
 } from "./contract.ts";
 import {
+  ProjectMountsGroupLive,
   ProjectsGroupLive,
   ReferencesGroupLive,
   SessionChangesGroupLive,
@@ -364,6 +365,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
   Layer.provide(BriefsGroupLive),
   Layer.provide(RunsGroupLive),
   Layer.provide(ProjectsGroupLive),
+  Layer.provide(ProjectMountsGroupLive),
   Layer.provide(ReferencesGroupLive),
   Layer.provide(SessionsGroupLive),
   Layer.provide(SessionChangesGroupLive),

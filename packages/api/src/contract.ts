@@ -9,6 +9,7 @@ import {
   Issue,
   IssueId,
   ProjectId,
+  ProjectMountId,
   ReferenceId,
   Run,
   RunId,
@@ -19,6 +20,7 @@ import {
   Checkpoint,
   FollowUp,
   Project,
+  ProjectMount,
   Reference,
   ReviewComment,
   Session,
@@ -323,6 +325,43 @@ const referencesGroup = HttpApiGroup.make("references")
   )
   .middleware(AuthMiddleware);
 
+/** Declare a host folder the project's sessions can see; read-only unless chosen otherwise. */
+export class AddProjectMount extends Schema.Class<AddProjectMount>("AddProjectMount")({
+  name: Schema.String,
+  hostPath: Schema.String,
+  readOnly: Schema.Boolean,
+}) {}
+
+/**
+ * Per-project extra mounts (plan §17, decided 2026-08-01): host folders
+ * mounted at `/workspace/home/<name>` in the project's sessions. The review
+ * scope is unchanged — mounts widen what the agent can see, never what Mend
+ * reviews.
+ */
+const projectMountsGroup = HttpApiGroup.make("projectMounts")
+  .add(
+    HttpApiEndpoint.get("list", "/projects/:id/mounts", {
+      params: { id: ProjectId },
+      success: Schema.Array(ProjectMount),
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("add", "/projects/:id/mounts", {
+      params: { id: ProjectId },
+      payload: AddProjectMount,
+      success: ProjectMount,
+      error: Schema.Union([NotFound, StoreFailure]),
+    }),
+  )
+  .add(
+    HttpApiEndpoint.delete("remove", "/projects/:id/mounts/:mountId", {
+      params: { id: ProjectId, mountId: ProjectMountId },
+      error: NotFound,
+    }),
+  )
+  .middleware(AuthMiddleware);
+
 /** Provisioning a session: the worktree exists after this; launching is separate. */
 export class NewWorkbenchSession extends Schema.Class<NewWorkbenchSession>("NewWorkbenchSession")({
   harness: Schema.String,
@@ -515,6 +554,7 @@ export const MendApi = HttpApi.make("mend")
   .add(briefsGroup)
   .add(runsGroup)
   .add(projectsGroup)
+  .add(projectMountsGroup)
   .add(referencesGroup)
   .add(sessionsGroup)
   .add(sessionChangesGroup)

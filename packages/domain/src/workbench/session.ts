@@ -8,6 +8,7 @@ import {
   SessionId,
   Sha,
 } from "../ids.ts";
+import { SessionExtraMount } from "./mount.ts";
 import { SessionReferenceMount } from "./reference.ts";
 
 /**
@@ -50,6 +51,8 @@ export class Session extends Schema.Class<Session>("Session")({
   contextSnapshotId: Schema.NullOr(ContextSnapshotId),
   /** References mounted read-only beside the worktree at launch, SHAs as observed then. */
   referenceMounts: Schema.Array(SessionReferenceMount),
+  /** Project folders mounted beside the worktree at launch — what the agent could see. */
+  extraMounts: Schema.Array(SessionExtraMount),
   sealantRunId: Schema.NullOr(SealantRunId),
   sealantWorkspaceId: Schema.NullOr(SealantWorkspaceId),
   /** The platform's interactive PTY session id (0.7.0) — the reattach handle. */

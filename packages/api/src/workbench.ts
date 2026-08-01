@@ -1,6 +1,9 @@
+import * as fs from "node:fs";
+
 import {
   CheckpointsRepo,
   FollowUpsRepo,
+  ProjectMountsRepo,
   ProjectsRepo,
   ReferencesRepo,
   ReviewCommentsRepo,
@@ -89,6 +92,86 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         const projectSessions = yield* sessions.listForProject(params.id);
         return new ProjectDetail({ project, sessions: projectSessions });
+      }),
+    ),
+);
+
+/** The blueprint's path shape, checked early so the failure names the field, not the launch. */
+const isNormalizedAbsolutePath = (value: string): boolean =>
+  value.startsWith("/") &&
+  value !== "/" &&
+  !value.endsWith("/") &&
+  !value.includes("//") &&
+  value.split("/").every((segment) => segment !== "." && segment !== "..");
+
+export const ProjectMountsGroupLive = HttpApiBuilder.group(MendApi, "projectMounts", (handlers) =>
+  handlers
+    .handle("list", ({ params }) =>
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        const mounts = yield* ProjectMountsRepo;
+        yield* projects
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        return yield* mounts.listForProject(params.id);
+      }),
+    )
+    .handle("add", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        const mounts = yield* ProjectMountsRepo;
+        yield* projects
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        if (!STORE_NAME.test(payload.name)) {
+          return yield* new StoreFailure({
+            message: `"${payload.name}" is not a usable mount name (lowercase letters, digits, ".", "_", "-").`,
+          });
+        }
+        if (!isNormalizedAbsolutePath(payload.hostPath)) {
+          return yield* new StoreFailure({
+            message: `Host path must be absolute and normalized (no "..", no trailing slash): ${payload.hostPath}`,
+          });
+        }
+        const isDirectory = yield* Effect.sync(() => {
+          try {
+            return fs.statSync(payload.hostPath).isDirectory();
+          } catch {
+            return false;
+          }
+        });
+        if (!isDirectory) {
+          return yield* new StoreFailure({
+            message: `Not a directory on this machine: ${payload.hostPath}`,
+          });
+        }
+        const existing = yield* mounts.listForProject(params.id);
+        const clash = existing.find(
+          (mount) => mount.name === payload.name || mount.hostPath === payload.hostPath,
+        );
+        if (clash !== undefined) {
+          return yield* new StoreFailure({
+            message: `Already declared on this project: ${clash.name} (${clash.hostPath})`,
+          });
+        }
+        return yield* mounts.create({
+          projectId: params.id,
+          name: payload.name,
+          hostPath: payload.hostPath,
+          readOnly: payload.readOnly,
+        });
+      }),
+    )
+    .handle("remove", ({ params }) =>
+      Effect.gen(function* () {
+        const mounts = yield* ProjectMountsRepo;
+        const mount = yield* mounts
+          .byId(params.mountId)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.mountId })));
+        if (mount.projectId !== params.id) {
+          return yield* new NotFound({ id: params.mountId });
+        }
+        yield* mounts.remove(params.mountId);
       }),
     ),
 );

@@ -3,6 +3,7 @@ import * as path from "node:path";
 
 import {
   CheckpointsRepo,
+  ProjectMountsRepo,
   ProjectNotFoundError,
   ProjectsRepo,
   ReferencesRepo,
@@ -12,7 +13,7 @@ import {
 } from "@mend/db";
 import { SealantRunId, SealantWorkspaceId, SessionId, type ProjectId } from "@mend/domain";
 import type { Checkpoint, CheckpointTrigger, Session } from "@mend/domain/workbench";
-import { SessionReferenceMount } from "@mend/domain/workbench";
+import { SessionExtraMount, SessionReferenceMount } from "@mend/domain/workbench";
 import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import { GitError, Store, sessionStatePathOf, worktreePathOf } from "@mend/store";
 import type { Harness, Run as SdkRun, WorkspaceCredentialsOptions } from "@sealant/sdk";
@@ -120,6 +121,7 @@ export class SessionEngine extends Context.Service<
       const changes = yield* SessionChangesRepo;
       const checkpoints = yield* CheckpointsRepo;
       const references = yield* ReferencesRepo;
+      const projectMounts = yield* ProjectMountsRepo;
       const store = yield* Store;
       const scope = yield* Effect.scope;
 
@@ -481,16 +483,29 @@ export class SessionEngine extends Context.Service<
         const project = yield* projects.byId(session.projectId);
         const worktree = worktreePathOf(project.storePath, session.worktree);
         const shape = platformShape(session.harness);
-        // The project's selected references ride beside the worktree, read-only
-        // at /workspace/ref/<name> (plan §17, 2026-08-01). Resolved at launch;
-        // the session records exactly what it received, SHAs as observed now.
+        // What rides beside the worktree (plan §17, 2026-08-01): selected
+        // references read-only at /workspace/ref/<name>, and the project's
+        // declared host folders at /workspace/home/<name> — read-only unless
+        // deliberately chosen otherwise. Resolved at launch; the session
+        // records exactly what it received.
         const selectedReferences = yield* references
           .listForProject(project.id)
           .pipe(Effect.orElseSucceed(() => []));
-        const referenceMounts = selectedReferences.map((reference) => ({
-          hostPath: reference.path,
-          mountPath: `/workspace/ref/${reference.name}`,
-        }));
+        const declaredMounts = yield* projectMounts
+          .listForProject(project.id)
+          .pipe(Effect.orElseSucceed(() => []));
+        const workspaceMounts = [
+          ...selectedReferences.map((reference) => ({
+            hostPath: reference.path,
+            mountPath: `/workspace/ref/${reference.name}`,
+          })),
+          ...declaredMounts.map((mount) => ({
+            hostPath: mount.hostPath,
+            mountPath: `/workspace/home/${mount.name}`,
+            // Omitted = the blueprint default (read-only). Only rw is explicit.
+            ...(mount.readOnly ? {} : { readOnly: false }),
+          })),
+        ];
         // A failed provision settles the session — fire-and-forget launchers
         // (the web) must never strand a row in "starting" with no error.
         const settleOnFailure = <A>(effect: Effect.Effect<A, SealantPlatformError>) =>
@@ -504,7 +519,7 @@ export class SessionEngine extends Context.Service<
         const createWorkspace = (withCredentials: boolean) =>
           sealant.createWorkspace({
             source: { kind: "mount", path: worktree },
-            ...(referenceMounts.length === 0 ? {} : { mounts: referenceMounts }),
+            ...(workspaceMounts.length === 0 ? {} : { mounts: workspaceMounts }),
             harness: shape.harness,
             name: `mend-${session.id.slice(0, 8)}`,
             // Belt for every path that forgets to stop: the platform reaper.
@@ -614,21 +629,58 @@ export class SessionEngine extends Context.Service<
                 }),
             ),
           );
-          // Tell the harness the references exist — appended to its global
-          // memory file in the workspace $HOME (never the worktree: the note
-          // is not review content). After state restore, which rewrites $HOME.
+        }
+        if (declaredMounts.length > 0) {
+          yield* sessions.setExtraMounts(
+            sessionId,
+            declaredMounts.map(
+              (mount) =>
+                new SessionExtraMount({
+                  name: mount.name,
+                  hostPath: mount.hostPath,
+                  mountPath: `/workspace/home/${mount.name}`,
+                  readOnly: mount.readOnly,
+                }),
+            ),
+          );
+        }
+        if (workspaceMounts.length > 0) {
+          // Tell the harness the mounts exist — appended to its global memory
+          // file in the workspace $HOME (never the worktree: the note is not
+          // review content). After state restore, which rewrites $HOME.
+          const referencesSection =
+            selectedReferences.length === 0
+              ? ""
+              : `Read-only clones of dependency sources — read the actual source here ` +
+                `before guessing a dependency's API:\n\n` +
+                selectedReferences
+                  .map((reference) => `- /workspace/ref/${reference.name}`)
+                  .join("\n") +
+                `\n\n`;
+          const foldersSection =
+            declaredMounts.length === 0
+              ? ""
+              : `Project folders from the user's machine:\n\n` +
+                declaredMounts
+                  .map((mount) =>
+                    mount.readOnly
+                      ? `- /workspace/home/${mount.name} (read-only)`
+                      : `- /workspace/home/${mount.name} (read-write — writes land on the ` +
+                        `user's folder directly and are not part of the reviewed change)`,
+                  )
+                  .join("\n") +
+                `\n\n`;
           const note =
-            `\n<!-- mend:references -->\n## Mend references\n\n` +
-            `Read-only clones of dependency sources are mounted beside the repo:\n\n` +
-            selectedReferences.map((reference) => `- /workspace/ref/${reference.name}`).join("\n") +
-            `\n\nRead the actual source there before guessing a dependency's API.\n`;
+            `\n<!-- mend:mounts -->\n## Mend mounts\n\nMounted beside the repo:\n\n` +
+            referencesSection +
+            foldersSection;
           yield* sealant
             .exec(workspace, [
               "sh",
               "-c",
               `mkdir -p "$HOME/.claude" "$HOME/.codex"; ` +
                 `for f in "$HOME/.claude/CLAUDE.md" "$HOME/.codex/AGENTS.md"; do ` +
-                `grep -q "mend:references" "$f" 2>/dev/null || printf '%s' "$1" >> "$f"; done`,
+                `grep -Eq "mend:(mounts|references)" "$f" 2>/dev/null || printf '%s' "$1" >> "$f"; done`,
               "sh",
               note,
             ])

@@ -7,7 +7,12 @@ import {
   SessionId,
   type Sha,
 } from "@mend/domain";
-import { Session, type SessionReferenceMount, type SessionStatus } from "@mend/domain/workbench";
+import {
+  Session,
+  type SessionExtraMount,
+  type SessionReferenceMount,
+  type SessionStatus,
+} from "@mend/domain/workbench";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -69,6 +74,11 @@ export class SessionsRepo extends Context.Service<
     readonly setReferenceMounts: (
       id: SessionId,
       mounts: ReadonlyArray<SessionReferenceMount>,
+    ) => Effect.Effect<void>;
+    /** The project folders launch actually bound — recorded once, at launch. */
+    readonly setExtraMounts: (
+      id: SessionId,
+      mounts: ReadonlyArray<SessionExtraMount>,
     ) => Effect.Effect<void>;
     readonly setStatus: (id: SessionId, status: SessionStatus) => Effect.Effect<void>;
     readonly saveLastSeenSequence: (id: SessionId, sequence: bigint) => Effect.Effect<void>;
@@ -199,6 +209,16 @@ export class SessionsRepo extends Context.Service<
           WHERE id = ${id}`.pipe(Effect.orDie);
       });
 
+      const setExtraMounts = Effect.fn("SessionsRepo.setExtraMounts")(function* (
+        id: SessionId,
+        mounts: ReadonlyArray<SessionExtraMount>,
+      ) {
+        yield* sql`
+          UPDATE agent_sessions
+          SET extra_mounts = ${JSON.stringify(mounts)}, updated_at = now()
+          WHERE id = ${id}`.pipe(Effect.orDie);
+      });
+
       const setStatus = Effect.fn("SessionsRepo.setStatus")(function* (
         id: SessionId,
         status: SessionStatus,
@@ -278,6 +298,7 @@ export class SessionsRepo extends Context.Service<
         setSealantSessionId,
         setProviderSessionId,
         setReferenceMounts,
+        setExtraMounts,
         setStatus,
         saveLastSeenSequence,
         notifyProgress,

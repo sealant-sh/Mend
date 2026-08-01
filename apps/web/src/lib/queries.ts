@@ -8,6 +8,7 @@ import {
   listReferences,
   pendingFollowUp,
   projectDetail,
+  projectMounts,
   projectReferences,
   sessionDetail,
 } from "#/lib/api";
@@ -47,6 +48,12 @@ export const projectReferencesQuery = (id: string) =>
   queryOptions({
     queryKey: ["project", id, "references"],
     queryFn: () => projectReferences(id),
+  });
+
+export const projectMountsQuery = (id: string) =>
+  queryOptions({
+    queryKey: ["project", id, "mounts"],
+    queryFn: () => projectMounts(id),
   });
 
 export const activeSessionsQuery = queryOptions({
