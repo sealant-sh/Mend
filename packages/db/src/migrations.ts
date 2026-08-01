@@ -319,6 +319,18 @@ const reviewCommentSpans = Effect.gen(function* () {
   yield* sql`ALTER TABLE review_comments ADD COLUMN end_line integer`;
 });
 
+/** Phones registered for push — the token IS the identity (one row per install). */
+const pushDevices = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE push_devices (
+      token text PRIMARY KEY,
+      platform text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      last_seen_at timestamptz NOT NULL DEFAULT now()
+    )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -327,4 +339,5 @@ export const migrations = {
   "0005_follow_ups": followUps,
   "0006_sealant_session": sealantSession,
   "0007_review_comment_spans": reviewCommentSpans,
+  "0008_push_devices": pushDevices,
 };

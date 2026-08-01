@@ -47,17 +47,45 @@ const nativeTerminalView = (): ComponentType<NativeTerminalSurfaceProps> | null 
   return cachedView;
 };
 
+// Scrollback the JS side retains. Trimming breaks the native prefix-diff and
+// forces a surface reset + full replay, so trim with hysteresis: let the
+// buffer run to TRIM_AT, then cut back to KEEP — resets stay rare instead of
+// firing on every chunk once the cap is reached (t3code caps at 512 KiB).
+const KEEP_CHARS = 512 * 1024;
+const TRIM_AT_CHARS = 640 * 1024;
+
+const trimBuffer = (buffer: string): string => {
+  if (buffer.length <= TRIM_AT_CHARS) return buffer;
+  let start = buffer.length - KEEP_CHARS;
+  // Never split a surrogate pair.
+  const lead = buffer.charCodeAt(start);
+  if (lead >= 0xdc00 && lead <= 0xdfff) start += 1;
+  return buffer.slice(start);
+};
+
+const decodeLatin1 = (bytes: Uint8Array): string => {
+  // Chunked fromCharCode: a spread of a large PTY burst overflows the stack.
+  let out = "";
+  for (let i = 0; i < bytes.length; i += 8192) {
+    out += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  }
+  return out;
+};
+
 export function GhosttyTerminal({
   serverUrl,
   token,
   sessionId,
   registerSend,
+  transformInput,
 }: {
   readonly serverUrl: string;
   readonly token: string;
   readonly sessionId: string;
   /** Hands the caller a raw-bytes sender (the accessory key bar uses it). */
   readonly registerSend?: (send: (data: string) => void) => void;
+  /** Applied to keyboard input before it hits the wire (sticky modifiers). */
+  readonly transformInput?: (data: string) => string;
 }) {
   const Native = nativeTerminalView();
   const { scheme, colors } = useEvidenceTheme();
@@ -80,15 +108,29 @@ export function GhosttyTerminal({
       }
     });
     const decoder = typeof TextDecoder === "undefined" ? null : new TextDecoder();
+    // Coalesce PTY bursts to one React commit per frame: a busy harness emits
+    // dozens of WebSocket frames per screen frame, and a setState per frame
+    // of output is exactly the re-render storm that made the terminal crawl.
+    // Chunks accumulate in a ref; one rAF flushes them into state, and the
+    // native side feeds only the appended suffix.
+    let pending = "";
+    let flushHandle: number | null = null;
+    const flush = () => {
+      flushHandle = null;
+      if (pending === "") return;
+      const chunk = pending;
+      pending = "";
+      setBuffer((current) => trimBuffer(current + chunk));
+    };
     ws.onmessage = (event) => {
       if (typeof event.data === "string") return; // control frames ({"t":"end"})
       const bytes = new Uint8Array(event.data as ArrayBuffer);
-      const chunk =
-        decoder !== null ? decoder.decode(bytes, { stream: true }) : String.fromCharCode(...bytes);
-      setBuffer((current) => current + chunk);
+      pending += decoder !== null ? decoder.decode(bytes, { stream: true }) : decodeLatin1(bytes);
+      flushHandle ??= requestAnimationFrame(flush);
     };
     return () => {
       wsRef.current = null;
+      if (flushHandle !== null) cancelAnimationFrame(flushHandle);
       ws.close();
     };
   }, [Native, serverUrl, token, sessionId]);
@@ -128,7 +170,8 @@ export function GhosttyTerminal({
         onInput={(event) => {
           const socket = wsRef.current;
           if (socket !== null && socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ t: "input", data: event.nativeEvent.data }));
+            const data = transformInput?.(event.nativeEvent.data) ?? event.nativeEvent.data;
+            socket.send(JSON.stringify({ t: "input", data }));
           }
         }}
         onResize={(event) => {
