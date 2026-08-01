@@ -204,8 +204,6 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
     label: null,
     base: null,
   });
-  const worktree = worktreePathOf(project.storePath, session.worktree);
-
   say(`${green("✓")} worktree ${session.worktree} ${dim(`· branch ${session.branch}`)}`);
   say(
     `${green("✓")} base ${dim(session.baseSha.slice(0, 12))} · session ${dim(session.id.slice(0, 8))}`,
