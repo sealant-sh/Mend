@@ -10,6 +10,7 @@ import { Screen, ScreenHeader } from "@/components/screen";
 import { StatusWord } from "@/components/status";
 import { MonoText, UiText } from "@/components/typography";
 import { loadConfig, saveConfig } from "@/data/live";
+import { enablePushNotifications } from "@/data/notifications";
 import { radius, useEvidenceTheme } from "@/theme/evidence";
 
 export default function SettingsScreen() {
@@ -17,6 +18,12 @@ export default function SettingsScreen() {
   const [url, setUrl] = useState("");
   const [token, setToken] = useState("");
   const [saved, setSaved] = useState(false);
+  const [push, setPush] = useState<
+    | { readonly state: "idle" }
+    | { readonly state: "registering" }
+    | { readonly state: "registered" }
+    | { readonly state: "unavailable"; readonly reason: string }
+  >({ state: "idle" });
   const [check, setCheck] = useState<
     | { readonly state: "idle" }
     | { readonly state: "testing" }
@@ -122,6 +129,37 @@ export default function SettingsScreen() {
             }}
           />
           <MonoText>Sessions, terminal, and review all ride this one connection.</MonoText>
+        </View>
+      </Panel>
+      <Panel>
+        <View style={{ padding: 16, gap: 12 }}>
+          <UiText>Notifications — a push when a session settles or waits on you</UiText>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+            <EvButton
+              variant="outline"
+              label={
+                push.state === "registering"
+                  ? "Registering…"
+                  : push.state === "registered"
+                    ? "Registered"
+                    : "Enable notifications"
+              }
+              onPress={() => {
+                setPush({ state: "registering" });
+                void enablePushNotifications().then((result) =>
+                  setPush(
+                    result.state === "registered"
+                      ? { state: "registered" }
+                      : { state: "unavailable", reason: result.reason },
+                  ),
+                );
+              }}
+              style={{ flex: 1 }}
+            />
+            {push.state === "registered" && <StatusWord tone="observed" word="registered" />}
+            {push.state === "unavailable" && <StatusWord tone="breakage" word="unavailable" />}
+          </View>
+          {push.state === "unavailable" && <MonoText>{push.reason}</MonoText>}
         </View>
       </Panel>
     </Screen>

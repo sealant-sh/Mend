@@ -10,20 +10,33 @@ import {
 } from "@expo-google-fonts/space-grotesk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useFonts } from "expo-font";
-import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from "expo-router";
+import { DarkTheme, DefaultTheme, Stack, ThemeProvider, useRouter } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { useEffect } from "react";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 
+import {
+  configureForegroundPresentation,
+  wireNotificationNavigation,
+} from "@/data/notification-navigation";
 import { fontFamilies, useEvidenceTheme } from "@/theme/evidence";
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 1 } } });
 
 SplashScreen.preventAutoHideAsync();
+configureForegroundPresentation();
 
 export default function RootLayout() {
   const { scheme, colors } = useEvidenceTheme();
+  const router = useRouter();
+  useEffect(
+    () =>
+      wireNotificationNavigation({
+        push: (sessionId) => router.push({ pathname: "/session/[id]", params: { id: sessionId } }),
+      }),
+    [],
+  );
   const [fontsLoaded] = useFonts({
     Inter_400Regular,
     Inter_500Medium,

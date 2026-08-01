@@ -448,6 +448,33 @@ const sessionChangesGroup = HttpApiGroup.make("sessionChanges")
   )
   .middleware(AuthMiddleware);
 
+/** An Expo push token registration — one per app install, token is identity. */
+export class RegisterDeviceRequest extends Schema.Class<RegisterDeviceRequest>(
+  "RegisterDeviceRequest",
+)({
+  token: Schema.String,
+  platform: Schema.String,
+}) {}
+
+export class RegisteredDevice extends Schema.Class<RegisteredDevice>("RegisteredDevice")({
+  token: Schema.String,
+  platform: Schema.String,
+}) {}
+
+const devicesGroup = HttpApiGroup.make("devices")
+  .add(
+    HttpApiEndpoint.post("register", "/devices", {
+      payload: RegisterDeviceRequest,
+      success: RegisteredDevice,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.delete("unregister", "/devices/:token", {
+      params: { token: Schema.String },
+    }),
+  )
+  .middleware(AuthMiddleware);
+
 export const MendApi = HttpApi.make("mend")
   .add(healthGroup)
   .add(sealantGroup)
@@ -457,4 +484,5 @@ export const MendApi = HttpApi.make("mend")
   .add(projectsGroup)
   .add(sessionsGroup)
   .add(sessionChangesGroup)
+  .add(devicesGroup)
   .prefix("/api");
