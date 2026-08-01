@@ -1,5 +1,5 @@
-// The closer — one plain ask. The page ends on a quiet inert record whose run
-// has not started: honest to the day-one status.
+// The closer — one plain ask. The page ends on a quiet inert record whose
+// session has not started: honest to the day-one status.
 
 import { GitHubLogo } from "#/components/github";
 import {
@@ -17,7 +17,7 @@ import { RunRecord } from "#/components/run-record";
 
 export function FinalCta() {
   return (
-    <section id="start" className="bg-[var(--sw-canvas)] py-24 lg:py-32">
+    <section id="start" className="bg-[var(--sw-bg)] py-24 lg:py-32">
       <Container>
         <Reveal>
           <div className="mx-auto max-w-3xl rounded-[2.25rem] border border-border bg-panel px-8 py-16 text-center shadow-[var(--shadow-md)] sm:px-12 lg:py-24">
@@ -26,8 +26,10 @@ export function FinalCta() {
               Early, and building in public.
             </Display>
             <p className="mx-auto mt-5 max-w-[52ch] text-lg leading-relaxed text-muted-foreground">
-              The queue is being built now; the first briefs will land in this repo. If the approach
-              holds up to your scrutiny, star it, read the code, or open an issue.
+              The core loop is already real: adopt a repository, run or reattach to your agent,
+              inspect and comment on its worktree, then carry the follow-up back into the same
+              session. Do it from another computer or your phone. Browser services, one-click review
+              delivery, and record-grounded machine review are next.
             </p>
             <div className="mt-9 flex flex-wrap items-center justify-center gap-3">
               <PrimaryCTA href={REPO_URL}>
@@ -39,10 +41,10 @@ export function FinalCta() {
             <TrustLine className="mt-7" />
             <RunRecord
               variant="inert"
-              runId="run mnd_0001"
+              runId="session 01J00000"
               status={{ word: "Not started", tone: "pending" }}
               events={[]}
-              footnote="queue.empty · the first brief lands here"
+              footnote="no sessions yet · your first lands here"
               className="mx-auto mt-10 max-w-md text-left"
             />
           </div>

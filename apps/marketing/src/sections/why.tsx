@@ -1,78 +1,78 @@
-// WHY — the problem, with the problem shown. Left: three facts, each
-// checkable against the reader's own experience. Right: the foil — a typical
-// agent PR as it arrives today, dimmed and desaturated. The only "before"
-// artifact on the page; every other exhibit is the fix.
+// WHY — the session is the work, but today its pieces are owned by one laptop
+// and one harness. The foil is the familiar terminal pile the reader already
+// has; every other exhibit on the page shows the session put back together.
 
 import { Container, Eyebrow, Reveal, SectionHead } from "#/components/primitives";
 
 const PROBLEMS: ReadonlyArray<readonly [string, string]> = [
   [
-    "The summary reviews itself",
-    "The description on an agent PR is written by the model that made the change. If it missed something, its summary misses it too.",
+    "The laptop owns the work",
+    "The checkout, worktree, terminal, and dev server live on whichever computer started them. Move to another computer and the work is somewhere else — unless you stop and publish it first.",
   ],
   [
-    "The workspace is gone",
-    "By review time, the environment that produced the change has been torn down. What ran, what failed first, what else was touched — unrecoverable.",
+    "The harness owns the conversation",
+    "Claude Code, Codex, and every other agent keep their own session history. Changing models usually means abandoning the conversation or rebuilding it by hand.",
   ],
   [
-    "So the diff is all you get",
-    "Agent PRs merge unread, or queue until they rot. Reviewing one properly means re-deriving the work yourself, which is the job the agent was supposed to remove.",
+    "The diff has no memory",
+    "A source-control panel can show what changed. It cannot show which session changed it, what the agent was asked, what ran afterwards, or what was never exercised.",
   ],
 ];
 
-// The foil: today's agent PR. Deliberately in the banned register — the model
-// rendering a verdict on its own work — because that is the artifact under
-// critique. Dimmed so it reads as the "before", never as this page's voice.
-function FoilPR() {
+// The foil: today's working day. Deliberately the artifact under critique —
+// dimmed so it reads as the "before", never as this page's voice.
+function FoilTerminal() {
   return (
     <figure className="min-w-0">
       <div className="overflow-hidden rounded-2xl border border-border bg-background opacity-90 shadow-[var(--shadow-sm)] saturate-[.45]">
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-rule bg-[var(--sw-sunken)] px-5 py-3">
-          <span className="min-w-0 truncate font-mono text-[0.72rem] text-ink-2">
-            acme/billing-service <span className="text-faint">/</span> #5199
-          </span>
-          <span className="flex shrink-0 items-center gap-1.5">
-            <span className="size-1.5 rounded-full bg-[var(--sw-green-dot)]" aria-hidden="true" />
-            <span className="font-mono text-[0.68rem] text-success">All checks passed</span>
-          </span>
+          <span className="min-w-0 truncate font-mono text-[0.72rem] text-ink-2">~ — tmux</span>
+          <span className="font-mono text-[0.68rem] text-faint">3 windows</span>
         </div>
-        <div className="px-5 py-5 sm:px-6">
-          <h3 className="font-display text-lg font-semibold tracking-[-0.01em] text-foreground">
-            Fix invoice rounding bug
-          </h3>
-          <p className="mt-1 font-mono text-[0.68rem] text-faint">
-            agent-bot wants to merge 1 commit into main
+        <div className="flex flex-wrap gap-x-4 gap-y-1 border-b border-rule-faint px-5 py-2 font-mono text-[0.68rem]">
+          <span className="text-ink-2">0: claude · api</span>
+          <span className="text-faint">
+            1: codex · billing <span className="text-warning">●</span>
+          </span>
+          <span className="text-faint">2: claude · infra</span>
+        </div>
+        <div className="px-5 py-4 font-mono text-[0.74rem] leading-[1.9]">
+          <p className="text-ink-2">
+            <span className="text-faint select-none">$ </span>git diff --stat | tail -1
           </p>
-          <div className="mt-4 rounded-xl border border-rule-faint bg-panel px-4 py-3.5">
-            <p className="text-[0.86rem] leading-relaxed text-ink-2">
-              I've identified and fixed the rounding issue in the invoice calculation. The discount
-              is now applied before rounding, which resolves the discrepancy. I also cleaned up some
-              related code and improved formatting throughout. All tests pass and this change is
-              safe to merge! 🎉
-            </p>
-          </div>
-          <dl className="mt-4">
-            {(
-              [
-                ["Changes", "47 files · +1,204 / −356"],
-                ["Conversation", "0 comments"],
-                ["Workspace", "deleted 2 hours ago"],
-                ["How it was made", "—"],
-              ] as const
-            ).map(([k, v]) => (
-              <div
-                key={k}
-                className="grid grid-cols-[8.5rem_1fr] gap-x-3 border-b border-rule-faint py-2 last:border-b-0"
-              >
-                <dt className="ev-eyebrow self-center text-faint">{k}</dt>
-                <dd className="min-w-0 truncate font-mono text-[0.72rem] text-ink-2">{v}</dd>
-              </div>
-            ))}
-          </dl>
+          <p className="text-muted-foreground">
+            {" "}
+            23 files changed, 914 insertions(+), 212 deletions(-)
+          </p>
+          <p className="mt-2 text-ink-2">
+            <span className="text-faint select-none">$ </span>git status --short | head -3
+          </p>
+          <p className="text-muted-foreground"> M src/auth/session.ts</p>
+          <p className="text-muted-foreground"> M src/invoice.ts</p>
+          <p className="text-muted-foreground">?? src/auth/legacy-shim.ts</p>
+          <p className="mt-2 text-faint"># the laptop is at home · the dev server is on :3000</p>
+          <p className="text-faint"># claude's conversation does not exist in codex</p>
         </div>
+        <dl className="border-t border-rule-faint px-5 py-3">
+          {(
+            [
+              ["Work", "this checkout · this laptop"],
+              ["Sessions", "3 terminals · 2 provider histories"],
+              ["From your phone", "—"],
+            ] as const
+          ).map(([k, v]) => (
+            <div
+              key={k}
+              className="grid grid-cols-[8.5rem_1fr] gap-x-3 border-b border-rule-faint py-2 last:border-b-0"
+            >
+              <dt className="ev-eyebrow self-center text-faint">{k}</dt>
+              <dd className="min-w-0 truncate font-mono text-[0.72rem] text-ink-2">{v}</dd>
+            </div>
+          ))}
+        </dl>
       </div>
       <figcaption className="mt-3 text-center font-mono text-[0.62rem] tracking-[0.04em] text-faint uppercase">
-        A typical agent PR, today — the summary is the author's own
+        A working day, today — the work belongs to the terminal pile
       </figcaption>
     </figure>
   );
@@ -86,12 +86,12 @@ export function Why() {
           <div className="min-w-0">
             <SectionHead
               eyebrow={<Eyebrow>Why</Eyebrow>}
-              title="Nobody reads the code anymore. Something has to."
+              title="The session is the work. Today, it's trapped in pieces."
               intro={
                 <p>
-                  Agent tooling optimized writing the change. Deciding whether to merge it is still
-                  your problem — and everything you'd need to decide with disappears when the
-                  agent's workspace does.
+                  A coding session spans a checkout, a terminal, a provider history, a running app,
+                  and the change itself. Today those pieces are scattered across the machine and
+                  harness you happened to start with.
                 </p>
               }
             />
@@ -107,7 +107,7 @@ export function Why() {
             </Reveal>
           </div>
           <Reveal className="min-w-0 lg:pt-8">
-            <FoilPR />
+            <FoilTerminal />
           </Reveal>
         </div>
       </Container>

@@ -1,34 +1,40 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { MotionConfig } from "framer-motion";
 
-import { BriefSection } from "#/sections/brief-section";
+import { BrowserSection } from "#/sections/browser";
+import { ContextSection } from "#/sections/context";
 import { Evidence } from "#/sections/evidence";
 import { FinalCta } from "#/sections/final-cta";
 import { Hero } from "#/sections/hero";
 import { Mobile } from "#/sections/mobile";
 import { OpenSource } from "#/sections/opensource";
-import { HowItWorks } from "#/sections/queue";
-import { Sources } from "#/sections/sources";
+import { Review } from "#/sections/review";
+import { Sessions } from "#/sections/sessions";
 import { Why } from "#/sections/why";
 
 export const Route = createFileRoute("/")({
   component: MarketingPage,
 });
 
-// Ordered per MEND-PLAN §11: the problem and the product (hero) → why this
-// exists → the brief, walked → the source trail → mobile → where the
-// recording comes from (Sealant) → the loop → open source → the ask.
+// One causal story, not a feature bag: the ownership thesis → what traps work
+// today → add one word to the agent CLI → the whole session (including its
+// planned dev server) becomes reachable → review the local change → prove it
+// on a phone → explain the record → planned context → trust posture → the ask.
 function MarketingPage() {
   return (
-    <main className="overflow-x-clip">
-      <Hero />
-      <Why />
-      <BriefSection />
-      <Sources />
-      <Mobile />
-      <Evidence />
-      <HowItWorks />
-      <OpenSource />
-      <FinalCta />
-    </main>
+    <MotionConfig reducedMotion="user">
+      <main className="overflow-x-clip">
+        <Hero />
+        <Why />
+        <Sessions />
+        <BrowserSection />
+        <Review />
+        <Mobile />
+        <Evidence />
+        <ContextSection />
+        <OpenSource />
+        <FinalCta />
+      </main>
+    </MotionConfig>
   );
 }

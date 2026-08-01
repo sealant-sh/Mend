@@ -1,7 +1,7 @@
-// OPEN-SOURCE & SELF-HOSTED — plain facts: where it runs, what it costs,
-// what it refuses to do. Three cards in the page's card idiom.
+// OPEN-SOURCE & LOCAL-FIRST — plain facts: where it runs, where the code
+// lives, what it refuses to do. Three cards in the page's card idiom.
 
-import { Code2, ScanEye, ServerCog } from "lucide-react";
+import { Code2, HardDrive, ScanEye } from "lucide-react";
 
 import {
   CloneCommand,
@@ -22,31 +22,32 @@ const PILLARS: ReadonlyArray<Pillar> = [
   {
     icon: Code2,
     title: "Open source",
-    body: "Apache-2.0, one repo. You can read every line of the thing that touches your issues and opens PRs in your name.",
+    body: "Apache-2.0, one repo. You can read every line of the thing that runs your agents, holds your repositories, and talks to your phone.",
   },
   {
-    icon: ServerCog,
-    title: "Self-hosted",
-    body: "Runs against your own GitHub and your own Sealant instance. No hosted service, no account, nothing phoning home.",
+    icon: HardDrive,
+    title: "Local-first, self-hosted",
+    body: "The store is a directory on your Mend host; sessions run there under your control. Remote access uses your own LAN or tailnet — no Mend cloud, no Mend account, no public repository required.",
   },
   {
     icon: ScanEye,
     title: "Observations, not verdicts",
-    body: "No scores, no “safe to merge”. Mend shows what the runtime observed and leaves the merge decision where it belongs.",
+    body: "No scores, no “safe to merge”. Mend shows what the runtime observed — what ran, what didn't, what has no recorded cause — and leaves the decision where it belongs.",
   },
 ];
 
 export function OpenSource() {
   return (
-    <section id="open-source" className="bg-panel py-24 lg:py-32">
+    <section id="open-source" className="bg-[var(--sw-canvas)] py-24 lg:py-32">
       <Container>
         <SectionHead
-          eyebrow={<Eyebrow>Open-source and self-hosted</Eyebrow>}
-          title="Nothing leaves your infrastructure."
+          eyebrow={<Eyebrow>Open-source and local-first</Eyebrow>}
+          title="Mend has no cloud to send it to."
           intro={
             <p>
-              Your code, your runs, and your credentials stay on machines you control. Mend talks to
-              your GitHub and your Sealant instance and nowhere else.
+              Your repositories, session state, and review record stay on hardware you control. The
+              agent you choose still talks to its provider as usual; Mend adds no hosted service or
+              telemetry in between, and remote access does not require a public port.
             </p>
           }
         />

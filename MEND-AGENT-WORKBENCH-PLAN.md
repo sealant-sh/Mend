@@ -93,6 +93,13 @@ follow-up guidance from a phone or another laptop without turning the product in
 The user should not need to expose a public port, configure a reverse proxy, or build a custom VPN.
 Mend should make an existing private network such as Tailscale easy to use and easy to verify.
 
+### 2.7 The running application is trapped with the workspace
+
+Starting a development server inside an agent workspace is easy; reaching the exact application it
+serves from another browser or phone is not. Container ports, forwarding commands, and disposable
+preview URLs force the developer to reconstruct which service belongs to which session. The running
+application should be another authenticated view of the session, not a separate deployment chore.
+
 ---
 
 ## 3. Product thesis
@@ -178,6 +185,12 @@ through the public surface.
 
 No confidence scores, risk meters, “safe to merge” verdicts, or automatic approval. Show what was
 observed, what was inferred, what was not run, and what needs attention.
+
+### 4.10 The running application belongs to the session
+
+A development server runs against one session worktree. Mend should surface it on that session and
+make it reachable through the same private, authenticated boundary as the conversation, terminal,
+and review. It must not become public by default.
 
 ---
 
@@ -386,6 +399,7 @@ The session page combines:
 - sources consulted;
 - checks and artifacts;
 - controls to send input, stop, resume, or open a terminal;
+- development services detected or declared for the session, with authenticated browser links;
 - a link to review the resulting change.
 
 The browser or phone may disconnect without terminating the session. Reopening the page resumes from
@@ -636,6 +650,24 @@ contain a permanent administrator credential.
 
 Later work may support Headscale, a hosted relay, or alternative private networks. None is necessary
 to prove the product.
+
+## 7.6 Session development services
+
+Mend should treat a development server as a session capability, not a deployment. The first useful
+version should:
+
+- detect listening ports in the workspace, while allowing an explicit service declaration when
+  detection is ambiguous;
+- associate each service with the session and worktree that started it;
+- expose an authenticated browser URL through Mend's existing private network boundary;
+- preserve normal browser behavior, including WebSockets and hot reload;
+- show whether the backing process is running, exited, or unreachable;
+- let the user open the same service from desktop or phone;
+- require no public port and never publish a service by default.
+
+The public Sealant SDK currently has no service-discovery or authenticated forwarding surface. Mend
+must not import runtime internals to create one; the required platform capability is tracked in
+`PLATFORM-FEEDBACK.md`.
 
 ---
 
@@ -923,6 +955,7 @@ A complete vertical slice must allow a developer to:
 9. Send those comments back to the same agent as an editable follow-up instruction.
 10. Watch the session resume and the diff update.
 11. Open the same project, session, and review from a phone over Tailscale.
+12. Open a development server running in the session from that phone without publishing it.
 
 ## 11.2 MVP exit test
 
@@ -934,6 +967,7 @@ The agent changes code and runs a check.
 Disconnect the browser.
 Reconnect from a phone over Tailscale.
 Inspect the live or completed session.
+Open the development server attached to that session.
 Review the local diff and leave an inline comment.
 Send the review back to the same agent.
 Observe the agent update the code.
@@ -1061,12 +1095,13 @@ Work:
 - Add Tailscale detection and reachability checks.
 - Add scoped device pairing and revocation.
 - Support remote session input and terminal access.
+- Surface session development services through authenticated browser URLs.
 - Optimize the unified diff and review comments for touch.
 
 Exit test:
 
-> Pair a phone over Tailscale, answer an agent question, review a changed file, and send a review
-> comment without exposing the instance publicly.
+> Pair a phone over Tailscale, answer an agent question, open the session's development server,
+> review a changed file, and send a review comment without exposing the instance publicly.
 
 ## M5 — Verification and optional publication
 
@@ -1226,6 +1261,13 @@ understand the work.
 
 ### Decided
 
+- **2026-08-01 — Browser access to session development services.** A development server is part of
+  its session, alongside the conversation, terminal, record, and change. Mend will detect or accept
+  declared workspace ports and expose them through authenticated browser URLs on the same private
+  network boundary used by the product. Services are never public by default. The required Sealant
+  SDK capability is tracked in `PLATFORM-FEEDBACK.md`; Mend will not work around it with private
+  runtime imports.
+
 - **2026-07-25 — Execution model: central store, no host bind.** Agents never execute against the
   user's pre-existing checkout. Repositories are adopted into a Mend-managed store (bare repo plus
   per-session git worktrees); sessions run in managed Sealant workspaces that mount their worktree
@@ -1383,8 +1425,9 @@ closing and reopening the browser.
 A developer should eventually be able to say:
 
 > I can open any project, see every agent session working on it, know exactly what context each
-> session had, review the local code properly, ask why a change exists, send comments back to the
-> agent, and do all of that from my phone without exposing my machine publicly.
+> session had, open the application it is running, review the local code properly, ask why a change
+> exists, send comments back to the agent, and do all of that from my phone without exposing my
+> machine publicly.
 
 If a proposed feature does not materially improve that sentence or strengthen the Sealant SDK
 required to deliver it, it is probably not part of this product yet.

@@ -9,8 +9,8 @@ private network. No issue tracker or PR required. Read `MEND-AGENT-WORKBENCH-PLA
 the canonical product direction and carries the decision log. The retired issue-to-PR/queue
 documents live in `docs/archive/` — do not implement against them.
 
-- `apps/marketing`: TanStack Start marketing site (Cloudflare Workers via wrangler). Still pitches
-  the old direction; refresh pending.
+- `apps/marketing`: TanStack Start marketing site (Cloudflare Workers via wrangler). Pitches the
+  workbench direction (refreshed 2026-08-01).
 - `apps/web`: TanStack Start product web app — Now · projects · sessions · review.
 - `packages/*`: shared libraries (`ui` design tokens, domain packages as they appear).
 - `tooling/*`: shared configs (`typescript`).

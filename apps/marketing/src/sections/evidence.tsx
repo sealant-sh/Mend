@@ -19,60 +19,48 @@ const CODE: ReadonlyArray<ReadonlyArray<readonly [string, Tone]>> = [
     ["create", "fn"],
     ["({", "plain"],
   ],
+  [["  // the session's git worktree, owned by Mend's store", "comment"]],
   [
-    ["  repository: ", "plain"],
-    ["issue.repository", "plain"],
-    [",", "plain"],
-  ],
-  [
-    ["  harness: ", "plain"],
-    ["opencode", "fn"],
-    ["(),", "plain"],
+    ["  source: { kind: ", "plain"],
+    ['"mount"', "str"],
+    [", path: worktree },", "plain"],
   ],
   [["})", "plain"]],
   [["", "plain"]],
   [
     ["const", "kw"],
-    [" run = ", "plain"],
+    [" term = ", "plain"],
     ["await", "kw"],
-    [" workspace.harness.", "plain"],
-    ["start", "fn"],
-    ["(", "plain"],
-    ["promptFor", "fn"],
-    ["(issue))", "plain"],
+    [" workspace.sessions.", "plain"],
+    ["open", "fn"],
+    ["([", "plain"],
+    ['"claude"', "str"],
+    ["])", "plain"],
   ],
   [["", "plain"]],
+  [["// detach, reattach, replay — from any sequence, on any device", "comment"]],
+  [
+    ["const", "kw"],
+    [" attachment = ", "plain"],
+    ["await", "kw"],
+    [" term.", "plain"],
+    ["attach", "fn"],
+    ["({ from: lastSeen })", "plain"],
+  ],
   [
     ["for await", "kw"],
     [" (", "plain"],
     ["const", "kw"],
-    [" event ", "plain"],
+    [" chunk ", "plain"],
     ["of", "kw"],
-    [" run.record.", "plain"],
-    ["stream", "fn"],
-    ["()) {", "plain"],
+    [" attachment.output) {", "plain"],
   ],
   [
-    ["  board.", "plain"],
-    ["update", "fn"],
-    ["(issue, event)", "plain"],
+    ["  terminal.", "plain"],
+    ["write", "fn"],
+    ["(chunk)", "plain"],
   ],
   [["}", "plain"]],
-  [["", "plain"]],
-  [
-    ["await", "kw"],
-    [" run.", "plain"],
-    ["wait", "fn"],
-    ["()", "plain"],
-  ],
-  [
-    ["const", "kw"],
-    [" pr = ", "plain"],
-    ["await", "kw"],
-    [" github.", "plain"],
-    ["openPullRequest", "fn"],
-    ["(run.changes, run.record)", "plain"],
-  ],
 ];
 
 const TONE_CLASS: Record<Tone, string> = {
@@ -118,7 +106,7 @@ export function Evidence() {
               title="The record is written by the runtime, not the model."
               intro={
                 <p>
-                  Every Mend job runs on{" "}
+                  Every Mend session runs on{" "}
                   <a
                     href={PLATFORM_SITE_URL}
                     target="_blank"
@@ -128,29 +116,29 @@ export function Evidence() {
                     Sealant
                   </a>
                   , an open-source runtime that puts the harness in a workspace it doesn't control
-                  and records the run from underneath it: processes, exits, file changes, command
-                  output, network. The harness can't embellish a record it doesn't write.
+                  and records the session from underneath it: processes, exits, file changes,
+                  terminal output, network. The harness can't embellish a record it doesn't write.
                 </p>
               }
             />
             <Reveal className="mt-10 space-y-7">
               <div>
                 <h3 className="font-display text-lg font-semibold tracking-[-0.01em] text-foreground">
-                  Provenance on every event
+                  Runtime events are observations
                 </h3>
                 <p className="mt-2 max-w-[52ch] leading-relaxed text-muted-foreground">
-                  <span className="text-success">Observed</span> means the runtime saw it happen.{" "}
-                  <span className="text-warning">Inferred</span> means the harness claimed it. The
-                  two are never blurred, in the record or in the UI.
+                  Processes, exits, file changes, and terminal bytes come from the runtime record.
+                  What the harness says remains conversation, not proof that something happened.
+                  Hunk-level provenance inside Mend's review is still in development.
                 </p>
               </div>
               <div>
                 <h3 className="font-display text-lg font-semibold tracking-[-0.01em] text-foreground">
-                  The record outlives the workspace
+                  The record outlives the terminal
                 </h3>
                 <p className="mt-2 max-w-[52ch] leading-relaxed text-muted-foreground">
-                  The run is a durable event log, not a terminal scrollback. Replay it step by step
-                  during review, or a month later when someone asks why the change was made.
+                  A session is a durable event log, not a scrollback buffer. Replay it during
+                  review, or a month later when someone asks why the change was made.
                 </p>
               </div>
               <div>
@@ -159,16 +147,16 @@ export function Evidence() {
                 </h3>
                 <p className="mt-2 max-w-[52ch] leading-relaxed text-muted-foreground">
                   Mend reports what happened and stops there. No confidence scores, no "safe to
-                  merge". You decide what merges — with the evidence in front of you.
+                  merge". You decide what lands — with the evidence in front of you.
                 </p>
               </div>
             </Reveal>
           </div>
 
           <Reveal className="min-w-0 lg:pt-10">
-            <CatalogEyebrow runId="mnd_4c7t" events="212" className="mb-3 block" />
+            <CatalogEyebrow runId="01J8QK4M" events="212" className="mb-3 block" />
             <RunRecord
-              runId="run mnd_4c7t"
+              runId="session 01J8QK4M"
               capture="00:33.415"
               status={{ word: "Completed · observed", tone: "observed" }}
               replay
@@ -210,7 +198,7 @@ export function Evidence() {
                   { sign: "+", text: "return round(discounted);" },
                 ],
               }}
-              footnote="pull_request.opened · #221 · mend/invoice-rounding"
+              footnote="checkpoint 0007 · worktree mend/session/01J8QK4M"
               illustrative
             />
           </Reveal>
@@ -225,8 +213,8 @@ export function Evidence() {
             <p className="mt-4 max-w-[52ch] text-lg leading-relaxed text-muted-foreground">
               This is Mend's whole integration with Sealant — the public{" "}
               <code className="font-mono text-[0.85em] text-foreground">@sealant/sdk</code> from
-              npm. Create a workspace around the issue's repository, start the harness, stream the
-              record onto the board, open the PR from the settled changes.
+              npm. Mount the session's worktree into a workspace, open the harness on a PTY, attach
+              to the durable stream from any sequence.
             </p>
             <p className="mt-4 max-w-[52ch] leading-relaxed text-muted-foreground">
               Anything Mend does, your own tooling can do. If you'd rather build your own workflow

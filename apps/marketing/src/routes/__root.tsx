@@ -10,7 +10,7 @@ import appCss from "../styles.css?url";
 
 const TITLE = "Mend — code is now cheap, trust is not";
 const DESCRIPTION =
-  "Mend takes an issue from your tracker (GitHub, Linear, or Jira), has a coding agent fix it in a recorded workspace, and reviews the change against that recording — everything else reads the diff and guesses. The PR arrives with the review done. Open source, self-hosted, built on Sealant.";
+  "Put Mend in front of Claude Code or Codex. Mend keeps each coding-agent session in a durable worktree on a machine you control, so you can reattach from any computer or phone, resume the original harness, switch between Claude Code and Codex in beta, and review the local change before it lands. Open source, self-hosted, built on Sealant.";
 
 export const Route = createRootRoute({
   head: () => ({
@@ -44,9 +44,10 @@ function RootComponent() {
               <Brand />
               <nav className="hidden items-center gap-7 lg:flex" aria-label="Primary">
                 <TopLevelNavLink href="#why">Why</TopLevelNavLink>
-                <TopLevelNavLink href="#review">The brief</TopLevelNavLink>
-                <TopLevelNavLink href="#sources">Sources</TopLevelNavLink>
-                <TopLevelNavLink href="#how">How it works</TopLevelNavLink>
+                <TopLevelNavLink href="#sessions">Keep your agent</TopLevelNavLink>
+                <TopLevelNavLink href="#browser">Dev servers</TopLevelNavLink>
+                <TopLevelNavLink href="#review">Review</TopLevelNavLink>
+                <TopLevelNavLink href="#anywhere">Phone</TopLevelNavLink>
                 <TopLevelNavLink href={PLATFORM_SITE_URL}>Sealant</TopLevelNavLink>
               </nav>
             </div>
@@ -83,18 +84,20 @@ function RootComponent() {
                   <span className="font-mono text-xs font-normal text-faint">by Sealant</span>
                 </a>
                 <p className="mt-4 max-w-[34ch] text-sm leading-relaxed text-muted-foreground">
-                  Reviews every agent change against a full recording of how it was made, and opens
-                  pull requests with the review done. Open source and self-hosted.
+                  Put Mend in front of the coding agent you already use. Your worktree,
+                  conversation, and record stay together on your Mend host — ready from another
+                  computer or your phone. Open source and self-hosted.
                 </p>
               </div>
               <FooterCol
                 title="Product"
                 links={[
                   ["Why", "#why"],
-                  ["The brief", "#review"],
-                  ["The source trail", "#sources"],
-                  ["The mobile app", "#mobile"],
-                  ["How it works", "#how"],
+                  ["Keep your agent", "#sessions"],
+                  ["Dev servers", "#browser"],
+                  ["Review", "#review"],
+                  ["Context", "#context"],
+                  ["Phone", "#anywhere"],
                   ["GitHub", REPO_URL],
                 ]}
               />
