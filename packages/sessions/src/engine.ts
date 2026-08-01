@@ -33,6 +33,67 @@ import {
   type ConvertedNativeSession,
 } from "./native-convert.ts";
 
+const readManifest = (stateDir: string) =>
+  Effect.promise(async (): Promise<HarnessStateManifest | null> => {
+    try {
+      const raw = await fs.readFile(path.join(stateDir, "manifest.json"), "utf8");
+      return JSON.parse(raw) as HarnessStateManifest;
+    } catch {
+      return null;
+    }
+  });
+
+/** How a harness takes an opening prompt (the cross-harness handoff). */
+const promptArgv = (harness: string, prompt: string): ReadonlyArray<string> | null => {
+  switch (harness) {
+    case "claude":
+      return ["claude", prompt];
+    case "codex":
+      return ["codex", prompt];
+    default:
+      return null;
+  }
+};
+
+/** Credentials ride connected accounts (references only); harness picks image behavior. */
+const platformShape = (
+  harness: string,
+): { harness: Harness; credentials: WorkspaceCredentialsOptions | undefined } => {
+  switch (harness) {
+    case "codex":
+      return { harness: codex(), credentials: { codex: true } };
+    case "claude":
+      return { harness: claudeCode(), credentials: { claude: true } };
+    default:
+      return { harness: opencode(), credentials: undefined };
+  }
+};
+
+/**
+ * Permission prompts are the harness re-asking a question Mend already
+ * answers: the session runs in an isolated workspace on its own
+ * worktree, every byte is recorded, and nothing lands without review.
+ * Default every harness to its bypass mode; a caller that passes the
+ * flag itself (or a contrary one) is left alone.
+ */
+const withPermissionDefaults = (
+  harness: string,
+  argv: ReadonlyArray<string>,
+): ReadonlyArray<string> => {
+  const [head, ...rest] = argv;
+  if (harness === "claude" && head === "claude" && !argv.includes("--permission-mode")) {
+    return argv.includes("--dangerously-skip-permissions")
+      ? argv
+      : ["claude", "--dangerously-skip-permissions", ...rest];
+  }
+  if (harness === "codex" && head === "codex" && !argv.includes("--sandbox")) {
+    return argv.includes("--dangerously-bypass-approvals-and-sandbox")
+      ? argv
+      : ["codex", "--dangerously-bypass-approvals-and-sandbox", ...rest];
+  }
+  return argv;
+};
+
 export interface ProvisionInput {
   readonly projectId: ProjectId;
   readonly harness: string;
@@ -264,20 +325,6 @@ export class SessionEngine extends Context.Service<
         yield* Effect.forkIn(work, scope);
       });
 
-      /** Credentials ride connected accounts (references only); harness picks image behavior. */
-      const platformShape = (
-        harness: string,
-      ): { harness: Harness; credentials: WorkspaceCredentialsOptions | undefined } => {
-        switch (harness) {
-          case "codex":
-            return { harness: codex(), credentials: { codex: true } };
-          case "claude":
-            return { harness: claudeCode(), credentials: { claude: true } };
-          default:
-            return { harness: opencode(), credentials: undefined };
-        }
-      };
-
       /**
        * Interactive Claude Code ignores the platform's env-injected credential
        * during onboarding: `claude -p` honors `CLAUDE_CODE_OAUTH_TOKEN`, but
@@ -320,31 +367,6 @@ export class SessionEngine extends Context.Service<
         // as root unless the environment says so, and it is telling the truth.
         `export IS_SANDBOX=1; ` +
         `exec "$@"`;
-
-      /**
-       * Permission prompts are the harness re-asking a question Mend already
-       * answers: the session runs in an isolated workspace on its own
-       * worktree, every byte is recorded, and nothing lands without review.
-       * Default every harness to its bypass mode; a caller that passes the
-       * flag itself (or a contrary one) is left alone.
-       */
-      const withPermissionDefaults = (
-        harness: string,
-        argv: ReadonlyArray<string>,
-      ): ReadonlyArray<string> => {
-        const [head, ...rest] = argv;
-        if (harness === "claude" && head === "claude" && !argv.includes("--permission-mode")) {
-          return argv.includes("--dangerously-skip-permissions")
-            ? argv
-            : ["claude", "--dangerously-skip-permissions", ...rest];
-        }
-        if (harness === "codex" && head === "codex" && !argv.includes("--sandbox")) {
-          return argv.includes("--dangerously-bypass-approvals-and-sandbox")
-            ? argv
-            : ["codex", "--dangerously-bypass-approvals-and-sandbox", ...rest];
-        }
-        return argv;
-      };
 
       const withHarnessBootstrap = (
         harness: string,
@@ -463,16 +485,6 @@ export class SessionEngine extends Context.Service<
             ),
           ),
         );
-
-      const readManifest = (stateDir: string) =>
-        Effect.promise(async (): Promise<HarnessStateManifest | null> => {
-          try {
-            const raw = await fs.readFile(path.join(stateDir, "manifest.json"), "utf8");
-            return JSON.parse(raw) as HarnessStateManifest;
-          } catch {
-            return null;
-          }
-        });
 
       const launchInternal = Effect.fn("SessionEngine.launchInternal")(function* (
         sessionId: SessionId,
@@ -760,18 +772,6 @@ export class SessionEngine extends Context.Service<
         claude: ["claude"],
         codex: ["codex"],
         opencode: ["opencode"],
-      };
-
-      /** How a harness takes an opening prompt (the cross-harness handoff). */
-      const promptArgv = (harness: string, prompt: string): ReadonlyArray<string> | null => {
-        switch (harness) {
-          case "claude":
-            return ["claude", prompt];
-          case "codex":
-            return ["codex", prompt];
-          default:
-            return null;
-        }
       };
 
       const ACTIVE_STATUSES = new Set(["starting", "running", "waiting", "idle"]);
