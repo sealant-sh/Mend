@@ -29,11 +29,37 @@ const KEYS: ReadonlyArray<{ readonly label: string; readonly data: string }> = [
   { label: "-", data: "-" },
 ];
 
+/** Ctrl+letter is the letter's alphabet position; punctuation per ECMA-48. */
+const applyCtrl = (data: string): string => {
+  if (data.length !== 1) return data;
+  const code = data.toLowerCase().charCodeAt(0);
+  if (code >= 97 && code <= 122) return String.fromCharCode(code - 96);
+  const specials: Record<string, string> = {
+    "@": "\u0000",
+    "[": "\u001b",
+    "\\": "\u001c",
+    "]": "\u001d",
+    "^": "\u001e",
+    _: "\u001f",
+    "?": "\u007f",
+  };
+  return specials[data] ?? data;
+};
+
 export default function TerminalScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { colors } = useEvidenceTheme();
   const insets = useSafeAreaInsets();
   const [base, setBase] = useState<{ url: string; token: string } | null>(null);
+  // Sticky modifier (t3code's key-bar pattern): tap ctrl, then the key it
+  // applies to — phone keyboards can't chord. The ref mirrors the state so
+  // the input transform reads the latch without re-wiring the surface.
+  const [ctrlLatched, setCtrlLatched] = useState(false);
+  const ctrlLatchedRef = useRef(false);
+  const latchCtrl = (latched: boolean) => {
+    ctrlLatchedRef.current = latched;
+    setCtrlLatched(latched);
+  };
   const sendRef = useRef<((data: string) => void) | null>(null);
   useEffect(() => {
     void loadConfig().then((config) => setBase({ url: config.url, token: config.token }));
@@ -57,6 +83,11 @@ export default function TerminalScreen() {
             registerSend={(send) => {
               sendRef.current = send;
             }}
+            transformInput={(data) => {
+              if (!ctrlLatchedRef.current) return data;
+              latchCtrl(false);
+              return applyCtrl(data);
+            }}
           />
         )}
       </View>
@@ -74,10 +105,24 @@ export default function TerminalScreen() {
               borderTopColor: colors.softRule,
             }}
           >
+            <Pressable
+              onPress={() => latchCtrl(!ctrlLatched)}
+              style={{
+                flex: 1,
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: ctrlLatched ? colors.wash : undefined,
+              }}
+            >
+              <MonoText style={{ color: ctrlLatched ? colors.accent : colors.ink }}>ctrl</MonoText>
+            </Pressable>
             {KEYS.map((key) => (
               <Pressable
                 key={key.label}
-                onPress={() => sendRef.current?.(key.data)}
+                onPress={() => {
+                  sendRef.current?.(ctrlLatched ? applyCtrl(key.data) : key.data);
+                  latchCtrl(false);
+                }}
                 style={{ flex: 1, alignItems: "center", justifyContent: "center" }}
               >
                 <MonoText style={{ color: colors.ink }}>{key.label}</MonoText>

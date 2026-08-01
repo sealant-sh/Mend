@@ -18,6 +18,7 @@ import {
   PgLive,
   ProjectMountsRepo,
   ProjectsRepo,
+  PushDevicesRepo,
   ReferencesRepo,
   ReviewCommentsRepo,
   RunsRepo,
@@ -35,7 +36,13 @@ import {
   sealantProviderLayer,
   SummarizeFailureJob,
 } from "@mend/inference";
-import { Dispatcher, JobRunner, runStarterLayer, startRunToolLayer } from "@mend/jobs";
+import {
+  Dispatcher,
+  JobRunner,
+  runStarterLayer,
+  SessionNotifierLive,
+  startRunToolLayer,
+} from "@mend/jobs";
 import { SealantClient } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import { Store, StoreConfig } from "@mend/store";
@@ -74,6 +81,7 @@ const DatabaseLive = Layer.mergeAll(
   CheckpointsRepo.layer,
   ReviewCommentsRepo.layer,
   FollowUpsRepo.layer,
+  PushDevicesRepo.layer,
 ).pipe(Layer.provideMerge(MigratorLive.pipe(Layer.provideMerge(PgLive))));
 
 // ─── The central store (host-side git) + the session engine over it ────────
@@ -188,6 +196,8 @@ const WorkerLive = Layer.mergeAll(
   InferenceWorkersLive,
   // Constructing the engine resumes supervision of unsettled sessions.
   SessionEngineLive,
+  // Pushes to registered phones when a session settles or waits on the user.
+  SessionNotifierLive,
 ).pipe(
   Layer.provide(Dispatcher.layer),
   Layer.provide(BriefCompiler.layer),

@@ -12,21 +12,23 @@ export type ButtonVariant = "primary" | "outline" | "ghost";
 export function EvButton({
   label,
   variant = "primary",
+  size = "md",
   onPress,
   style,
 }: {
   readonly label: string;
   readonly variant?: ButtonVariant;
+  readonly size?: "md" | "sm";
   readonly onPress?: () => void;
   readonly style?: StyleProp<ViewStyle>;
 }) {
   const { colors, shadow } = useEvidenceTheme();
   const base: ViewStyle = {
-    minHeight: 44,
+    minHeight: size === "sm" ? 34 : 44,
     borderRadius: radius.xl,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 20,
+    paddingHorizontal: size === "sm" ? 14 : 20,
   };
   const byVariant: Record<ButtonVariant, ViewStyle> = {
     primary: { backgroundColor: colors.accent, boxShadow: shadow.cobalt },
@@ -46,7 +48,7 @@ export function EvButton({
     >
       <UiText
         weight="medium"
-        size={14}
+        size={size === "sm" ? 13 : 14}
         {...(tone ? { tone } : {})}
         style={variant === "primary" ? { color: colors.accentForeground } : undefined}
       >

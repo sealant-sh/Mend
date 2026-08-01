@@ -319,6 +319,18 @@ const reviewCommentSpans = Effect.gen(function* () {
   yield* sql`ALTER TABLE review_comments ADD COLUMN end_line integer`;
 });
 
+/** Phones registered for push — the token IS the identity (one row per install). */
+const pushDevices = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE push_devices (
+      token text PRIMARY KEY,
+      platform text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      last_seen_at timestamptz NOT NULL DEFAULT now()
+    )`;
+});
+
 /**
  * References (plan §17, decided 2026-08-01): read-only clones of dependency
  * sources in the store, selected per project, mounted at `/workspace/ref/<name>`.
@@ -384,6 +396,8 @@ export const migrations = {
   "0005_follow_ups": followUps,
   "0006_sealant_session": sealantSession,
   "0007_review_comment_spans": reviewCommentSpans,
-  "0008_references": references,
-  "0009_project_mounts": projectMounts,
+  // 0008 went to push devices on main while these were in flight — renumbered.
+  "0008_push_devices": pushDevices,
+  "0009_references": references,
+  "0010_project_mounts": projectMounts,
 };

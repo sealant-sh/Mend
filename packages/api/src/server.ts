@@ -1,5 +1,12 @@
 import { Auth } from "@mend/auth";
-import { BriefCommentsRepo, BriefsRepo, ChangesRepo, IssuesRepo, RunsRepo } from "@mend/db";
+import {
+  BriefCommentsRepo,
+  BriefsRepo,
+  ChangesRepo,
+  IssuesRepo,
+  PushDevicesRepo,
+  RunsRepo,
+} from "@mend/db";
 import type { RunId } from "@mend/domain";
 import { JobRunner } from "@mend/jobs";
 import { SealantClient } from "@mend/sealant";
@@ -17,6 +24,7 @@ import {
   LossSpanView,
   MendApi,
   NotFound,
+  RegisteredDevice,
   RunCommandView,
   RunDetail,
   RunSourceView,
@@ -357,6 +365,23 @@ export const RunsGroupLive = HttpApiBuilder.group(MendApi, "runs", (handlers) =>
     ),
 );
 
+export const DevicesGroupLive = HttpApiBuilder.group(MendApi, "devices", (handlers) =>
+  handlers
+    .handle("register", ({ payload }) =>
+      Effect.gen(function* () {
+        const devices = yield* PushDevicesRepo;
+        const device = yield* devices.register(payload.token, payload.platform);
+        return new RegisteredDevice({ token: device.token, platform: device.platform });
+      }),
+    )
+    .handle("unregister", ({ params }) =>
+      Effect.gen(function* () {
+        const devices = yield* PushDevicesRepo;
+        yield* devices.remove(params.token);
+      }),
+    ),
+);
+
 /** Every group implementation plus the API registration, ready for the boundary. */
 export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
   Layer.provide(HealthGroupLive),
@@ -369,5 +394,6 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
   Layer.provide(ReferencesGroupLive),
   Layer.provide(SessionsGroupLive),
   Layer.provide(SessionChangesGroupLive),
+  Layer.provide(DevicesGroupLive),
   Layer.provide(AuthMiddlewareLive),
 );
