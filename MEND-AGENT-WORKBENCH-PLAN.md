@@ -762,6 +762,42 @@ The SDK and gateway must support scoped access to:
 
 Mend owns user-facing pairing and authorization. Sealant owns enforcement primitives.
 
+### G. Multiple workspace mounts with read-only support (decided 2026-08-01)
+
+§8.1.A originally specified a plural mount surface (`mounts: [{ path, source }]`); the shipped SDK
+is singular (`source: { kind: "mount", path }`) — exactly one host path, always read-write, at the
+working directory. Two decided features need the plural shape back, plus one addition:
+
+- accept additional mounts beyond the primary source, each with its own container path outside the
+  working directory — e.g. `mounts: [{ hostPath, mountPath, readOnly }]`;
+- support `readOnly` per mount (the docker adapter currently never emits `:ro`); read-only is what
+  makes one shared host directory safely mountable into many concurrent workspaces;
+- extend the mount allowlist policy to cover the additional roots;
+- record the full mount set on the workspace so the session manifest can state what the agent could
+  see.
+
+Consumers: per-project extra mounts and reference clones (§17, decided 2026-08-01). The primary
+source mount semantics of §8.1.A are unchanged.
+
+### H. Workspace port reachability (decided 2026-08-01)
+
+A dev server started inside a workspace container must be reachable by a browser on the host and on
+paired devices over the private network. Workspace containers run on the default bridge with no
+published ports, and the daemon already has the right primitive — `openForward`/`closeForward`
+(direct-tcpip from inside the container, raw byte conduit) — but its only consumer is the SSH
+gateway; neither the Core API nor the SDK exposes it.
+
+- expose the forward as a public SDK surface — e.g. `workspace.forward(port)` returning a duplex
+  byte stream Mend can terminate on a host listener;
+- optionally: have sealantd observe listening sockets inside the container (it is PID 1) and emit a
+  typed record event when a port starts or stops listening, so ports are discovered by observation
+  rather than agent cooperation;
+- record that a forward was opened (an event, not the bytes) so the session record stays honest
+  about reachability.
+
+Mend owns the host listener, its binding policy (localhost plus explicitly selected private
+interfaces, per §7.5), and the preview UX.
+
 ---
 
 ## 9. Architecture direction
@@ -1209,6 +1245,41 @@ understand the work.
   every finding must link to the record or ship with a runnable check (the evidential noise filter);
   proposed checks discharge via verification runs. New milestone M2.5; details in §7.3. Revives the
   queue-era brief compiler inside the workbench review surface.
+
+- **2026-08-01 — Dev-server preview: per-port TCP forwards, not an HTTP path proxy.** When a server
+  starts listening inside a session's workspace, Mend allocates a host port (bound to localhost and
+  explicitly selected private interfaces, per §7.5), pumps bytes to the container port over the
+  SDK-exposed forward (§8.1.H), and shows the URL. Raw TCP rather than a path-prefixed HTTP proxy:
+  path prefixes break absolute asset paths, HMR websockets, and cookies on real dev servers, and
+  wildcard subdomains are not available on a LAN/tailnet. Ports are discovered by observation
+  (sealantd listen events) where possible, phrased in product voice ("Listening on 5173 ·
+  observed"). Mobile reaches the same forwarded host port over the tailnet; the app shows a preview
+  entry per session. Accepted trade-off, recorded deliberately: a raw TCP forward cannot enforce
+  Mend auth per-request — acceptable under the private-interfaces-only posture; an auth-gated
+  HTTP-aware mode may layer on later.
+
+- **2026-08-01 — Per-project extra mounts, read-only, review scope unchanged.** A project may
+  declare additional host folders (sibling repos, an uncommitted experiments folder) mounted into
+  every session workspace outside the working directory (e.g. `/workspace/home/<name>`), default
+  read-only, per-folder explicit opt-in — never "mount everything" (sibling checkouts carry `.env`
+  secrets). The review focuses on the repo in question: the reviewable change remains exactly
+  worktree-versus-base; extra mounts widen what the agent can see, not what Mend reviews. The mount
+  set is declared on the session record and listed in the operational-contract prompt. Needs §8.1.G.
+  The "scratch files inside each worktree" sub-case has a no-platform-change alternative: a
+  per-project seed folder copied into each worktree at creation and covered by the managed excludes
+  (a symlink would dangle inside the container).
+
+- **2026-08-01 — References: cloned dependency sources mounted read-only.** A new product noun,
+  `reference`: an upstream repository cloned into the store (`_references/<name>`, shallow by
+  default, refreshed manually or periodically) — not a project: no sessions, no worktrees, no
+  adoption. A global list with per-project selection; selected references mount read-only at
+  `/workspace/ref/<name>` (one shared clone serves concurrent workspaces safely). Where possible,
+  pin the checkout to the version the project's lockfile declares, and record reference names + SHAs
+  in the session manifest for reproducibility. The operational-contract prompt tells the agent:
+  source for these dependencies is mounted under `/workspace/ref/`; read it before guessing APIs.
+  References sit beside context packs, not inside them — packs are immutable snapshots, references
+  are live clones with a per-session pinned SHA; a later bridge may let a context item point into a
+  reference. Needs §8.1.G.
 
 ### Still open
 
