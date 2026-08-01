@@ -17,6 +17,7 @@ import {
   MigratorLive,
   PgLive,
   ProjectsRepo,
+  ReferencesRepo,
   ReviewCommentsRepo,
   RunsRepo,
   SessionChangesRepo,
@@ -65,6 +66,7 @@ const DatabaseLive = Layer.mergeAll(
   InferenceCallsRepo.layer,
   // Workbench repos (plan §5; docs/M0-INVENTORY.md).
   ProjectsRepo.layer,
+  ReferencesRepo.layer,
   SessionsRepo.layer,
   SessionChangesRepo.layer,
   CheckpointsRepo.layer,

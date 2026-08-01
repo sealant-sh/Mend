@@ -319,6 +319,38 @@ const reviewCommentSpans = Effect.gen(function* () {
   yield* sql`ALTER TABLE review_comments ADD COLUMN end_line integer`;
 });
 
+/**
+ * References (plan §17, decided 2026-08-01): read-only clones of dependency
+ * sources in the store, selected per project, mounted at `/workspace/ref/<name>`.
+ * Table is `reference_repos` — `references` is a reserved word; the product
+ * noun stays `reference`. The session records what it actually mounted
+ * (`reference_mounts`), SHAs as observed at launch.
+ */
+const references = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE reference_repos (
+      id text PRIMARY KEY,
+      name text NOT NULL UNIQUE,
+      origin_url text NOT NULL,
+      path text NOT NULL UNIQUE,
+      pinned_ref text,
+      head_sha text,
+      refreshed_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`
+    CREATE TABLE project_references (
+      project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      reference_id text NOT NULL REFERENCES reference_repos(id) ON DELETE CASCADE,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (project_id, reference_id)
+    )`;
+  yield* sql`
+    ALTER TABLE agent_sessions ADD COLUMN reference_mounts jsonb NOT NULL DEFAULT '[]'`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -327,4 +359,5 @@ export const migrations = {
   "0005_follow_ups": followUps,
   "0006_sealant_session": sealantSession,
   "0007_review_comment_spans": reviewCommentSpans,
+  "0008_references": references,
 };

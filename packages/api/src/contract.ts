@@ -9,6 +9,7 @@ import {
   Issue,
   IssueId,
   ProjectId,
+  ReferenceId,
   Run,
   RunId,
   SessionId,
@@ -18,6 +19,7 @@ import {
   Checkpoint,
   FollowUp,
   Project,
+  Reference,
   ReviewComment,
   Session,
 } from "@mend/domain/workbench";
@@ -263,6 +265,64 @@ const projectsGroup = HttpApiGroup.make("projects")
   )
   .middleware(AuthMiddleware);
 
+/** Add a reference: clone `source` shallow into the store, pinned to `ref` when given. */
+export class AddReference extends Schema.Class<AddReference>("AddReference")({
+  name: Schema.String,
+  source: Schema.String,
+  /** Branch or tag to hold the clone at; null = the remote's default branch. */
+  ref: Schema.NullOr(Schema.String),
+}) {}
+
+/** The project's selection, replaced as a set — what its sessions will mount. */
+export class ProjectReferenceSelection extends Schema.Class<ProjectReferenceSelection>(
+  "ProjectReferenceSelection",
+)({
+  referenceIds: Schema.Array(ReferenceId),
+}) {}
+
+/**
+ * References (plan §17, decided 2026-08-01): a global list of read-only
+ * dependency clones, selected per project, mounted at `/workspace/ref/<name>`.
+ */
+const referencesGroup = HttpApiGroup.make("references")
+  .add(HttpApiEndpoint.get("list", "/references", { success: Schema.Array(Reference) }))
+  .add(
+    HttpApiEndpoint.post("add", "/references", {
+      payload: AddReference,
+      success: Reference,
+      error: StoreFailure,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.delete("remove", "/references/:id", {
+      params: { id: ReferenceId },
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("refresh", "/references/:id/refresh", {
+      params: { id: ReferenceId },
+      success: Reference,
+      error: Schema.Union([NotFound, StoreFailure]),
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("forProject", "/projects/:id/references", {
+      params: { id: ProjectId },
+      success: Schema.Array(Reference),
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put("selectForProject", "/projects/:id/references", {
+      params: { id: ProjectId },
+      payload: ProjectReferenceSelection,
+      success: Schema.Array(Reference),
+      error: NotFound,
+    }),
+  )
+  .middleware(AuthMiddleware);
+
 /** Provisioning a session: the worktree exists after this; launching is separate. */
 export class NewWorkbenchSession extends Schema.Class<NewWorkbenchSession>("NewWorkbenchSession")({
   harness: Schema.String,
@@ -455,6 +515,7 @@ export const MendApi = HttpApi.make("mend")
   .add(briefsGroup)
   .add(runsGroup)
   .add(projectsGroup)
+  .add(referencesGroup)
   .add(sessionsGroup)
   .add(sessionChangesGroup)
   .prefix("/api");

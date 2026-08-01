@@ -8,6 +8,7 @@ import {
   SessionId,
   Sha,
 } from "../ids.ts";
+import { SessionReferenceMount } from "./reference.ts";
 
 /**
  * Lifecycle of a supervised coding-agent process (plan §5.5). `waiting` and
@@ -47,6 +48,8 @@ export class Session extends Schema.Class<Session>("Session")({
   /** Where the worktree branched from — the change's comparison base. */
   baseSha: Sha,
   contextSnapshotId: Schema.NullOr(ContextSnapshotId),
+  /** References mounted read-only beside the worktree at launch, SHAs as observed then. */
+  referenceMounts: Schema.Array(SessionReferenceMount),
   sealantRunId: Schema.NullOr(SealantRunId),
   sealantWorkspaceId: Schema.NullOr(SealantWorkspaceId),
   /** The platform's interactive PTY session id (0.7.0) — the reattach handle. */

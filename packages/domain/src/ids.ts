@@ -50,3 +50,6 @@ export type ContextSnapshotId = typeof ContextSnapshotId.Type;
 
 export const FollowUpId = Schema.String.pipe(Schema.brand("FollowUpId"));
 export type FollowUpId = typeof FollowUpId.Type;
+
+export const ReferenceId = Schema.String.pipe(Schema.brand("ReferenceId"));
+export type ReferenceId = typeof ReferenceId.Type;

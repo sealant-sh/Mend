@@ -5,12 +5,14 @@ import {
   CheckpointsRepo,
   ProjectNotFoundError,
   ProjectsRepo,
+  ReferencesRepo,
   SessionChangesRepo,
   SessionNotFoundError,
   SessionsRepo,
 } from "@mend/db";
 import { SealantRunId, SealantWorkspaceId, SessionId, type ProjectId } from "@mend/domain";
 import type { Checkpoint, CheckpointTrigger, Session } from "@mend/domain/workbench";
+import { SessionReferenceMount } from "@mend/domain/workbench";
 import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import { GitError, Store, sessionStatePathOf, worktreePathOf } from "@mend/store";
 import type { Harness, Run as SdkRun, WorkspaceCredentialsOptions } from "@sealant/sdk";
@@ -117,6 +119,7 @@ export class SessionEngine extends Context.Service<
       const projects = yield* ProjectsRepo;
       const changes = yield* SessionChangesRepo;
       const checkpoints = yield* CheckpointsRepo;
+      const references = yield* ReferencesRepo;
       const store = yield* Store;
       const scope = yield* Effect.scope;
 
@@ -478,6 +481,16 @@ export class SessionEngine extends Context.Service<
         const project = yield* projects.byId(session.projectId);
         const worktree = worktreePathOf(project.storePath, session.worktree);
         const shape = platformShape(session.harness);
+        // The project's selected references ride beside the worktree, read-only
+        // at /workspace/ref/<name> (plan §17, 2026-08-01). Resolved at launch;
+        // the session records exactly what it received, SHAs as observed now.
+        const selectedReferences = yield* references
+          .listForProject(project.id)
+          .pipe(Effect.orElseSucceed(() => []));
+        const referenceMounts = selectedReferences.map((reference) => ({
+          hostPath: reference.path,
+          mountPath: `/workspace/ref/${reference.name}`,
+        }));
         // A failed provision settles the session — fire-and-forget launchers
         // (the web) must never strand a row in "starting" with no error.
         const settleOnFailure = <A>(effect: Effect.Effect<A, SealantPlatformError>) =>
@@ -491,6 +504,7 @@ export class SessionEngine extends Context.Service<
         const createWorkspace = (withCredentials: boolean) =>
           sealant.createWorkspace({
             source: { kind: "mount", path: worktree },
+            ...(referenceMounts.length === 0 ? {} : { mounts: referenceMounts }),
             harness: shape.harness,
             name: `mend-${session.id.slice(0, 8)}`,
             // Belt for every path that forgets to stop: the platform reaper.
@@ -586,6 +600,39 @@ export class SessionEngine extends Context.Service<
           yield* Effect.promise(() => fs.rm(importDir, { recursive: true, force: true })).pipe(
             Effect.ignore,
           );
+        }
+
+        if (selectedReferences.length > 0) {
+          yield* sessions.setReferenceMounts(
+            sessionId,
+            selectedReferences.map(
+              (reference) =>
+                new SessionReferenceMount({
+                  name: reference.name,
+                  mountPath: `/workspace/ref/${reference.name}`,
+                  sha: reference.headSha,
+                }),
+            ),
+          );
+          // Tell the harness the references exist — appended to its global
+          // memory file in the workspace $HOME (never the worktree: the note
+          // is not review content). After state restore, which rewrites $HOME.
+          const note =
+            `\n<!-- mend:references -->\n## Mend references\n\n` +
+            `Read-only clones of dependency sources are mounted beside the repo:\n\n` +
+            selectedReferences.map((reference) => `- /workspace/ref/${reference.name}`).join("\n") +
+            `\n\nRead the actual source there before guessing a dependency's API.\n`;
+          yield* sealant
+            .exec(workspace, [
+              "sh",
+              "-c",
+              `mkdir -p "$HOME/.claude" "$HOME/.codex"; ` +
+                `for f in "$HOME/.claude/CLAUDE.md" "$HOME/.codex/AGENTS.md"; do ` +
+                `grep -q "mend:references" "$f" 2>/dev/null || printf '%s' "$1" >> "$f"; done`,
+              "sh",
+              note,
+            ])
+            .pipe(Effect.ignore);
         }
 
         const pty = yield* sealant

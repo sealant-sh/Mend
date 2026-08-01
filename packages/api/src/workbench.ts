@@ -2,6 +2,7 @@ import {
   CheckpointsRepo,
   FollowUpsRepo,
   ProjectsRepo,
+  ReferencesRepo,
   ReviewCommentsRepo,
   SessionChangesRepo,
   SessionsRepo,
@@ -32,6 +33,13 @@ import {
  * concern yet (the CLI launches; the API steers and reviews).
  */
 
+/**
+ * Directory-, mount-, and shell-safe store names (projects and references
+ * both become store directories); the leading [a-z0-9] also keeps the store's
+ * `_references/` dir collision-free.
+ */
+const STORE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
 export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (handlers) =>
   handlers
     .handle("list", () =>
@@ -44,6 +52,11 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
       Effect.gen(function* () {
         const projects = yield* ProjectsRepo;
         const store = yield* Store;
+        if (!STORE_NAME.test(payload.name)) {
+          return yield* new StoreFailure({
+            message: `"${payload.name}" is not a usable project name (lowercase letters, digits, ".", "_", "-").`,
+          });
+        }
         const existing = yield* projects.byName(payload.name);
         if (existing !== null) {
           return yield* new StoreFailure({
@@ -76,6 +89,96 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         const projectSessions = yield* sessions.listForProject(params.id);
         return new ProjectDetail({ project, sessions: projectSessions });
+      }),
+    ),
+);
+
+export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (handlers) =>
+  handlers
+    .handle("list", () =>
+      Effect.gen(function* () {
+        const references = yield* ReferencesRepo;
+        return yield* references.list();
+      }),
+    )
+    .handle("add", ({ payload }) =>
+      Effect.gen(function* () {
+        const references = yield* ReferencesRepo;
+        const store = yield* Store;
+        if (!STORE_NAME.test(payload.name)) {
+          return yield* new StoreFailure({
+            message: `"${payload.name}" is not a usable reference name (lowercase letters, digits, ".", "_", "-").`,
+          });
+        }
+        const existing = yield* references.byName(payload.name);
+        if (existing !== null) {
+          return yield* new StoreFailure({
+            message: `"${payload.name}" already exists — its clone lives at ${existing.path}`,
+          });
+        }
+        const cloned = yield* store.cloneReference(payload.name, payload.source, payload.ref).pipe(
+          Effect.mapError(
+            (error) =>
+              new StoreFailure({
+                message: error.cause.stderr === "" ? String(error) : error.cause.stderr,
+              }),
+          ),
+        );
+        return yield* references.create({
+          name: payload.name,
+          originUrl: payload.source,
+          path: cloned.path,
+          pinnedRef: payload.ref,
+          headSha: cloned.headSha,
+        });
+      }),
+    )
+    .handle("remove", ({ params }) =>
+      Effect.gen(function* () {
+        const references = yield* ReferencesRepo;
+        const store = yield* Store;
+        const reference = yield* references
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        yield* store.removeReference(reference.path);
+        yield* references.remove(params.id);
+      }),
+    )
+    .handle("refresh", ({ params }) =>
+      Effect.gen(function* () {
+        const references = yield* ReferencesRepo;
+        const store = yield* Store;
+        const reference = yield* references
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        const refreshed = yield* store
+          .refreshReference(reference.path, reference.pinnedRef)
+          .pipe(Effect.mapError((error) => new StoreFailure({ message: error.stderr })));
+        yield* references.setHead(params.id, refreshed.headSha);
+        return yield* references
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+      }),
+    )
+    .handle("forProject", ({ params }) =>
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        const references = yield* ReferencesRepo;
+        yield* projects
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        return yield* references.listForProject(params.id);
+      }),
+    )
+    .handle("selectForProject", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        const references = yield* ReferencesRepo;
+        yield* projects
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        yield* references.setForProject(params.id, payload.referenceIds);
+        return yield* references.listForProject(params.id);
       }),
     ),
 );

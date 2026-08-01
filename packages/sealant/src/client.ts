@@ -29,6 +29,23 @@ import { SealantConnection } from "./connection.ts";
 import { SealantPlatformError } from "./errors.ts";
 
 /**
+ * An additional read-only-by-default mount beside the workspace's primary
+ * source — SDK ≥0.9 (`WorkspaceExtraMount`, sealant#120). Typed here so Mend
+ * compiles against 0.8.x during the transition: an older SDK's builder ignores
+ * the key, so the workspace launches without the mounts rather than failing —
+ * the connection check's version report is the tell.
+ */
+export interface WorkspaceExtraMountOptions {
+  readonly hostPath: string;
+  readonly mountPath: string;
+  readonly readOnly?: boolean;
+}
+
+export interface CreateWorkspaceOptions extends CreateOptions {
+  readonly mounts?: ReadonlyArray<WorkspaceExtraMountOptions>;
+}
+
+/**
  * The Sealant platform behind an Effect service contract, on SDK 0.5.0.
  *
  * Two publics surfaces back this layer, deliberately split:
@@ -44,7 +61,7 @@ export class SealantClient extends Context.Service<
   SealantClient,
   {
     readonly createWorkspace: (
-      options: CreateOptions,
+      options: CreateWorkspaceOptions,
     ) => Effect.Effect<Workspace, SealantPlatformError>;
     readonly getWorkspace: (id: string) => Effect.Effect<Workspace, SealantPlatformError>;
     /** Runs outlive workspaces — records are replayable long after close-out. */
@@ -168,8 +185,8 @@ export class SealantClient extends Context.Service<
       const apiContext = yield* Layer.build(sealantApiClientLayer(internalConfig));
       const ownerUserId = internalConfig.hostLocal.ownerUserId;
 
-      const createWorkspace = Effect.fn("SealantClient.createWorkspace")((options: CreateOptions) =>
-        wrap(() => sealant.workspaces.create(options)),
+      const createWorkspace = Effect.fn("SealantClient.createWorkspace")(
+        (options: CreateWorkspaceOptions) => wrap(() => sealant.workspaces.create(options)),
       );
 
       const getWorkspace = Effect.fn("SealantClient.getWorkspace")((id: string) =>

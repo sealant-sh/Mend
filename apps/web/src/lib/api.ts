@@ -402,6 +402,64 @@ export const adoptProject = async (name: string, source: string): Promise<Projec
   return body;
 };
 
+export interface ReferenceDto {
+  readonly id: string;
+  readonly name: string;
+  readonly originUrl: string;
+  readonly path: string;
+  readonly pinnedRef: string | null;
+  readonly headSha: string | null;
+  readonly refreshedAt: string | null;
+  readonly createdAt: string;
+}
+
+export const listReferences = () => request<ReadonlyArray<ReferenceDto>>("/api/references");
+
+/** Cloning can fail for reasons worth reading (422 carries git's own words). */
+export const addReference = async (
+  name: string,
+  source: string,
+  ref: string | null,
+): Promise<ReferenceDto> => {
+  const response = await fetch("/api/references", {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name, source, ref }),
+  });
+  if (response.status === 401) throw redirect({ to: "/login" });
+  if (!response.ok) {
+    const body: { readonly message?: string } = await response.json().catch(() => ({}));
+    throw new Error(body.message ?? `clone failed (${response.status})`);
+  }
+  const body: ReferenceDto = await response.json();
+  return body;
+};
+
+/** 204 on success — no body to parse. */
+export const removeReference = async (id: string): Promise<void> => {
+  const response = await fetch(`/api/references/${id}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (response.status === 401) throw redirect({ to: "/login" });
+  if (!response.ok) throw new Error(`DELETE /api/references/${id} responded ${response.status}`);
+};
+
+export const refreshReference = (id: string) =>
+  post<ReferenceDto>(`/api/references/${id}/refresh`, {});
+
+export const projectReferences = (projectId: string) =>
+  request<ReadonlyArray<ReferenceDto>>(`/api/projects/${projectId}/references`);
+
+/** Replace the project's selection as a set — what its next sessions will mount. */
+export const selectProjectReferences = (projectId: string, referenceIds: ReadonlyArray<string>) =>
+  request<ReadonlyArray<ReferenceDto>>(`/api/projects/${projectId}/references`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ referenceIds }),
+  });
+
 export const listActiveSessions = () => request<ReadonlyArray<SessionDto>>("/api/sessions");
 
 export const sessionDetail = (id: string) => request<SessionDetailDto>(`/api/sessions/${id}`);

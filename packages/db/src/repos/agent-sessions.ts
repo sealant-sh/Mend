@@ -7,7 +7,7 @@ import {
   SessionId,
   type Sha,
 } from "@mend/domain";
-import { Session, type SessionStatus } from "@mend/domain/workbench";
+import { Session, type SessionReferenceMount, type SessionStatus } from "@mend/domain/workbench";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -65,6 +65,11 @@ export class SessionsRepo extends Context.Service<
     /** The PTY session id — how a client reattaches to the live terminal. */
     readonly setSealantSessionId: (id: SessionId, sealantSessionId: string) => Effect.Effect<void>;
     readonly setProviderSessionId: (id: SessionId, providerId: string) => Effect.Effect<void>;
+    /** What launch actually mounted beside the worktree — recorded once, at launch. */
+    readonly setReferenceMounts: (
+      id: SessionId,
+      mounts: ReadonlyArray<SessionReferenceMount>,
+    ) => Effect.Effect<void>;
     readonly setStatus: (id: SessionId, status: SessionStatus) => Effect.Effect<void>;
     readonly saveLastSeenSequence: (id: SessionId, sequence: bigint) => Effect.Effect<void>;
     /** Live progress pointer for the Now feed and session page (plan §9.4). */
@@ -184,6 +189,16 @@ export class SessionsRepo extends Context.Service<
           WHERE id = ${id}`.pipe(Effect.orDie);
       });
 
+      const setReferenceMounts = Effect.fn("SessionsRepo.setReferenceMounts")(function* (
+        id: SessionId,
+        mounts: ReadonlyArray<SessionReferenceMount>,
+      ) {
+        yield* sql`
+          UPDATE agent_sessions
+          SET reference_mounts = ${JSON.stringify(mounts)}, updated_at = now()
+          WHERE id = ${id}`.pipe(Effect.orDie);
+      });
+
       const setStatus = Effect.fn("SessionsRepo.setStatus")(function* (
         id: SessionId,
         status: SessionStatus,
@@ -262,6 +277,7 @@ export class SessionsRepo extends Context.Service<
         setSealantIds,
         setSealantSessionId,
         setProviderSessionId,
+        setReferenceMounts,
         setStatus,
         saveLastSeenSequence,
         notifyProgress,
