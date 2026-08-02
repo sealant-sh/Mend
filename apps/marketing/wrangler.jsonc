@@ -4,8 +4,9 @@
   "compatibility_date": "2026-03-28",
   "compatibility_flags": ["nodejs_compat"],
   "main": "@tanstack/react-start/server-entry",
-  // Custom domain intentionally unset — the production domain for Mend is an open
-  // decision (mend.sealant.dev vs its own domain). Deploys land on workers.dev until then.
+  // Decided 2026-08-02: Mend lives under the platform's domain. Wrangler creates the
+  // DNS record in the sealant.dev zone on deploy.
+  "routes": [{ "pattern": "mend.sealant.dev", "custom_domain": true }],
   "observability": {
     "enabled": true,
   },
