@@ -8,9 +8,9 @@ import { PLATFORM_SITE_URL, PLATFORM_URL, REPO_URL } from "#/components/primitiv
 
 import appCss from "../styles.css?url";
 
-const TITLE = "Mend — an open-source workbench for coding-agent sessions";
+const TITLE = "Mend — run Claude Code, Codex, and OpenCode remotely";
 const DESCRIPTION =
-  "One harness-agnostic repo and context store, reachable from any of your devices — your phone included. First-class review for everything your agents write, on your own infra. mend claude — and everything else stays the same. Open source, self-hosted, built on Sealant.";
+  "Run Claude Code, Codex CLI, or OpenCode on a server you own and use them from any device, phone included. Sessions keep running when you disconnect, and Mend reviews every change with you. Open source, self-hosted, built on Sealant.";
 
 export const Route = createRootRoute({
   head: () => ({
@@ -43,12 +43,10 @@ function RootComponent() {
             <div className="flex items-center gap-9">
               <Brand />
               <nav className="hidden items-center gap-7 lg:flex" aria-label="Primary">
-                <TopLevelNavLink href="#why">The problems</TopLevelNavLink>
                 <TopLevelNavLink href="#how">How it works</TopLevelNavLink>
                 <TopLevelNavLink href="#phone">Phone</TopLevelNavLink>
-                <TopLevelNavLink href="#servers">Dev servers</TopLevelNavLink>
                 <TopLevelNavLink href="#review">Review</TopLevelNavLink>
-                <TopLevelNavLink href="#next">What's next</TopLevelNavLink>
+                <TopLevelNavLink href="#evidence">Under the hood</TopLevelNavLink>
                 <TopLevelNavLink href={PLATFORM_SITE_URL}>Sealant</TopLevelNavLink>
               </nav>
             </div>
@@ -85,20 +83,17 @@ function RootComponent() {
                   <span className="font-mono text-xs font-normal text-faint">by Sealant</span>
                 </a>
                 <p className="mt-4 max-w-[34ch] text-sm leading-relaxed text-muted-foreground">
-                  Runs the coding agent you already use in a recorded worktree on your own machine.
-                  The session stays reachable from any computer or your phone. Open source and
-                  self-hosted.
+                  Run Claude Code, Codex, or OpenCode on your own server and use them from any
+                  device. Open source and self-hosted.
                 </p>
               </div>
               <FooterCol
                 title="Product"
                 links={[
-                  ["The problems", "#why"],
                   ["How it works", "#how"],
                   ["Phone", "#phone"],
-                  ["Dev servers", "#servers"],
                   ["Review", "#review"],
-                  ["What's next", "#next"],
+                  ["Under the hood", "#evidence"],
                   ["GitHub", REPO_URL],
                 ]}
               />
@@ -114,7 +109,6 @@ function RootComponent() {
                 title="Project"
                 links={[
                   ["License", REPO_URL],
-                  ["Roadmap", REPO_URL],
                   ["Discussions", REPO_URL],
                 ]}
               />

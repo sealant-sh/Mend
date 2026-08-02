@@ -1,22 +1,22 @@
-// THE REVIEW — the core section: the session's worktree as a first-class
-// reviewable change, walked part by part beside the full exhibit. This is
-// what the recording is FOR.
+// THE REVIEW — the session's worktree as a reviewable change, with Mend
+// reviewing alongside: draft comments and suggested fixes backed by the
+// session record.
 
 import { ChangeReview } from "#/components/change-review";
 import { Container, Eyebrow, Reveal, SectionHead } from "#/components/primitives";
 
 const PARTS: ReadonlyArray<readonly [string, string]> = [
   [
-    "Comments become an editable follow-up",
-    "Mend assembles the open comments into one editable instruction and saves it to the same session. Today, mend continue delivers the bundle and reopens the work; one-click delivery from the review is next.",
+    "Mend reviews with you",
+    "Mend reads the change against the session record and leaves draft comments with suggested fixes — each one tied to what actually ran, with a check you can execute. It runs on your server with your subscription, so nothing leaves your infra.",
   ],
   [
-    "The change already belongs to one session",
-    "Every write happens in that session's supervised worktree, so the change-to-session link is structural rather than guessed. Hunk-level prompts, commands, and checks are the next layer of the review.",
+    "Comments become a follow-up",
+    "Open comments are assembled into one editable instruction and saved to the session. mend continue delivers the bundle and reopens the work.",
   ],
   [
-    "Landing is optional",
-    "Commit, merge, or open a PR when the review holds — or don't. Publication is one possible output of a change, not the price of getting a review.",
+    "Merge on your terms",
+    "Commit, merge, or open a PR when the review holds — or keep the change local. Reviewing doesn't require pushing a branch anywhere.",
   ],
 ];
 
@@ -25,20 +25,18 @@ export function Review() {
     <section id="review" className="bg-[var(--sw-bg)] py-24 lg:py-32">
       <Container>
         <SectionHead
-          eyebrow={<Eyebrow>The review</Eyebrow>}
+          eyebrow={<Eyebrow>Review</Eyebrow>}
           title="Review the change before it's a commit."
           intro={
             <p>
-              Each session exposes one change: its worktree against its base. That is a first-class
-              review object in Mend — a proper diff viewer, line-range comments, and a direct path
-              back to the session that produced it. No branch to push, no PR to open — and the
-              review runs where the session ran, on your own infra, not in a third-party review
-              service.
+              Each session exposes one change: its worktree against its base. Mend gives it a proper
+              diff viewer with line-range comments and a direct path back to the session that
+              produced it — and reviews the change itself, right there on your server.
             </p>
           }
         />
         <Reveal className="mt-12">
-          <ChangeReview illustrative />
+          <ChangeReview />
         </Reveal>
         <Reveal className="mt-12 grid gap-x-8 gap-y-10 sm:grid-cols-3">
           {PARTS.map(([title, body]) => (

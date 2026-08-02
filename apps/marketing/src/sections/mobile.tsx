@@ -1,9 +1,8 @@
-// ANY DEVICE — the phone is the proof that the session no longer belongs to
-// the desk. The three frames show what the development app actually supports;
-// the review is deliberately read-only until mobile comments ship.
+// PHONE — the app connects to your Mend server over your own network: see
+// what's running, answer a waiting agent, read the diff.
 
 import { AppHeader, AppStatus, IPhoneFrame } from "#/components/iphone";
-import { AvailableNow, Container, Eyebrow, Reveal, SectionHead } from "#/components/primitives";
+import { Container, Eyebrow, Reveal, SectionHead } from "#/components/primitives";
 
 // ── Screen 1 — the Now inbox ─────────────────────────────────────────────────
 
@@ -34,8 +33,8 @@ const NOW_GROUPS: ReadonlyArray<readonly [string, ReadonlyArray<NowRow>]> = [
     [
       {
         where: "codex · sealantd",
-        title: "4 files · +86 / −12 · 2 checks observed",
-        word: "Settled",
+        title: "4 files · +86 / −12 · 2 checks ran",
+        word: "Finished",
         dot: "bg-[var(--sw-green-dot)]",
         text: "text-success",
       },
@@ -59,7 +58,7 @@ const NOW_GROUPS: ReadonlyArray<readonly [string, ReadonlyArray<NowRow>]> = [
 function NowScreen() {
   return (
     <div>
-      <AppHeader title="Now" meta="3 sessions · 2 projects · this machine" />
+      <AppHeader title="Now" meta="3 sessions · 2 projects" />
       {NOW_GROUPS.map(([stage, rows]) => (
         <div key={stage}>
           <p className="ev-eyebrow border-b border-rule-faint bg-[var(--sw-sunken)] px-5 py-1.5">
@@ -94,7 +93,7 @@ function SessionScreen() {
     <div className="flex flex-col">
       <AppHeader title="claude · billing-service" meta="session 01J8QK4M · recording" />
       <div className="flex items-center justify-between border-b border-rule px-5 py-2.5">
-        <AppStatus word="Running · recorded" dot="bg-primary" text="text-primary" pulse />
+        <AppStatus word="Running" dot="bg-primary" text="text-primary" pulse />
         <span className="font-mono text-[0.62rem] text-faint">212 events</span>
       </div>
       <div className="bg-[var(--sw-sunken)] px-5 py-3 font-mono text-[0.64rem] leading-[1.8]">
@@ -128,7 +127,7 @@ function ReviewScreen() {
           [
             ["Change", "4 files · +86 / −12"],
             ["Record", "212 events"],
-            ["Mode", "read-only on mobile"],
+            ["Session", "claude · 01J8QK4M"],
           ] as const
         ).map(([k, v]) => (
           <div
@@ -151,13 +150,10 @@ function ReviewScreen() {
           <code>+ return dbSession(req)</code>
         </pre>
       </div>
-      <div className="mt-auto px-5 pt-3 pb-3">
+      <div className="mt-auto px-5 pt-3 pb-4">
         <span className="flex min-h-10 w-full items-center justify-center rounded-xl border border-rule bg-background font-sans text-[0.8rem] font-medium text-foreground shadow-[var(--shadow-xs)]">
           Read the full diff
         </span>
-        <p className="mt-2 text-center font-mono text-[0.6rem] text-warning">
-          Inline comments and send-review are next
-        </p>
       </div>
     </div>
   );
@@ -170,19 +166,16 @@ export function Mobile() {
     <section id="phone" className="bg-[var(--sw-bg)] py-24 lg:py-32">
       <Container>
         <SectionHead
-          eyebrow={<Eyebrow>Any device</Eyebrow>}
+          eyebrow={<Eyebrow>Phone</Eyebrow>}
           title="The same session, from your phone."
           intro={
             <p>
-              The development app connects to a real Mend host: see what is running, start or resume
-              an agent, message a live session, open its terminal, read the local diff. A control
-              and review surface — not an IDE on a small screen.
+              See what's running, start or resume an agent, answer a waiting question, open the
+              terminal, read the diff. The app talks to your Mend server over your LAN or tailnet;
+              nothing is exposed publicly.
             </p>
           }
         />
-        <Reveal className="mt-6">
-          <AvailableNow word="Working today" />
-        </Reveal>
 
         <Reveal className="mt-14">
           <div className="flex flex-wrap items-start justify-center gap-8 lg:gap-12">
@@ -196,16 +189,6 @@ export function Mobile() {
               <ReviewScreen />
             </IPhoneFrame>
           </div>
-          <p className="mt-10 text-center font-mono text-[0.62rem] tracking-[0.04em] text-faint uppercase">
-            Illustrative data — capabilities available in the development app
-          </p>
-        </Reveal>
-
-        <Reveal className="mt-10">
-          <p className="mx-auto max-w-[68ch] text-center leading-relaxed text-muted-foreground">
-            The app reaches the Mend host over your LAN or tailnet with an operator token. Nothing
-            is exposed publicly.
-          </p>
         </Reveal>
       </Container>
     </section>
