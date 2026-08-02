@@ -21,6 +21,7 @@ export function Screen({
   return (
     <ScrollView
       style={{ flex: 1, backgroundColor: colors.bg }}
+      keyboardShouldPersistTaps="handled"
       contentContainerStyle={{
         paddingTop: (topInset ? insets.top : 0) + spacing.md,
         paddingHorizontal: 20,

@@ -1,0 +1,237 @@
+import { execFile } from "node:child_process";
+
+import { Effect, Layer, Schema } from "effect";
+import * as Context from "effect/Context";
+import { HttpRouter } from "effect/unstable/http";
+import { HttpApiBuilder } from "effect/unstable/httpapi";
+
+import { GhFailure, GhRepoView, GhStatusView, MendApi } from "./contract.ts";
+
+/**
+ * Adoption discovery through the host's own GitHub CLI (plan §17, decided
+ * 2026-08-02). The credentials are gh's, not Mend's: whatever `gh auth login`
+ * set up on this machine answers here, and a missing or signed-out gh is
+ * reported as status — never invented around with a Mend-held token.
+ */
+
+/** A gh invocation that exited nonzero (or could not run at all). */
+export class GhError extends Schema.TaggedErrorClass<GhError>()("GhError", {
+  args: Schema.Array(Schema.String),
+  exitCode: Schema.NullOr(Schema.Int),
+  stderr: Schema.String,
+}) {}
+
+interface ExecFailure {
+  readonly code?: number | string;
+  readonly stderr?: string;
+  readonly message?: string;
+}
+
+/** gh answers within this window or the endpoint reports the stall instead of hanging. */
+const GH_TIMEOUT_MS = 20_000;
+
+/**
+ * Run gh with args; resolve with both streams (gh splits status output between
+ * them by version). Mirrors store/git.ts: plain `node:child_process`, args as
+ * a vector — user input never meets a shell.
+ */
+const gh = (
+  args: ReadonlyArray<string>,
+): Effect.Effect<{ readonly stdout: string; readonly stderr: string }, GhError> =>
+  Effect.callback<{ readonly stdout: string; readonly stderr: string }, GhError>((resume) => {
+    const child = execFile(
+      "gh",
+      [...args],
+      {
+        timeout: GH_TIMEOUT_MS,
+        maxBuffer: 8 * 1024 * 1024,
+        env: { ...process.env, GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1" },
+      },
+      (error, stdout, stderr) => {
+        if (error === null) {
+          resume(Effect.succeed({ stdout, stderr }));
+          return;
+        }
+        const failure = error as ExecFailure;
+        resume(
+          Effect.fail(
+            new GhError({
+              args: [...args],
+              exitCode: typeof failure.code === "number" ? failure.code : null,
+              stderr: (failure.stderr ?? failure.message ?? "").trim(),
+            }),
+          ),
+        );
+      },
+    );
+    return Effect.sync(() => child.kill());
+  });
+
+const parseJson = <T>(raw: string, args: ReadonlyArray<string>): Effect.Effect<T, GhError> =>
+  Effect.try({
+    try: () => JSON.parse(raw) as T,
+    catch: () =>
+      new GhError({ args: [...args], exitCode: null, stderr: "gh returned unparseable JSON" }),
+  });
+
+/** `gh repo list --json` item — visibility UPPERCASE, language nested. */
+interface RepoListItem {
+  readonly nameWithOwner: string;
+  readonly description: string;
+  readonly visibility: string;
+  readonly isFork: boolean;
+  readonly primaryLanguage: { readonly name: string } | null;
+  readonly stargazerCount: number;
+  readonly pushedAt: string | null;
+  readonly url: string;
+}
+
+/** `gh search repos --json` item — visibility lowercase, language flat. */
+interface RepoSearchItem {
+  readonly fullName: string;
+  readonly description: string;
+  readonly visibility: string;
+  readonly isFork: boolean;
+  readonly language: string | null;
+  readonly stargazersCount: number;
+  readonly pushedAt: string | null;
+  readonly url: string;
+}
+
+const REPO_LIMIT = 30;
+const LIST_FIELDS =
+  "nameWithOwner,description,visibility,isFork,primaryLanguage,stargazerCount,pushedAt,url";
+const SEARCH_FIELDS =
+  "fullName,description,visibility,isFork,language,stargazersCount,pushedAt,url";
+
+export class Gh extends Context.Service<
+  Gh,
+  {
+    /** What the host's gh reports — absence and sign-out are content, not errors. */
+    readonly status: () => Effect.Effect<GhStatusView>;
+    /** Empty query: the account's repos, most recently pushed first. Otherwise a GitHub-wide search. */
+    readonly repos: (query: string) => Effect.Effect<ReadonlyArray<GhRepoView>, GhError>;
+  }
+>()("@mend/api/Gh") {}
+
+/** The live Gh: the real CLI on this machine. A separate constant — embedding
+ * it in the class definition loses the provided-service type (`Layer<never>`). */
+export const GhLive: Layer.Layer<Gh> = Layer.succeed(Gh, {
+  status: () =>
+    gh(["--version"]).pipe(
+      Effect.flatMap(() =>
+        gh(["auth", "status", "--hostname", "github.com"]).pipe(
+          Effect.map(({ stdout, stderr }) => {
+            const login = /account (\S+)/.exec(`${stdout}\n${stderr}`)?.[1] ?? null;
+            return new GhStatusView({
+              available: true,
+              authenticated: true,
+              login,
+              detail: null,
+            });
+          }),
+          Effect.catch((error) =>
+            Effect.succeed(
+              new GhStatusView({
+                available: true,
+                authenticated: false,
+                login: null,
+                detail: error.stderr === "" ? "gh is signed out" : error.stderr,
+              }),
+            ),
+          ),
+        ),
+      ),
+      Effect.catch((error) =>
+        Effect.succeed(
+          new GhStatusView({
+            available: false,
+            authenticated: false,
+            login: null,
+            detail: error.stderr === "" ? "gh was not found" : error.stderr,
+          }),
+        ),
+      ),
+    ),
+  repos: (query: string) => {
+    const trimmed = query.trim();
+    if (trimmed === "") {
+      const args = ["repo", "list", "--limit", String(REPO_LIMIT), "--json", LIST_FIELDS];
+      return gh(args).pipe(
+        Effect.flatMap(({ stdout }) => parseJson<ReadonlyArray<RepoListItem>>(stdout, args)),
+        Effect.map((items) =>
+          items.map(
+            (item) =>
+              new GhRepoView({
+                nameWithOwner: item.nameWithOwner,
+                description: item.description === "" ? null : item.description,
+                visibility: item.visibility.toLowerCase(),
+                isFork: item.isFork,
+                language: item.primaryLanguage?.name ?? null,
+                stars: item.stargazerCount,
+                pushedAt: item.pushedAt,
+                url: item.url,
+              }),
+          ),
+        ),
+      );
+    }
+    // `--` so a query is always positional, never parsed as a flag.
+    const args = [
+      "search",
+      "repos",
+      "--limit",
+      String(REPO_LIMIT),
+      "--json",
+      SEARCH_FIELDS,
+      "--",
+      trimmed,
+    ];
+    return gh(args).pipe(
+      Effect.flatMap(({ stdout }) => parseJson<ReadonlyArray<RepoSearchItem>>(stdout, args)),
+      Effect.map((items) =>
+        items.map(
+          (item) =>
+            new GhRepoView({
+              nameWithOwner: item.fullName,
+              description: item.description === "" ? null : item.description,
+              visibility: item.visibility.toLowerCase(),
+              isFork: item.isFork,
+              language: item.language === "" ? null : item.language,
+              stars: item.stargazersCount,
+              pushedAt: item.pushedAt,
+              url: item.url,
+            }),
+        ),
+      ),
+    );
+  },
+});
+
+export const GithubGroupLive = HttpApiBuilder.group(
+  MendApi,
+  "github",
+  (handlers) =>
+    handlers
+      .handle("status", () =>
+        Effect.gen(function* () {
+          const cli = yield* Gh;
+          return yield* cli.status();
+        }),
+      )
+      .handle("repos", ({ query }) =>
+        Effect.gen(function* () {
+          const cli = yield* Gh;
+          return yield* cli
+            .repos(query.query ?? "")
+            .pipe(
+              Effect.mapError(
+                (error) =>
+                  new GhFailure({ message: error.stderr === "" ? String(error) : error.stderr }),
+              ),
+            );
+        }),
+      ),
+  // Gh is api-internal: erase the handlers' requirement here so the boundary
+  // never sees it (plain Layer.provide can't reach request-level requirements).
+).pipe(HttpRouter.provideRequest(GhLive));

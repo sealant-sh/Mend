@@ -113,7 +113,12 @@ wrapper):
 4. Define Effect services as types/contracts first (`Context.Tag` / `ServiceMap.Service`) with no
    embedded live implementation in the definition.
 5. Define live/test implementations as separate layer constants after the service definitions (same
-   file is fine when clearly sectioned), and compose those layers at the boundary.
+   file is fine when clearly sectioned), and compose those layers at the boundary. This is a safety
+   rule, not style: a `static layer` embedded in the class body can silently infer `Layer<never>`
+   (self-reference during declaration) and then provides nothing — the leak only errors at the far
+   boundary. Give the separate constant an explicit type: `const XLive: Layer.Layer<X> = …`. Do not
+   copy the embedded statics that still exist in the repo (e.g. `StoreConfig.layer`); they infer
+   correctly today by luck, not by design.
 
 Topics: quick-start, project-setup, tsconfig, basics, services-and-layers, data-modeling,
 error-handling, config, testing, cli.
