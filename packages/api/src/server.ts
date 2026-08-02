@@ -32,6 +32,7 @@ import {
   TracePage,
   Unauthorized,
 } from "./contract.ts";
+import { GithubGroupLive } from "./github.ts";
 import {
   ProjectMountsGroupLive,
   ProjectsGroupLive,
@@ -394,6 +395,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
   Layer.provide(ReferencesGroupLive),
   Layer.provide(SessionsGroupLive),
   Layer.provide(SessionChangesGroupLive),
+  Layer.provide(GithubGroupLive),
   Layer.provide(DevicesGroupLive),
   Layer.provide(AuthMiddlewareLive),
 );

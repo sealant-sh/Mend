@@ -45,6 +45,11 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
 
 ## Agent Defaults
 
+- Never open a PR (or push a branch for one) without first running
+  `pnpm exec turbo typecheck --force` and `pnpm exec turbo lint --force` and seeing both pass —
+  forced, so a warm cache can't lie. Note the residual gap: CI installs with `--lockfile=false`, so
+  local green only equals CI green while the catalog pins exact versions; if CI fails on code you
+  didn't touch, suspect dependency drift before suspecting your diff.
 - After code changes, always run `pnpm format:fix`.
 - For type-checking, always use `tsgo` (`pnpm typecheck`) and do not use `tsc`.
 - Never touch `pnpm-lock.yaml` (no manual edits and no workflow steps that update it).
@@ -113,7 +118,12 @@ wrapper):
 4. Define Effect services as types/contracts first (`Context.Tag` / `ServiceMap.Service`) with no
    embedded live implementation in the definition.
 5. Define live/test implementations as separate layer constants after the service definitions (same
-   file is fine when clearly sectioned), and compose those layers at the boundary.
+   file is fine when clearly sectioned), and compose those layers at the boundary. This is a safety
+   rule, not style: a `static layer` embedded in the class body can silently infer `Layer<never>`
+   (self-reference during declaration) and then provides nothing — the leak only errors at the far
+   boundary. Give the separate constant an explicit type: `const XLive: Layer.Layer<X> = …`. Do not
+   copy the embedded statics that still exist in the repo (e.g. `StoreConfig.layer`); they infer
+   correctly today by luck, not by design.
 
 Topics: quick-start, project-setup, tsconfig, basics, services-and-layers, data-modeling,
 error-handling, config, testing, cli.

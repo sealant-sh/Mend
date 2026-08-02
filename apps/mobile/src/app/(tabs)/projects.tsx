@@ -31,11 +31,23 @@ export default function ProjectsScreen() {
 
   return (
     <Screen topInset>
-      <ScreenHeader
-        eyebrow="mend"
-        title="Projects"
-        meta={`${projects.data?.length ?? 0} adopted`}
-      />
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "flex-end",
+          justifyContent: "space-between",
+          gap: 12,
+        }}
+      >
+        <View style={{ flexShrink: 1 }}>
+          <ScreenHeader
+            eyebrow="mend"
+            title="Projects"
+            meta={`${projects.data?.length ?? 0} adopted`}
+          />
+        </View>
+        <EvButton size="sm" label="Adopt" onPress={() => router.push("/adopt")} />
+      </View>
       {(projects.data ?? []).map((project) => {
         const sessions = (all.data ?? [])
           .filter(({ session }) => session.projectId === project.id)

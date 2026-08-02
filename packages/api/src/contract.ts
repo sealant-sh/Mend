@@ -547,6 +547,51 @@ const sessionChangesGroup = HttpApiGroup.make("sessionChanges")
   )
   .middleware(AuthMiddleware);
 
+/**
+ * Adoption discovery: the host's GitHub CLI answers with the credentials it
+ * already holds — Mend adds none of its own. What was observed about gh
+ * (missing, signed out) is status content, never a hidden error; clients fall
+ * back to a typed source. No new product noun — this is still adoption.
+ */
+export class GhStatusView extends Schema.Class<GhStatusView>("GhStatusView")({
+  available: Schema.Boolean,
+  authenticated: Schema.Boolean,
+  /** The account gh reports as active, when signed in. */
+  login: Schema.NullOr(Schema.String),
+  /** The CLI's own words when discovery cannot serve — verbatim, never rephrased. */
+  detail: Schema.NullOr(Schema.String),
+}) {}
+
+/** One repository exactly as gh reported it (list and search shapes normalized). */
+export class GhRepoView extends Schema.Class<GhRepoView>("GhRepoView")({
+  nameWithOwner: Schema.String,
+  description: Schema.NullOr(Schema.String),
+  visibility: Schema.String,
+  isFork: Schema.Boolean,
+  language: Schema.NullOr(Schema.String),
+  stars: Schema.Int,
+  pushedAt: Schema.NullOr(Schema.String),
+  url: Schema.String,
+}) {}
+
+/** A gh invocation that could not answer — its stderr, verbatim. */
+export class GhFailure extends Schema.TaggedErrorClass<GhFailure>()(
+  "GhFailure",
+  { message: Schema.String },
+  { httpApiStatus: 422 },
+) {}
+
+const githubGroup = HttpApiGroup.make("github")
+  .add(HttpApiEndpoint.get("status", "/github/status", { success: GhStatusView }))
+  .add(
+    HttpApiEndpoint.get("repos", "/github/repos", {
+      query: { query: Schema.optional(Schema.String) },
+      success: Schema.Array(GhRepoView),
+      error: GhFailure,
+    }),
+  )
+  .middleware(AuthMiddleware);
+
 /** An Expo push token registration — one per app install, token is identity. */
 export class RegisterDeviceRequest extends Schema.Class<RegisterDeviceRequest>(
   "RegisterDeviceRequest",
@@ -585,5 +630,6 @@ export const MendApi = HttpApi.make("mend")
   .add(referencesGroup)
   .add(sessionsGroup)
   .add(sessionChangesGroup)
+  .add(githubGroup)
   .add(devicesGroup)
   .prefix("/api");

@@ -4,7 +4,7 @@
  * is a server URL + bearer token stored on device — same token the CLI uses.
  */
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type { StatusTone } from "@/components/status";
 
@@ -60,9 +60,19 @@ export interface ChangedFileDto {
   readonly deletions: number;
 }
 
+/** The server answered and said no — carries its own words when it gave any. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
 const api = async <T>(method: "GET" | "POST", route: string, body?: unknown): Promise<T> => {
   const config = await loadConfig();
-  if (config.url === "") throw new Error("Set the server URL in Settings first.");
+  if (config.url === "") throw new ApiError("Set the server URL in Settings first.", 0);
   const response = await fetch(`${config.url}/api${route}`, {
     method,
     headers: {
@@ -71,7 +81,16 @@ const api = async <T>(method: "GET" | "POST", route: string, body?: unknown): Pr
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  if (!response.ok) throw new Error(`${method} ${route} → ${response.status}`);
+  if (!response.ok) {
+    let message = `${method} ${route} → ${response.status}`;
+    try {
+      const parsed = (await response.json()) as { readonly message?: unknown };
+      if (typeof parsed.message === "string" && parsed.message !== "") message = parsed.message;
+    } catch {
+      // Not JSON — the status line stands.
+    }
+    throw new ApiError(message, response.status);
+  }
   return (await response.json()) as T;
 };
 
@@ -198,7 +217,83 @@ export const useTranscript = (sessionId: string, live: boolean) =>
     refetchInterval: live ? 1_500 : false,
   });
 
+// ─── github discovery (the server host's own gh CLI answers) ────────────────
+
+export interface GhStatusDto {
+  readonly available: boolean;
+  readonly authenticated: boolean;
+  readonly login: string | null;
+  readonly detail: string | null;
+}
+
+export interface GhRepoDto {
+  readonly nameWithOwner: string;
+  readonly description: string | null;
+  readonly visibility: string;
+  readonly isFork: boolean;
+  readonly language: string | null;
+  readonly stars: number;
+  readonly pushedAt: string | null;
+  readonly url: string;
+}
+
+export const useGhStatus = () =>
+  useQuery({
+    queryKey: ["github-status"],
+    queryFn: () => api<GhStatusDto>("GET", "/github/status"),
+    staleTime: 30_000,
+    retry: false,
+  });
+
+export const useGhRepos = (query: string, enabled: boolean) =>
+  useQuery({
+    queryKey: ["github-repos", query],
+    enabled,
+    queryFn: () =>
+      api<ReadonlyArray<GhRepoDto>>(
+        "GET",
+        query === "" ? "/github/repos" : `/github/repos?query=${encodeURIComponent(query)}`,
+      ),
+    placeholderData: keepPreviousData,
+    staleTime: 60_000,
+  });
+
 // ─── actions ────────────────────────────────────────────────────────────────
+
+/** How long to keep watching for a clone whose request dropped mid-flight. */
+const ADOPT_WATCH_MS = 180_000;
+const ADOPT_POLL_MS = 3_000;
+
+export const useAdoptProject = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { readonly name: string; readonly source: string }) => {
+      try {
+        return await api<ProjectDto>("POST", "/projects", input);
+      } catch (error) {
+        // A big clone can outlive the phone's request while the server keeps
+        // cloning. Only on a dropped connection (never on an answered
+        // failure), watch the project list for the name instead of failing
+        // blind.
+        if (!(error instanceof TypeError)) throw error;
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < ADOPT_WATCH_MS) {
+          await new Promise((resolve) => setTimeout(resolve, ADOPT_POLL_MS));
+          const projects = await api<ReadonlyArray<ProjectDto>>("GET", "/projects").catch(
+            () => null,
+          );
+          const adopted = projects?.find((project) => project.name === input.name);
+          if (adopted !== undefined) return adopted;
+        }
+        throw new Error(
+          `The connection dropped mid-clone and "${input.name}" has not appeared after 3 minutes — check the server.`,
+          { cause: error },
+        );
+      }
+    },
+    onSettled: () => queryClient.invalidateQueries(),
+  });
+};
 
 export const useSessionActions = () => {
   const queryClient = useQueryClient();

@@ -624,6 +624,8 @@ The mobile experience must support:
 - inline and change-level comments;
 - send review feedback to the agent;
 - browse context and session handoffs;
+- adopt a repository into the store — pick from the host GitHub CLI's repositories or type a source
+  (added 2026-08-02, see §17);
 - open a terminal as an escape hatch.
 
 The mobile product is not required to support full code editing, project-wide navigation, or every
@@ -1260,6 +1262,19 @@ understand the work.
 ## 17. Open decisions
 
 ### Decided
+
+- **2026-08-02 — Mobile adoption, discovered through the host's GitHub CLI.** Adoption joins the
+  mobile capability set (§7.4): typing a clone URL on a phone was the real barrier, so the server
+  asks its own `gh` for repositories to tap (`GET /api/github/status`, `GET /api/github/repos`, same
+  auth middleware, args passed as a vector — user input never meets a shell). The credentials are
+  gh's, not Mend's — no Mend-held GitHub token, and a host where `gh auth login` ran usually has
+  private-repo clones already working. No new product noun: this is still adoption; discovery
+  degrades honestly (a missing or signed-out gh is reported in the CLI's own words) and the
+  typed-source form always remains. `POST /projects` stays blocking; the mobile client treats a
+  dropped request as "clone continuing on the server" and watches the project list for the name
+  rather than failing blind. If large clones make that feel bad in practice, the recorded follow-up
+  is an adopting-state project row fed by the existing `mend_events` notify path. The web adopt form
+  can reuse the discovery endpoints unchanged.
 
 - **2026-08-01 — Browser access to session development services.** A development server is part of
   its session, alongside the conversation, terminal, record, and change. Mend will detect or accept
