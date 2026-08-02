@@ -1,12 +1,15 @@
 // Adopt a project — the server host's GitHub CLI answers with repos to tap
 // (its credentials, not Mend's), or any clone URL / server path typed by
 // hand. Same verb, same endpoint as web and CLI; the clone lands in the
-// central store and sessions get worktrees from there.
+// central store and sessions get worktrees from there. The confirm step is a
+// sticky bar: picking a repo never requires scrolling back to act.
 
 import { useRouter } from "expo-router";
 import { Check } from "lucide-react-native";
 import { useEffect, useState } from "react";
-import { Pressable, StyleSheet, TextInput, View } from "react-native";
+import { Keyboard, Pressable, StyleSheet, TextInput, View } from "react-native";
+import { KeyboardStickyView } from "react-native-keyboard-controller";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { EvButton } from "@/components/button";
 import { Panel, PanelRow } from "@/components/panel";
@@ -107,6 +110,7 @@ function RepoRow({
 export default function AdoptScreen() {
   const router = useRouter();
   const { colors } = useEvidenceTheme();
+  const insets = useSafeAreaInsets();
   const status = useGhStatus();
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebounced(query.trim(), 350);
@@ -122,10 +126,12 @@ export default function AdoptScreen() {
   const nameOk = STORE_NAME.test(name);
 
   const pick = (repo: GhRepoDto) => {
+    Keyboard.dismiss();
     adopt.reset();
-    setSelected((current) => (current?.nameWithOwner === repo.nameWithOwner ? null : repo));
+    const deselecting = selected?.nameWithOwner === repo.nameWithOwner;
+    setSelected(deselecting ? null : repo);
     setManualSource("");
-    if (!nameTouched) setName(inferName(repo.nameWithOwner));
+    if (!nameTouched) setName(deselecting ? "" : inferName(repo.nameWithOwner));
   };
 
   const typeSource = (value: string) => {
@@ -137,6 +143,7 @@ export default function AdoptScreen() {
 
   const submit = () => {
     if (source === "" || !nameOk || adopt.isPending) return;
+    Keyboard.dismiss();
     adopt.mutate({ name, source }, { onSuccess: () => router.back() });
   };
 
@@ -152,98 +159,112 @@ export default function AdoptScreen() {
   } as const;
 
   return (
-    <Screen>
-      <BodyText tone="muted">
-        Clones into the central store on the server; sessions run in worktrees from that copy, never
-        your checkout.
-      </BodyText>
+    <View style={{ flex: 1, backgroundColor: colors.bg }}>
+      <Screen>
+        <BodyText tone="muted">
+          Clones into the central store on the server; sessions run in worktrees from that copy,
+          never your checkout.
+        </BodyText>
 
-      <SectionLabel>
-        {status.data?.login == null ? "github" : `github · ${status.data.login}`}
-      </SectionLabel>
-      {status.isPending ? (
+        <SectionLabel>
+          {status.data?.login == null ? "github" : `github · ${status.data.login}`}
+        </SectionLabel>
+        {status.isPending ? (
+          <Panel>
+            <View style={{ padding: 16 }}>
+              <MonoText tone="faint">asking the server's gh…</MonoText>
+            </View>
+          </Panel>
+        ) : discovery ? (
+          <Panel>
+            <View style={{ padding: 12, paddingBottom: 8 }}>
+              <TextInput
+                value={query}
+                onChangeText={setQuery}
+                placeholder="Search github — empty shows your latest"
+                placeholderTextColor={colors.faint}
+                autoCapitalize="none"
+                autoCorrect={false}
+                returnKeyType="search"
+                style={inputStyle}
+              />
+            </View>
+            {repos.isPending ? (
+              <PanelRow>
+                <MonoText tone="faint">searching…</MonoText>
+              </PanelRow>
+            ) : repos.isError ? (
+              <PanelRow>
+                <MonoText tone="danger" size={11.5}>
+                  {repos.error.message}
+                </MonoText>
+              </PanelRow>
+            ) : repos.data.length === 0 ? (
+              <PanelRow>
+                <MonoText tone="faint">nothing matched</MonoText>
+              </PanelRow>
+            ) : (
+              repos.data.map((repo) => (
+                <RepoRow
+                  key={repo.nameWithOwner}
+                  repo={repo}
+                  selected={selected?.nameWithOwner === repo.nameWithOwner}
+                  onPress={() => pick(repo)}
+                />
+              ))
+            )}
+          </Panel>
+        ) : (
+          <Panel>
+            <View style={{ padding: 16, gap: 8 }}>
+              <UiText>GitHub discovery is unavailable on the server</UiText>
+              <MonoText tone="muted" size={11.5}>
+                {status.data?.detail ??
+                  (status.error instanceof Error ? status.error.message : "no detail reported")}
+              </MonoText>
+              {status.data?.available === true ? (
+                <MonoText tone="faint" size={11.5}>
+                  run `gh auth login` on the server machine, then reopen this screen
+                </MonoText>
+              ) : null}
+            </View>
+          </Panel>
+        )}
+
+        <SectionLabel>any source</SectionLabel>
         <Panel>
-          <View style={{ padding: 16 }}>
-            <MonoText tone="faint">asking the server's gh…</MonoText>
-          </View>
-        </Panel>
-      ) : discovery ? (
-        <Panel>
-          <View style={{ padding: 12, paddingBottom: 8 }}>
+          <View style={{ padding: 16, gap: 8 }}>
+            <UiText>Clone URL, or an absolute path on the server machine</UiText>
             <TextInput
-              value={query}
-              onChangeText={setQuery}
-              placeholder="Search github — empty shows your latest"
+              value={manualSource}
+              onChangeText={typeSource}
+              placeholder="https://github.com/owner/repo.git"
               placeholderTextColor={colors.faint}
               autoCapitalize="none"
               autoCorrect={false}
               style={inputStyle}
             />
           </View>
-          {repos.isPending ? (
-            <PanelRow>
-              <MonoText tone="faint">searching…</MonoText>
-            </PanelRow>
-          ) : repos.isError ? (
-            <PanelRow>
-              <MonoText tone="danger" size={11.5}>
-                {repos.error.message}
-              </MonoText>
-            </PanelRow>
-          ) : repos.data.length === 0 ? (
-            <PanelRow>
-              <MonoText tone="faint">nothing matched</MonoText>
-            </PanelRow>
-          ) : (
-            repos.data.map((repo) => (
-              <RepoRow
-                key={repo.nameWithOwner}
-                repo={repo}
-                selected={selected?.nameWithOwner === repo.nameWithOwner}
-                onPress={() => pick(repo)}
-              />
-            ))
-          )}
         </Panel>
-      ) : (
-        <Panel>
-          <View style={{ padding: 16, gap: 8 }}>
-            <UiText>GitHub discovery is unavailable on the server</UiText>
-            <MonoText tone="muted" size={11.5}>
-              {status.data?.detail ??
-                (status.error instanceof Error ? status.error.message : "no detail reported")}
-            </MonoText>
-            {status.data?.available === true ? (
-              <MonoText tone="faint" size={11.5}>
-                run `gh auth login` on the server machine, then reopen this screen
-              </MonoText>
-            ) : null}
-          </View>
-        </Panel>
-      )}
-
-      <SectionLabel>any source</SectionLabel>
-      <Panel>
-        <View style={{ padding: 16, gap: 8 }}>
-          <UiText>Clone URL, or an absolute path on the server machine</UiText>
-          <TextInput
-            value={manualSource}
-            onChangeText={typeSource}
-            placeholder="https://github.com/owner/repo.git"
-            placeholderTextColor={colors.faint}
-            autoCapitalize="none"
-            autoCorrect={false}
-            style={inputStyle}
-          />
-        </View>
-      </Panel>
+      </Screen>
 
       {source === "" ? null : (
-        <>
-          <SectionLabel>adopt</SectionLabel>
-          <Panel>
-            <View style={{ padding: 16, gap: 12 }}>
-              <UiText>Store name</UiText>
+        <KeyboardStickyView offset={{ closed: 0, opened: insets.bottom }}>
+          <View
+            style={{
+              backgroundColor: colors.panel,
+              borderTopWidth: StyleSheet.hairlineWidth,
+              borderTopColor: colors.softRule,
+              paddingHorizontal: 16,
+              paddingTop: 12,
+              paddingBottom: Math.max(insets.bottom, 12),
+              gap: 8,
+            }}
+          >
+            <MonoText tone="faint" size={11} numberOfLines={1}>
+              {source}
+            </MonoText>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
               <TextInput
                 value={name}
                 onChangeText={(value) => {
@@ -255,34 +276,31 @@ export default function AdoptScreen() {
                 placeholderTextColor={colors.faint}
                 autoCapitalize="none"
                 autoCorrect={false}
-                style={inputStyle}
+                style={[inputStyle, { flex: 1, paddingVertical: 8 }]}
               />
-              {name !== "" && !nameOk ? (
-                <MonoText tone="muted" size={11.5}>
-                  lowercase letters, digits, ".", "_", "-" — starting with a letter or digit
-                </MonoText>
-              ) : null}
-              <MonoText tone="faint" size={11.5} numberOfLines={1}>
-                {source}
+              <EvButton
+                label={adopt.isPending ? "Adopting…" : "Adopt"}
+                onPress={submit}
+                style={nameOk && !adopt.isPending ? undefined : { opacity: 0.5 }}
+              />
+            </View>
+            {name !== "" && !nameOk ? (
+              <MonoText tone="muted" size={11}>
+                lowercase letters, digits, ".", "_", "-" — starting with a letter or digit
               </MonoText>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-                <EvButton
-                  label={adopt.isPending ? "Adopting…" : "Adopt project"}
-                  onPress={submit}
-                  style={[{ flex: 1 }, nameOk ? null : { opacity: 0.5 }]}
-                />
-                {adopt.isPending ? <StatusWord tone="live" word="cloning" /> : null}
-                {adopt.isError ? <StatusWord tone="breakage" word="failed" /> : null}
-              </View>
-              {adopt.isError ? (
-                <MonoText tone="danger" size={11.5}>
+            ) : null}
+            {adopt.isPending ? <StatusWord tone="live" word="cloning into the store" /> : null}
+            {adopt.isError ? (
+              <View style={{ gap: 4 }}>
+                <StatusWord tone="breakage" word="failed" />
+                <MonoText tone="danger" size={11}>
                   {adopt.error.message}
                 </MonoText>
-              ) : null}
-            </View>
-          </Panel>
-        </>
+              </View>
+            ) : null}
+          </View>
+        </KeyboardStickyView>
       )}
-    </Screen>
+    </View>
   );
 }
