@@ -10,7 +10,7 @@ import appCss from "../styles.css?url";
 
 const TITLE = "Mend — an open-source workbench for coding-agent sessions";
 const DESCRIPTION =
-  "Mend runs Claude Code, Codex, or any coding agent in a recorded git worktree on a machine you control. Detach and the session keeps running; attach from another computer or your phone; review the accumulated change with the session record beside it. Open source, self-hosted, built on Sealant.";
+  "One harness-agnostic repo and context store, reachable from any of your devices — your phone included. First-class review for everything your agents write, on your own infra. mend claude — and everything else stays the same. Open source, self-hosted, built on Sealant.";
 
 export const Route = createRootRoute({
   head: () => ({
@@ -43,10 +43,11 @@ function RootComponent() {
             <div className="flex items-center gap-9">
               <Brand />
               <nav className="hidden items-center gap-7 lg:flex" aria-label="Primary">
-                <TopLevelNavLink href="#why">Why</TopLevelNavLink>
+                <TopLevelNavLink href="#why">The problems</TopLevelNavLink>
                 <TopLevelNavLink href="#how">How it works</TopLevelNavLink>
-                <TopLevelNavLink href="#review">Review</TopLevelNavLink>
                 <TopLevelNavLink href="#phone">Phone</TopLevelNavLink>
+                <TopLevelNavLink href="#servers">Dev servers</TopLevelNavLink>
+                <TopLevelNavLink href="#review">Review</TopLevelNavLink>
                 <TopLevelNavLink href="#next">What's next</TopLevelNavLink>
                 <TopLevelNavLink href={PLATFORM_SITE_URL}>Sealant</TopLevelNavLink>
               </nav>
@@ -92,10 +93,11 @@ function RootComponent() {
               <FooterCol
                 title="Product"
                 links={[
-                  ["Why", "#why"],
+                  ["The problems", "#why"],
                   ["How it works", "#how"],
-                  ["Review", "#review"],
                   ["Phone", "#phone"],
+                  ["Dev servers", "#servers"],
+                  ["Review", "#review"],
                   ["What's next", "#next"],
                   ["GitHub", REPO_URL],
                 ]}
