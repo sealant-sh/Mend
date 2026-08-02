@@ -19,7 +19,7 @@ const FACTS: ReadonlyArray<readonly [string, string]> = [
   ],
   [
     "Detach without stopping",
-    "The agent runs in a supervised workspace, not in the terminal window that displays it. Close the client and the process keeps running; reattach later from the CLI, the web app, or the phone with the scrollback intact.",
+    "The agent runs in a supervised workspace, not in the terminal window that displays it. Close the client and the process keeps running; reattach later from the CLI, the web app, or the phone with the scrollback intact. Good context follows the session, not the terminal — nothing to hoard.",
   ],
   [
     "Resume, or switch harnesses",
@@ -33,14 +33,15 @@ export function Sessions() {
       <Container>
         <SectionHead
           eyebrow={<Eyebrow>How it works</Eyebrow>}
-          title="mend claude is the Claude Code you already run."
+          title="One store for repos and sessions, on a machine you pick."
           intro={
             <p>
               <code className="font-mono text-[0.85em] text-foreground">mend claude</code>,{" "}
               <code className="font-mono text-[0.85em] text-foreground">mend codex</code>, or{" "}
-              <code className="font-mono text-[0.85em] text-foreground">mend run -- anything</code>.
-              The TUI, shortcuts, and connected subscription are unchanged. Mend adds a durable
-              worktree under the agent and a recorded workspace around it.
+              <code className="font-mono text-[0.85em] text-foreground">mend run -- anything</code>{" "}
+              — the same TUI, shortcuts, and connected subscription you have today. Mend adds a
+              durable worktree under the agent and a recorded workspace around it, all inside one
+              central store instead of scattered checkouts.
             </p>
           }
         />

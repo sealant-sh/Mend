@@ -31,8 +31,9 @@ export function Review() {
             <p>
               Each session exposes one change: its worktree against its base. That is a first-class
               review object in Mend — a proper diff viewer, line-range comments, and a direct path
-              back to the session that produced it. No branch to push, no PR to open, nothing to
-              clean up first.
+              back to the session that produced it. No branch to push, no PR to open — and the
+              review runs where the session ran, on your own infra, not in a third-party review
+              service.
             </p>
           }
         />

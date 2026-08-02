@@ -5,10 +5,6 @@ import { BuildingNow, Container, Eyebrow, Reveal, SectionHead } from "#/componen
 
 const PLANNED: ReadonlyArray<readonly [string, string]> = [
   [
-    "A browser surface for dev servers",
-    "When a session starts a development server, Mend will expose it on the session's private URL — reachable from your other devices over the same authenticated connection, without turning the workspace into a public deployment.",
-  ],
-  [
     "Context packs and handoffs",
     "Named, versioned selections of files, docs, and decisions. Each session receives an immutable snapshot, so “what did the agent know?” has an exact answer — and a settled session drafts a handoff you can edit and pass to the next one.",
   ],
@@ -31,7 +27,8 @@ export function WhatsNext() {
           title="What isn't built yet."
           intro={
             <p>
-              Everything above this line runs in the development build today. The pieces below are
+              Everything above this line runs in the development build today, except the dev-server
+              forwards — those are marked in development where they appear. The pieces below are
               designed but not shipped.
             </p>
           }
