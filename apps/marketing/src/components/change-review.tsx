@@ -207,8 +207,8 @@ export function ChangeReview({
                 <DiffLine key={`${row.sign}${row.oldNo ?? ""}-${row.newNo ?? ""}`} {...row} />
               ))}
               <CommentCard
-                author="Mend read the change"
-                meta="draft · not a verdict · planned"
+                author="Mend"
+                meta="draft · from the session record"
                 mark
                 evidence="evidence: seq 0087–0198 · proposed check: pnpm test invoice-rounding"
                 suggestion={{

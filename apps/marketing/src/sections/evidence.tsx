@@ -1,8 +1,7 @@
-// THE EVIDENCE — the load-bearing section. Introduces Sealant to readers who
-// met Mend first, and makes the one technical claim everything else rests on:
-// the record is captured by the runtime, underneath the harness, so the model
-// can't write its own account. Record panel beside the claim; the SDK snippet
-// below shows there are no private hooks.
+// UNDER THE HOOD — introduces Sealant to readers who met Mend first, and the
+// technical claim behind the record: it's captured by the runtime, underneath
+// the harness. Record panel beside the claim; the SDK snippet below shows the
+// whole integration surface.
 
 import { Display, Eyebrow, PLATFORM_SITE_URL, Reveal, SectionHead } from "#/components/primitives";
 import { CatalogEyebrow, RunRecord } from "#/components/run-record";
@@ -102,11 +101,11 @@ export function Evidence() {
         <div className="grid items-start gap-12 lg:grid-cols-2 lg:gap-16">
           <div className="min-w-0">
             <SectionHead
-              eyebrow={<Eyebrow>Where the recording comes from</Eyebrow>}
-              title="The record is written by the runtime, not the model."
+              eyebrow={<Eyebrow>Under the hood</Eyebrow>}
+              title="Every session is recorded by the runtime."
               intro={
                 <p>
-                  Every Mend session runs on{" "}
+                  Sessions run on{" "}
                   <a
                     href={PLATFORM_SITE_URL}
                     target="_blank"
@@ -116,38 +115,29 @@ export function Evidence() {
                     Sealant
                   </a>
                   , an open-source runtime that puts the harness in a workspace it doesn't control
-                  and records the session from underneath it: processes, exits, file changes,
-                  terminal output, network. The harness can't embellish a record it doesn't write.
+                  and records from underneath it: processes, exits, file changes, terminal output,
+                  network. The harness can't edit a record it doesn't write.
                 </p>
               }
             />
             <Reveal className="mt-10 space-y-7">
               <div>
                 <h3 className="font-display text-lg font-semibold tracking-[-0.01em] text-foreground">
-                  Runtime events are observations
+                  Review against what actually ran
                 </h3>
                 <p className="mt-2 max-w-[52ch] leading-relaxed text-muted-foreground">
-                  Processes, exits, file changes, and terminal bytes come from the runtime record.
-                  What the harness says remains conversation, not proof that something happened.
-                  Hunk-level provenance inside Mend's review is still in development.
+                  Which commands ran, what they exited with, which files changed and when — the
+                  review and Mend's draft comments draw on this record, so a claim in the
+                  conversation and a fact from the runtime are never confused.
                 </p>
               </div>
               <div>
                 <h3 className="font-display text-lg font-semibold tracking-[-0.01em] text-foreground">
-                  The record outlives the terminal
+                  Replay any session later
                 </h3>
                 <p className="mt-2 max-w-[52ch] leading-relaxed text-muted-foreground">
                   A session is a durable event log, not a scrollback buffer. Replay it during
                   review, or a month later when someone asks why the change was made.
-                </p>
-              </div>
-              <div>
-                <h3 className="font-display text-lg font-semibold tracking-[-0.01em] text-foreground">
-                  Observations, not verdicts
-                </h3>
-                <p className="mt-2 max-w-[52ch] leading-relaxed text-muted-foreground">
-                  Mend reports what happened and stops there. No confidence scores, no "safe to
-                  merge". You decide what lands — with the evidence in front of you.
                 </p>
               </div>
             </Reveal>
@@ -158,7 +148,7 @@ export function Evidence() {
             <RunRecord
               runId="session 01J8QK4M"
               capture="00:33.415"
-              status={{ word: "Completed · observed", tone: "observed" }}
+              status={{ word: "Completed", tone: "observed" }}
               replay
               events={[
                 {
@@ -199,7 +189,6 @@ export function Evidence() {
                 ],
               }}
               footnote="checkpoint 0007 · worktree mend/session/01J8QK4M"
-              illustrative
             />
           </Reveal>
         </div>
@@ -217,8 +206,7 @@ export function Evidence() {
               to the durable stream from any sequence.
             </p>
             <p className="mt-4 max-w-[52ch] leading-relaxed text-muted-foreground">
-              Anything Mend does, your own tooling can do. If you'd rather build your own workflow
-              than adopt this one, the runtime underneath is the part to take.
+              Anything Mend does, your own tooling can do with the same SDK.
             </p>
             <a
               href={PLATFORM_SITE_URL}

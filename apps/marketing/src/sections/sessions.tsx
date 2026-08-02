@@ -1,29 +1,20 @@
-// HOW IT WORKS — what `mend claude` actually does, stated as mechanics rather
-// than promises: the store, the per-session worktree, the supervised
-// workspace, and what detach/resume mean. The hero already showed the moment;
-// this section explains it.
+// HOW IT WORKS — what `mend codex` actually does: the store, the per-session
+// worktree, the supervised workspace, detach and resume.
 
-import {
-  AvailableNow,
-  BuildingNow,
-  Container,
-  Eyebrow,
-  Reveal,
-  SectionHead,
-} from "#/components/primitives";
+import { Container, Eyebrow, Reveal, SectionHead } from "#/components/primitives";
 
 const FACTS: ReadonlyArray<readonly [string, string]> = [
   [
     "One store, one worktree per session",
-    "mend adopt clones the repository into a central store on the Mend host. Each session runs in its own git worktree there, so parallel agents cannot collide and no client checkout becomes the source of truth.",
+    "mend adopt clones the repository into a central store on your server. Each session runs in its own git worktree there, so parallel agents can't collide and you stop keeping a clone per machine.",
   ],
   [
     "Detach without stopping",
-    "The agent runs in a supervised workspace, not in the terminal window that displays it. Close the client and the process keeps running; reattach later from the CLI, the web app, or the phone with the scrollback intact. Good context follows the session, not the terminal — nothing to hoard.",
+    "The agent runs in a supervised workspace, not in the terminal window that displays it. Close the laptop and the process keeps running; reattach later from the CLI, the web app, or your phone with the scrollback intact.",
   ],
   [
     "Resume, or switch harnesses",
-    "A settled session reopens with the same harness and its native state. Reopening a Claude Code session in Codex — or the reverse — works in beta: same worktree, translated conversation history.",
+    "A finished session reopens with the same harness and its native state. You can also reopen a Claude Code session in Codex, or the reverse: same worktree, translated conversation history.",
   ],
 ];
 
@@ -33,22 +24,17 @@ export function Sessions() {
       <Container>
         <SectionHead
           eyebrow={<Eyebrow>How it works</Eyebrow>}
-          title="One store for repos and sessions, on a machine you pick."
+          title="The same tools, running on your server."
           intro={
             <p>
               <code className="font-mono text-[0.85em] text-foreground">mend claude</code>,{" "}
               <code className="font-mono text-[0.85em] text-foreground">mend codex</code>, or{" "}
               <code className="font-mono text-[0.85em] text-foreground">mend run -- anything</code>{" "}
-              — the same TUI, shortcuts, and connected subscription you have today. Mend adds a
-              durable worktree under the agent and a recorded workspace around it, all inside one
-              central store instead of scattered checkouts.
+              — the same TUI, shortcuts, and subscription you use today. Mend puts a durable
+              worktree under the agent and records the session around it.
             </p>
           }
         />
-        <Reveal className="mt-6 flex flex-wrap items-center gap-4">
-          <AvailableNow word="Core loop working" />
-          <BuildingNow word="Cross-harness beta" />
-        </Reveal>
 
         <Reveal className="mt-12 grid gap-x-8 gap-y-10 sm:grid-cols-3">
           {FACTS.map(([title, body]) => (

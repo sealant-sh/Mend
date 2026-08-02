@@ -1,12 +1,10 @@
-// THE HERO — repo-header energy: the name, three factual sentences, the
-// exhibit. The harness word in `mend claude` cycles because the claim is
-// harness-agnostic; the rest of the line stays the same on purpose.
+// THE HERO — one concrete claim with the tool name cycling, one sentence of
+// consequence, the terminal showing the command.
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useState } from "react";
 
 import { GitHubLogo } from "#/components/github";
-import { MendMark } from "#/components/logo";
 import { PrimaryCTA, REPO_URL, riseChild, riseParent, SecondaryCTA } from "#/components/primitives";
 
 // One terminal line: prompt lines in ink, output muted, stage directions faint.
@@ -57,7 +55,7 @@ function HeroTerminal() {
   );
 }
 
-const HARNESSES = ["claude", "codex", "pi"];
+const HARNESSES = ["Claude Code", "Codex CLI", "OpenCode"];
 const LONGEST_HARNESS = HARNESSES.reduce((a, b) => (b.length > a.length ? b : a));
 
 function CyclingHarness() {
@@ -76,9 +74,9 @@ function CyclingHarness() {
         <motion.span
           key={word}
           className="text-primary [grid-area:1/1]"
-          initial={{ opacity: 0, y: 12 }}
+          initial={{ opacity: 0, y: 14 }}
           animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -12 }}
+          exit={{ opacity: 0, y: -14 }}
           transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
         >
           {word}
@@ -100,27 +98,20 @@ export function Hero() {
         aria-hidden="true"
       />
       <div className="relative mx-auto w-full max-w-[1200px] px-6 py-16 sm:px-8 lg:py-24">
-        <div className="grid items-center gap-12 lg:grid-cols-[minmax(0,27rem)_1fr] lg:gap-14">
+        <div className="grid items-center gap-12 lg:grid-cols-[minmax(0,30rem)_1fr] lg:gap-14">
           <motion.div className="min-w-0" {...parent}>
-            <motion.div {...child} className="flex items-center gap-3.5">
-              <MendMark className="size-11 sm:size-14" aria-hidden="true" />
-              <h1 className="font-display text-5xl leading-none font-semibold tracking-[-0.03em] text-foreground sm:text-6xl lg:text-[4.2rem]">
-                Mend
-              </h1>
-            </motion.div>
+            <motion.h1
+              {...child}
+              className="font-display text-[2.5rem] leading-[1.12] font-semibold tracking-[-0.03em] text-foreground sm:text-5xl lg:text-[3.1rem]"
+            >
+              Run <CyclingHarness /> remotely from your local machine.
+            </motion.h1>
             <motion.p
               {...child}
-              className="mt-8 max-w-[46ch] text-lg leading-relaxed text-muted-foreground"
+              className="mt-6 max-w-[46ch] text-lg leading-relaxed text-muted-foreground"
             >
-              One harness-agnostic repo and context store, reachable from any of your devices — your
-              phone included. First-class review for everything your agents write, on your own
-              infra.
-            </motion.p>
-            <motion.p {...child} className="mt-4 text-lg leading-relaxed text-muted-foreground">
-              <code className="font-mono text-[0.92em] text-foreground">
-                mend <CyclingHarness />
-              </code>{" "}
-              — and everything else stays the same.
+              The session runs on a server you own and stays reachable from every device you have,
+              phone included.
             </motion.p>
             <motion.div {...child} className="mt-8 flex flex-wrap items-center gap-3">
               <PrimaryCTA href={REPO_URL}>
@@ -132,7 +123,7 @@ export function Hero() {
               </SecondaryCTA>
             </motion.div>
             <motion.p {...child} className="mt-6 font-mono text-xs text-faint">
-              Open source · Self-hosted · In development
+              Open source · Self-hosted
             </motion.p>
           </motion.div>
 
