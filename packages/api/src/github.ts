@@ -2,7 +2,6 @@ import { execFile } from "node:child_process";
 
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
-import { HttpRouter } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { GhFailure, GhRepoView, GhStatusView, MendApi } from "./contract.ts";
@@ -114,8 +113,13 @@ export class Gh extends Context.Service<
   }
 >()("@mend/api/Gh") {}
 
-/** The live Gh: the real CLI on this machine. A separate constant — embedding
- * it in the class definition loses the provided-service type (`Layer<never>`). */
+/**
+ * The live Gh: the real CLI on this machine. A separate constant — embedding
+ * it in the class definition loses the provided-service type (`Layer<never>`).
+ * Provided at the composition boundary like every other handler dependency:
+ * group-scoped `HttpRouter.provideRequest` erases the requirement in types but
+ * does NOT reach HttpApi group handlers at runtime ("Service not found").
+ */
 export const GhLive: Layer.Layer<Gh> = Layer.succeed(Gh, {
   status: () =>
     gh(["--version"]).pipe(
@@ -208,30 +212,25 @@ export const GhLive: Layer.Layer<Gh> = Layer.succeed(Gh, {
   },
 });
 
-export const GithubGroupLive = HttpApiBuilder.group(
-  MendApi,
-  "github",
-  (handlers) =>
-    handlers
-      .handle("status", () =>
-        Effect.gen(function* () {
-          const cli = yield* Gh;
-          return yield* cli.status();
-        }),
-      )
-      .handle("repos", ({ query }) =>
-        Effect.gen(function* () {
-          const cli = yield* Gh;
-          return yield* cli
-            .repos(query.query ?? "")
-            .pipe(
-              Effect.mapError(
-                (error) =>
-                  new GhFailure({ message: error.stderr === "" ? String(error) : error.stderr }),
-              ),
-            );
-        }),
-      ),
-  // Gh is api-internal: erase the handlers' requirement here so the boundary
-  // never sees it (plain Layer.provide can't reach request-level requirements).
-).pipe(HttpRouter.provideRequest(GhLive));
+export const GithubGroupLive = HttpApiBuilder.group(MendApi, "github", (handlers) =>
+  handlers
+    .handle("status", () =>
+      Effect.gen(function* () {
+        const cli = yield* Gh;
+        return yield* cli.status();
+      }),
+    )
+    .handle("repos", ({ query }) =>
+      Effect.gen(function* () {
+        const cli = yield* Gh;
+        return yield* cli
+          .repos(query.query ?? "")
+          .pipe(
+            Effect.mapError(
+              (error) =>
+                new GhFailure({ message: error.stderr === "" ? String(error) : error.stderr }),
+            ),
+          );
+      }),
+    ),
+);
