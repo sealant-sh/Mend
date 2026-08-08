@@ -1,5 +1,6 @@
-// Project — repository state, sessions, the active change, context packs
-// (plan §6.2). The place to start or resume an agent and open review.
+// Project — repository state and its sessions, live (plan §6.2). The place
+// to start an agent and step into any session. Context packs join when the
+// context library ships (plan M3) — no mock stand-ins.
 
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { View } from "react-native";
@@ -8,105 +9,90 @@ import { EvButton } from "@/components/button";
 import { Panel, PanelRow } from "@/components/panel";
 import { Screen, ScreenHeader, SectionLabel } from "@/components/screen";
 import { SessionRow } from "@/components/session-row";
-import { BodyText, MonoText, UiText } from "@/components/typography";
-import { changeStats, projectById, sessionsForProject } from "@/data/mock";
+import { BodyText, MonoText } from "@/components/typography";
+import { toSession, useProjectSessions, useSessionActions } from "@/data/live";
+
+const HARNESSES = ["claude", "codex", "opencode"] as const;
 
 export default function ProjectScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const project = projectById(id);
-  if (!project) {
+  const detail = useProjectSessions(id ?? null);
+  const { start } = useSessionActions();
+  const project = detail.data?.project;
+  const sessions = detail.data?.sessions ?? [];
+
+  if (detail.isError) {
     return (
       <Screen>
-        <BodyText tone="muted">This project is not in the store.</BodyText>
+        <BodyText tone="muted">
+          {String((detail.error as Error | null)?.message ?? "This project is not reachable.")}
+        </BodyText>
       </Screen>
     );
   }
-  const own = sessionsForProject(project.id);
-  const unreviewed = own.filter((s) => s.change?.reviewed === false);
+  if (project === undefined) {
+    return (
+      <Screen>
+        <MonoText tone="faint">loading…</MonoText>
+      </Screen>
+    );
+  }
+
+  const fire = (harness: string) => {
+    start.mutate(
+      { projectId: project.id, harness },
+      {
+        onSuccess: (session) =>
+          router.push({ pathname: "/session/[id]", params: { id: session.id } }),
+      },
+    );
+  };
 
   return (
     <Screen>
       <ScreenHeader
         eyebrow="project"
         title={project.name}
-        meta={`${project.storePath} · ${project.branch} @ ${project.headSha}`}
+        meta={`${project.defaultBranch}${project.adoptedSha === null ? "" : ` @ ${project.adoptedSha.slice(0, 7)}`}`}
       />
+
+      <SectionLabel>Start a session</SectionLabel>
+      <Panel>
+        <PanelRow first>
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            {HARNESSES.map((harness) => (
+              <EvButton
+                key={harness}
+                variant="outline"
+                label={start.isPending ? "…" : harness}
+                disabled={start.isPending}
+                onPress={() => fire(harness)}
+                style={{ flex: 1 }}
+              />
+            ))}
+          </View>
+        </PanelRow>
+      </Panel>
 
       <SectionLabel>Sessions</SectionLabel>
       <Panel>
-        {own.map((session, i) => (
-          <SessionRow
-            key={session.id}
-            session={session}
-            first={i === 0}
-            onPress={() => router.push({ pathname: "/session/[id]", params: { id: session.id } })}
-          />
-        ))}
-      </Panel>
-
-      {unreviewed.length > 0 ? (
-        <>
-          <SectionLabel>Changes</SectionLabel>
-          <Panel>
-            {unreviewed.map((session, i) => (
-              <PanelRow key={session.id} first={i === 0}>
-                <View style={{ gap: 4 }}>
-                  <View
-                    style={{
-                      flexDirection: "row",
-                      justifyContent: "space-between",
-                      alignItems: "baseline",
-                      gap: 8,
-                    }}
-                  >
-                    <MonoText tone="faint" size={11}>
-                      worktree vs {project.branch}
-                    </MonoText>
-                    <MonoText tone="muted" size={11}>
-                      {session.change ? changeStats(session.change) : ""}
-                    </MonoText>
-                  </View>
-                  <UiText weight="medium" size={14.5} numberOfLines={2}>
-                    {session.title}
-                  </UiText>
-                  <EvButton
-                    label="Open review"
-                    variant="ghost"
-                    style={{ alignSelf: "flex-start", minHeight: 32, paddingHorizontal: 0 }}
-                    onPress={() =>
-                      router.push({ pathname: "/review/[id]", params: { id: session.id } })
-                    }
-                  />
-                </View>
-              </PanelRow>
-            ))}
-          </Panel>
-        </>
-      ) : null}
-
-      <SectionLabel>Context packs</SectionLabel>
-      <Panel>
-        {project.contextPacks.map((pack, i) => (
-          <PanelRow key={pack.name} first={i === 0}>
-            <View
-              style={{
-                flexDirection: "row",
-                justifyContent: "space-between",
-                alignItems: "baseline",
-                gap: 8,
-              }}
-            >
-              <UiText size={14}>{pack.name}</UiText>
-              <MonoText tone="faint" size={11.5}>
-                {pack.items} items
-              </MonoText>
-            </View>
+        {sessions.length === 0 ? (
+          <PanelRow first>
+            <MonoText tone="faint">no sessions yet — start one above</MonoText>
           </PanelRow>
-        ))}
+        ) : (
+          sessions.map((session, index) => (
+            <SessionRow
+              key={session.id}
+              session={toSession(session, project.name)}
+              detail={session.summary}
+              first={index === 0}
+              onPress={() => router.push({ pathname: "/session/[id]", params: { id: session.id } })}
+            />
+          ))
+        )}
       </Panel>
-
-      <EvButton label="New session" />
     </Screen>
   );
 }

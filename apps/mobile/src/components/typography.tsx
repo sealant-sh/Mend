@@ -5,8 +5,16 @@ import type { ReactNode } from "react";
 import type { StyleProp, TextStyle } from "react-native";
 import { Text } from "react-native";
 
+import { useDisplayPreferences } from "@/data/preferences";
 import type { EvidenceColors } from "@/theme/evidence";
 import { fontFamilies, typeScale, useEvidenceTheme } from "@/theme/evidence";
+
+// Every component below multiplies its size by the user's text scale, so
+// the Settings control reaches all type — including callsites that pass an
+// explicit `size`. Line heights ride the same multiplier.
+export function useTextScale(): number {
+  return useDisplayPreferences().textScale;
+}
 
 export type Tone =
   | "ink"
@@ -52,7 +60,7 @@ interface TextProps {
 /** Display title — Space Grotesk, tight tracking. Page titles only. */
 export function DisplayTitle({ children, tone = "ink", style, numberOfLines }: TextProps) {
   const { colors } = useEvidenceTheme();
-  const size = typeScale.pageTitle.size;
+  const size = typeScale.pageTitle.size * useTextScale();
   return (
     <Text
       {...(numberOfLines === undefined ? {} : { numberOfLines })}
@@ -75,14 +83,15 @@ export function DisplayTitle({ children, tone = "ink", style, numberOfLines }: T
 /** Body prose — Inter 400 at 14.5/1.55. */
 export function BodyText({ children, tone = "ink", style, numberOfLines }: TextProps) {
   const { colors } = useEvidenceTheme();
+  const size = typeScale.body.size * useTextScale();
   return (
     <Text
       {...(numberOfLines === undefined ? {} : { numberOfLines })}
       style={[
         {
           fontFamily: fontFamilies.sans.regular,
-          fontSize: typeScale.body.size,
-          lineHeight: typeScale.body.size * typeScale.body.lineHeight,
+          fontSize: size,
+          lineHeight: size * typeScale.body.lineHeight,
           color: toneColor(colors, tone),
         },
         style,
@@ -103,14 +112,15 @@ export function UiText({
   numberOfLines,
 }: TextProps & { readonly weight?: keyof typeof fontFamilies.sans; readonly size?: number }) {
   const { colors } = useEvidenceTheme();
+  const scaled = size * useTextScale();
   return (
     <Text
       {...(numberOfLines === undefined ? {} : { numberOfLines })}
       style={[
         {
           fontFamily: fontFamilies.sans[weight],
-          fontSize: size,
-          lineHeight: size * 1.4,
+          fontSize: scaled,
+          lineHeight: scaled * 1.4,
           color: toneColor(colors, tone),
         },
         style,
@@ -131,14 +141,15 @@ export function MonoText({
   numberOfLines,
 }: TextProps & { readonly weight?: keyof typeof fontFamilies.mono; readonly size?: number }) {
   const { colors } = useEvidenceTheme();
+  const scaled = size * useTextScale();
   return (
     <Text
       {...(numberOfLines === undefined ? {} : { numberOfLines })}
       style={[
         {
           fontFamily: fontFamilies.mono[weight],
-          fontSize: size,
-          lineHeight: size * 1.5,
+          fontSize: scaled,
+          lineHeight: scaled * 1.5,
           color: toneColor(colors, tone),
         },
         style,
@@ -152,7 +163,7 @@ export function MonoText({
 /** The tiny mono eyebrow — the only uppercase in the system. */
 export function Eyebrow({ children, tone = "label", style }: TextProps) {
   const { colors } = useEvidenceTheme();
-  const size = typeScale.eyebrow.size;
+  const size = typeScale.eyebrow.size * useTextScale();
   return (
     <Text
       style={[

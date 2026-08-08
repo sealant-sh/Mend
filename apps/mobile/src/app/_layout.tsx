@@ -8,12 +8,13 @@ import {
   SpaceGrotesk_600SemiBold,
   SpaceGrotesk_700Bold,
 } from "@expo-google-fonts/space-grotesk";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useFonts } from "expo-font";
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider, useRouter } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { useEffect } from "react";
+import { AppState } from "react-native";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 
 import {
@@ -23,6 +24,11 @@ import {
 import { fontFamilies, useEvidenceTheme } from "@/theme/evidence";
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 1 } } });
+
+// React Native has no window focus: teach React Query that foregrounding IS
+// focus, so every stale query refetches the moment the app comes back —
+// the polls stop serving data from before the phone went to sleep.
+AppState.addEventListener("change", (state) => focusManager.setFocused(state === "active"));
 
 SplashScreen.preventAutoHideAsync();
 configureForegroundPresentation();
@@ -70,7 +76,7 @@ export default function RootLayout() {
     <KeyboardProvider>
       <QueryClientProvider client={queryClient}>
         <ThemeProvider value={navTheme}>
-          <StatusBar style="auto" />
+          <StatusBar style={scheme === "dark" ? "light" : "dark"} />
           <Stack
             screenOptions={{
               headerStyle: { backgroundColor: colors.bg },

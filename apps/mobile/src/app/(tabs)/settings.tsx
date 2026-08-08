@@ -1,8 +1,9 @@
 // Settings — the machine this app steers: server URL + the bearer token the
-// CLI already uses (MEND_TOKEN). Stored on device; nothing else to set up.
+// CLI already uses (MEND_TOKEN), plus how the app reads: theme and text size.
+// Stored on device; nothing else to set up.
 
 import { useEffect, useState } from "react";
-import { TextInput, View } from "react-native";
+import { Pressable, TextInput, View } from "react-native";
 
 import { EvButton } from "@/components/button";
 import { Panel } from "@/components/panel";
@@ -11,10 +12,51 @@ import { StatusWord } from "@/components/status";
 import { MonoText, UiText } from "@/components/typography";
 import { loadConfig, saveConfig } from "@/data/live";
 import { enablePushNotifications } from "@/data/notifications";
+import type { ThemePreference } from "@/data/preferences";
+import { setDisplayPreferences, TEXT_SCALES, useDisplayPreferences } from "@/data/preferences";
 import { radius, useEvidenceTheme } from "@/theme/evidence";
+
+function Segmented<T extends string | number>({
+  value,
+  options,
+  onChange,
+}: {
+  readonly value: T;
+  readonly options: ReadonlyArray<{ readonly value: T; readonly label: string }>;
+  readonly onChange: (next: T) => void;
+}) {
+  const { colors } = useEvidenceTheme();
+  return (
+    <View style={{ flexDirection: "row", gap: 6 }}>
+      {options.map((option) => {
+        const selected = option.value === value;
+        return (
+          <Pressable
+            key={String(option.value)}
+            onPress={() => onChange(option.value)}
+            style={{
+              flex: 1,
+              alignItems: "center",
+              paddingVertical: 8,
+              borderRadius: radius.lg,
+              borderWidth: 1,
+              borderColor: selected ? colors.accent : colors.rule,
+              backgroundColor: selected ? colors.wash : undefined,
+            }}
+          >
+            <UiText size={13} weight="medium" tone={selected ? "accent" : "ink2"}>
+              {option.label}
+            </UiText>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
 
 export default function SettingsScreen() {
   const { colors } = useEvidenceTheme();
+  const display = useDisplayPreferences();
   const [url, setUrl] = useState("");
   const [token, setToken] = useState("");
   const [saved, setSaved] = useState(false);
@@ -130,6 +172,29 @@ export default function SettingsScreen() {
             }}
           />
           <MonoText>Sessions, terminal, and review all ride this one connection.</MonoText>
+        </View>
+      </Panel>
+      <Panel>
+        <View style={{ padding: 16, gap: 12 }}>
+          <UiText>Theme</UiText>
+          <Segmented<ThemePreference>
+            value={display.theme}
+            options={[
+              { value: "system", label: "System" },
+              { value: "light", label: "Light" },
+              { value: "dark", label: "Dark" },
+            ]}
+            onChange={(theme) => setDisplayPreferences({ theme })}
+          />
+          <UiText>Text size</UiText>
+          <Segmented<number>
+            value={display.textScale}
+            options={TEXT_SCALES.map(({ label, value }) => ({ label, value }))}
+            onChange={(textScale) => setDisplayPreferences({ textScale })}
+          />
+          <MonoText>
+            Everything scales with this — conversation, terminal, review. This line previews it.
+          </MonoText>
         </View>
       </Panel>
       <Panel>

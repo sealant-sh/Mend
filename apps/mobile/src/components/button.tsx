@@ -14,12 +14,14 @@ export function EvButton({
   variant = "primary",
   size = "md",
   onPress,
+  disabled = false,
   style,
 }: {
   readonly label: string;
   readonly variant?: ButtonVariant;
   readonly size?: "md" | "sm";
   readonly onPress?: () => void;
+  readonly disabled?: boolean;
   readonly style?: StyleProp<ViewStyle>;
 }) {
   const { colors, shadow } = useEvidenceTheme();
@@ -44,7 +46,14 @@ export function EvButton({
   return (
     <Pressable
       {...(onPress ? { onPress } : {})}
-      style={({ pressed }) => [base, byVariant[variant], pressed && { opacity: 0.82 }, style]}
+      disabled={disabled}
+      style={({ pressed }) => [
+        base,
+        byVariant[variant],
+        pressed && { opacity: 0.82 },
+        disabled && { opacity: 0.45 },
+        style,
+      ]}
     >
       <UiText
         weight="medium"

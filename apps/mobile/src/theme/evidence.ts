@@ -6,6 +6,8 @@ import { evidenceColors, shadows } from "@mend/ui/tokens";
 import { useSyncExternalStore } from "react";
 import { Appearance } from "react-native";
 
+import { useDisplayPreferences } from "@/data/preferences";
+
 export { fontFamilies, radius, spacing, typeScale } from "@mend/ui/tokens";
 export type { EvidenceColors, EvidenceScheme };
 
@@ -28,9 +30,12 @@ function getScheme(): EvidenceScheme {
 
 // useSyncExternalStore rather than RN's useColorScheme: on the statically
 // rendered web build the latter keeps the server's "light" snapshot after
-// hydration; this re-reads the real scheme on client mount.
+// hydration; this re-reads the real scheme on client mount. The user's
+// Settings override wins over the OS scheme when one is set.
 export function useEvidenceScheme(): EvidenceScheme {
-  return useSyncExternalStore(subscribe, getScheme, () => "light");
+  const os = useSyncExternalStore<EvidenceScheme>(subscribe, getScheme, () => "light");
+  const { theme } = useDisplayPreferences();
+  return theme === "system" ? os : theme;
 }
 
 export function useEvidenceTheme(): EvidenceTheme {
