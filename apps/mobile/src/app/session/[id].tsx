@@ -21,8 +21,10 @@ import { StatusWord } from "@/components/status";
 import { DisplayTitle, MonoText, UiText } from "@/components/typography";
 import {
   ACTIVE,
+  canContinue,
   loadConfig,
   toneOf,
+  usePendingFollowUp,
   useSession,
   useSessionActions,
   useTranscript,
@@ -120,7 +122,8 @@ export default function SessionScreen() {
   const change = detail.data?.change ?? null;
   const active = session !== undefined && ACTIVE.has(session.status);
   const transcript = useTranscript(id, active);
-  const { resume, stop } = useSessionActions();
+  const followUp = usePendingFollowUp(id).data ?? null;
+  const { resume, stop, continueFollowUp } = useSessionActions();
   const [draft, setDraft] = useState("");
   const [pendingSends, setPendingSends] = useState<
     ReadonlyArray<{ readonly id: number; readonly text: string }>
@@ -247,10 +250,24 @@ export default function SessionScreen() {
                   }
                 />
               )}
+              {!active && followUp !== null && canContinue(session.harness) && (
+                <EvButton
+                  size="sm"
+                  label={continueFollowUp.isPending ? "delivering…" : "Deliver follow-up"}
+                  disabled={continueFollowUp.isPending}
+                  onPress={() =>
+                    continueFollowUp.mutate({
+                      sessionId: session.id,
+                      harness: session.harness,
+                      instruction: followUp.instruction,
+                    })
+                  }
+                />
+              )}
               {!active && (
                 <EvButton
                   size="sm"
-                  variant={change === null ? "primary" : "outline"}
+                  variant={change === null && followUp === null ? "primary" : "outline"}
                   label={resume.isPending ? "resuming…" : "Resume"}
                   onPress={() => resume.mutate({ sessionId: session.id, harness: null })}
                 />

@@ -295,6 +295,30 @@ export const useAdoptProject = () => {
   });
 };
 
+export interface FollowUpDto {
+  readonly id: string;
+  readonly sessionId: string;
+  readonly instruction: string;
+  readonly status: string;
+}
+
+/** How each harness takes an instruction as its opening prompt (the CLI's table). */
+const CONTINUE_ARGV: Record<string, (instruction: string) => ReadonlyArray<string>> = {
+  codex: (instruction) => ["codex", instruction],
+  claude: (instruction) => ["claude", instruction],
+  opencode: (instruction) => ["opencode", "run", instruction],
+};
+
+export const canContinue = (harness: string): boolean => CONTINUE_ARGV[harness] !== undefined;
+
+export const usePendingFollowUp = (sessionId: string | undefined) =>
+  useQuery({
+    queryKey: ["session", sessionId, "follow-up"],
+    enabled: sessionId !== undefined,
+    refetchInterval: 10_000,
+    queryFn: () => api<FollowUpDto | null>("GET", `/sessions/${sessionId}/follow-up`),
+  });
+
 export const useSessionActions = () => {
   const queryClient = useQueryClient();
   const invalidate = () => queryClient.invalidateQueries();
@@ -322,5 +346,25 @@ export const useSessionActions = () => {
     mutationFn: (sessionId: string) => api<SessionDto>("POST", `/sessions/${sessionId}/stop`, {}),
     onSettled: invalidate,
   });
-  return { start, resume, stop };
+  // `mend continue` parity: deliver the pending follow-up (reopens the
+  // session), then relaunch the harness in the same worktree with the
+  // instruction as its opening prompt.
+  const continueFollowUp = useMutation({
+    mutationFn: async (input: {
+      readonly sessionId: string;
+      readonly harness: string;
+      readonly instruction: string;
+    }) => {
+      const build = CONTINUE_ARGV[input.harness];
+      if (build === undefined) {
+        throw new ApiError(`harness "${input.harness}" has no known resume command`, 0);
+      }
+      await api<FollowUpDto>("POST", `/sessions/${input.sessionId}/follow-up/deliver`, {});
+      return await api<SessionDto>("POST", `/sessions/${input.sessionId}/launch`, {
+        argv: build(input.instruction),
+      });
+    },
+    onSettled: invalidate,
+  });
+  return { start, resume, stop, continueFollowUp };
 };
