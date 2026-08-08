@@ -1,6 +1,6 @@
-// The page's entire message, shared by both stylings (/ and /2): the claim,
-// the five capabilities, the three how-it-works beats, and the install line.
-// Variants restyle; they never reword.
+// The page's entire message: the claim, the five capabilities, and the
+// install line. Layout lives in page.tsx and
+// screens.tsx; the words live here.
 
 import { Check, Copy, SunMoon } from "lucide-react";
 import { type ReactNode, useState } from "react";
@@ -9,7 +9,6 @@ import { GitHubLogo } from "#/components/github";
 import { MendMark } from "#/components/logo";
 
 export const REPO_URL = "https://github.com/sealant-sh/mend";
-export const PLATFORM_SITE_URL = "https://sealant.dev";
 export const INSTALL_COMMAND = "curl -fsSL https://mend.sealant.dev/install.sh | sh";
 
 export const HEADLINE = "Run your TUI agents anywhere you want";
@@ -60,45 +59,6 @@ export const FEATURES: ReadonlyArray<{ title: string; body: ReactNode }> = [
       <>
         Scrub a session's record and promote what mattered into the project's context store as named
         packs. Inject it anytime.
-      </>
-    ),
-  },
-];
-
-export const HOW_IT_WORKS: ReadonlyArray<{ title: string; body: ReactNode }> = [
-  {
-    title: "The binary",
-    body: (
-      <>
-        <Cmd>mend</Cmd> runs on your machine. It adopts a repo into the central store, gives each
-        session its worktree, and serves the web and phone apps.
-      </>
-    ),
-  },
-  {
-    title: "The containers",
-    body: (
-      <>
-        Sessions run in containers managed by{" "}
-        <a
-          href={PLATFORM_SITE_URL}
-          target="_blank"
-          rel="noreferrer"
-          className="text-foreground underline decoration-[var(--sw-rule)] underline-offset-2 transition-colors hover:decoration-current"
-        >
-          Sealant
-        </a>
-        , the platform underneath. Each container mounts the session's worktree; the harness runs
-        inside, unchanged.
-      </>
-    ),
-  },
-  {
-    title: "The record",
-    body: (
-      <>
-        Every session is recorded as it runs. Web and phone attach to the same record, so scrollback
-        and review follow you between devices — and any session can be replayed.
       </>
     ),
   },

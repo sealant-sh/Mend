@@ -1,5 +1,4 @@
-// The five product screens and their long-form explanations, shared by the
-// full-screen-modal variant (/5) and the tour variant (/6). The screens are
+// The five product screens and their long-form explanations. The screens are
 // drawn from apps/web's real pages (session · project · review), deliberately
 // more finished than today's build — they are the design target the web app
 // works back toward.

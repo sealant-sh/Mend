@@ -1,8 +1,10 @@
-// VARIANT /4 — the tour: one tab per capability, a big stage below showing
-// the active feature's story and exhibit. Auto-advances via the active tab's
-// CSS progress line (advance on animationend — no timers, no effects), with a
-// pause control. Markup lives here rather than in routes/4.tsx because
-// Tailwind's source scanner skips digit-named files.
+// THE PAGE — one screen, no pitch: a tight masthead (claim + install line),
+// a tab per capability, and a stage that carries the whole story — copy on
+// the left, a polished product screen on the right. The tour auto-advances
+// via the active tab's CSS progress line (advance on animationend — no
+// timers, no effects), with a pause control; clicking a tab jumps. The
+// winner of a six-variant exploration (see the previous commit for the
+// alternatives).
 
 import { motion, MotionConfig } from "framer-motion";
 import {
@@ -19,13 +21,12 @@ import { type ComponentType, useState } from "react";
 import {
   FEATURES,
   HEADLINE,
-  HOW_IT_WORKS,
   InstallCommand,
   PageHeader,
   SUBLINE,
   TRUST_LINE,
 } from "#/components/content";
-import { DETAILS } from "#/components/details";
+import { AppFrame, EXPLAIN, SCREENS } from "#/components/screens";
 
 type IconType = ComponentType<{ className?: string }>;
 
@@ -38,7 +39,7 @@ const TABS: ReadonlyArray<{ label: string; icon: IconType }> = [
   { label: "Context packs", icon: Layers },
 ];
 
-export function MarketingPageTour() {
+export function MarketingPage() {
   const [active, setActive] = useState(0);
   const [paused, setPaused] = useState(false);
 
@@ -52,22 +53,25 @@ export function MarketingPageTour() {
 
         <PageHeader />
 
-        <div className="relative mx-auto flex w-full max-w-[1200px] grow flex-col justify-center gap-4 px-6 py-2 sm:px-8">
-          <section className="mend-rise text-center">
-            <h1 className="font-display text-[2.6rem] leading-[1.04] font-semibold tracking-[-0.025em] text-balance text-foreground sm:text-[3.25rem]">
+        <div className="relative mx-auto flex w-full max-w-[1200px] grow flex-col justify-center gap-3 px-6 py-2 sm:px-8">
+          {/* The masthead — the hero, shifted up to a single tight block. */}
+          <section className="mend-rise shrink-0 text-center">
+            <h1 className="font-display text-3xl leading-[1.06] font-semibold tracking-[-0.025em] text-balance text-foreground sm:text-4xl">
               {HEADLINE}
             </h1>
-            <p className="mx-auto mt-3 max-w-[52ch] text-lg leading-relaxed text-muted-foreground">
-              {SUBLINE}
-            </p>
-            <div className="mt-4 flex flex-col items-center gap-3">
+            <div className="mt-2.5 flex flex-wrap items-center justify-center gap-x-5 gap-y-2">
+              <p className="text-[15px] leading-relaxed text-balance text-muted-foreground">
+                {SUBLINE}
+              </p>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center justify-center gap-x-5 gap-y-3">
               <InstallCommand />
               <p className="font-mono text-xs text-faint">{TRUST_LINE}</p>
             </div>
           </section>
 
           <section aria-label="Capabilities" className="mend-rise [animation-delay:0.1s]">
-            <div className="flex items-center gap-2">
+            <div className="flex shrink-0 items-center gap-2">
               <div
                 className="grid flex-1 grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5"
                 role="tablist"
@@ -117,12 +121,16 @@ export function MarketingPageTour() {
               </button>
             </div>
 
-            {/* All five panels stay mounted, stacked in one grid cell, so the
-                stage is permanently as tall as its tallest tab — switching
-                crossfades without moving anything else on the page. */}
-            <div className="relative mt-3 grid overflow-hidden rounded-3xl bg-panel p-5 shadow-[var(--shadow-lg)] sm:px-6">
-              {FEATURES.map(({ title }, i) => {
-                const d = DETAILS[i];
+            {/* The stage: /5's modal interior, permanently open. All five
+                panels stay mounted in one grid cell — no layout shift. */}
+            {/* Capped, not full-bleed: tall enough for the screen to read as
+                real, short enough that the page still breathes. */}
+            {/* Sized by subtraction: the viewport minus everything above it
+                (header + hero + tabs ≈ 22.5rem), so the stage takes all the
+                real leftover and the small remainder centers the column. */}
+            <div className="relative mt-3 grid h-[clamp(26rem,calc(100dvh-22.5rem),36rem)] overflow-hidden rounded-3xl bg-[var(--sw-bg)] shadow-[var(--shadow-lg)]">
+              {FEATURES.map(({ title, body }, i) => {
+                const screen = SCREENS[i];
                 return (
                   <motion.div
                     key={title}
@@ -130,38 +138,35 @@ export function MarketingPageTour() {
                     animate={{ opacity: active === i ? 1 : 0, y: active === i ? 0 : 10 }}
                     transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
                     aria-hidden={active !== i}
-                    className={`grid items-start gap-6 [grid-area:1/1] md:grid-cols-[minmax(0,1fr)_minmax(0,26rem)] md:gap-10 ${
+                    className={`grid h-full min-h-0 [grid-area:1/1] lg:grid-cols-[minmax(0,23rem)_minmax(0,1fr)] ${
                       active === i ? "" : "pointer-events-none"
                     }`}
                   >
-                    <div className="min-w-0">
+                    {/* The short claim leads; the product story follows. The
+                        deeper technical paragraph lives on /5, where the
+                        full-screen modal has room for it. */}
+                    <div className="flex min-h-0 flex-col justify-center overflow-hidden px-7 py-5 sm:px-8">
                       <p className="font-mono text-xs text-faint">
-                        0{i + 1} / 0{TABS.length}
+                        0{i + 1} / 0{FEATURES.length}
                       </p>
-                      <h2 className="mt-2 font-display text-xl font-semibold tracking-[-0.01em] text-foreground sm:text-2xl">
+                      <h2 className="mt-2.5 font-display text-2xl leading-snug font-semibold tracking-[-0.015em] text-foreground">
                         {title}
                       </h2>
-                      <p className="mt-3 text-sm leading-relaxed text-foreground/90">{d?.detail}</p>
+                      <p className="mt-3.5 text-[14.5px] leading-relaxed text-foreground/90">
+                        {body}
+                      </p>
+                      <p className="mt-3 text-[14.5px] leading-relaxed text-muted-foreground">
+                        {EXPLAIN[i]}
+                      </p>
                     </div>
-                    <div className="min-w-0">
-                      <p className="ev-eyebrow">{d?.exampleTitle}</p>
-                      <div className="mt-2.5">{d?.example}</div>
-                    </div>
+                    {screen ? (
+                      <div className="min-h-0 p-4 pl-0 max-lg:hidden">
+                        <AppFrame url={screen.url} screen={screen.node} />
+                      </div>
+                    ) : null}
                   </motion.div>
                 );
               })}
-            </div>
-          </section>
-
-          <section aria-label="How it works" className="mend-rise [animation-delay:0.2s]">
-            <p className="ev-eyebrow">How it works</p>
-            <div className="mt-3 grid gap-6 border-t border-[var(--sw-soft-rule)] pt-4 lg:grid-cols-3 lg:gap-8">
-              {HOW_IT_WORKS.map(({ title, body }) => (
-                <div key={title}>
-                  <h2 className="font-sans text-sm font-semibold text-foreground">{title}</h2>
-                  <p className="mt-1.5 text-[13px] leading-relaxed text-muted-foreground">{body}</p>
-                </div>
-              ))}
             </div>
           </section>
         </div>
