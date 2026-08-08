@@ -3,7 +3,7 @@
 // more finished than today's build — they are the design target the web app
 // works back toward.
 
-import { type ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 
 import { Cmd } from "#/components/content";
 import { MendMark } from "#/components/logo";
@@ -222,25 +222,137 @@ function TermPane({
   );
 }
 
-function TLine({
-  tone = "out",
-  children,
-}: {
-  tone?: "cmd" | "out" | "dim" | "ok";
-  children?: ReactNode;
-}) {
-  if (tone === "cmd") {
-    return (
-      <span className="block whitespace-pre">
-        <span className="text-[#5c5c66] select-none">$ </span>
-        <span className="text-[#e8e8ec]">{children}</span>
-      </span>
-    );
-  }
-  const color =
-    tone === "dim" ? "text-[#5c5c66]" : tone === "ok" ? "text-[#7fbf95]" : "text-[#b9b9c0]";
-  return <span className={`block whitespace-pre ${color}`}>{children}</span>;
+/** One step of a self-driving terminal script. */
+type TermStep =
+  | { readonly kind: "cmd"; readonly text: string }
+  | { readonly kind: "out" | "dim" | "ok" | "live"; readonly text: string; readonly delay?: number }
+  | { readonly kind: "pause"; readonly ms: number };
+
+const TERM_COLOR = {
+  out: "text-[#b9b9c0]",
+  dim: "text-[#5c5c66]",
+  ok: "text-[#7fbf95]",
+} as const;
+
+/** A muted line whose final word reads green — "… · recording". */
+function LiveText({ text }: { text: string }) {
+  const cut = text.lastIndexOf(" ");
+  return (
+    <>
+      <span className="text-[#b9b9c0]">{text.slice(0, cut + 1)}</span>
+      <span className="text-[#7fbf95]">{text.slice(cut + 1)}</span>
+    </>
+  );
 }
+
+/**
+ * The terminal drives itself: commands type character by character, output
+ * arrives after a beat, then the scene holds and loops. The whole machine is
+ * CSS animations chained on animationend — the site types, never the user.
+ */
+export function TermScript({ steps }: { steps: ReadonlyArray<TermStep> }) {
+  const [cycle, setCycle] = useState(0);
+  const [idx, setIdx] = useState(0);
+  const advance = () => {
+    if (idx + 1 < steps.length) {
+      setIdx(idx + 1);
+    } else {
+      setIdx(0);
+      setCycle((c) => c + 1);
+    }
+  };
+
+  return (
+    <div key={cycle}>
+      {steps.slice(0, idx + 1).map((step, i) => {
+        const active = i === idx;
+        if (step.kind === "pause") {
+          return active ? (
+            <span
+              key={i}
+              className="mend-timer block h-0"
+              style={{ "--timer": `${step.ms}ms` } as React.CSSProperties}
+              onAnimationEnd={advance}
+              aria-hidden="true"
+            />
+          ) : null;
+        }
+        if (step.kind === "cmd") {
+          return (
+            <span key={i} className="block whitespace-pre">
+              <span className="text-[#5c5c66] select-none">$ </span>
+              {active ? (
+                <>
+                  <span
+                    className="mend-type text-[#e8e8ec]"
+                    style={
+                      {
+                        "--type-w": `${step.text.length}ch`,
+                        "--type-steps": step.text.length,
+                        "--type-dur": `${step.text.length * 42}ms`,
+                      } as React.CSSProperties
+                    }
+                    onAnimationEnd={advance}
+                  >
+                    {step.text}
+                  </span>
+                  <span className="mend-caret text-[#e8e8ec]" aria-hidden="true">
+                    ▍
+                  </span>
+                </>
+              ) : (
+                <span className="text-[#e8e8ec]">{step.text}</span>
+              )}
+            </span>
+          );
+        }
+        const body =
+          step.kind === "live" ? (
+            <LiveText text={step.text} />
+          ) : (
+            <span className={TERM_COLOR[step.kind]}>{step.text}</span>
+          );
+        return (
+          <span
+            key={i}
+            className={active ? "mend-appear block whitespace-pre" : "block whitespace-pre"}
+            style={
+              active
+                ? ({ animationDelay: `${step.delay ?? 350}ms` } as React.CSSProperties)
+                : undefined
+            }
+            onAnimationEnd={active ? advance : undefined}
+          >
+            {body}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+const SESSION_SCRIPT: ReadonlyArray<TermStep> = [
+  { kind: "cmd", text: "mend claude" },
+  { kind: "live", text: "session 01J8QK4M · recording", delay: 420 },
+  { kind: "dim", text: "  [ Claude Code runs here, unchanged ]", delay: 480 },
+  { kind: "pause", ms: 600 },
+  { kind: "out", text: "› round half-cents at the invoice boundary", delay: 250 },
+  { kind: "dim", text: "  editing src/billing/total.ts…", delay: 650 },
+  { kind: "ok", text: "✓ checkpoint 41 · seq 4021", delay: 750 },
+  { kind: "pause", ms: 2600 },
+];
+
+const CONTINUE_SCRIPT: ReadonlyArray<TermStep> = [
+  { kind: "cmd", text: "mend codex" },
+  { kind: "dim", text: "  [ Codex worked here — 41 checkpoints ]", delay: 500 },
+  { kind: "dim", text: "detached — the session kept running", delay: 600 },
+  { kind: "pause", ms: 700 },
+  { kind: "cmd", text: "mend claude --continue 01j8qkpt" },
+  { kind: "dim", text: "  replaying scrollback…", delay: 420 },
+  { kind: "out", text: "same worktree, same record — Claude picks up", delay: 700 },
+  { kind: "ok", text: "✓ context snapshot 7 · unchanged across harnesses", delay: 600 },
+  { kind: "pause", ms: 2800 },
+];
 
 function ListRow({
   primary,
@@ -270,17 +382,51 @@ function ListRow({
   );
 }
 
-function PhoneFrame({ children }: { children: ReactNode }) {
+export function PhoneFrame({
+  children,
+  dark = false,
+  large = false,
+}: {
+  children: ReactNode;
+  dark?: boolean;
+  large?: boolean;
+}) {
   return (
-    <div className="w-[10.5rem] rotate-2 rounded-[1.5rem] border border-rule bg-panel p-1.5 shadow-[var(--shadow-xl)]">
-      <div className="mx-auto mb-1 h-1 w-8 rounded-full bg-[var(--sw-rule)]" aria-hidden="true" />
-      <div className="overflow-hidden rounded-[1.05rem] bg-[#16161a] px-3 py-2.5 font-mono text-[0.62rem] leading-[1.9]">
+    <div
+      className={`${large ? "w-[11rem]" : "w-[8.5rem]"} shrink-0 rounded-[1.9rem] bg-[#17171a] p-[5px] shadow-[var(--shadow-xl)]`}
+    >
+      <div
+        className={`relative flex ${large ? "h-[22.5rem]" : "h-[17rem]"} flex-col overflow-hidden rounded-[1.5rem] ${dark ? "bg-[#101013]" : "bg-[var(--sw-bg)]"}`}
+      >
+        <div className="relative z-10 flex shrink-0 items-center justify-between px-3 pt-1.5 pb-1">
+          <span
+            className={`font-mono text-[7.5px] font-medium ${dark ? "text-[#b9b9c0]" : "text-foreground"}`}
+          >
+            09:41
+          </span>
+          <span
+            className="absolute top-1.5 left-1/2 h-[10px] w-9 -translate-x-1/2 rounded-full bg-[#0c0c0f]"
+            aria-hidden="true"
+          />
+          <span className="flex items-end gap-[1px]" aria-hidden="true">
+            {[2, 3, 4, 5].map((h) => (
+              <span
+                key={h}
+                className={`w-[1.5px] rounded-[0.5px] ${dark ? "bg-[#b9b9c0]" : "bg-[#3b3b40]"}`}
+                style={{ height: h }}
+              />
+            ))}
+          </span>
+        </div>
         {children}
+        <div
+          className={`pointer-events-none absolute bottom-1 left-1/2 z-10 h-0.5 w-9 -translate-x-1/2 rounded-full ${dark ? "bg-[#3a3a42]" : "bg-[#1b1b1d]/70"}`}
+          aria-hidden="true"
+        />
       </div>
     </div>
   );
 }
-
 // ── the five product screens ────────────────────────────────────────────────
 
 export const SCREENS: ReadonlyArray<{ url: string; node: ReactNode }> = [
@@ -318,20 +464,7 @@ export const SCREENS: ReadonlyArray<{ url: string; node: ReactNode }> = [
                 </p>
               </>
             }
-            lines={
-              <>
-                <TLine tone="cmd">mend claude</TLine>
-                <TLine>
-                  session 01J8QK4M · <span className="text-[#7fbf95]">recording</span>
-                </TLine>
-                <TLine tone="dim"> </TLine>
-                <TLine tone="dim"> [ Claude Code runs here, unchanged ]</TLine>
-                <TLine tone="dim"> </TLine>
-                <TLine>› round half-cents at the invoice boundary</TLine>
-                <TLine tone="dim"> editing src/billing/total.ts…</TLine>
-                <TLine tone="ok">✓ checkpoint 41 · seq 4021</TLine>
-              </>
-            }
+            lines={<TermScript steps={SESSION_SCRIPT} />}
           />
           <div className="flex min-w-0 flex-col gap-3 max-lg:hidden">
             <RailCard label="Checkpoints">
@@ -356,17 +489,6 @@ export const SCREENS: ReadonlyArray<{ url: string; node: ReactNode }> = [
               />
             </RailCard>
           </div>
-        </div>
-        {/* Over the terminal's corner, not the rail — the phone shows the
-            same screen, so it reads best sitting on it. */}
-        <div className="absolute right-[13.75rem] -bottom-2 max-xl:right-4">
-          <PhoneFrame>
-            <TLine tone="cmd">mend claude</TLine>
-            <TLine>
-              01J8QK4M · <span className="text-[#7fbf95]">recording</span>
-            </TLine>
-            <TLine tone="dim">[ the same screen ]</TLine>
-          </PhoneFrame>
         </div>
       </div>
     ),
@@ -397,21 +519,7 @@ export const SCREENS: ReadonlyArray<{ url: string; node: ReactNode }> = [
               record r_01J8QKPT · settled — replay from any checkpoint
             </p>
           }
-          lines={
-            <>
-              <TLine tone="cmd">mend codex</TLine>
-              <TLine tone="dim"> [ Codex worked here — 41 checkpoints ]</TLine>
-              <TLine tone="dim">detached — the session kept running</TLine>
-              <TLine tone="dim"> </TLine>
-              <TLine tone="cmd">mend claude --continue 01j8qkpt</TLine>
-              <TLine tone="dim"> replaying scrollback…</TLine>
-              <TLine>
-                <span className="text-[#e8e8ec]">same worktree, same record</span> — Claude picks up
-                where Codex stopped
-              </TLine>
-              <TLine tone="ok">✓ context snapshot 7 · unchanged across harnesses</TLine>
-            </>
-          }
+          lines={<TermScript steps={CONTINUE_SCRIPT} />}
         />
       </div>
     ),

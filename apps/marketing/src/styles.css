@@ -99,13 +99,97 @@
 .mend-tab-progress {
   animation: mend-tab-progress 7s linear both;
 }
+/* Terminal-demo primitives: a command types itself (steps() over ch width),
+   output lines reveal after a beat, an invisible timer paces the script.
+   Each chains to the next on animationend — no JS timers. Deliberately NOT
+   in the reduced-motion kill list: killing them would freeze the script's
+   state machine mid-scene; the motion itself is terminal-typical. */
+@keyframes mend-type {
+  from {
+    width: 0;
+  }
+  to {
+    width: var(--type-w);
+  }
+}
+
+.mend-type {
+  display: inline-block;
+  overflow: hidden;
+  vertical-align: bottom;
+  white-space: pre;
+  animation: mend-type var(--type-dur) steps(var(--type-steps)) both;
+}
+
+@keyframes mend-appear {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.mend-appear {
+  animation: mend-appear 0.18s ease-out both;
+}
+
+@keyframes mend-timer {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+.mend-timer {
+  animation: mend-timer var(--timer) linear both;
+}
+
+/* Character-strip animations: a stack of 1em-tall frames behind a 1em window.
+   The spinner loops its ten braille frames; the counter steps once per second
+   and its end resolves the spinner (animationend chains the script). */
+@keyframes mend-strip {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(var(--strip-shift));
+  }
+}
+
+.mend-strip-loop {
+  animation: mend-strip var(--strip-dur) steps(var(--strip-steps)) infinite;
+}
+
+.mend-strip-once {
+  animation: mend-strip var(--strip-dur) steps(var(--strip-steps)) both;
+}
+
+@keyframes mend-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.mend-caret {
+  animation: mend-blink 1.1s steps(1) infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
   }
   .mend-rise,
   .mend-status-running,
-  .mend-tab-progress {
+  .mend-tab-progress,
+  .mend-caret {
     animation: none;
   }
 }
