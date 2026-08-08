@@ -57,10 +57,19 @@ export class Auth extends Context.Service<
         basePath: "/api/auth",
         emailAndPassword: { enabled: true },
         plugins: [bearer()],
-        // APP_URL is authoritative; the two extras cover both local entry
-        // points (vite dev on 3101, the Effect server itself on 3105) so a
-        // dev instance never rejects its own origin.
-        trustedOrigins: [baseUrl, "http://localhost:3101", "http://localhost:3105"],
+        // APP_URL is authoritative; the localhost pair covers both local entry
+        // points (vite dev on 3101, the Effect server itself on 3105) so a dev
+        // instance never rejects its own origin. The tailnet addresses are how
+        // the operator reaches this machine from a phone.
+        trustedOrigins: [
+          baseUrl,
+          "http://localhost:3101",
+          "http://localhost:3105",
+          "http://100.126.133.49:3101",
+          "http://100.126.133.49:3105",
+          "http://192.168.1.245:3101",
+          "http://192.168.1.245:3105",
+        ],
       });
 
       const handler = Effect.fn("Auth.handler")((request: Request) =>
