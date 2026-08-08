@@ -513,6 +513,17 @@ A session started outside Mend cannot be assumed to have complete evidence. Impo
 session history may be supported later, but the first version should be honest about the boundary:
 complete records begin when the process is launched or attached through Sealant.
 
+### PTY-first, reaffirmed (decided 2026-08-09)
+
+Examined against t3code, which drives every harness over a structured protocol (agent SDK,
+`codex app-server` JSON-RPC, ACP) and reserves the PTY for a user shell. Mend deliberately stays
+PTY-first: the unmodified interactive harness in a recorded PTY is the product identity — any agent
+works, and the recorded TUI session is the evidence trail. Consequences accepted: composer sends to
+a TUI must keep the body and the Enter keypress as separate PTY writes (a combined write trips
+harness paste-burst heuristics), and richer turn/approval/resume semantics stay where §7.2 already
+places them — optional provider-specific adapters layered on top, never a replacement for the PTY
+path.
+
 ## 7.3 Local review and diff
 
 The diff viewer must be good enough to use instead of opening a pull request solely for review.

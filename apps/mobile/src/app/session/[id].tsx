@@ -10,12 +10,13 @@
 
 import { LegendList } from "@legendapp/list/react-native";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { StyleSheet, TextInput, View } from "react-native";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Pressable, StyleSheet, TextInput, View } from "react-native";
 import { KeyboardStickyView, useKeyboardState } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { EvButton } from "@/components/button";
+import { MendMarkdown } from "@/components/markdown";
 import { StatusWord } from "@/components/status";
 import { DisplayTitle, MonoText, UiText } from "@/components/typography";
 import {
@@ -27,6 +28,7 @@ import {
   useTranscript,
   type TranscriptEventDto,
 } from "@/data/live";
+import { useTtySocket } from "@/data/tty-socket";
 import { radius, spacing, useEvidenceTheme } from "@/theme/evidence";
 
 interface FeedEntry {
@@ -67,10 +69,11 @@ const EventRow = memo(
     }
     if (event.kind === "assistant" && event.text !== null) {
       // Full-bleed prose on the sheet — the report needs width, not a card.
+      // Rendered as real markdown: harness output is markdown-shaped.
       return (
-        <UiText size={15} style={{ lineHeight: 23, paddingHorizontal: 2 }}>
-          {event.text}
-        </UiText>
+        <View style={{ paddingHorizontal: 2 }}>
+          <MendMarkdown>{event.text}</MendMarkdown>
+        </View>
       );
     }
     if (event.kind === "reasoning" && event.text !== null) {
@@ -128,7 +131,6 @@ export default function SessionScreen() {
   const lastInvalidate = useRef(0);
   const [base, setBase] = useState<{ url: string; token: string } | null>(null);
   const [composerHeight, setComposerHeight] = useState(64);
-  const wsRef = useRef<WebSocket | null>(null);
   const transcriptRef = useRef<(() => Promise<unknown>) | null>(null);
   transcriptRef.current = transcript.refetch;
 
@@ -136,42 +138,38 @@ export default function SessionScreen() {
     void loadConfig().then((config) => setBase({ url: config.url, token: config.token }));
   }, []);
 
-  useEffect(() => {
-    if (base === null || !active || session === undefined) return;
-    const url = new URL(`${base.url}/api/tty`);
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    url.searchParams.set("session", session.id);
-    url.searchParams.set("from", "0");
-    url.searchParams.set("token", base.token);
-    const ws = new WebSocket(url.toString());
-    ws.binaryType = "arraybuffer";
-    wsRef.current = ws;
-    // PTY bytes are the live signal: the harness is doing something. Surface
-    // it immediately (working indicator) and pull the transcript at most
-    // once a second while activity flows — turns land as they happen.
-    ws.addEventListener("message", (event) => {
-      if (typeof event.data === "string") return;
-      setWorking(true);
-      if (workingTimer.current !== null) clearTimeout(workingTimer.current);
-      workingTimer.current = setTimeout(() => setWorking(false), 2_500);
-      const now = Date.now();
-      if (now - lastInvalidate.current > 1_000) {
-        lastInvalidate.current = now;
-        void transcriptRef.current?.();
-      }
-    });
-    return () => {
-      wsRef.current = null;
-      if (workingTimer.current !== null) clearTimeout(workingTimer.current);
-      ws.close();
-    };
-  }, [base, active, session?.id]);
+  // PTY bytes are the live signal: the harness is doing something. Surface
+  // it immediately (working indicator) and pull the transcript at most
+  // once a second while activity flows — turns land as they happen. The
+  // supervised socket owns reconnection; this screen only reads phase.
+  const onBinary = useCallback(() => {
+    setWorking(true);
+    if (workingTimer.current !== null) clearTimeout(workingTimer.current);
+    workingTimer.current = setTimeout(() => setWorking(false), 2_500);
+    const now = Date.now();
+    if (now - lastInvalidate.current > 1_000) {
+      lastInvalidate.current = now;
+      void transcriptRef.current?.();
+    }
+  }, []);
+  const tty = useTtySocket({
+    serverUrl: base?.url ?? null,
+    token: base?.token ?? null,
+    sessionId: session?.id,
+    enabled: active,
+    onBinary,
+  });
 
   const send = () => {
-    const socket = wsRef.current;
     const text = draft.trim();
-    if (socket === null || socket.readyState !== WebSocket.OPEN || text === "") return;
-    socket.send(JSON.stringify({ t: "input", data: `${draft}\r` }));
+    if (text === "") return;
+    // Body and Enter must be separate PTY writes. One write delivers the
+    // whole burst to the harness in a single read, and Claude/Codex TUIs
+    // classify that as a paste — a \r inside a paste becomes a literal
+    // newline in the prompt buffer instead of a submit. A lone trailing \r
+    // (never \n: that is Ctrl+J to a raw-mode TUI) is unambiguous Enter.
+    if (!tty.send(text)) return;
+    setTimeout(() => void tty.send("\r"), 100);
     pendingSeq.current += 1;
     setPendingSends((current) => [...current, { id: pendingSeq.current, text }]);
     setWorking(true);
@@ -322,6 +320,24 @@ export default function SessionScreen() {
             style={{ position: "absolute", bottom: 0, left: 0, right: 0 }}
             offset={{ closed: 0, opened: 0 }}
           >
+            {!tty.canSend && (
+              // The socket is down or still opening: say so instead of letting
+              // Send silently no-op. Tapping skips the remaining backoff.
+              <Pressable
+                onPress={tty.retryNow}
+                style={{
+                  alignItems: "center",
+                  paddingVertical: 4,
+                  backgroundColor: colors.sunken,
+                }}
+              >
+                <MonoText tone="faint" size={11}>
+                  {tty.phase === "reconnecting"
+                    ? "reconnecting… (tap to retry now)"
+                    : "connecting to the session…"}
+                </MonoText>
+              </Pressable>
+            )}
             <View
               onLayout={(event) => setComposerHeight(event.nativeEvent.layout.height)}
               style={{
@@ -356,7 +372,7 @@ export default function SessionScreen() {
                   fontSize: 15,
                 }}
               />
-              <EvButton label="Send" onPress={send} />
+              <EvButton label="Send" onPress={send} disabled={!tty.canSend} />
             </View>
           </KeyboardStickyView>
         )}

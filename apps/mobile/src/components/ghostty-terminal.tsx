@@ -1,18 +1,21 @@
 // The native terminal: a libghostty surface (vendored from pingdotgg/t3code,
 // MIT — see modules/t3-terminal/THIRD_PARTY_NOTICES.md) fed by the SAME
-// /api/tty WebSocket every Mend surface uses. The JS contract is tiny:
-// the surface emits input {data} and resize {cols,rows}; remote PTY output
-// rides the buffer prop and the native side feeds only the appended suffix.
+// /api/tty WebSocket every Mend surface uses — now through the supervised
+// socket hook, so a dropped link reconnects itself instead of freezing the
+// surface. Each reconnect replays the PTY record from 0; the buffer restarts
+// on the new generation and the native side rebuilds from the fresh prefix.
 // When the installed binary lacks the native module (Expo Go, stale build),
 // the WebView terminal takes over — the app never loses its terminal.
 
 import { requireNativeView } from "expo";
 import type { ComponentType } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { NativeSyntheticEvent, ViewProps } from "react-native";
-import { View } from "react-native";
+import { Pressable, View } from "react-native";
 import { WebView } from "react-native-webview";
 
+import { MonoText, useTextScale } from "@/components/typography";
+import { useTtySocket } from "@/data/tty-socket";
 import { useEvidenceTheme } from "@/theme/evidence";
 
 interface TerminalInputEvent {
@@ -72,6 +75,9 @@ const decodeLatin1 = (bytes: Uint8Array): string => {
   return out;
 };
 
+const makeDecoder = (): TextDecoder | null =>
+  typeof TextDecoder === "undefined" ? null : new TextDecoder();
+
 export function GhosttyTerminal({
   serverUrl,
   token,
@@ -89,51 +95,60 @@ export function GhosttyTerminal({
 }) {
   const Native = nativeTerminalView();
   const { scheme, colors } = useEvidenceTheme();
+  const textScale = useTextScale();
   const [buffer, setBuffer] = useState("");
-  const wsRef = useRef<WebSocket | null>(null);
 
-  useEffect(() => {
-    if (Native === null) return;
-    const url = new URL(`${serverUrl}/api/tty`);
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    url.searchParams.set("session", sessionId);
-    url.searchParams.set("from", "0");
-    url.searchParams.set("token", token);
-    const ws = new WebSocket(url.toString());
-    ws.binaryType = "arraybuffer";
-    wsRef.current = ws;
-    registerSend?.((data) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ t: "input", data }));
+  // Coalesce PTY bursts to one React commit per frame: a busy harness emits
+  // dozens of WebSocket frames per screen frame, and a setState per frame
+  // of output is exactly the re-render storm that made the terminal crawl.
+  // Chunks accumulate in a ref; one rAF flushes them into state, and the
+  // native side feeds only the appended suffix.
+  const pendingRef = useRef("");
+  const flushHandle = useRef<number | null>(null);
+  const decoderRef = useRef<TextDecoder | null>(makeDecoder());
+  const generationRef = useRef(0);
+  const restartRef = useRef(false);
+
+  const flush = useCallback(() => {
+    flushHandle.current = null;
+    if (pendingRef.current === "" && !restartRef.current) return;
+    const chunk = pendingRef.current;
+    pendingRef.current = "";
+    if (restartRef.current) {
+      // A fresh connection replays from 0 — replace, never append.
+      restartRef.current = false;
+      setBuffer(trimBuffer(chunk));
+      return;
+    }
+    setBuffer((current) => trimBuffer(current + chunk));
+  }, []);
+
+  const onBinary = useCallback(
+    (data: ArrayBuffer, generation: number) => {
+      if (generation !== generationRef.current) {
+        generationRef.current = generation;
+        pendingRef.current = "";
+        restartRef.current = true;
+        decoderRef.current = makeDecoder();
       }
-    });
-    const decoder = typeof TextDecoder === "undefined" ? null : new TextDecoder();
-    // Coalesce PTY bursts to one React commit per frame: a busy harness emits
-    // dozens of WebSocket frames per screen frame, and a setState per frame
-    // of output is exactly the re-render storm that made the terminal crawl.
-    // Chunks accumulate in a ref; one rAF flushes them into state, and the
-    // native side feeds only the appended suffix.
-    let pending = "";
-    let flushHandle: number | null = null;
-    const flush = () => {
-      flushHandle = null;
-      if (pending === "") return;
-      const chunk = pending;
-      pending = "";
-      setBuffer((current) => trimBuffer(current + chunk));
-    };
-    ws.addEventListener("message", (event) => {
-      if (typeof event.data === "string") return; // control frames ({"t":"end"})
-      const bytes = new Uint8Array(event.data as ArrayBuffer);
-      pending += decoder !== null ? decoder.decode(bytes, { stream: true }) : decodeLatin1(bytes);
-      flushHandle ??= requestAnimationFrame(flush);
-    });
-    return () => {
-      wsRef.current = null;
-      if (flushHandle !== null) cancelAnimationFrame(flushHandle);
-      ws.close();
-    };
-  }, [Native, serverUrl, token, sessionId]);
+      const bytes = new Uint8Array(data);
+      pendingRef.current +=
+        decoderRef.current !== null
+          ? decoderRef.current.decode(bytes, { stream: true })
+          : decodeLatin1(bytes);
+      flushHandle.current ??= requestAnimationFrame(flush);
+    },
+    [flush],
+  );
+
+  const tty = useTtySocket({
+    serverUrl,
+    token,
+    sessionId,
+    enabled: Native !== null,
+    onBinary,
+  });
+  registerSend?.((data) => void tty.send(data));
 
   if (Native === null) {
     // Binary without the native module — the WebView terminal still works.
@@ -161,32 +176,36 @@ export function GhosttyTerminal({
         style={{ flex: 1 }}
         terminalKey={sessionId}
         initialBuffer={buffer}
-        fontSize={12.5}
+        fontSize={12.5 * textScale}
         autoFocus
         appearanceScheme={scheme}
         themeConfig={`${themeConfig}\n`}
         backgroundColor={colors.panel}
         foregroundColor={colors.ink}
         onInput={(event) => {
-          const socket = wsRef.current;
-          if (socket !== null && socket.readyState === WebSocket.OPEN) {
-            const data = transformInput?.(event.nativeEvent.data) ?? event.nativeEvent.data;
-            socket.send(JSON.stringify({ t: "input", data }));
-          }
+          const data = transformInput?.(event.nativeEvent.data) ?? event.nativeEvent.data;
+          tty.send(data);
         }}
-        onResize={(event) => {
-          const socket = wsRef.current;
-          if (socket !== null && socket.readyState === WebSocket.OPEN) {
-            socket.send(
-              JSON.stringify({
-                t: "resize",
-                cols: event.nativeEvent.cols,
-                rows: event.nativeEvent.rows,
-              }),
-            );
-          }
-        }}
+        onResize={(event) => tty.resize(event.nativeEvent.cols, event.nativeEvent.rows)}
       />
+      {(tty.phase === "reconnecting" || tty.phase === "ended") && (
+        <Pressable
+          onPress={tty.phase === "reconnecting" ? tty.retryNow : undefined}
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            alignItems: "center",
+            paddingVertical: 4,
+            backgroundColor: colors.sunken,
+          }}
+        >
+          <MonoText tone="faint" size={11}>
+            {tty.phase === "ended" ? "session settled" : "reconnecting… (tap to retry now)"}
+          </MonoText>
+        </Pressable>
+      )}
     </View>
   );
 }
