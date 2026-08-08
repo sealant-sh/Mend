@@ -1,5 +1,13 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-router";
+import type { ErrorComponentProps } from "@tanstack/react-router";
+import {
+  CatchBoundary,
+  createRootRoute,
+  HeadContent,
+  Outlet,
+  Scripts,
+  useLocation,
+} from "@tanstack/react-router";
 
 import { queryClient } from "#/lib/queries";
 
@@ -22,7 +30,31 @@ export const Route = createRootRoute({
   component: RootComponent,
 });
 
+// One boundary above every page: a single failing query (one unreachable
+// project, one expired session) degrades to this screen instead of a blank
+// document. The reset key is the pathname, so navigating away recovers.
+function RouteError({ error, reset }: ErrorComponentProps) {
+  return (
+    <main className="mx-auto max-w-lg px-6 py-24">
+      <p className="font-mono text-[11px] tracking-wider text-faint uppercase">
+        this page failed to load
+      </p>
+      <p className="mt-3 font-mono text-[12.5px] break-words text-muted-foreground">
+        {error instanceof Error ? error.message : String(error)}
+      </p>
+      <button
+        type="button"
+        onClick={reset}
+        className="mt-6 rounded-xl border border-border bg-card px-3 py-1.5 font-sans text-xs font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5"
+      >
+        Try again
+      </button>
+    </main>
+  );
+}
+
 function RootComponent() {
+  const pathname = useLocation({ select: (location) => location.pathname });
   return (
     <html lang="en">
       <head>
@@ -30,7 +62,9 @@ function RootComponent() {
       </head>
       <body className="min-h-screen bg-background font-sans text-foreground">
         <QueryClientProvider client={queryClient}>
-          <Outlet />
+          <CatchBoundary getResetKey={() => pathname} errorComponent={RouteError}>
+            <Outlet />
+          </CatchBoundary>
         </QueryClientProvider>
         <Scripts />
       </body>

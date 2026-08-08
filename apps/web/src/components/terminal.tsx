@@ -12,7 +12,15 @@ import { useEffect, useRef, useState } from "react";
  * (terminal, fit addon, socket, observers) and tears it all down together.
  */
 
-type WireState = "connecting" | "live" | "settled" | "disconnected" | "unavailable";
+type WireState = "connecting" | "live" | "reconnecting" | "settled";
+
+// The reconnect discipline mirrors the mobile tty hook (patterns from
+// t3code's connection supervisor, MIT — pingdotgg/t3code): a fixed ladder,
+// reset once the link proves stable, immediate retry on window focus. The
+// terminal instance survives reconnects — only the socket is replaced, and
+// the screen resets because the server replays the record from 0.
+const LADDER_MS = [3_000, 4_000, 8_000, 16_000] as const;
+const STABLE_AFTER_MS = 30_000;
 
 /** Resolve a CSS custom property so xterm's JS theme follows the app theme. */
 const cssVar = (name: string, fallback: string): string => {
@@ -63,63 +71,105 @@ export function SessionTerminal({
       term.open(element);
       fit.fit();
 
-      const url = new URL("/api/tty", window.location.origin);
-      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-      url.searchParams.set("session", sessionId);
-      url.searchParams.set("from", "0");
-      if (token !== undefined && token !== "") url.searchParams.set("token", token);
-      const ws = new WebSocket(url);
-      ws.binaryType = "arraybuffer";
+      let ws: WebSocket | null = null;
+      let timer: number | null = null;
+      let attempt = 0;
+      let connectedAt: number | null = null;
+      let settled = false;
+      let disposed = false;
 
       const sendResize = () => {
-        if (ws.readyState === WebSocket.OPEN) {
+        if (ws !== null && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ t: "resize", cols: term.cols, rows: term.rows }));
         }
       };
 
-      let settled = false;
-      ws.addEventListener("open", () => {
-        setState("live");
-        sendResize();
-        term.focus();
-      });
-      ws.addEventListener("message", (event) => {
-        if (typeof event.data === "string") {
-          try {
-            const frame = JSON.parse(event.data) as { readonly t?: string };
-            if (frame.t === "end") {
-              settled = true;
-              setState("settled");
-            }
-          } catch {
-            // Unknown text frame — ignore.
-          }
-          return;
-        }
-        term.write(new Uint8Array(event.data as ArrayBuffer));
-      });
-      ws.addEventListener("close", () => {
-        setState((current) => {
-          if (settled || current === "settled") return "settled";
-          return current === "connecting" ? "unavailable" : "disconnected";
+      const connect = () => {
+        if (disposed || settled) return;
+        setState(attempt === 0 ? "connecting" : "reconnecting");
+        const url = new URL("/api/tty", window.location.origin);
+        url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+        url.searchParams.set("session", sessionId);
+        url.searchParams.set("from", "0");
+        if (token !== undefined && token !== "") url.searchParams.set("token", token);
+        const socket = new WebSocket(url);
+        socket.binaryType = "arraybuffer";
+        ws = socket;
+
+        socket.addEventListener("open", () => {
+          if (disposed || socket !== ws) return;
+          connectedAt = Date.now();
+          // The server replays from 0 — the screen is replaced, not appended.
+          term.reset();
+          setState("live");
+          sendResize();
+          term.focus();
         });
-      });
+        socket.addEventListener("message", (event) => {
+          if (disposed || socket !== ws) return;
+          if (typeof event.data === "string") {
+            try {
+              const frame = JSON.parse(event.data) as { readonly t?: string };
+              if (frame.t === "end") {
+                settled = true;
+                setState("settled");
+              }
+            } catch {
+              // Unknown text frame — ignore.
+            }
+            return;
+          }
+          term.write(new Uint8Array(event.data as ArrayBuffer));
+        });
+        socket.addEventListener("close", () => {
+          if (disposed || socket !== ws) return;
+          ws = null;
+          if (settled) {
+            setState("settled");
+            return;
+          }
+          if (connectedAt !== null && Date.now() - connectedAt >= STABLE_AFTER_MS) attempt = 0;
+          connectedAt = null;
+          const delay = LADDER_MS[Math.min(attempt, LADDER_MS.length - 1)];
+          attempt += 1;
+          setState("reconnecting");
+          timer = window.setTimeout(connect, delay);
+        });
+      };
+
+      // Coming back to the tab is the moment the user notices a dead link:
+      // skip whatever backoff remains and try immediately.
+      const onFocus = () => {
+        if (disposed || settled) return;
+        if (ws !== null && ws.readyState === WebSocket.OPEN) return;
+        if (timer !== null) {
+          window.clearTimeout(timer);
+          timer = null;
+        }
+        attempt = 0;
+        connect();
+      };
+      window.addEventListener("focus", onFocus);
 
       const encoder = new TextEncoder();
       const onData = term.onData((data) => {
-        if (ws.readyState === WebSocket.OPEN) {
+        if (ws !== null && ws.readyState === WebSocket.OPEN) {
           ws.send(new Uint8Array(encoder.encode(data)).buffer);
         }
       });
       const onResize = term.onResize(() => sendResize());
       const observer = new ResizeObserver(() => fit.fit());
       observer.observe(element);
+      connect();
 
       return () => {
+        disposed = true;
+        window.removeEventListener("focus", onFocus);
+        if (timer !== null) window.clearTimeout(timer);
         observer.disconnect();
         onData.dispose();
         onResize.dispose();
-        ws.close();
+        ws?.close();
         term.dispose();
       };
     };
@@ -137,8 +187,7 @@ export function SessionTerminal({
         <p className="border-t border-rule-faint px-4 py-2 font-mono text-[11.5px] text-faint">
           {state === "connecting" && "connecting…"}
           {state === "settled" && "session settled — the terminal is closed; the record remains"}
-          {state === "disconnected" && "connection dropped — reload to reattach"}
-          {state === "unavailable" && "terminal unavailable — the session has no live PTY"}
+          {state === "reconnecting" && "connection lost — reconnecting automatically"}
         </p>
       )}
     </div>

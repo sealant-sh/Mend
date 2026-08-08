@@ -553,3 +553,20 @@ export const createFollowUp = (sessionId: string, instruction: string) =>
 
 export const pendingFollowUp = (sessionId: string) =>
   request<FollowUpDto | null>(`/api/sessions/${sessionId}/follow-up`);
+
+/** Marks the pending follow-up delivered and reopens the session. */
+export const deliverFollowUp = (sessionId: string) =>
+  post<FollowUpDto>(`/api/sessions/${sessionId}/follow-up/deliver`, {});
+
+/**
+ * How each harness takes an instruction as its opening prompt — the same
+ * table the CLI's `mend continue` uses. Null: no known resume command.
+ */
+export const continueArgv = (harness: string, instruction: string): ReadonlyArray<string> | null =>
+  harness === "codex"
+    ? ["codex", instruction]
+    : harness === "claude"
+      ? ["claude", instruction]
+      : harness === "opencode"
+        ? ["opencode", "run", instruction]
+        : null;

@@ -3,6 +3,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { WorkbenchDiff } from "#/components/diff";
+import { FollowUpBanner } from "#/components/follow-up";
 import { AppShell } from "#/components/shell";
 import {
   createFollowUp,
@@ -83,12 +84,7 @@ function ChangePage() {
             session
           </Link>
         </p>
-        {followUp !== null && (
-          <p className="mt-3 font-mono text-xs text-warning">
-            follow-up pending — resume the session with{" "}
-            <span className="text-ink-2">mend continue</span> in a terminal
-          </p>
-        )}
+        <FollowUpBanner sessionId={change.sessionId} followUp={followUp} />
 
         <div className="mt-8 grid items-start gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
           {/* The sidebar owns navigation AND the change-level comment surface —
@@ -267,9 +263,11 @@ function SendReviewDialog({
               Follow-up saved for the session
             </p>
             <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-              The session picks it up next time it runs — from a terminal:{" "}
-              <span className="font-mono text-xs text-ink-2">mend continue</span>. The comments in
-              the bundle are marked sent; they stay open until the work addresses them.
+              Deliver it with the <span className="font-medium">Deliver &amp; relaunch</span> button
+              on this page or the session page (or{" "}
+              <span className="font-mono text-xs text-ink-2">mend continue</span> from a terminal).
+              The comments in the bundle are marked sent; they stay open until the work addresses
+              them.
             </p>
             <div className="mt-4 flex justify-end">
               <button

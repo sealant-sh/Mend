@@ -2,6 +2,7 @@ import { useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useCallback, useState } from "react";
 
+import { FollowUpBanner } from "#/components/follow-up";
 import { AppShell } from "#/components/shell";
 import { SessionStatusDot } from "#/components/status";
 import { SessionTerminal } from "#/components/terminal";
@@ -76,12 +77,7 @@ function SessionPage() {
             checkpoints, and review are live
           </p>
         )}
-        {followUp !== null && (
-          <p className="mt-3 font-mono text-xs text-warning">
-            follow-up pending — resume this session with{" "}
-            <span className="text-ink-2">mend continue</span> in a terminal
-          </p>
-        )}
+        <FollowUpBanner sessionId={sessionId} followUp={followUp} />
 
         <div className="mt-6 flex flex-wrap items-center gap-3">
           {change !== null && (
