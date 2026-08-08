@@ -1,13 +1,18 @@
-import { useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useCallback, useState } from "react";
+import { useState } from "react";
 
 import { FollowUpBanner } from "#/components/follow-up";
 import { AppShell } from "#/components/shell";
 import { SessionStatusDot } from "#/components/status";
 import { SessionTerminal } from "#/components/terminal";
-import { checkpointSession, resumeSession, stopSession, type WorkbenchEventDto } from "#/lib/api";
-import { pendingFollowUpQuery, queryClient, sessionDetailQuery } from "#/lib/queries";
+import { checkpointSession, resumeSession, stopSession, type TranscriptEventDto } from "#/lib/api";
+import {
+  pendingFollowUpQuery,
+  queryClient,
+  sessionDetailQuery,
+  sessionTranscriptQuery,
+} from "#/lib/queries";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 
 export const Route = createFileRoute("/sessions/$sessionId")({
@@ -20,23 +25,72 @@ export const Route = createFileRoute("/sessions/$sessionId")({
 
 const ACTIVE = new Set(["starting", "running", "waiting", "idle"]);
 
+function TranscriptEvent({ event }: { readonly event: TranscriptEventDto }) {
+  if (event.kind === "user" && event.text !== null) {
+    return (
+      <div className="ml-auto max-w-[85%] rounded-xl bg-secondary px-3.5 py-2.5">
+        <p className="text-[13.5px] leading-relaxed whitespace-pre-wrap text-foreground">
+          {event.text}
+        </p>
+      </div>
+    );
+  }
+  if (event.kind === "assistant" && event.text !== null) {
+    return (
+      <p className="text-[13.5px] leading-relaxed whitespace-pre-wrap text-ink-2">{event.text}</p>
+    );
+  }
+  if (event.kind === "reasoning" && event.text !== null) {
+    return <p className="line-clamp-2 font-mono text-[11px] text-faint">{event.text}</p>;
+  }
+  if (event.kind === "tool") {
+    return (
+      <div className="rounded-lg bg-secondary px-3 py-2">
+        <p className="font-mono text-[11.5px] text-ink-2">
+          {event.command !== null ? `$ ${event.command}` : `⚙ ${event.name ?? "tool"}`}
+        </p>
+        {event.output !== null && event.output !== "" && (
+          <p className="mt-1 line-clamp-3 font-mono text-[10.5px] whitespace-pre-wrap text-faint">
+            {event.output}
+          </p>
+        )}
+      </div>
+    );
+  }
+  return null;
+}
+
+/** The durable record, conversation-shaped — what the ephemeral SSE lines could never replay. */
+function TranscriptPane({ sessionId }: { readonly sessionId: string }) {
+  const transcript = useQuery(sessionTranscriptQuery(sessionId));
+  if (transcript.isLoading) {
+    return <p className="p-4 font-mono text-xs text-faint">reading the record…</p>;
+  }
+  const events = transcript.data?.events ?? [];
+  if (events.length === 0) {
+    return (
+      <p className="p-4 font-mono text-xs text-faint">
+        {transcript.isError
+          ? "the record could not be read — it stays on the platform"
+          : "no conversation recorded — open the change for the reviewed diff"}
+      </p>
+    );
+  }
+  return (
+    <div className="flex max-h-[480px] flex-col gap-2.5 overflow-y-auto p-4">
+      {events.map((event, index) => (
+        <TranscriptEvent key={index} event={event} />
+      ))}
+    </div>
+  );
+}
+
 function SessionPage() {
   const { sessionId } = Route.useParams();
   const { session, checkpoints, change } = useSuspenseQuery(sessionDetailQuery(sessionId)).data;
   const followUp = useSuspenseQuery(pendingFollowUpQuery(sessionId)).data;
-  const [lines, setLines] = useState<ReadonlyArray<string>>([]);
   const [pending, setPending] = useState<"stop" | "checkpoint" | "resume" | null>(null);
-
-  const onEvent = useCallback(
-    (event: WorkbenchEventDto) => {
-      if (event.type === "session-progress" && event.sessionId === sessionId) {
-        const line = `${event.sequence ?? ""}  ${event.line ?? ""}`;
-        setLines((current) => [...current.slice(-199), line]);
-      }
-    },
-    [sessionId],
-  );
-  useWorkbenchEvents(onEvent);
+  useWorkbenchEvents();
 
   const act = (kind: "stop" | "checkpoint") => {
     setPending(kind);
@@ -173,24 +227,16 @@ function SessionPage() {
                     <p className="font-mono text-[11.5px] text-muted-foreground">
                       {session.sealantRunId === null
                         ? "no record — the session was not supervised"
-                        : `run ${session.sealantRunId}`}
+                        : `run ${session.sealantRunId} · the durable record`}
                     </p>
                   </div>
-                  <div className="max-h-[480px] overflow-y-auto p-4">
-                    {lines.length === 0 ? (
-                      <p className="font-mono text-xs text-faint">
-                        {session.sealantRunId === null
-                          ? "Progress appears here once sessions launch supervised."
-                          : "The session is settled — open the change for the reviewed diff."}
-                      </p>
-                    ) : (
-                      lines.map((line, index) => (
-                        <p key={index} className="font-mono text-xs leading-6 text-ink-2">
-                          {line}
-                        </p>
-                      ))
-                    )}
-                  </div>
+                  {session.sealantRunId === null ? (
+                    <p className="p-4 font-mono text-xs text-faint">
+                      Progress appears here once sessions launch supervised.
+                    </p>
+                  ) : (
+                    <TranscriptPane sessionId={sessionId} />
+                  )}
                 </div>
               </>
             )}
