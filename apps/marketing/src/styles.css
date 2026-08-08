@@ -84,12 +84,28 @@
   animation: mend-status-pulse 1.8s ease-in-out infinite;
 }
 
+/* The /4 tour: the active tab's cobalt line fills over the dwell time; the
+   variant advances on animationend. Reduced motion kills the animation, which
+   also stops the auto-advance — tabs then only change by hand. */
+@keyframes mend-tab-progress {
+  from {
+    width: 0%;
+  }
+  to {
+    width: 100%;
+  }
+}
+
+.mend-tab-progress {
+  animation: mend-tab-progress 7s linear both;
+}
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
   }
   .mend-rise,
-  .mend-status-running {
+  .mend-status-running,
+  .mend-tab-progress {
     animation: none;
   }
 }

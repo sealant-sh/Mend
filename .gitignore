@@ -16,5 +16,6 @@ npm-debug.log*
 .env.production
 
 .wrangler/
+.tanstack/
 **/routeTree.gen.ts
 **/worker-configuration.d.ts
