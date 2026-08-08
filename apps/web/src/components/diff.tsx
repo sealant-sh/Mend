@@ -7,6 +7,7 @@ import {
 import { FileDiff } from "@pierre/diffs/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { CommentStateActions } from "#/components/comment-state";
 import { postChangeComment, type ReviewCommentDto } from "#/lib/api";
 import { queryClient } from "#/lib/queries";
 
@@ -379,13 +380,16 @@ export const lineLabel = (line: number | null, endLine: number | null) =>
 
 function InlineComment({ comment }: { readonly comment: ReviewCommentDto }) {
   return (
-    <div className="mx-4 my-2 rounded-xl border border-border bg-background p-3 font-sans shadow-xs">
+    <div
+      className={`mx-4 my-2 rounded-xl border border-border bg-background p-3 font-sans shadow-xs ${comment.state === "dismissed" ? "opacity-60" : ""}`}
+    >
       <p className="font-mono text-[10.5px] text-label">
         {comment.authorKind === "mend" ? "Mend" : comment.authorName} · line{" "}
         {lineLabel(comment.line, comment.endLine)} ·{" "}
         {comment.sentToSessionId === null ? comment.state : "sent to session"}
       </p>
       <p className="mt-1 text-[13.5px] leading-relaxed text-ink-2">{comment.body}</p>
+      <CommentStateActions comment={comment} />
     </div>
   );
 }

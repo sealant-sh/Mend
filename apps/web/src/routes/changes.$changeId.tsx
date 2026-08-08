@@ -2,6 +2,7 @@ import { useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
 
+import { CommentStateActions } from "#/components/comment-state";
 import { WorkbenchDiff } from "#/components/diff";
 import { FollowUpBanner } from "#/components/follow-up";
 import { AppShell } from "#/components/shell";
@@ -165,12 +166,16 @@ function ChangeComments({
       <p className="text-xs font-medium text-label">Change-level comments</p>
       <div className="mt-3 flex max-h-56 flex-col gap-3 overflow-y-auto">
         {changeLevel.map((comment) => (
-          <div key={comment.id} className="rounded-xl bg-card p-3 shadow-xs">
+          <div
+            key={comment.id}
+            className={`rounded-xl bg-card p-3 shadow-xs ${comment.state === "dismissed" ? "opacity-60" : ""}`}
+          >
             <p className="font-mono text-[10.5px] text-label">
               {comment.authorKind === "mend" ? "Mend" : comment.authorName} ·{" "}
               {comment.sentToSessionId === null ? comment.state : "sent to session"}
             </p>
             <p className="mt-1.5 text-[13.5px] leading-relaxed text-ink-2">{comment.body}</p>
+            <CommentStateActions comment={comment} />
           </div>
         ))}
         <div className="rounded-xl bg-card p-3 shadow-xs">

@@ -488,5 +488,22 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
           state: "open",
         });
       }),
+    )
+    .handle("commentState", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const comments = yield* ReviewCommentsRepo;
+        const existing = yield* comments
+          .byId(params.commentId)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.commentId })));
+        // The comment must anchor to the change in the path — ids are not
+        // interchangeable across changes.
+        if (existing.changeId !== params.id) {
+          return yield* Effect.fail(new NotFound({ id: params.commentId }));
+        }
+        yield* comments.setState(params.commentId, payload.state);
+        return yield* comments
+          .byId(params.commentId)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.commentId })));
+      }),
     ),
 );

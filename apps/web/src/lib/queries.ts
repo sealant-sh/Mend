@@ -11,6 +11,7 @@ import {
   projectMounts,
   projectReferences,
   sessionDetail,
+  sessionTranscript,
 } from "#/lib/api";
 
 /**
@@ -83,4 +84,10 @@ export const pendingFollowUpQuery = (sessionId: string) =>
   queryOptions({
     queryKey: ["session", sessionId, "follow-up"],
     queryFn: () => pendingFollowUp(sessionId),
+  });
+
+export const sessionTranscriptQuery = (sessionId: string) =>
+  queryOptions({
+    queryKey: ["session", sessionId, "transcript"],
+    queryFn: () => sessionTranscript(sessionId),
   });

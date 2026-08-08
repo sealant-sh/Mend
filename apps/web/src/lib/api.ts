@@ -558,6 +558,31 @@ export const pendingFollowUp = (sessionId: string) =>
 export const deliverFollowUp = (sessionId: string) =>
   post<FollowUpDto>(`/api/sessions/${sessionId}/follow-up/deliver`, {});
 
+/** A reviewer's disposition on an existing comment (draft is machine-only). */
+export const setCommentState = (
+  changeId: string,
+  commentId: string,
+  state: "open" | "addressed" | "dismissed",
+) => post<ReviewCommentDto>(`/api/changes/${changeId}/comments/${commentId}/state`, { state });
+
+/** One conversation event of the canonical session record. */
+export interface TranscriptEventDto {
+  readonly kind: string;
+  readonly text: string | null;
+  readonly name: string | null;
+  readonly command: string | null;
+  readonly output: string | null;
+}
+
+export interface SessionTranscriptDto {
+  readonly sourceHarness: string;
+  readonly events: ReadonlyArray<TranscriptEventDto>;
+}
+
+/** The durable record, conversation-shaped — survives reloads, unlike SSE lines. */
+export const sessionTranscript = (id: string) =>
+  request<SessionTranscriptDto>(`/api/sessions/${id}/transcript`);
+
 /**
  * How each harness takes an instruction as its opening prompt — the same
  * table the CLI's `mend continue` uses. Null: no known resume command.

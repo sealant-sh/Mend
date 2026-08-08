@@ -11,6 +11,7 @@ import {
   ProjectId,
   ProjectMountId,
   ReferenceId,
+  ReviewCommentId,
   Run,
   RunId,
   SessionId,
@@ -522,6 +523,16 @@ export class NewReviewCommentRequest extends Schema.Class<NewReviewCommentReques
   body: Schema.String,
 }) {}
 
+/**
+ * A reviewer's disposition on an existing comment. `draft` is absent by
+ * design — it belongs to Mend-authored findings and is machine-set only.
+ */
+export class SetCommentStateRequest extends Schema.Class<SetCommentStateRequest>(
+  "SetCommentStateRequest",
+)({
+  state: Schema.Literals(["open", "addressed", "dismissed"]),
+}) {}
+
 const sessionChangesGroup = HttpApiGroup.make("sessionChanges")
   .add(
     HttpApiEndpoint.get("diff", "/changes/:id/diff", {
@@ -541,6 +552,14 @@ const sessionChangesGroup = HttpApiGroup.make("sessionChanges")
     HttpApiEndpoint.post("comment", "/changes/:id/comments", {
       params: { id: ChangeId },
       payload: NewReviewCommentRequest,
+      success: ReviewComment,
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("commentState", "/changes/:id/comments/:commentId/state", {
+      params: { id: ChangeId, commentId: ReviewCommentId },
+      payload: SetCommentStateRequest,
       success: ReviewComment,
       error: NotFound,
     }),
