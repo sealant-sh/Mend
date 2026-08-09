@@ -10,8 +10,10 @@ import {
   createSession,
   launchSession,
   refreshReference,
+  removeProject,
   removeProjectMount,
   removeReference,
+  removeSession,
   selectProjectReferences,
 } from "#/lib/api";
 import {
@@ -36,6 +38,8 @@ export const Route = createFileRoute("/projects/$projectId")({
   component: ProjectPage,
 });
 
+const LIVE_STATES = new Set(["starting", "running", "waiting", "idle"]);
+
 /** How each harness launches — mirrors the CLI's map; the server records either way. */
 const HARNESSES: ReadonlyArray<{ readonly name: string; readonly argv: ReadonlyArray<string> }> = [
   { name: "claude", argv: ["claude"] },
@@ -48,7 +52,42 @@ function ProjectPage() {
   const { project, sessions, annotations } = useSuspenseQuery(projectDetailQuery(projectId)).data;
   const navigate = useNavigate();
   const [starting, setStarting] = useState<string | null>(null);
+  const [clearing, setClearing] = useState<"idle" | "armed" | "working">("idle");
+  const [removing, setRemoving] = useState<"idle" | "armed" | "working">("idle");
+  const [leftoverNote, setLeftoverNote] = useState<string | null>(null);
   useWorkbenchEvents();
+
+  const settled = sessions.filter((session) => !LIVE_STATES.has(session.status));
+
+  /** Second click executes — destructive actions confirm explicitly (plan §15). */
+  const clearSettled = () => {
+    if (clearing === "idle") {
+      setClearing("armed");
+      return;
+    }
+    if (clearing !== "armed") return;
+    setClearing("working");
+    void Promise.allSettled(settled.map((session) => removeSession(session.id))).finally(() => {
+      setClearing("idle");
+      void queryClient.invalidateQueries({ queryKey: ["project", projectId] });
+    });
+  };
+
+  const remove = () => {
+    if (removing === "idle") {
+      setRemoving("armed");
+      return;
+    }
+    if (removing !== "armed") return;
+    setRemoving("working");
+    void removeProject(projectId)
+      .then((report) => {
+        if (report.leftover !== null) setLeftoverNote(report.leftover);
+        void queryClient.invalidateQueries();
+        return navigate({ to: "/projects" });
+      })
+      .catch(() => setRemoving("idle"));
+  };
 
   /**
    * Fire a session from here: create the row, kick the supervised launch, and
@@ -87,6 +126,21 @@ function ProjectPage() {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-xs font-medium text-label">Sessions</p>
             <div className="flex items-center gap-2">
+              {settled.length > 0 && (
+                <button
+                  type="button"
+                  disabled={clearing === "working"}
+                  onClick={clearSettled}
+                  onBlur={() => setClearing((current) => (current === "armed" ? "idle" : current))}
+                  className={`font-sans text-xs font-medium transition-colors ${clearing === "armed" ? "text-warning" : "text-muted-foreground hover:text-foreground"} disabled:opacity-50`}
+                >
+                  {clearing === "working"
+                    ? "Clearing…"
+                    : clearing === "armed"
+                      ? `Really delete ${settled.length} settled session${settled.length === 1 ? "" : "s"}?`
+                      : "Clear settled"}
+                </button>
+              )}
               <span className="text-xs text-label">start a session:</span>
               {HARNESSES.map((harness) => (
                 <button
@@ -162,6 +216,33 @@ function ProjectPage() {
         <ReferencesSection projectId={projectId} />
 
         <MountsSection projectId={projectId} />
+
+        <section className="mt-12 border-t border-rule-faint pt-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="font-mono text-xs text-faint">
+              Removing this project stops its live sessions, deletes its sessions and reviews, and
+              removes the store copy. The origin repository is untouched.
+            </p>
+            <button
+              type="button"
+              disabled={removing === "working"}
+              onClick={remove}
+              onBlur={() => setRemoving((current) => (current === "armed" ? "idle" : current))}
+              className={`shrink-0 rounded-xl border px-3 py-1.5 font-sans text-xs font-medium shadow-xs transition-colors disabled:opacity-50 ${removing === "armed" ? "border-[var(--sw-red)] text-[var(--sw-red)]" : "border-border bg-card text-muted-foreground hover:text-foreground"}`}
+            >
+              {removing === "working"
+                ? "Removing…"
+                : removing === "armed"
+                  ? "Really remove project and store copy?"
+                  : "Remove project…"}
+            </button>
+          </div>
+          {leftoverNote !== null && (
+            <p className="mt-2 font-mono text-xs text-warning">
+              some files would not delete (container-owned) — remaining at {leftoverNote}
+            </p>
+          )}
+        </section>
       </div>
     </AppShell>
   );

@@ -265,6 +265,19 @@ export class ProjectDetail extends Schema.Class<ProjectDetail>("ProjectDetail")(
   annotations: Schema.Array(SessionAnnotation),
 }) {}
 
+/** The outcome of a destructive removal — what went, what would not. */
+export class RemovalReport extends Schema.Class<RemovalReport>("RemovalReport")({
+  removed: Schema.Boolean,
+  leftover: Schema.NullOr(Schema.String),
+}) {}
+
+/** Deleting a live session is refused — stop it first. */
+export class SessionActive extends Schema.TaggedErrorClass<SessionActive>()(
+  "SessionActive",
+  { id: Schema.String },
+  { httpApiStatus: 409 },
+) {}
+
 const projectsGroup = HttpApiGroup.make("projects")
   .add(HttpApiEndpoint.get("list", "/projects", { success: Schema.Array(Project) }))
   .add(
@@ -278,6 +291,16 @@ const projectsGroup = HttpApiGroup.make("projects")
     HttpApiEndpoint.get("detail", "/projects/:id", {
       params: { id: ProjectId },
       success: ProjectDetail,
+      error: NotFound,
+    }),
+  )
+  .add(
+    // Removal stops the project's live sessions, deletes every row under it,
+    // and removes the store copy. `leftover` reports a path that would not
+    // delete (container-uid files) — honesty over a false clean.
+    HttpApiEndpoint.delete("remove", "/projects/:id", {
+      params: { id: ProjectId },
+      success: RemovalReport,
       error: NotFound,
     }),
   )
@@ -440,6 +463,23 @@ const sessionsGroup = HttpApiGroup.make("sessions")
     HttpApiEndpoint.get("detail", "/sessions/:id", {
       params: { id: SessionId },
       success: SessionDetail,
+      error: NotFound,
+    }),
+  )
+  .add(
+    // Settled sessions only — a live one answers 409; stop it first. Takes
+    // the worktree with it; checkpoints' refs survive in the bare repo.
+    HttpApiEndpoint.delete("remove", "/sessions/:id", {
+      params: { id: SessionId },
+      success: RemovalReport,
+      error: Schema.Union([NotFound, SessionActive]),
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("label", "/sessions/:id/label", {
+      params: { id: SessionId },
+      payload: Schema.Struct({ label: Schema.NullOr(Schema.String) }),
+      success: Session,
       error: NotFound,
     }),
   )

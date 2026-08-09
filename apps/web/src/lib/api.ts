@@ -339,6 +339,23 @@ export interface ChangeStatsDto {
 
 export const changeStats = (id: string) => request<ChangeStatsDto>(`/api/changes/${id}/stats`);
 
+/** The outcome of a destructive removal — what went, what would not delete. */
+export interface RemovalReportDto {
+  readonly removed: boolean;
+  readonly leftover: string | null;
+}
+
+const del = <A>(path: string) => request<A>(path, { method: "DELETE" });
+
+/** Stops live sessions, deletes every row under the project, removes the store copy. */
+export const removeProject = (id: string) => del<RemovalReportDto>(`/api/projects/${id}`);
+
+/** Settled sessions only — a live one answers 409. Takes the worktree with it. */
+export const removeSession = (id: string) => del<RemovalReportDto>(`/api/sessions/${id}`);
+
+export const setSessionLabel = (id: string, label: string | null) =>
+  post<SessionDto>(`/api/sessions/${id}/label`, { label });
+
 export interface CheckpointDto {
   readonly id: string;
   readonly sessionId: string;

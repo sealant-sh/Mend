@@ -31,6 +31,8 @@ export class ProjectsRepo extends Context.Service<
     readonly byId: (id: ProjectId) => Effect.Effect<Project, ProjectNotFoundError>;
     readonly byName: (name: string) => Effect.Effect<Project | null>;
     readonly list: () => Effect.Effect<ReadonlyArray<Project>>;
+    /** Hard delete — sessions and everything under them cascade. */
+    readonly remove: (id: ProjectId) => Effect.Effect<void>;
   }
 >()("@mend/db/ProjectsRepo") {
   static readonly layer = Layer.effect(
@@ -74,7 +76,12 @@ export class ProjectsRepo extends Context.Service<
         return yield* Effect.forEach(rows, decodeRow);
       });
 
-      return { create, byId, byName, list };
+      const remove = Effect.fn("ProjectsRepo.remove")(function* (id: ProjectId) {
+        yield* sql`DELETE FROM projects WHERE id = ${id}`.pipe(Effect.orDie);
+        yield* notifyEvent(sql, { type: "project", projectId: id });
+      });
+
+      return { create, byId, byName, list, remove };
     }),
   );
 }

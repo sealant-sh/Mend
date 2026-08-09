@@ -93,6 +93,9 @@ export class SessionsRepo extends Context.Service<
     ) => Effect.Effect<void>;
     /** A delivered follow-up resumes the settled session — same row, same worktree, same change. */
     readonly reopen: (id: SessionId) => Effect.Effect<void>;
+    readonly setLabel: (id: SessionId, label: string | null) => Effect.Effect<void>;
+    /** Hard delete — comments, checkpoints, follow-ups, change and tour cascade. */
+    readonly remove: (id: SessionId) => Effect.Effect<void>;
     readonly setHarness: (id: SessionId, harness: string) => Effect.Effect<void>;
   }
 >()("@mend/db/SessionsRepo") {
@@ -287,6 +290,25 @@ export class SessionsRepo extends Context.Service<
       });
 
       /** A session is a continuous piece of work; the harness is the tool currently driving it. */
+      const setLabel = Effect.fn("SessionsRepo.setLabel")(function* (
+        id: SessionId,
+        label: string | null,
+      ) {
+        yield* sql`
+          UPDATE agent_sessions SET label = ${label}, updated_at = now()
+          WHERE id = ${id}`.pipe(Effect.orDie);
+        yield* notify(id);
+      });
+
+      const remove = Effect.fn("SessionsRepo.remove")(function* (id: SessionId) {
+        const rows = yield* sql`
+          DELETE FROM agent_sessions WHERE id = ${id} RETURNING project_id`.pipe(Effect.orDie);
+        const row = rows[0] as { projectId: string } | undefined;
+        if (row !== undefined) {
+          yield* notifyEvent(sql, { type: "session", sessionId: id, projectId: row.projectId });
+        }
+      });
+
       const setHarness = Effect.fn("SessionsRepo.setHarness")(function* (
         id: SessionId,
         harness: string,
@@ -322,6 +344,8 @@ export class SessionsRepo extends Context.Service<
         notifyProgress,
         settle,
         reopen,
+        setLabel,
+        remove,
         setHarness,
       };
     }),

@@ -1,12 +1,19 @@
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { FollowUpBanner } from "#/components/follow-up";
 import { AppShell } from "#/components/shell";
 import { SessionStatusDot } from "#/components/status";
 import { SessionTerminal } from "#/components/terminal";
-import { checkpointSession, resumeSession, stopSession, type TranscriptEventDto } from "#/lib/api";
+import {
+  checkpointSession,
+  removeSession,
+  resumeSession,
+  setSessionLabel,
+  stopSession,
+  type TranscriptEventDto,
+} from "#/lib/api";
 import {
   pendingFollowUpQuery,
   queryClient,
@@ -90,7 +97,36 @@ function SessionPage() {
   const { session, checkpoints, change } = useSuspenseQuery(sessionDetailQuery(sessionId)).data;
   const followUp = useSuspenseQuery(pendingFollowUpQuery(sessionId)).data;
   const [pending, setPending] = useState<"stop" | "checkpoint" | "resume" | null>(null);
+  const [labelDraft, setLabelDraft] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<"idle" | "armed" | "working">("idle");
+  const navigate = useNavigate();
   useWorkbenchEvents();
+
+  const saveLabel = () => {
+    if (labelDraft === null) return;
+    const next = labelDraft.trim();
+    setLabelDraft(null);
+    if (next === (session.label ?? "")) return;
+    void setSessionLabel(sessionId, next === "" ? null : next).then(() =>
+      queryClient.invalidateQueries({ queryKey: ["session", sessionId] }),
+    );
+  };
+
+  /** Second click executes — destructive actions confirm explicitly (plan §15). */
+  const deleteSession = () => {
+    if (deleting === "idle") {
+      setDeleting("armed");
+      return;
+    }
+    if (deleting !== "armed") return;
+    setDeleting("working");
+    void removeSession(sessionId)
+      .then(() => {
+        void queryClient.invalidateQueries();
+        return navigate({ to: "/projects/$projectId", params: { projectId: session.projectId } });
+      })
+      .catch(() => setDeleting("idle"));
+  };
 
   const act = (kind: "stop" | "checkpoint") => {
     setPending(kind);
@@ -106,10 +142,38 @@ function SessionPage() {
       <div className="mx-auto max-w-[1100px]">
         <p className="ev-eyebrow">session</p>
         <div className="mt-2 flex flex-wrap items-center justify-between gap-4">
-          <h1 className="font-display text-3xl font-medium tracking-tight text-foreground">
-            {session.harness}
-            {session.label === null ? "" : ` — ${session.label}`}
-          </h1>
+          {labelDraft === null ? (
+            <h1 className="font-display text-3xl font-medium tracking-tight text-foreground">
+              {session.harness}
+              {session.label === null ? "" : ` — ${session.label}`}
+              <button
+                type="button"
+                onClick={() => setLabelDraft(session.label ?? "")}
+                title="Rename this session"
+                className="ml-3 align-middle font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+              >
+                rename
+              </button>
+            </h1>
+          ) : (
+            <div className="flex items-center gap-2">
+              <h1 className="font-display text-3xl font-medium tracking-tight text-foreground">
+                {session.harness} —
+              </h1>
+              <input
+                autoFocus
+                value={labelDraft}
+                onChange={(event) => setLabelDraft(event.target.value)}
+                onBlur={saveLabel}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") saveLabel();
+                  if (event.key === "Escape") setLabelDraft(null);
+                }}
+                placeholder="what this session is about"
+                className="rounded-lg border border-input bg-background px-3 py-1.5 font-sans text-lg text-foreground placeholder:text-faint"
+              />
+            </div>
+          )}
           <SessionStatusDot status={session.status} recorded={session.sealantRunId !== null} />
         </div>
         <p className="mt-2 font-mono text-xs text-faint">
@@ -159,6 +223,21 @@ function SessionPage() {
               className="font-sans text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
             >
               {pending === "stop" ? "Stopping…" : "Stop"}
+            </button>
+          )}
+          {!ACTIVE.has(session.status) && (
+            <button
+              type="button"
+              disabled={deleting === "working"}
+              onClick={deleteSession}
+              onBlur={() => setDeleting((current) => (current === "armed" ? "idle" : current))}
+              className={`font-sans text-sm font-medium transition-colors disabled:opacity-50 ${deleting === "armed" ? "text-[var(--sw-red)]" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              {deleting === "working"
+                ? "Deleting…"
+                : deleting === "armed"
+                  ? "Really delete session and worktree?"
+                  : "Delete…"}
             </button>
           )}
           {!ACTIVE.has(session.status) && (

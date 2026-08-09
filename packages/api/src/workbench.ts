@@ -26,6 +26,8 @@ import {
   MendApi,
   NotFound,
   ProjectDetail,
+  RemovalReport,
+  SessionActive,
   SessionAnnotation,
   SessionDetail,
   StoreFailure,
@@ -46,6 +48,9 @@ import {
  * `_references/` dir collision-free.
  */
 const STORE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+/** Live session states — removal refuses these; project removal stops them. */
+const LIVE_STATES = new Set(["starting", "running", "waiting", "idle"]);
 
 export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (handlers) =>
   handlers
@@ -102,6 +107,27 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           sessions: projectSessions,
           annotations: annotations.map((row) => new SessionAnnotation(row)),
         });
+      }),
+    )
+    .handle("remove", ({ params }) =>
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        const sessions = yield* SessionsRepo;
+        const engine = yield* SessionEngine;
+        const store = yield* Store;
+        const project = yield* projects
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        // Stop everything live first — workspaces die with their sessions.
+        const projectSessions = yield* sessions.listForProject(params.id);
+        yield* Effect.forEach(
+          projectSessions.filter((session) => LIVE_STATES.has(session.status)),
+          (session) => engine.stop(session.id).pipe(Effect.ignore),
+          { concurrency: 4 },
+        );
+        const { leftover } = yield* store.removeProjectStore(project.storePath);
+        yield* projects.remove(params.id);
+        return new RemovalReport({ removed: true, leftover });
       }),
     ),
 );
@@ -315,6 +341,38 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const sessionCheckpoints = yield* checkpoints.listForSession(params.id);
         const change = yield* changes.bySession(params.id);
         return new SessionDetail({ session, checkpoints: sessionCheckpoints, change });
+      }),
+    )
+    .handle("remove", ({ params }) =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        const projects = yield* ProjectsRepo;
+        const store = yield* Store;
+        const session = yield* sessions
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        if (LIVE_STATES.has(session.status)) {
+          return yield* new SessionActive({ id: params.id });
+        }
+        const project = yield* projects
+          .byId(session.projectId)
+          .pipe(Effect.mapError(() => new NotFound({ id: session.projectId })));
+        const { leftover } = yield* store.removeWorktreeForce(project.storePath, session.worktree);
+        yield* sessions.remove(params.id);
+        return new RemovalReport({ removed: true, leftover });
+      }),
+    )
+    .handle("label", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        yield* sessions
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        const trimmed = payload.label === null ? null : payload.label.trim();
+        yield* sessions.setLabel(params.id, trimmed === "" ? null : trimmed);
+        return yield* sessions
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
       }),
     )
     .handle("stop", ({ params }) =>

@@ -81,6 +81,15 @@ const untrackedIn = (worktreePath: string) =>
     Effect.map((out) => (out === "" ? [] : out.split("\n"))),
   );
 
+const rmBestEffort = (target: string): { readonly leftover: string | null } => {
+  try {
+    fs.rmSync(target, { recursive: true, force: true });
+  } catch {
+    // EACCES on container-uid files — what survives is reported by the caller.
+  }
+  return { leftover: fs.existsSync(target) ? target : null };
+};
+
 /** Where a named worktree lives relative to its project's bare repo. */
 export const worktreePathOf = (storePath: string, name: string) =>
   path.join(path.dirname(storePath), "worktrees", name);
@@ -112,6 +121,22 @@ export class Store extends Context.Service<
     ) => Effect.Effect<SessionWorktree, GitError>;
     /** Remove a session worktree; checkpoint refs survive in the bare repo. */
     readonly removeWorktree: (storePath: string, name: string) => Effect.Effect<void, GitError>;
+    /**
+     * Best-effort worktree removal for session deletion: git first, then a
+     * plain rm for what git refuses (container-uid files from workspace
+     * builds). Never fails — a surviving path is reported, not thrown.
+     */
+    readonly removeWorktreeForce: (
+      storePath: string,
+      name: string,
+    ) => Effect.Effect<{ readonly leftover: string | null }>;
+    /**
+     * Remove the project's whole store directory (bare repo + worktrees).
+     * Same honesty contract: a path that would not delete is the answer.
+     */
+    readonly removeProjectStore: (
+      storePath: string,
+    ) => Effect.Effect<{ readonly leftover: string | null }>;
     /**
      * Snapshot the worktree without touching HEAD, index, or files: throwaway
      * index → write-tree → commit-tree (parented on the previous checkpoint)
@@ -227,6 +252,24 @@ export class Store extends Context.Service<
       ) {
         const worktreePath = path.join(path.dirname(storePath), "worktrees", name);
         yield* git(["worktree", "remove", "--force", worktreePath], storePath);
+      });
+
+      const removeWorktreeForce = Effect.fn("Store.removeWorktreeForce")(function* (
+        storePath: string,
+        name: string,
+      ) {
+        const worktreePath = path.join(path.dirname(storePath), "worktrees", name);
+        yield* git(["worktree", "remove", "--force", worktreePath], storePath).pipe(Effect.ignore);
+        const result = yield* Effect.sync(() => rmBestEffort(worktreePath));
+        // Drop the stale registration when the directory did go away.
+        yield* git(["worktree", "prune"], storePath).pipe(Effect.ignore);
+        return result;
+      });
+
+      const removeProjectStore = Effect.fn("Store.removeProjectStore")(function* (
+        storePath: string,
+      ) {
+        return yield* Effect.sync(() => rmBestEffort(path.dirname(storePath)));
       });
 
       const checkpoint = Effect.fn("Store.checkpoint")(function* (
@@ -407,6 +450,8 @@ export class Store extends Context.Service<
         adopt,
         createWorktree,
         removeWorktree,
+        removeWorktreeForce,
+        removeProjectStore,
         checkpoint,
         diffRange,
         diffWorktree,

@@ -102,6 +102,7 @@ const projectsLayer = (world: World) =>
     },
     byName: () => Effect.succeed(null),
     list: () => Effect.succeed([...world.projects.values()]),
+    remove: () => Effect.die("not in test"),
   });
 
 const sessionsLayer = (world: World) => {
@@ -174,6 +175,8 @@ const sessionsLayer = (world: World) => {
       Effect.sync(() => update(id, { status: outcome, summary, settledAt: now() })),
     reopen: (id) => Effect.sync(() => update(id, { status: "running", settledAt: null })),
     setHarness: (id, harness) => Effect.sync(() => update(id, { harness })),
+    setLabel: (id, label) => Effect.sync(() => update(id, { label })),
+    remove: () => Effect.die("not in test"),
   });
 };
 
