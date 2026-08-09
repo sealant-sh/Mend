@@ -15,6 +15,8 @@ export const InferenceContext = Schema.Literals([
   "run-audit-qa",
   // "Mend reads the change" (plan §7.3) — the workbench machine review pass.
   "change-reading",
+  // The composed review tour — same reading, guided-walkthrough output.
+  "change-tour",
 ]);
 export type InferenceContext = typeof InferenceContext.Type;
 

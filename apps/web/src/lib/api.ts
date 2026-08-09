@@ -402,6 +402,36 @@ export interface ReviewCommentDto {
 export const readChange = (changeId: string) =>
   post<{ readonly queued: boolean }>(`/api/changes/${changeId}/read`, {});
 
+/** One stop of the composed review tour. */
+export interface TourStopDto {
+  readonly title: string;
+  readonly file: string | null;
+  readonly line: number | null;
+  readonly endLine: number | null;
+  readonly narration: string;
+  readonly evidence: ReadonlyArray<RecordLinkDto>;
+  readonly grounded: boolean;
+}
+
+/** Mend's composed guided walkthrough of a change. */
+export interface ChangeTourDto {
+  readonly id: string;
+  readonly changeId: string;
+  readonly sessionId: string;
+  readonly summary: string;
+  readonly approach: string | null;
+  readonly stops: ReadonlyArray<TourStopDto>;
+  readonly diffDigest: string;
+  readonly createdAt: string;
+}
+
+export const changeTour = (changeId: string) =>
+  request<ChangeTourDto | null>(`/api/changes/${changeId}/tour`);
+
+/** Queue tour composition; the tour arrives over SSE when written. */
+export const composeTour = (changeId: string) =>
+  post<{ readonly queued: boolean }>(`/api/changes/${changeId}/tour`, {});
+
 /** A workbench SSE event — pointers only; clients re-read through the API. */
 export interface WorkbenchEventDto {
   readonly type: string;

@@ -1,21 +1,24 @@
-import { useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { CommentStateActions, EvidenceLines } from "#/components/comment-state";
 import { WorkbenchDiff } from "#/components/diff";
 import { FollowUpBanner } from "#/components/follow-up";
 import { AppShell } from "#/components/shell";
 import {
+  composeTour,
   createFollowUp,
   postChangeComment,
   readChange,
+  type ChangeTourDto,
   type ReviewCommentDto,
   type SessionChangeDto,
 } from "#/lib/api";
 import {
   changeCommentsQuery,
   changeDiffQuery,
+  changeTourQuery,
   pendingFollowUpQuery,
   queryClient,
 } from "#/lib/queries";
@@ -49,7 +52,10 @@ function ChangePage() {
     readonly path: string;
     readonly nonce: number;
   } | null>(null);
-  const [tourStop, setTourStop] = useState<number | null>(null);
+  // The composed tour: -1 = the overview card, 0..n-1 = stops.
+  const tour = useQuery(changeTourQuery(changeId)).data ?? null;
+  const [tourIndex, setTourIndex] = useState<number | null>(null);
+  const [composing, setComposing] = useState(false);
   useWorkbenchEvents();
 
   const additions = files.reduce((sum, file) => sum + file.additions, 0);
@@ -58,37 +64,45 @@ function ChangePage() {
     (comment) => comment.state === "open" && comment.sentToSessionId === null,
   );
 
-  // The tour's stop order (plan §7.3: machine findings feed it): files with
-  // live Mend findings first, then any commented file, then by churn — the
-  // reading order a reviewer would want, not the alphabetical one git gives.
-  const tourStops = useMemo(() => {
-    const weight = (path: string, predicate: (comment: ReviewCommentDto) => boolean) =>
-      comments.filter((comment) => comment.file === path && predicate(comment)).length;
-    return files.toSorted((a, b) => {
-      const findings =
-        weight(
-          b.path,
-          (c) => c.authorKind === "mend" && (c.state === "draft" || c.state === "open"),
-        ) -
-        weight(
-          a.path,
-          (c) => c.authorKind === "mend" && (c.state === "draft" || c.state === "open"),
-        );
-      if (findings !== 0) return findings;
-      const commented =
-        weight(b.path, (c) => c.state !== "dismissed") -
-        weight(a.path, (c) => c.state !== "dismissed");
-      if (commented !== 0) return commented;
-      return b.additions + b.deletions - (a.additions + a.deletions);
-    });
-  }, [files, comments]);
+  // Composition finished while we waited (SSE invalidated the query): open
+  // the tour at its overview without another click.
+  useEffect(() => {
+    if (composing && tour !== null) {
+      setComposing(false);
+      setTourIndex(-1);
+    }
+  }, [composing, tour]);
 
   const goToStop = (index: number) => {
-    const stop = tourStops[index];
+    if (tour === null) return;
+    const stop = tour.stops[index];
     if (stop === undefined) return;
-    setTourStop(index);
-    setFocusFile({ path: stop.path, nonce: Date.now() });
+    setTourIndex(index);
+    if (stop.file !== null) setFocusFile({ path: stop.file, nonce: Date.now() });
   };
+
+  const startTour = () => {
+    if (tour !== null) {
+      setTourIndex(-1);
+      return;
+    }
+    setComposing(true);
+    void composeTour(changeId).catch(() => setComposing(false));
+  };
+
+  const activeStop =
+    tour !== null && tourIndex !== null && tourIndex >= 0 ? (tour.stops[tourIndex] ?? null) : null;
+  const tourMarker =
+    activeStop !== null && activeStop.file !== null && activeStop.line !== null
+      ? {
+          file: activeStop.file,
+          line: activeStop.line,
+          endLine: activeStop.endLine,
+          title: activeStop.title,
+          narration: activeStop.narration,
+          nonce: tourIndex ?? 0,
+        }
+      : null;
 
   return (
     <AppShell>
@@ -101,11 +115,12 @@ function ChangePage() {
           <div className="flex items-center gap-2">
             <button
               type="button"
-              disabled={files.length === 0}
-              onClick={() => goToStop(0)}
+              disabled={files.length === 0 || composing}
+              onClick={startTour}
+              title="Mend reads the diff and the session record and composes the guided walkthrough"
               className="rounded-xl border border-border bg-card px-4 py-2 font-sans text-sm font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-60"
             >
-              Tour this change
+              {composing ? "Mend is composing the tour…" : "Tour this change"}
             </button>
             <ReadChangeButton changeId={changeId} />
             <button
@@ -132,51 +147,14 @@ function ChangePage() {
         </p>
         <FollowUpBanner sessionId={change.sessionId} followUp={followUp} />
 
-        {tourStop !== null && tourStops[tourStop] !== undefined && (
-          <div className="sticky top-3 z-30 mt-5 flex flex-wrap items-center gap-3 rounded-2xl border border-border bg-card px-4 py-2.5 shadow-md">
-            <p className="font-mono text-[11px] text-label">
-              stop {tourStop + 1}/{tourStops.length}
-            </p>
-            <p className="min-w-0 flex-1 truncate font-mono text-xs text-ink-2">
-              {tourStops[tourStop].path}
-              <span className="text-faint">
-                {" "}
-                · +{tourStops[tourStop].additions} −{tourStops[tourStop].deletions}
-                {(() => {
-                  const findings = comments.filter(
-                    (comment) =>
-                      comment.file === tourStops[tourStop]?.path &&
-                      comment.authorKind === "mend" &&
-                      (comment.state === "draft" || comment.state === "open"),
-                  ).length;
-                  return findings > 0 ? ` · ${findings} finding${findings === 1 ? "" : "s"}` : "";
-                })()}
-              </span>
-            </p>
-            <button
-              type="button"
-              disabled={tourStop === 0}
-              onClick={() => goToStop(tourStop - 1)}
-              className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40"
-            >
-              ← Prev
-            </button>
-            <button
-              type="button"
-              disabled={tourStop >= tourStops.length - 1}
-              onClick={() => goToStop(tourStop + 1)}
-              className="rounded-xl border border-border bg-card px-3 py-1 font-sans text-xs font-medium text-foreground shadow-xs disabled:opacity-40"
-            >
-              Next →
-            </button>
-            <button
-              type="button"
-              onClick={() => setTourStop(null)}
-              className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-            >
-              End
-            </button>
-          </div>
+        {tour !== null && tourIndex !== null && (
+          <TourPanel
+            tour={tour}
+            index={tourIndex}
+            onGo={goToStop}
+            onOverview={() => setTourIndex(-1)}
+            onEnd={() => setTourIndex(null)}
+          />
         )}
 
         <div className="mt-8 grid items-start gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
@@ -213,6 +191,7 @@ function ChangePage() {
               comments={comments}
               stats={files}
               focus={focusFile}
+              tourMarker={tourMarker}
             />
           </div>
         </div>
@@ -226,6 +205,113 @@ function ChangePage() {
         />
       )}
     </AppShell>
+  );
+}
+
+/**
+ * The composed tour's walking surface: the overview first (what the change
+ * is, how the session went about it), then the stops in Mend's chosen order —
+ * each narrated, evidence-linked or honestly marked as inferred reading, and
+ * circled in the diff below when it points at a region.
+ */
+function TourPanel({
+  tour,
+  index,
+  onGo,
+  onOverview,
+  onEnd,
+}: {
+  readonly tour: ChangeTourDto;
+  readonly index: number;
+  readonly onGo: (index: number) => void;
+  readonly onOverview: () => void;
+  readonly onEnd: () => void;
+}) {
+  const stop = index >= 0 ? (tour.stops[index] ?? null) : null;
+  return (
+    <div className="sticky top-3 z-30 mt-5 rounded-2xl border border-[color-mix(in_oklab,var(--sw-accent)_35%,transparent)] bg-card px-5 py-4 shadow-md">
+      {stop === null ? (
+        <>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="font-mono text-[11px] text-label">
+              Mend&apos;s tour · {tour.stops.length} stop{tour.stops.length === 1 ? "" : "s"} ·
+              composed {new Date(tour.createdAt).toLocaleTimeString()}
+            </p>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => onGo(0)}
+                className="rounded-xl bg-primary px-3.5 py-1.5 font-sans text-xs font-medium text-primary-foreground shadow-[var(--shadow-cobalt)]"
+              >
+                Start walking →
+              </button>
+              <button
+                type="button"
+                onClick={onEnd}
+                className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+          <p className="mt-3 text-[14px] leading-relaxed text-foreground">{tour.summary}</p>
+          {tour.approach !== null && (
+            <p className="mt-2 text-[13px] leading-relaxed text-muted-foreground">
+              <span className="font-mono text-[10.5px] text-label">from the record · </span>
+              {tour.approach}
+            </p>
+          )}
+        </>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="min-w-0 flex-1 truncate font-mono text-[11px] text-label">
+              stop {index + 1}/{tour.stops.length}
+              {stop.file === null ? "" : ` · ${stop.file}`}
+              {stop.line === null
+                ? ""
+                : `:${stop.line}${stop.endLine === null ? "" : `–${stop.endLine}`}`}
+              {stop.grounded ? "" : " · inferred reading"}
+            </p>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={index === 0 ? onOverview : () => onGo(index - 1)}
+                className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+              >
+                ← {index === 0 ? "Overview" : "Prev"}
+              </button>
+              <button
+                type="button"
+                disabled={index >= tour.stops.length - 1}
+                onClick={() => onGo(index + 1)}
+                className="rounded-xl border border-border bg-card px-3 py-1 font-sans text-xs font-medium text-foreground shadow-xs disabled:opacity-40"
+              >
+                Next →
+              </button>
+              <button
+                type="button"
+                onClick={onEnd}
+                className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+              >
+                End
+              </button>
+            </div>
+          </div>
+          <p className="mt-2 font-sans text-sm font-medium text-foreground">{stop.title}</p>
+          <p className="mt-1 text-[13.5px] leading-relaxed text-ink-2">{stop.narration}</p>
+          {stop.evidence.length > 0 && (
+            <div className="mt-2 flex flex-col gap-1">
+              {stop.evidence.map((link, evidenceIndex) => (
+                <p key={evidenceIndex} className="truncate font-mono text-[10.5px] text-faint">
+                  seq {link.sequence} · <span className="text-ink-2">{link.excerpt}</span>
+                </p>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 

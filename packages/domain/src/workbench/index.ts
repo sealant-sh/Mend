@@ -23,3 +23,4 @@ export * from "./project.ts";
 export * from "./reference.ts";
 export * from "./review-comment.ts";
 export * from "./session.ts";
+export * from "./tour.ts";

@@ -4,6 +4,7 @@ import {
   changeComments,
   changeDiff,
   changeStats,
+  changeTour,
   listActiveSessions,
   listProjects,
   listReferences,
@@ -99,4 +100,10 @@ export const changeStatsQuery = (changeId: string) =>
     queryKey: ["change", changeId, "stats"],
     queryFn: () => changeStats(changeId),
     staleTime: 60_000,
+  });
+
+export const changeTourQuery = (changeId: string) =>
+  queryOptions({
+    queryKey: ["change", changeId, "tour"],
+    queryFn: () => changeTour(changeId),
   });

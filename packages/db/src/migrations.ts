@@ -400,6 +400,27 @@ const reviewCommentEvidence = Effect.gen(function* () {
     ALTER TABLE review_comments ADD COLUMN evidence jsonb NOT NULL DEFAULT '[]'`;
 });
 
+/**
+ * The composed review tour (plan §7.3): Mend reads the diff and the record
+ * and writes the guided walkthrough — summary, approach, ordered stops with
+ * evidence links. One per change, replaced on recompose; the document is
+ * jsonb (sequences as decimal strings), diff_digest detects staleness.
+ */
+const changeTours = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE change_tours (
+      id text PRIMARY KEY,
+      change_id text NOT NULL UNIQUE REFERENCES session_changes(id) ON DELETE CASCADE,
+      session_id text NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      summary text NOT NULL,
+      approach text,
+      stops jsonb NOT NULL,
+      diff_digest text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -413,4 +434,5 @@ export const migrations = {
   "0009_references": references,
   "0010_project_mounts": projectMounts,
   "0011_review_comment_evidence": reviewCommentEvidence,
+  "0012_change_tours": changeTours,
 };

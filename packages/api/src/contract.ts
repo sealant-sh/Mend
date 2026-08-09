@@ -18,6 +18,7 @@ import {
 } from "@mend/domain";
 import {
   Change as SessionChange,
+  ChangeTour,
   Checkpoint,
   FollowUp,
   Project,
@@ -596,6 +597,21 @@ const sessionChangesGroup = HttpApiGroup.make("sessionChanges")
     // "Read this change" (plan §7.3): queue the machine pass; findings land
     // asynchronously as draft comments and arrive over the normal SSE path.
     HttpApiEndpoint.post("read", "/changes/:id/read", {
+      params: { id: ChangeId },
+      success: Schema.Struct({ queued: Schema.Boolean }),
+      error: NotFound,
+    }),
+  )
+  .add(
+    // The composed review tour: null until composed; SSE announces arrival.
+    HttpApiEndpoint.get("tour", "/changes/:id/tour", {
+      params: { id: ChangeId },
+      success: Schema.NullOr(ChangeTour),
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("composeTour", "/changes/:id/tour", {
       params: { id: ChangeId },
       success: Schema.Struct({ queued: Schema.Boolean }),
       error: NotFound,

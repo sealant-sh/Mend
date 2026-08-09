@@ -1,29 +1,19 @@
 import { ProjectsRepo, ReviewCommentsRepo, SessionChangesRepo, SessionsRepo } from "@mend/db";
 import { ChangeId } from "@mend/domain";
 import { RecordLink } from "@mend/domain/workbench";
-import { SealantClient } from "@mend/sealant";
-import { Store, worktreePathOf } from "@mend/store";
-import { Effect, Layer, Schema, Stream } from "effect";
+import type { SealantClient } from "@mend/sealant";
+import { worktreePathOf, type Store } from "@mend/store";
+import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
-import {
-  InferenceError,
-  InferenceProvider,
-  InferenceToolError,
-  type InferenceTool,
-} from "./provider.ts";
-import { RecordingEvent } from "./tools.ts";
+import { InferenceError, InferenceProvider, InferenceToolError } from "./provider.ts";
+import { makeSessionChangePass } from "./session-tools.ts";
 import { makeTool } from "./toolset.ts";
 
 /** The `read-change` job's payload — on-demand from the review page (§7.3). */
 export class ReadChangeJob extends Schema.Class<ReadChangeJob>("ReadChangeJob")({
   changeId: ChangeId,
 }) {}
-
-/** One read_recording call returns at most this many events — narrow with the selector. */
-const MAX_RECORDING_EVENTS = 500;
-/** A diff bigger than this is truncated in the tool result — the model is told. */
-const MAX_DIFF_CHARS = 180_000;
 
 /**
  * "Mend reads the change" (plan §7.3): the machine review pass over a settled
@@ -57,12 +47,6 @@ Sequences are decimal strings.`;
 
 const Disposition = Schema.Literals(["direct-evidence", "not-executed", "unrelated-change"]);
 
-const ReadChangeInput = Schema.Struct({});
-const ReadRecordingInput = Schema.Struct({
-  fromSequence: Schema.optional(Schema.NullOr(Schema.BigIntFromString)),
-  toSequence: Schema.optional(Schema.NullOr(Schema.BigIntFromString)),
-  kinds: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
-});
 const DraftFindingInput = Schema.Struct({
   /** Null file = change-level finding. */
   file: Schema.NullOr(Schema.String),
@@ -73,16 +57,6 @@ const DraftFindingInput = Schema.Struct({
   evidence: Schema.Array(
     Schema.Struct({ sequence: Schema.BigIntFromString, excerpt: Schema.String }),
   ),
-});
-
-const ChangeReadResult = Schema.Struct({
-  branch: Schema.String,
-  baseSha: Schema.String,
-  files: Schema.Array(
-    Schema.Struct({ path: Schema.String, additions: Schema.Int, deletions: Schema.Int }),
-  ),
-  diff: Schema.String,
-  truncated: Schema.Boolean,
 });
 
 const FindingResult = Schema.Struct({ recorded: Schema.Boolean, commentId: Schema.String });
@@ -105,8 +79,9 @@ export class ChangeReader extends Context.Service<
       const sessions = yield* SessionsRepo;
       const projects = yield* ProjectsRepo;
       const comments = yield* ReviewCommentsRepo;
-      const sealant = yield* SealantClient;
-      const store = yield* Store;
+      // The pass tools need Store + SealantClient; captured here, provided
+      // per job (the comment-router pattern — tool sets are built fresh).
+      const toolContext = yield* Effect.context<Store | SealantClient>();
 
       const read = Effect.fn("ChangeReader.read")(function* (job: ReadChangeJob) {
         const change = yield* changes
@@ -124,103 +99,17 @@ export class ChangeReader extends Context.Service<
           );
         }
         const sealantRunId = session.sealantRunId;
-        const worktree = worktreePathOf(project.storePath, session.worktree);
+
+        const pass = yield* makeSessionChangePass({
+          worktree: worktreePathOf(project.storePath, session.worktree),
+          change,
+          sealantRunId,
+        }).pipe(Effect.provide(toolContext));
 
         const existing = yield* comments.listForChange(job.changeId);
-        const changedPaths = new Set<string>();
-
-        // The noise filter's memory: sequences the model has actually read
-        // in THIS pass. draft_finding refuses to cite anything else.
-        const seenSequences = new Set<string>();
-
-        const readChangeTool: InferenceTool = makeTool({
-          name: "read_change",
-          description:
-            "The session's change: unified diff of its worktree against the base, with per-file +/- counts. Takes no input.",
-          inputSchema: { type: "object", properties: {}, additionalProperties: false },
-          input: ReadChangeInput,
-          run: () =>
-            Effect.gen(function* () {
-              const diff = yield* store.diffWorktree(worktree, change.baseSha);
-              const files = yield* store.changedFiles(worktree, change.baseSha, null);
-              for (const file of files) changedPaths.add(file.path);
-              const truncated = diff.length > MAX_DIFF_CHARS;
-              return {
-                branch: change.branch,
-                baseSha: change.baseSha,
-                files,
-                diff: truncated
-                  ? `${diff.slice(0, MAX_DIFF_CHARS)}\n… (diff truncated — ${diff.length} chars total; rely on the per-file counts for scope)`
-                  : diff,
-                truncated,
-              };
-            }).pipe(
-              Effect.mapError(
-                (error) =>
-                  new InferenceToolError({
-                    tool: "read_change",
-                    message: `reading the change failed: ${String(error)}`,
-                  }),
-              ),
-            ),
-          encode: (value) => Schema.encodeEffect(ChangeReadResult)(value).pipe(Effect.orDie),
-        });
-
-        const readRecordingTool: InferenceTool = makeTool({
-          name: "read_recording",
-          description:
-            "The session's durable record, oldest first. Returns at most 500 events; page with fromSequence, narrow with toSequence/kinds. processStarted/processExited carry commands and exit codes.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              fromSequence: { type: ["string", "null"], description: "decimal string" },
-              toSequence: { type: ["string", "null"], description: "decimal string" },
-              kinds: { type: ["array", "null"], items: { type: "string" } },
-            },
-            additionalProperties: false,
-          },
-          input: ReadRecordingInput,
-          run: (input) =>
-            Effect.gen(function* () {
-              const sdkRun = yield* sealant.getRun(sealantRunId);
-              const from = input.fromSequence ?? 0n;
-              const to = input.toSequence ?? null;
-              const kinds = input.kinds ?? null;
-              const events = yield* sealant.recordTimeline(sdkRun, { from }).pipe(
-                Stream.takeWhile((entry) => to === null || entry.sequence <= to),
-                Stream.filter((entry) => (kinds === null ? true : kinds.includes(entry.kind))),
-                Stream.take(MAX_RECORDING_EVENTS),
-                Stream.map(
-                  (entry) =>
-                    new RecordingEvent({
-                      sequence: entry.sequence,
-                      kind: entry.kind,
-                      occurredAt: new Date(entry.occurredAt),
-                      summary: entry.summary,
-                      // The runtime recorded every timeline entry — that is what observed means.
-                      provenance: "observed",
-                      data: entry.data,
-                    }),
-                ),
-                Stream.runCollect,
-              );
-              for (const event of events) seenSequences.add(event.sequence.toString());
-              return events;
-            }).pipe(
-              Effect.mapError(
-                (error) =>
-                  new InferenceToolError({
-                    tool: "read_recording",
-                    message: `reading the record failed: ${String(error)}`,
-                  }),
-              ),
-            ),
-          encode: (value) =>
-            Schema.encodeEffect(Schema.Array(RecordingEvent))([...value]).pipe(Effect.orDie),
-        });
 
         let findingsWritten = 0;
-        const draftFindingTool: InferenceTool = makeTool({
+        const draftFindingTool = makeTool({
           name: "draft_finding",
           description:
             "Record one finding as a draft review comment the reviewer will accept, edit, or dismiss. Evidence is required and every cited sequence must be one you actually read via read_recording in this pass.",
@@ -265,7 +154,7 @@ export class ChangeReader extends Context.Service<
                 );
               }
               const unseen = input.evidence.filter(
-                (pointer) => !seenSequences.has(pointer.sequence.toString()),
+                (pointer) => !pass.seenSequences.has(pointer.sequence.toString()),
               );
               if (unseen.length > 0) {
                 return yield* reject(
@@ -281,29 +170,31 @@ export class ChangeReader extends Context.Service<
               if (overlong.length > 0) {
                 return yield* reject("excerpts cap at 200 chars — quote the relevant fragment");
               }
-              if (input.file !== null && !changedPaths.has(input.file)) {
+              if (input.file !== null && !pass.changedPaths.has(input.file)) {
                 return yield* reject(
                   `"${input.file}" is not in this change — anchor to a changed file from read_change, or use null for change-level`,
                 );
               }
-              const created = yield* comments.create({
-                changeId: job.changeId,
-                file: input.file,
-                line: input.file === null ? null : (input.line ?? null),
-                endLine: input.file === null ? null : (input.endLine ?? null),
-                authorKind: "mend",
-                authorName: "Mend",
-                body: input.body,
-                state: "draft",
-                evidence: input.evidence.map(
-                  (pointer) =>
-                    new RecordLink({
-                      sealantRunId,
-                      sequence: pointer.sequence,
-                      excerpt: pointer.excerpt,
-                    }),
-                ),
-              });
+              const created = yield* comments
+                .create({
+                  changeId: job.changeId,
+                  file: input.file,
+                  line: input.file === null ? null : (input.line ?? null),
+                  endLine: input.file === null ? null : (input.endLine ?? null),
+                  authorKind: "mend",
+                  authorName: "Mend",
+                  body: input.body,
+                  state: "draft",
+                  evidence: input.evidence.map(
+                    (pointer) =>
+                      new RecordLink({
+                        sealantRunId,
+                        sequence: pointer.sequence,
+                        excerpt: pointer.excerpt,
+                      }),
+                  ),
+                })
+                .pipe(Effect.orDie);
               findingsWritten += 1;
               return { recorded: true, commentId: created.id };
             }),
@@ -328,7 +219,7 @@ export class ChangeReader extends Context.Service<
             `The session settled "${session.status}"${session.summary === null ? "" : ` — its own summary: ${session.summary.slice(0, 300)}`}.\n\n` +
             `Existing comments on this change (do not restate):\n${existingSummary}\n\n` +
             `Start with read_change.`,
-          tools: [readChangeTool, readRecordingTool, draftFindingTool],
+          tools: [pass.readChangeTool, pass.readRecordingTool, draftFindingTool],
         });
 
         // Zero findings is legitimate; the pass itself completing is success.

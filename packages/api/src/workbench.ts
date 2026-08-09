@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 
 import {
+  ChangeToursRepo,
   CheckpointsRepo,
   FollowUpsRepo,
   ProjectMountsRepo,
@@ -485,6 +486,29 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
             name: "read-change",
             payload: { changeId: params.id },
             idempotencyKey: `read-change:${params.id}`,
+          })
+          .pipe(Effect.orDie);
+        return { queued: true };
+      }),
+    )
+    .handle("tour", ({ params }) =>
+      Effect.gen(function* () {
+        const changes = yield* SessionChangesRepo;
+        const tours = yield* ChangeToursRepo;
+        yield* changes.byId(params.id).pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        return yield* tours.byChange(params.id);
+      }),
+    )
+    .handle("composeTour", ({ params }) =>
+      Effect.gen(function* () {
+        const changes = yield* SessionChangesRepo;
+        const jobs = yield* JobRunner;
+        yield* changes.byId(params.id).pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        yield* jobs
+          .enqueue({
+            name: "compose-tour",
+            payload: { changeId: params.id },
+            idempotencyKey: `compose-tour:${params.id}`,
           })
           .pipe(Effect.orDie);
         return { queued: true };

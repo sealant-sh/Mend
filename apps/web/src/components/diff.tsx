@@ -23,7 +23,18 @@ import { queryClient } from "#/lib/queries";
 
 type Annotation =
   | { readonly kind: "comment"; readonly comment: ReviewCommentDto }
-  | { readonly kind: "composer"; readonly anchor: CommentAnchor };
+  | { readonly kind: "composer"; readonly anchor: CommentAnchor }
+  | { readonly kind: "tour"; readonly marker: TourMarker };
+
+/** The active tour stop's circle: where the walkthrough is pointing right now. */
+export interface TourMarker {
+  readonly file: string;
+  readonly line: number | null;
+  readonly endLine: number | null;
+  readonly title: string;
+  readonly narration: string;
+  readonly nonce: number;
+}
 
 interface CommentAnchor {
   readonly file: string;
@@ -117,6 +128,7 @@ export function WorkbenchDiff({
   comments,
   stats,
   focus,
+  tourMarker = null,
 }: {
   readonly diff: string;
   readonly changeId: string;
@@ -124,6 +136,8 @@ export function WorkbenchDiff({
   readonly stats: ReadonlyArray<FileStat>;
   /** Sidebar navigation: expand + scroll to this file (nonce re-triggers). */
   readonly focus?: { readonly path: string; readonly nonce: number } | null;
+  /** The composed tour's active stop — renders its circle inline in the diff. */
+  readonly tourMarker?: TourMarker | null;
 }) {
   const [composer, setComposer] = useState<CommentAnchor | null>(null);
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
@@ -192,6 +206,28 @@ export function WorkbenchDiff({
     return () => cancelAnimationFrame(frame);
   }, [focus]);
 
+  // The tour pointed somewhere specific: bring the circle itself into view
+  // (the focus effect above only reaches the file's top). Double rAF — the
+  // marker annotation has to render before it can be scrolled to.
+  useEffect(() => {
+    if (tourMarker === null || tourMarker.line === null) return;
+    setCollapsed((current) => {
+      if (!current.has(tourMarker.file)) return current;
+      const next = new Set(current);
+      next.delete(tourMarker.file);
+      return next;
+    });
+    const frame = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        document.getElementById("tour-marker")?.scrollIntoView({
+          block: "center",
+          behavior: "smooth",
+        });
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [tourMarker]);
+
   if (diff === "") {
     return (
       <div className="rounded-2xl bg-card p-6 shadow-sm">
@@ -249,6 +285,13 @@ export function WorkbenchDiff({
               side: "additions",
               lineNumber: composer.endLine ?? composer.line,
               metadata: { kind: "composer", anchor: composer },
+            });
+          }
+          if (tourMarker !== null && tourMarker.file === file.name && tourMarker.line !== null) {
+            annotations.push({
+              side: "additions",
+              lineNumber: tourMarker.endLine ?? tourMarker.line,
+              metadata: { kind: "tour", marker: tourMarker },
             });
           }
           return (
@@ -352,6 +395,8 @@ export function WorkbenchDiff({
                     renderAnnotation={(annotation) =>
                       annotation.metadata.kind === "comment" ? (
                         <InlineComment comment={annotation.metadata.comment} />
+                      ) : annotation.metadata.kind === "tour" ? (
+                        <TourMarkerCard marker={annotation.metadata.marker} />
                       ) : (
                         <InlineComposer
                           changeId={changeId}
@@ -377,6 +422,28 @@ export function WorkbenchDiff({
 /** "12" or "12–18" — one label for both anchor shapes. */
 export const lineLabel = (line: number | null, endLine: number | null) =>
   line === null ? null : endLine === null || endLine === line ? `${line}` : `${line}–${endLine}`;
+
+/** The tour's circle, drawn where the stop points — narration beside the lines. */
+function TourMarkerCard({ marker }: { readonly marker: TourMarker }) {
+  return (
+    <div
+      id="tour-marker"
+      className="mx-4 my-2 rounded-xl border border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-background p-3 font-sans shadow-xs"
+    >
+      <p className="font-mono text-[10.5px] text-label">
+        tour · {marker.title}
+        {marker.line !== null && (
+          <span className="text-faint">
+            {" "}
+            · lines {marker.line}
+            {marker.endLine === null ? "" : `–${marker.endLine}`}
+          </span>
+        )}
+      </p>
+      <p className="mt-1 text-[13.5px] leading-relaxed text-ink-2">{marker.narration}</p>
+    </div>
+  );
+}
 
 function InlineComment({ comment }: { readonly comment: ReviewCommentDto }) {
   return (

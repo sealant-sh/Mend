@@ -10,6 +10,7 @@ import {
   BriefCommentsRepo,
   BriefsRepo,
   ChangesRepo,
+  ChangeToursRepo,
   CheckpointsRepo,
   FollowUpsRepo,
   InferenceCallsRepo,
@@ -29,6 +30,7 @@ import {
 import {
   BriefCompiler,
   ChangeReader,
+  ComposeTourJob,
   CommentRouter,
   CompileBriefJob,
   FailureSummarizer,
@@ -37,6 +39,7 @@ import {
   RouteCommentJob,
   sealantProviderLayer,
   SummarizeFailureJob,
+  TourComposer,
 } from "@mend/inference";
 import {
   Dispatcher,
@@ -82,6 +85,7 @@ const DatabaseLive = Layer.mergeAll(
   SessionChangesRepo.layer,
   CheckpointsRepo.layer,
   ReviewCommentsRepo.layer,
+  ChangeToursRepo.layer,
   FollowUpsRepo.layer,
   PushDevicesRepo.layer,
 ).pipe(Layer.provideMerge(MigratorLive.pipe(Layer.provideMerge(PgLive))));
@@ -160,6 +164,7 @@ const decodeCompileBriefJob = Schema.decodeUnknownEffect(CompileBriefJob);
 const decodeSummarizeFailureJob = Schema.decodeUnknownEffect(SummarizeFailureJob);
 const decodeRouteCommentJob = Schema.decodeUnknownEffect(RouteCommentJob);
 const decodeReadChangeJob = Schema.decodeUnknownEffect(ReadChangeJob);
+const decodeComposeTourJob = Schema.decodeUnknownEffect(ComposeTourJob);
 
 /** The inference job workers: a failed handler dies into the engine's retry. */
 const InferenceWorkersLive = Layer.effectDiscard(
@@ -169,9 +174,16 @@ const InferenceWorkersLive = Layer.effectDiscard(
     const summarizer = yield* FailureSummarizer;
     const router = yield* CommentRouter;
     const reader = yield* ChangeReader;
+    const tourComposer = yield* TourComposer;
     yield* jobs.work("read-change", (payload) =>
       decodeReadChangeJob(payload).pipe(
         Effect.flatMap((job) => reader.read(job)),
+        Effect.orDie,
+      ),
+    );
+    yield* jobs.work("compose-tour", (payload) =>
+      decodeComposeTourJob(payload).pipe(
+        Effect.flatMap((job) => tourComposer.compose(job)),
         Effect.orDie,
       ),
     );
@@ -214,6 +226,7 @@ const WorkerLive = Layer.mergeAll(
   Layer.provide(FailureSummarizer.layer),
   Layer.provide(CommentRouter.layer),
   Layer.provide(ChangeReader.layer),
+  Layer.provide(TourComposer.layer),
   Layer.provide(liveToolsLayer),
   // start_run: the one tool that reaches the run machinery.
   Layer.provide(startRunToolLayer),

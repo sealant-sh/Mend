@@ -8,3 +8,5 @@ export * from "./provider.ts";
 export * from "./sealant-provider.ts";
 export * from "./toolset.ts";
 export * from "./tools.ts";
+export * from "./session-tools.ts";
+export * from "./tour-composer.ts";
