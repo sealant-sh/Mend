@@ -1,4 +1,5 @@
-# Dev-only Postgres, on 5433 so it never fights a local install.
+# Dev-only Postgres, on 5434 so it fights neither a local install (5432)
+# nor the Sealant Core dev Postgres (5433) on the same machine.
 # The product compose (mend + postgres + Sealant env) is compose.yaml; the
 # distinct project name keeps the two stacks from recreating each other.
 #
@@ -13,7 +14,7 @@ services:
       POSTGRES_PASSWORD: mend
       POSTGRES_DB: mend
     ports:
-      - "5433:5432"
+      - "5434:5432"
     volumes:
       - mend-dev-pgdata:/var/lib/postgresql/data
 

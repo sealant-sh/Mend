@@ -16,7 +16,7 @@ is just the mechanics.
 
 ```sh
 pnpm install
-docker compose -f compose.dev.yaml up -d   # Postgres on localhost:5433 (project: mend-dev)
+docker compose -f compose.dev.yaml up -d   # Postgres on localhost:5434 (project: mend-dev)
 pnpm --filter @mend/web dev                # vite (3101) + the Effect server (3105), together
 ```
 
@@ -33,7 +33,7 @@ All optional in dev — the defaults match `compose.dev.yaml` and a localhost Se
 
 | Variable                        | Default                                    | What                                                                                                                                                                                                                                                                 |
 | ------------------------------- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`                  | `postgres://mend:mend@localhost:5433/mend` | Product Postgres                                                                                                                                                                                                                                                     |
+| `DATABASE_URL`                  | `postgres://mend:mend@localhost:5434/mend` | Product Postgres                                                                                                                                                                                                                                                     |
 | `SEALANT_BASE_URL`              | `http://localhost:8080`                    | Sealant control plane (a `~/.sealant` stack serves **4000**)                                                                                                                                                                                                         |
 | `SEALANT_API_KEY`               | unset                                      | Bearer for authenticated deployments                                                                                                                                                                                                                                 |
 | `SEALANT_OWNER_USER_ID`         | SDK default (`usr_local`)                  | **Must be the user id your Sealant web UI writes connected accounts under**, or inference/workspaces see nothing. Find it: `SELECT owner_user_id FROM connected_accounts` in Sealant's `sealant_control_plane` DB. Pre-auth wart; goes away when Sealant auth lands. |
