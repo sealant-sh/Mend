@@ -108,3 +108,16 @@
   --diffs-token-punctuation: var(--sw-muted);
   --diffs-token-link: #3b5a92;
 }
+
+/* Dark counterparts for the four fixed syntax hues — same hue families,
+   brightened to read on dark (DESIGN.md §1: identical structure, values
+   inverted). The light set sits at 5.2–6.7:1 on the sheet; these sit at
+   6.3–6.4:1 on the dark sheet, so both themes speak at the same volume.
+   The remaining tokens ride var(--sw-*) and flip on their own. */
+.dark .ev-diff {
+  --diffs-token-keyword: #c89272;
+  --diffs-token-string: #7fa78e;
+  --diffs-token-string-expression: #7fa78e;
+  --diffs-token-constant: #a996c9;
+  --diffs-token-link: #7d9fd6;
+}

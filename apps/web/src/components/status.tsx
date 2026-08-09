@@ -19,7 +19,7 @@ export function StatusDot({
           ? "bg-[var(--sw-amber)]"
           : tone === "accent"
             ? "bg-[var(--sw-accent)]"
-            : "border-[1.5px] border-[#b3b0a8] bg-transparent";
+            : "border-[1.5px] border-faint bg-transparent";
   const text =
     tone === "green"
       ? "text-success"
