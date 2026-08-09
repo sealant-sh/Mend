@@ -16,9 +16,14 @@ is just the mechanics.
 
 ```sh
 pnpm install
-docker compose -f compose.dev.yaml up -d   # Postgres on localhost:5434 (project: mend-dev)
-pnpm --filter @mend/web dev                # vite (3101) + the Effect server (3105), together
+cp .env.example .env                       # then fill in SEALANT_OWNER_USER_ID
+pnpm --filter @mend/web dev                # Postgres (docker, 5434) + vite (3101) + the Effect server (3105)
 ```
+
+The dev command is self-sufficient: it loads the root `.env` (explicit shell env wins), brings up
+the dev Postgres via `compose.dev.yaml` (skipped when `DATABASE_URL` points elsewhere), and runs
+vite and the Effect server together. Without `SEALANT_BASE_URL` it still boots — and warns that
+session launches will fail against the SDK's `localhost:8080` default.
 
 Open http://localhost:3101 (vite, proxies `/api` → 3105). Or build once
 (`pnpm --filter @mend/web build`) and run only the server — it then serves the built app itself on
@@ -44,12 +49,12 @@ All optional in dev — the defaults match `compose.dev.yaml` and a localhost Se
 | `MEND_INFERENCE_CLAUDE_ACCOUNT` | the account named `default`                | Which connected claude account inference uses                                                                                                                                                                                                                        |
 | `MEND_DISPATCH_INTERVAL`        | `5 seconds`                                | Dispatcher poll                                                                                                                                                                                                                                                      |
 
-Example against a local `~/.sealant` stack:
+Against a local `~/.sealant` stack, put these in the root `.env` (loaded by `pnpm dev`; see
+`.env.example`):
 
 ```sh
-SEALANT_BASE_URL=http://localhost:4000 \
-SEALANT_OWNER_USER_ID=<your sealant web user id> \
-pnpm --filter @mend/web dev
+SEALANT_BASE_URL=http://localhost:4000
+SEALANT_OWNER_USER_ID=<your sealant web user id>
 ```
 
 ## The loop, locally

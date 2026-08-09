@@ -17,6 +17,12 @@ services:
       - "5434:5432"
     volumes:
       - mend-dev-pgdata:/var/lib/postgresql/data
+    # `pnpm dev` runs `up -d --wait`; the healthcheck is what --wait gates on.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mend -d mend"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
 
 volumes:
   mend-dev-pgdata:
