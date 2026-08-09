@@ -7,7 +7,7 @@ import {
 import { FileDiff } from "@pierre/diffs/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { CommentStateActions, EvidenceLines } from "#/components/comment-state";
+import { CommentStateActions, EvidenceLines, SuggestionBlock } from "#/components/comment-state";
 import { postChangeComment, type ReviewCommentDto } from "#/lib/api";
 import { queryClient } from "#/lib/queries";
 
@@ -122,6 +122,14 @@ export interface FileStat {
   readonly deletions: number;
 }
 
+/** Walking controls rendered on the inline marker card, beside the circled lines. */
+export interface TourNav {
+  readonly onPrev: () => void;
+  readonly onNext: () => void;
+  readonly hasPrev: boolean;
+  readonly hasNext: boolean;
+}
+
 export function WorkbenchDiff({
   diff,
   changeId,
@@ -129,6 +137,7 @@ export function WorkbenchDiff({
   stats,
   focus,
   tourMarker = null,
+  tourNav = null,
 }: {
   readonly diff: string;
   readonly changeId: string;
@@ -138,6 +147,7 @@ export function WorkbenchDiff({
   readonly focus?: { readonly path: string; readonly nonce: number } | null;
   /** The composed tour's active stop — renders its circle inline in the diff. */
   readonly tourMarker?: TourMarker | null;
+  readonly tourNav?: TourNav | null;
 }) {
   const [composer, setComposer] = useState<CommentAnchor | null>(null);
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
@@ -350,7 +360,18 @@ export function WorkbenchDiff({
                     selectedLines={
                       selection !== null && selection.file === file.name
                         ? { start: selection.start, end: selection.end }
-                        : null
+                        : // The active stop's circle washes the lines it points
+                          // at — same band as a hand-made selection, because it
+                          // IS a selection: Mend's, on the reviewer's behalf. A
+                          // real drag takes the band back (branch above).
+                          tourMarker !== null &&
+                            tourMarker.file === file.name &&
+                            tourMarker.line !== null
+                          ? {
+                              start: tourMarker.line,
+                              end: tourMarker.endLine ?? tourMarker.line,
+                            }
+                          : null
                     }
                     options={{
                       diffStyle: "unified",
@@ -396,7 +417,7 @@ export function WorkbenchDiff({
                       annotation.metadata.kind === "comment" ? (
                         <InlineComment comment={annotation.metadata.comment} />
                       ) : annotation.metadata.kind === "tour" ? (
-                        <TourMarkerCard marker={annotation.metadata.marker} />
+                        <TourMarkerCard marker={annotation.metadata.marker} nav={tourNav} />
                       ) : (
                         <InlineComposer
                           changeId={changeId}
@@ -423,23 +444,57 @@ export function WorkbenchDiff({
 export const lineLabel = (line: number | null, endLine: number | null) =>
   line === null ? null : endLine === null || endLine === line ? `${line}` : `${line}–${endLine}`;
 
-/** The tour's circle, drawn where the stop points — narration beside the lines. */
-function TourMarkerCard({ marker }: { readonly marker: TourMarker }) {
+/**
+ * The tour's circle, drawn where the stop points — narration beside the
+ * lines, and the walking controls beside the narration, so Prev/Next are
+ * always at the reader's eye (the sticky panel can be far above the stop).
+ */
+function TourMarkerCard({
+  marker,
+  nav,
+}: {
+  readonly marker: TourMarker;
+  readonly nav: TourNav | null;
+}) {
   return (
     <div
       id="tour-marker"
       className="mx-4 my-2 rounded-xl border border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-background p-3 font-sans shadow-xs"
     >
-      <p className="font-mono text-[10.5px] text-label">
-        tour · {marker.title}
-        {marker.line !== null && (
-          <span className="text-faint">
-            {" "}
-            · lines {marker.line}
-            {marker.endLine === null ? "" : `–${marker.endLine}`}
-          </span>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="min-w-0 font-mono text-[10.5px] text-label">
+          tour · {marker.title}
+          {marker.line !== null && (
+            <span className="text-faint">
+              {" "}
+              · lines {marker.line}
+              {marker.endLine === null ? "" : `–${marker.endLine}`}
+            </span>
+          )}
+        </p>
+        {nav !== null && (
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              disabled={!nav.hasPrev}
+              onClick={nav.onPrev}
+              title="Previous stop (k or ←)"
+              className="rounded-lg border border-border bg-card px-2 py-0.5 font-sans text-[11px] font-medium text-foreground shadow-xs disabled:opacity-40"
+            >
+              ← Prev
+            </button>
+            <button
+              type="button"
+              disabled={!nav.hasNext}
+              onClick={nav.onNext}
+              title="Next stop (j or →)"
+              className="rounded-lg border border-border bg-card px-2 py-0.5 font-sans text-[11px] font-medium text-foreground shadow-xs disabled:opacity-40"
+            >
+              Next →
+            </button>
+          </div>
         )}
-      </p>
+      </div>
       <p className="mt-1 text-[13.5px] leading-relaxed text-ink-2">{marker.narration}</p>
     </div>
   );
@@ -451,11 +506,13 @@ function InlineComment({ comment }: { readonly comment: ReviewCommentDto }) {
       className={`mx-4 my-2 rounded-xl border border-border bg-background p-3 font-sans shadow-xs ${comment.state === "dismissed" ? "opacity-60" : ""}`}
     >
       <p className="font-mono text-[10.5px] text-label">
-        {comment.authorKind === "mend" ? "Mend" : comment.authorName} · line{" "}
+        {comment.authorKind === "mend" ? "Mend" : comment.authorName}
+        {comment.kind === "suggestion" ? " · suggestion" : ""} · line{" "}
         {lineLabel(comment.line, comment.endLine)} ·{" "}
         {comment.sentToSessionId === null ? comment.state : "sent to session"}
       </p>
       <p className="mt-1 text-[13.5px] leading-relaxed text-ink-2">{comment.body}</p>
+      <SuggestionBlock comment={comment} />
       <EvidenceLines comment={comment} />
       <CommentStateActions comment={comment} />
     </div>

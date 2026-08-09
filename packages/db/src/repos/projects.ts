@@ -1,6 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import { ProjectId, type Sha } from "@mend/domain";
-import { Project } from "@mend/domain/workbench";
+import { Project, type AutomationChoice } from "@mend/domain/workbench";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -31,6 +31,11 @@ export class ProjectsRepo extends Context.Service<
     readonly byId: (id: ProjectId) => Effect.Effect<Project, ProjectNotFoundError>;
     readonly byName: (name: string) => Effect.Effect<Project | null>;
     readonly list: () => Effect.Effect<ReadonlyArray<Project>>;
+    /** The project's stance on the review-automation switches (cascade: settings → project). */
+    readonly setAutomation: (
+      id: ProjectId,
+      choices: { readonly autoTour: AutomationChoice; readonly autoSuggest: AutomationChoice },
+    ) => Effect.Effect<Project, ProjectNotFoundError>;
     /** Hard delete — sessions and everything under them cascade. */
     readonly remove: (id: ProjectId) => Effect.Effect<void>;
   }
@@ -76,12 +81,28 @@ export class ProjectsRepo extends Context.Service<
         return yield* Effect.forEach(rows, decodeRow);
       });
 
+      const setAutomation = Effect.fn("ProjectsRepo.setAutomation")(function* (
+        id: ProjectId,
+        choices: { readonly autoTour: AutomationChoice; readonly autoSuggest: AutomationChoice },
+      ) {
+        const rows = yield* sql`
+          UPDATE projects
+          SET auto_tour = ${choices.autoTour}, auto_suggest = ${choices.autoSuggest}, updated_at = now()
+          WHERE id = ${id}
+          RETURNING *`.pipe(Effect.orDie);
+        const row = rows[0];
+        if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
+        const updated = yield* decodeRow(row);
+        yield* notifyEvent(sql, { type: "project", projectId: id });
+        return updated;
+      });
+
       const remove = Effect.fn("ProjectsRepo.remove")(function* (id: ProjectId) {
         yield* sql`DELETE FROM projects WHERE id = ${id}`.pipe(Effect.orDie);
         yield* notifyEvent(sql, { type: "project", projectId: id });
       });
 
-      return { create, byId, byName, list, remove };
+      return { create, byId, byName, list, setAutomation, remove };
     }),
   );
 }

@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 
 import {
+  ChangePassesRepo,
   ChangeToursRepo,
   CheckpointsRepo,
   FollowUpsRepo,
@@ -10,6 +11,7 @@ import {
   ReviewCommentsRepo,
   SessionChangesRepo,
   SessionsRepo,
+  SettingsRepo,
 } from "@mend/db";
 import { FollowUp } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
@@ -51,6 +53,23 @@ const STORE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 /** Live session states — removal refuses these; project removal stops them. */
 const LIVE_STATES = new Set(["starting", "running", "waiting", "idle"]);
+
+/** One settings document; PUT replaces it (clients edit what GET returned). */
+export const SettingsGroupLive = HttpApiBuilder.group(MendApi, "settings", (handlers) =>
+  handlers
+    .handle("get", () =>
+      Effect.gen(function* () {
+        const settings = yield* SettingsRepo;
+        return yield* settings.get();
+      }),
+    )
+    .handle("set", ({ payload }) =>
+      Effect.gen(function* () {
+        const settings = yield* SettingsRepo;
+        return yield* settings.set(payload);
+      }),
+    ),
+);
 
 export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (handlers) =>
   handlers
@@ -128,6 +147,17 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         const { leftover } = yield* store.removeProjectStore(project.storePath);
         yield* projects.remove(params.id);
         return new RemovalReport({ removed: true, leftover });
+      }),
+    )
+    .handle("automation", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        return yield* projects
+          .setAutomation(params.id, {
+            autoTour: payload.autoTour,
+            autoSuggest: payload.autoSuggest,
+          })
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
       }),
     ),
 );
@@ -570,6 +600,30 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
           })
           .pipe(Effect.orDie);
         return { queued: true };
+      }),
+    )
+    .handle("suggest", ({ params }) =>
+      Effect.gen(function* () {
+        const changes = yield* SessionChangesRepo;
+        const jobs = yield* JobRunner;
+        yield* changes.byId(params.id).pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        // One pass at a time per change; a finished pass can be re-requested.
+        yield* jobs
+          .enqueue({
+            name: "suggest-change",
+            payload: { changeId: params.id },
+            idempotencyKey: `suggest-change:${params.id}`,
+          })
+          .pipe(Effect.orDie);
+        return { queued: true };
+      }),
+    )
+    .handle("passes", ({ params }) =>
+      Effect.gen(function* () {
+        const changes = yield* SessionChangesRepo;
+        const passes = yield* ChangePassesRepo;
+        yield* changes.byId(params.id).pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        return yield* passes.listForChange(params.id);
       }),
     )
     .handle("stats", ({ params }) =>

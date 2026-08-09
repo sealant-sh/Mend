@@ -3,8 +3,10 @@ import { QueryClient, queryOptions } from "@tanstack/react-query";
 import {
   changeComments,
   changeDiff,
+  changePasses,
   changeStats,
   changeTour,
+  getSettings,
   listActiveSessions,
   listProjects,
   listReferences,
@@ -107,3 +109,14 @@ export const changeTourQuery = (changeId: string) =>
     queryKey: ["change", changeId, "tour"],
     queryFn: () => changeTour(changeId),
   });
+
+export const changePassesQuery = (changeId: string) =>
+  queryOptions({
+    queryKey: ["change", changeId, "passes"],
+    queryFn: () => changePasses(changeId),
+  });
+
+export const settingsQuery = queryOptions({
+  queryKey: ["settings"],
+  queryFn: getSettings,
+});

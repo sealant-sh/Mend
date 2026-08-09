@@ -102,6 +102,7 @@ const projectsLayer = (world: World) =>
     },
     byName: () => Effect.succeed(null),
     list: () => Effect.succeed([...world.projects.values()]),
+    setAutomation: () => Effect.die("not in test"),
     remove: () => Effect.die("not in test"),
   });
 
@@ -266,6 +267,8 @@ const setup = (tmp: string, world: World) => {
       storePath: adopted.storePath,
       defaultBranch: adopted.defaultBranch,
       adoptedSha: Sha.make(adopted.headSha),
+      autoTour: "inherit",
+      autoSuggest: "inherit",
       createdAt: now(),
       updatedAt: now(),
     });

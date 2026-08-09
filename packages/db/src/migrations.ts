@@ -421,6 +421,44 @@ const changeTours = Effect.gen(function* () {
     )`;
 });
 
+/**
+ * Review automation: per-project overrides of the Settings defaults (text
+ * tri-state, `inherit` follows Settings), and the suggestion comment shape —
+ * `kind` separates notes from suggestions; `suggestion` carries the proposed
+ * replacement for the anchored lines.
+ */
+const reviewAutomation = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE projects
+      ADD COLUMN auto_tour text NOT NULL DEFAULT 'inherit',
+      ADD COLUMN auto_suggest text NOT NULL DEFAULT 'inherit'`;
+  yield* sql`
+    ALTER TABLE review_comments
+      ADD COLUMN kind text NOT NULL DEFAULT 'note',
+      ADD COLUMN suggestion text`;
+});
+
+/**
+ * Machine-pass outcomes (tour · read · suggest): one row per (change, kind),
+ * replaced per run, so "the pass ran and drafted nothing" is a stored fact
+ * the review page can state — never the same silence as "the pass never ran".
+ */
+const changePasses = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE change_passes (
+      change_id text NOT NULL REFERENCES session_changes(id) ON DELETE CASCADE,
+      kind text NOT NULL,
+      status text NOT NULL,
+      detail text,
+      findings integer,
+      started_at timestamptz NOT NULL DEFAULT now(),
+      finished_at timestamptz,
+      PRIMARY KEY (change_id, kind)
+    )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -435,4 +473,6 @@ export const migrations = {
   "0010_project_mounts": projectMounts,
   "0011_review_comment_evidence": reviewCommentEvidence,
   "0012_change_tours": changeTours,
+  "0013_review_automation": reviewAutomation,
+  "0014_change_passes": changePasses,
 };

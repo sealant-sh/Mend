@@ -91,7 +91,39 @@ export class JobRunner extends Context.Service<
         yield* Effect.promise(() =>
           boss.work(name, async (jobs) => {
             for (const job of jobs) {
-              await Effect.runPromise(handler(job.data));
+              // The handler's death must still fail the job into pg-boss
+              // retry — but never silently. Without these taps the reason
+              // lives only in the jobs table, and the server log shows a
+              // clean 200 for the enqueue and then nothing at all.
+              const started = Date.now();
+              await Effect.runPromise(
+                Effect.annotateLogs(Effect.logInfo("job started"), {
+                  job: name,
+                  jobId: job.id,
+                }).pipe(
+                  Effect.andThen(handler(job.data)),
+                  Effect.tap(() =>
+                    Effect.annotateLogs(Effect.logInfo("job completed"), {
+                      job: name,
+                      jobId: job.id,
+                      durationMs: Date.now() - started,
+                    }),
+                  ),
+                  Effect.tapDefect((cause) =>
+                    Effect.annotateLogs(
+                      Effect.logError(
+                        "job failed — pg-boss retries until the limit, then dead-letters",
+                      ),
+                      {
+                        job: name,
+                        jobId: job.id,
+                        durationMs: Date.now() - started,
+                        cause: String(cause),
+                      },
+                    ),
+                  ),
+                ),
+              );
             }
           }),
         );

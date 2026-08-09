@@ -1,13 +1,23 @@
+import { useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { AppShell } from "#/components/shell";
-import { sealantConnection, type SealantConnectionDto } from "#/lib/api";
+import {
+  putSettings,
+  sealantConnection,
+  type SealantConnectionDto,
+  type SettingsDto,
+} from "#/lib/api";
+import { queryClient, settingsQuery } from "#/lib/queries";
 import { setThemePreference, useThemePreference, type ThemePreference } from "#/lib/theme";
 
 export const Route = createFileRoute("/settings")({
   ssr: false,
-  loader: () => sealantConnection(),
+  loader: async () => {
+    await queryClient.ensureQueryData(settingsQuery);
+    return sealantConnection();
+  },
   component: SettingsPage,
 });
 
@@ -26,9 +36,84 @@ function SettingsPage() {
       </div>
       <div className="max-w-2xl space-y-6">
         <ThemePanel />
+        <ReviewAutomationPanel />
         <SealantConnectionPanel connection={connection} />
       </div>
     </AppShell>
+  );
+}
+
+const AUTOMATION_ROWS: ReadonlyArray<{
+  readonly key: "autoTour" | "autoSuggest";
+  readonly label: string;
+  readonly detail: string;
+}> = [
+  {
+    key: "autoTour",
+    label: "Compose the description & tour",
+    detail:
+      "Runs at session settle. The review page opens with the description and tour already composed.",
+  },
+  {
+    key: "autoSuggest",
+    label: "Suggest fixes",
+    detail:
+      "Runs at session settle. Drafts replacement suggestions only for concrete defects; most changes produce none.",
+  },
+];
+
+/**
+ * Review automation defaults — the cascade's root. Every project follows
+ * these unless it overrides them on its own page (inherit · on · off).
+ */
+function ReviewAutomationPanel() {
+  const settings = useSuspenseQuery(settingsQuery).data;
+  const [pending, setPending] = useState<"autoTour" | "autoSuggest" | null>(null);
+
+  const toggle = (key: "autoTour" | "autoSuggest", value: boolean) => {
+    if (settings[key] === value) return;
+    setPending(key);
+    const next: SettingsDto = { ...settings, [key]: value };
+    void putSettings(next)
+      .then(() => queryClient.invalidateQueries({ queryKey: ["settings"] }))
+      .finally(() => setPending(null));
+  };
+
+  return (
+    <section className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
+      <h2 className="font-sans text-sm font-semibold">Review automation</h2>
+      <p className="mt-1 text-sm text-muted-foreground">
+        What runs when a session settles. Defaults for every project; a project can override either
+        switch on its own page.
+      </p>
+      <div className="mt-5 space-y-5 border-t border-[var(--sw-faint-rule)] pt-5">
+        {AUTOMATION_ROWS.map((row) => (
+          <div key={row.key} className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="font-sans text-sm font-medium text-foreground">{row.label}</p>
+              <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">{row.detail}</p>
+            </div>
+            <div className="flex shrink-0 gap-2">
+              {[true, false].map((value) => (
+                <button
+                  key={String(value)}
+                  type="button"
+                  disabled={pending !== null}
+                  onClick={() => toggle(row.key, value)}
+                  className={`rounded-xl border px-3.5 py-1.5 font-sans text-xs font-medium shadow-xs transition-colors disabled:opacity-60 ${
+                    settings[row.key] === value
+                      ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
+                      : "border-border bg-card text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {value ? "On" : "Off"}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 

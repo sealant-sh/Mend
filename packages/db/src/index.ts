@@ -15,6 +15,7 @@ export * from "./repos/project-mounts.ts";
 export * from "./repos/projects.ts";
 export * from "./repos/push-devices.ts";
 export * from "./repos/references.ts";
+export * from "./repos/change-passes.ts";
 export * from "./repos/change-tours.ts";
 export * from "./repos/review-comments.ts";
 export * from "./repos/runs.ts";

@@ -8,6 +8,7 @@ import {
   ChangeId,
   Issue,
   IssueId,
+  MendSettings,
   ProjectId,
   ProjectMountId,
   ReferenceId,
@@ -17,7 +18,9 @@ import {
   SessionId,
 } from "@mend/domain";
 import {
+  AutomationChoice,
   Change as SessionChange,
+  ChangePass,
   ChangeTour,
   Checkpoint,
   FollowUp,
@@ -278,6 +281,24 @@ export class SessionActive extends Schema.TaggedErrorClass<SessionActive>()(
   { httpApiStatus: 409 },
 ) {}
 
+/** The project's stance on the review-automation switches — both, replaced together. */
+export class ProjectAutomationRequest extends Schema.Class<ProjectAutomationRequest>(
+  "ProjectAutomationRequest",
+)({
+  autoTour: AutomationChoice,
+  autoSuggest: AutomationChoice,
+}) {}
+
+/**
+ * Product settings, one document (the review-automation cascade's root:
+ * project `inherit` resolves against these defaults). PUT replaces the whole
+ * document — clients edit what GET returned.
+ */
+const settingsGroup = HttpApiGroup.make("settings")
+  .add(HttpApiEndpoint.get("get", "/settings", { success: MendSettings }))
+  .add(HttpApiEndpoint.put("set", "/settings", { payload: MendSettings, success: MendSettings }))
+  .middleware(AuthMiddleware);
+
 const projectsGroup = HttpApiGroup.make("projects")
   .add(HttpApiEndpoint.get("list", "/projects", { success: Schema.Array(Project) }))
   .add(
@@ -301,6 +322,14 @@ const projectsGroup = HttpApiGroup.make("projects")
     HttpApiEndpoint.delete("remove", "/projects/:id", {
       params: { id: ProjectId },
       success: RemovalReport,
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put("automation", "/projects/:id/automation", {
+      params: { id: ProjectId },
+      payload: ProjectAutomationRequest,
+      success: Project,
       error: NotFound,
     }),
   )
@@ -657,6 +686,23 @@ const sessionChangesGroup = HttpApiGroup.make("sessionChanges")
       error: NotFound,
     }),
   )
+  .add(
+    // The suggestion pass: queue it; suggestions land asynchronously as
+    // draft comments carrying exact replacements, over the normal SSE path.
+    HttpApiEndpoint.post("suggest", "/changes/:id/suggest", {
+      params: { id: ChangeId },
+      success: Schema.Struct({ queued: Schema.Boolean }),
+      error: NotFound,
+    }),
+  )
+  .add(
+    // What ran over this change and what came of it — one row per pass kind.
+    HttpApiEndpoint.get("passes", "/changes/:id/passes", {
+      params: { id: ChangeId },
+      success: Schema.Array(ChangePass),
+      error: NotFound,
+    }),
+  )
   .middleware(AuthMiddleware);
 
 /**
@@ -734,6 +780,7 @@ const devicesGroup = HttpApiGroup.make("devices")
 export const MendApi = HttpApi.make("mend")
   .add(healthGroup)
   .add(sealantGroup)
+  .add(settingsGroup)
   .add(issuesGroup)
   .add(briefsGroup)
   .add(runsGroup)

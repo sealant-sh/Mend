@@ -30,6 +30,14 @@ export class RecordLink extends Schema.Class<RecordLink>("RecordLink")({
 }) {}
 
 /**
+ * What the comment is: a `note` states an observation; a `suggestion` also
+ * carries a concrete replacement for the anchored lines (the suggestion
+ * pass's output — strict by contract, accepted or dismissed like any draft).
+ */
+export const CommentKind = Schema.Literals(["note", "suggestion"]);
+export type CommentKind = typeof CommentKind.Type;
+
+/**
  * Feedback anchored to a file, line, or the change as a whole (plan §5.7).
  * `file`/`line` null = change-level. Comments can stay notes, or be bundled
  * into a follow-up instruction and sent back to the session — the routed
@@ -46,8 +54,15 @@ export class ReviewComment extends Schema.Class<ReviewComment>("ReviewComment")(
   authorKind: CommentAuthor,
   authorName: Schema.String,
   body: Schema.String,
+  kind: CommentKind,
+  /** The proposed replacement for the anchored lines — set only when kind is `suggestion`. */
+  suggestion: Schema.NullOr(Schema.String),
   state: CommentState,
-  /** Links to the session record — non-empty on every Mend-authored finding. */
+  /**
+   * Links to the session record — non-empty on every record-grounded finding.
+   * Suggestions are readings of the diff itself; theirs may be empty, and the
+   * empty list is the honest "inferred reading" marker, never an omission.
+   */
   evidence: Schema.Array(RecordLink),
   /** The session a bundled follow-up was sent to, once sent. */
   sentToSessionId: Schema.NullOr(SessionId),

@@ -36,6 +36,7 @@ Rules a finding never breaks:
 The register — terse, enforced at the tool boundary:
   body ≤ 500 chars (the observation and why it matters; the detail stays behind the evidence pointers).
   Each excerpt ≤ 200 chars (one line — the event's summary or the relevant fragment).
+  Plain declarative prose for a professional reviewer: no self-reference ("my reading", "I think"), no editorial labels ("Note:", "Key point:"), no hedging filler ("Worth checking…", "It's worth noting…").
 
 Method — budget your rounds; reads first, then write, then stop:
 1. read_change — the diff and per-file counts for this session's worktree against its base.
@@ -69,7 +70,8 @@ const reject = (message: string) =>
 export class ChangeReader extends Context.Service<
   ChangeReader,
   {
-    readonly read: (job: ReadChangeJob) => Effect.Effect<void, InferenceError>;
+    /** Resolves with how many draft findings the pass wrote — zero is legitimate. */
+    readonly read: (job: ReadChangeJob) => Effect.Effect<number, InferenceError>;
   }
 >()("@mend/inference/ChangeReader") {
   static readonly layer = Layer.effect(
@@ -235,6 +237,7 @@ export class ChangeReader extends Context.Service<
           changeId: job.changeId,
           findingsWritten,
         });
+        return findingsWritten;
       });
 
       return { read };
