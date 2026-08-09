@@ -37,11 +37,12 @@ The register — terse, enforced at the tool boundary:
   body ≤ 500 chars (the observation and why it matters; the detail stays behind the evidence pointers).
   Each excerpt ≤ 200 chars (one line — the event's summary or the relevant fragment).
 
-Method:
+Method — budget your rounds; reads first, then write, then stop:
 1. read_change — the diff and per-file counts for this session's worktree against its base.
-2. read_recording — work through the record (page and narrow with the selector; processStarted/processExited carry commands and exit codes). Match edits in the diff to their cause in the record; note what ran and what never did.
-3. draft_finding — one call per finding, anchored to a file (and line range when the diff pinpoints one) or change-level when it spans files. Typically 0-5 findings; each lands as a draft comment the reviewer accepts, edits, or dismisses.
-4. Finish with one short sentence: how many findings and the single most important one, or why there are none.
+2. read_terminal — the harness process's ACTUAL output and reconstructed commands. For a TUI session this is where the work is visible; the timeline's PTY payloads are content-addressed hashes, not readable text.
+3. read_recording — the structured timeline for sequence anchors (processStarted/processExited carry commands and exit codes). The prompt tells you the record's extent — never probe beyond it. Two or three selective calls suffice; do not page exhaustively.
+4. draft_finding — one call per finding, anchored to a file (and line range when the diff pinpoints one) or change-level when it spans files. Ground claims in what read_terminal showed; cite the nearest timeline sequences you read as the evidence anchors. Typically 0-5 findings.
+5. Finish with one short sentence: how many findings and the single most important one, or why there are none.
 
 Sequences are decimal strings.`;
 
@@ -217,9 +218,16 @@ export class ChangeReader extends Context.Service<
           prompt:
             `Read the change for session ${session.id} (${session.harness}, branch ${change.branch}). ` +
             `The session settled "${session.status}"${session.summary === null ? "" : ` — its own summary: ${session.summary.slice(0, 300)}`}.\n\n` +
+            `The record spans sequences 1..${session.lastSeenSequence} — do not read beyond that.\n\n` +
             `Existing comments on this change (do not restate):\n${existingSummary}\n\n` +
-            `Start with read_change.`,
-          tools: [pass.readChangeTool, pass.readRecordingTool, draftFindingTool],
+            `Start with read_change, then read_terminal.`,
+          tools: [
+            pass.readChangeTool,
+            pass.readRecordingTool,
+            pass.readTerminalTool,
+            draftFindingTool,
+          ],
+          maxRounds: 30,
         });
 
         // Zero findings is legitimate; the pass itself completing is success.

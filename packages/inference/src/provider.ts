@@ -44,6 +44,8 @@ export interface InferenceRequest {
   readonly tools?: ReadonlyArray<InferenceTool>;
   /** When set, the final answer must be JSON satisfying this schema. */
   readonly outputSchema?: Record<string, unknown>;
+  /** Tool-loop round budget; read-heavy passes need more than the default 12. */
+  readonly maxRounds?: number;
 }
 
 /**

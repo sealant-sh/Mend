@@ -32,6 +32,9 @@ export const InferenceToolName = Schema.Literals([
   "publish_brief",
   // change-reading: one draft review comment per call, evidence enforced.
   "draft_finding",
+  // The harness process's actual output — where TUI-session work is visible
+  // (the timeline stores PTY payloads content-addressed, not readable).
+  "read_terminal",
 ]);
 export type InferenceToolName = typeof InferenceToolName.Type;
 

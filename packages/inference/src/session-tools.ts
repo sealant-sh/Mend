@@ -18,6 +18,38 @@ const ReadRecordingInput = Schema.Struct({
   toSequence: Schema.optional(Schema.NullOr(Schema.BigIntFromString)),
   kinds: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
 });
+const ReadTerminalInput = Schema.Struct({
+  /** How many characters from the END of the output to return (default 30000). */
+  tailChars: Schema.optional(Schema.NullOr(Schema.Int)),
+});
+
+const TerminalReadResult = Schema.Struct({
+  commands: Schema.Array(
+    Schema.Struct({
+      command: Schema.String,
+      exitCode: Schema.NullOr(Schema.Int),
+      cwd: Schema.NullOr(Schema.String),
+    }),
+  ),
+  /** ANSI-stripped tail of the harness process's output. */
+  output: Schema.String,
+  totalChars: Schema.Int,
+});
+
+// Control Sequence Introducer / Operating System Command and friends — a TUI
+// redraws constantly; without stripping, the scrollback is unreadable noise.
+const ESC = String.fromCharCode(27);
+const BEL = String.fromCharCode(7);
+const ANSI_PATTERN = new RegExp(
+  `${ESC}(?:\\[[0-9;?]*[a-zA-Z]|\\][^${BEL}${ESC}]*(?:${BEL}|${ESC}\\\\)|[()][A-Z0-9]|[=><MC78])`,
+  "g",
+);
+const stripAnsi = (text: string): string =>
+  text
+    .replaceAll(ANSI_PATTERN, "")
+    .replaceAll("\r\n", "\n")
+    .replaceAll("\r", "\n")
+    .replaceAll(/\n{3,}/g, "\n\n");
 
 const ChangeReadResult = Schema.Struct({
   branch: Schema.String,
@@ -32,6 +64,8 @@ const ChangeReadResult = Schema.Struct({
 export interface SessionChangePass {
   readonly readChangeTool: InferenceTool;
   readonly readRecordingTool: InferenceTool;
+  /** The harness process's actual output + reconstructed commands. */
+  readonly readTerminalTool: InferenceTool;
   /** Sequences the model actually read in this pass — the noise filter's memory. */
   readonly seenSequences: ReadonlySet<string>;
   /** Paths read_change reported as changed — the only valid file anchors. */
@@ -146,5 +180,63 @@ export const makeSessionChangePass = (deps: {
         Schema.encodeEffect(Schema.Array(RecordingEvent))([...value]).pipe(Effect.orDie),
     });
 
-    return { readChangeTool, readRecordingTool, seenSequences, changedPaths };
+    const readTerminalTool = makeTool({
+      name: "read_terminal",
+      description:
+        "The harness process's ACTUAL terminal output (ANSI-stripped) plus the reconstructed command list. The timeline stores PTY payloads content-addressed — this is where the session's visible work lives. tailChars controls how much of the end you get (default 30000).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          tailChars: {
+            type: ["integer", "null"],
+            description: "chars from the end, default 30000",
+          },
+        },
+        additionalProperties: false,
+      },
+      input: ReadTerminalInput,
+      run: (input) =>
+        Effect.gen(function* () {
+          const sdkRun = yield* sealant.getRun(deps.sealantRunId);
+          const commands = yield* sealant.recordCommands(sdkRun);
+          const started = yield* sealant.recordTimeline(sdkRun, { from: 0n }).pipe(
+            Stream.filter((entry) => entry.kind === "processStarted"),
+            Stream.take(1),
+            Stream.runCollect,
+          );
+          const processId = [...started][0]?.processId ?? null;
+          let output = "";
+          let totalChars = 0;
+          if (processId !== null && processId !== undefined) {
+            const bytes = yield* sealant.recordScrollback(sdkRun, processId, "stdout");
+            const text = stripAnsi(new TextDecoder().decode(bytes));
+            totalChars = text.length;
+            const tail = Math.min(Math.max(input.tailChars ?? 30_000, 1_000), 120_000);
+            output =
+              text.length > tail
+                ? `…(${text.length - tail} earlier chars omitted — raise tailChars to see more)\n${text.slice(-tail)}`
+                : text;
+          }
+          return {
+            commands: commands.map((command) => ({
+              command: command.command,
+              exitCode: command.exitCode ?? null,
+              cwd: command.cwd ?? null,
+            })),
+            output,
+            totalChars,
+          };
+        }).pipe(
+          Effect.mapError(
+            (error) =>
+              new InferenceToolError({
+                tool: "read_terminal",
+                message: `reading the terminal failed: ${String(error)}`,
+              }),
+          ),
+        ),
+      encode: (value) => Schema.encodeEffect(TerminalReadResult)(value).pipe(Effect.orDie),
+    });
+
+    return { readChangeTool, readRecordingTool, readTerminalTool, seenSequences, changedPaths };
   });

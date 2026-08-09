@@ -38,10 +38,11 @@ The register:
   stops: typically 3-8. title ≤ 90 chars. narration ≤ 700 chars each — what to look at, why it matters, what the record shows.
   excerpts ≤ 200 chars, one line.
 
-Method:
+Method — budget your rounds; reads first, then answer:
 1. read_change — the full diff and per-file counts.
-2. read_recording — page through the record; match the diff to what the session actually did and checked.
-3. Answer with the tour document in the required JSON shape. Sequences are decimal strings. File paths must be paths from the diff.`;
+2. read_terminal — the harness process's ACTUAL output and reconstructed commands; for a TUI session this is where the work is visible (the timeline's PTY payloads are content-addressed hashes).
+3. read_recording — the structured timeline for sequence anchors. The prompt tells you the record's extent — never probe beyond it; two or three selective calls suffice.
+4. Answer with the tour document in the required JSON shape. Sequences are decimal strings. File paths must be paths from the diff.`;
 
 /** The model's answer shape — validated, then filtered against what was actually read. */
 const TourAnswer = Schema.Struct({
@@ -114,9 +115,11 @@ export class TourComposer extends Context.Service<
           prompt:
             `Compose the tour for session ${session.id} (${session.harness}, branch ${change.branch}). ` +
             `The session settled "${session.status}"${session.summary === null ? "" : ` — its own summary: ${session.summary.slice(0, 300)}`}.\n\n` +
-            `Start with read_change, then read the record. Answer with the tour document.`,
-          tools: [pass.readChangeTool, pass.readRecordingTool],
+            `The record spans sequences 1..${session.lastSeenSequence} — do not read beyond that.\n\n` +
+            `Start with read_change, then read_terminal, then the timeline. Answer with the tour document.`,
+          tools: [pass.readChangeTool, pass.readRecordingTool, pass.readTerminalTool],
           outputSchema,
+          maxRounds: 24,
         });
 
         const parsed = yield* Schema.decodeUnknownEffect(TourAnswer)(answer).pipe(

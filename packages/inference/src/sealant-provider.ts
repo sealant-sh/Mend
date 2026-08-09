@@ -99,7 +99,8 @@ export const sealantProviderLayer = Layer.effect(
         credentials,
       });
 
-      for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      const maxRounds = request.maxRounds ?? MAX_TOOL_ROUNDS;
+      for (let round = 0; round < maxRounds; round++) {
         if (response.turn.type === "text") {
           if (request.outputSchema === undefined) return response.turn.text;
           if (response.turn.json !== undefined) return response.turn.json;
@@ -114,7 +115,7 @@ export const sealantProviderLayer = Layer.effect(
       }
 
       return yield* new InferenceError({
-        message: `tool loop did not settle within ${MAX_TOOL_ROUNDS} rounds`,
+        message: `tool loop did not settle within ${maxRounds} rounds`,
         cause: null,
       });
     });

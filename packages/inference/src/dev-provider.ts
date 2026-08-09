@@ -98,7 +98,8 @@ export const devDirectProviderLayer = Layer.effect(
 
       const messages: Array<Anthropic.MessageParam> = [{ role: "user", content: request.prompt }];
 
-      for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
+      const maxTurns = request.maxRounds ?? MAX_TOOL_TURNS;
+      for (let turn = 0; turn < maxTurns; turn++) {
         const response = yield* callModel(request, apiTools, messages);
         yield* audit.record({
           context: request.context,
@@ -142,7 +143,7 @@ export const devDirectProviderLayer = Layer.effect(
       }
 
       return yield* new InferenceError({
-        message: `tool loop did not settle within ${MAX_TOOL_TURNS} turns`,
+        message: `tool loop did not settle within ${maxTurns} turns`,
         cause: null,
       });
     });

@@ -5,6 +5,7 @@ import type {
   InferenceResponse,
   InteractiveSession,
   Run,
+  RunCommand,
   RunFileChange,
   RunOptions,
   TimelineEntry,
@@ -133,6 +134,16 @@ export class SealantClient extends Context.Service<
       run: Run,
       options?: { readonly from?: bigint },
     ) => Stream.Stream<TimelineEntry, SealantPlatformError>;
+    /** The terminal commands the run executed, reconstructed by the platform. */
+    readonly recordCommands: (
+      run: Run,
+    ) => Effect.Effect<readonly RunCommand[], SealantPlatformError>;
+    /** Byte-exact scrollback for one process's output stream, concatenated. */
+    readonly recordScrollback: (
+      run: Run,
+      processId: string,
+      stream: "stdout" | "stderr",
+    ) => Effect.Effect<Uint8Array, SealantPlatformError>;
     /** The before/after of what a run changed: file list plus the unified diff. */
     readonly runChanges: (run: Run) => Effect.Effect<
       {
@@ -304,6 +315,29 @@ export class SealantClient extends Context.Service<
           toPlatformError,
         );
 
+      const recordCommands = Effect.fn("SealantClient.recordCommands")((run: Run) =>
+        wrap(() => run.record.commands()),
+      );
+
+      const recordScrollback = Effect.fn("SealantClient.recordScrollback")(
+        (run: Run, processId: string, stream: "stdout" | "stderr") =>
+          wrap(async () => {
+            const chunks: Array<Uint8Array> = [];
+            let total = 0;
+            for await (const chunk of run.record.scrollback(processId, stream)) {
+              chunks.push(chunk);
+              total += chunk.length;
+            }
+            const joined = new Uint8Array(total);
+            let offset = 0;
+            for (const chunk of chunks) {
+              joined.set(chunk, offset);
+              offset += chunk.length;
+            }
+            return joined;
+          }),
+      );
+
       const runChanges = Effect.fn("SealantClient.runChanges")((run: Run) =>
         wrap(async () => ({ files: run.changes.files, diff: await run.changes.diff() })),
       );
@@ -350,6 +384,8 @@ export class SealantClient extends Context.Service<
         inferenceRespond,
         recordStream,
         recordTimeline,
+        recordCommands,
+        recordScrollback,
         runChanges,
         connectionCheck,
       };
