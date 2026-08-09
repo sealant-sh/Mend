@@ -7,6 +7,26 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-08-09 · 0.9.0 · PTY output is unreadable through the record read surface
+
+**What Mend needed.** "Mend reads the change" (plan §7.3) reviews a settled session against its
+record. For a TUI session (`mend claude`), the agent's visible work — its reasoning, the commands it
+narrated, the checks it showed — lives in the PTY stream.
+
+**What exists today.** The timeline's `ioChunk pty-out` entries carry content-addressed SHA-256
+references, not payloads (correct for the timeline). The re-materializing surface,
+`run.record.scrollback(processId, stream)`, types `stream` as `IoStream = "stdout" | "stderr"` and
+returns **0 chunks on both** for a PTY-backed process whose record holds ~1,500 `pty-out` chunks
+(verified against a live run: `commands()` returns the bootstrap; both scrollback streams empty).
+Net effect: for TUI runs, no public surface can read what the terminal showed — the machine review
+pass can only observe process starts and hashes, and honestly reports that it cannot attest anything
+else.
+
+**Suggested surface.** Either admit the PTY stream into scrollback (`stream: "pty"` or make
+`scrollback(processId)` default to the process's PTY when it has one), or expose payload resolution
+for `ioChunk` refs (`record.chunk(ref)`). Byte-exact is already the scrollback contract; the PTY is
+the one stream where it matters most.
+
 ## 2026-08-01 · 0.8.1 · Plural mounts with read-only — the plan's original shape, plus `:ro`
 
 **Implemented at the source** — [sealant#120](https://github.com/sealant-sh/sealant/pull/120)
