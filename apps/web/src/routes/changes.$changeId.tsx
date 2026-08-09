@@ -1,6 +1,6 @@
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { CommentStateActions, EvidenceLines } from "#/components/comment-state";
 import { WorkbenchDiff } from "#/components/diff";
@@ -49,6 +49,7 @@ function ChangePage() {
     readonly path: string;
     readonly nonce: number;
   } | null>(null);
+  const [tourStop, setTourStop] = useState<number | null>(null);
   useWorkbenchEvents();
 
   const additions = files.reduce((sum, file) => sum + file.additions, 0);
@@ -56,6 +57,38 @@ function ChangePage() {
   const openUnsent = comments.filter(
     (comment) => comment.state === "open" && comment.sentToSessionId === null,
   );
+
+  // The tour's stop order (plan §7.3: machine findings feed it): files with
+  // live Mend findings first, then any commented file, then by churn — the
+  // reading order a reviewer would want, not the alphabetical one git gives.
+  const tourStops = useMemo(() => {
+    const weight = (path: string, predicate: (comment: ReviewCommentDto) => boolean) =>
+      comments.filter((comment) => comment.file === path && predicate(comment)).length;
+    return files.toSorted((a, b) => {
+      const findings =
+        weight(
+          b.path,
+          (c) => c.authorKind === "mend" && (c.state === "draft" || c.state === "open"),
+        ) -
+        weight(
+          a.path,
+          (c) => c.authorKind === "mend" && (c.state === "draft" || c.state === "open"),
+        );
+      if (findings !== 0) return findings;
+      const commented =
+        weight(b.path, (c) => c.state !== "dismissed") -
+        weight(a.path, (c) => c.state !== "dismissed");
+      if (commented !== 0) return commented;
+      return b.additions + b.deletions - (a.additions + a.deletions);
+    });
+  }, [files, comments]);
+
+  const goToStop = (index: number) => {
+    const stop = tourStops[index];
+    if (stop === undefined) return;
+    setTourStop(index);
+    setFocusFile({ path: stop.path, nonce: Date.now() });
+  };
 
   return (
     <AppShell>
@@ -66,6 +99,14 @@ function ChangePage() {
             {change.branch.replace(/^mend\/session\//, "session ")}
           </h1>
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={files.length === 0}
+              onClick={() => goToStop(0)}
+              className="rounded-xl border border-border bg-card px-4 py-2 font-sans text-sm font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-60"
+            >
+              Tour this change
+            </button>
             <ReadChangeButton changeId={changeId} />
             <button
               type="button"
@@ -90,6 +131,53 @@ function ChangePage() {
           </Link>
         </p>
         <FollowUpBanner sessionId={change.sessionId} followUp={followUp} />
+
+        {tourStop !== null && tourStops[tourStop] !== undefined && (
+          <div className="sticky top-3 z-30 mt-5 flex flex-wrap items-center gap-3 rounded-2xl border border-border bg-card px-4 py-2.5 shadow-md">
+            <p className="font-mono text-[11px] text-label">
+              stop {tourStop + 1}/{tourStops.length}
+            </p>
+            <p className="min-w-0 flex-1 truncate font-mono text-xs text-ink-2">
+              {tourStops[tourStop].path}
+              <span className="text-faint">
+                {" "}
+                · +{tourStops[tourStop].additions} −{tourStops[tourStop].deletions}
+                {(() => {
+                  const findings = comments.filter(
+                    (comment) =>
+                      comment.file === tourStops[tourStop]?.path &&
+                      comment.authorKind === "mend" &&
+                      (comment.state === "draft" || comment.state === "open"),
+                  ).length;
+                  return findings > 0 ? ` · ${findings} finding${findings === 1 ? "" : "s"}` : "";
+                })()}
+              </span>
+            </p>
+            <button
+              type="button"
+              disabled={tourStop === 0}
+              onClick={() => goToStop(tourStop - 1)}
+              className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40"
+            >
+              ← Prev
+            </button>
+            <button
+              type="button"
+              disabled={tourStop >= tourStops.length - 1}
+              onClick={() => goToStop(tourStop + 1)}
+              className="rounded-xl border border-border bg-card px-3 py-1 font-sans text-xs font-medium text-foreground shadow-xs disabled:opacity-40"
+            >
+              Next →
+            </button>
+            <button
+              type="button"
+              onClick={() => setTourStop(null)}
+              className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+            >
+              End
+            </button>
+          </div>
+        )}
 
         <div className="mt-8 grid items-start gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
           {/* The sidebar owns navigation AND the change-level comment surface —
