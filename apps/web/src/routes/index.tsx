@@ -2,11 +2,10 @@ import { useQuery, useSuspenseQueries, useSuspenseQuery } from "@tanstack/react-
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useState } from "react";
 
+import { useContextMenu } from "#/components/context-menu";
 import { AppShell } from "#/components/shell";
 import { SessionStatusDot } from "#/components/status";
 import {
-  createSession,
-  launchSession,
   resumeSession,
   stopSession,
   type SessionAnnotationDto,
@@ -15,6 +14,13 @@ import {
 } from "#/lib/api";
 import { changeStatsQuery, projectDetailQuery, projectsQuery, queryClient } from "#/lib/queries";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
+import {
+  HARNESSES,
+  LIVE_STATES,
+  projectMenu,
+  sessionMenu,
+  startSession,
+} from "#/lib/workbench-menus";
 
 export const Route = createFileRoute("/")({
   ssr: false,
@@ -27,10 +33,7 @@ export const Route = createFileRoute("/")({
   component: HomePage,
 });
 
-const ACTIVE = new Set(["starting", "running", "waiting", "idle"]);
-
-/** How each harness launches — mirrors the CLI; the server records either way. */
-const HARNESSES = ["claude", "codex", "opencode"] as const;
+const ACTIVE = LIVE_STATES;
 
 interface SessionEntry {
   readonly session: SessionDto;
@@ -53,6 +56,7 @@ function HomePage() {
   const navigate = useNavigate();
   const [busy, setBusy] = useState<string | null>(null);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const { openMenu, menuElement } = useContextMenu();
 
   const onEvent = useCallback((event: WorkbenchEventDto) => {
     if (event.type === "session-progress" && event.sessionId !== undefined) {
@@ -91,18 +95,8 @@ function HomePage() {
 
   /** Fire a fresh session on a project and land in its workbench. */
   const start = (projectId: string, harness: string) => {
-    const key = `${projectId}:${harness}`;
-    setBusy(key);
-    void createSession(projectId, harness)
-      .then((session) => {
-        void launchSession(session.id, [harness])
-          .catch(() => undefined)
-          .finally(() => {
-            void queryClient.invalidateQueries({ queryKey: ["session", session.id] });
-          });
-        return navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } });
-      })
-      .finally(() => setBusy(null));
+    setBusy(`${projectId}:${harness}`);
+    void startSession(navigate, projectId, harness).finally(() => setBusy(null));
   };
 
   /** Rejoin a settled session — same worktree, restored state, fresh workspace. */
@@ -159,6 +153,9 @@ function HomePage() {
                 key={entry.session.id}
                 entry={entry}
                 progressLine={progress[entry.session.id]}
+                onContextMenu={(event) =>
+                  openMenu(event, sessionMenu(entry.session, entry.annotation, navigate))
+                }
               />
             ))}
           </Section>
@@ -167,7 +164,14 @@ function HomePage() {
         {needsDelivery.length > 0 && (
           <Section label="Needs delivery">
             {needsDelivery.map((entry) => (
-              <SessionCard key={entry.session.id} entry={entry} progressLine={undefined} />
+              <SessionCard
+                key={entry.session.id}
+                entry={entry}
+                progressLine={undefined}
+                onContextMenu={(event) =>
+                  openMenu(event, sessionMenu(entry.session, entry.annotation, navigate))
+                }
+              />
             ))}
           </Section>
         )}
@@ -180,6 +184,9 @@ function HomePage() {
                 session={session}
                 project={project}
                 changeId={annotation?.changeId ?? ""}
+                onContextMenu={(event) =>
+                  openMenu(event, sessionMenu(session, annotation, navigate))
+                }
               />
             ))}
           </Section>
@@ -211,7 +218,13 @@ function HomePage() {
                   className="mt-6 size-3.5 shrink-0 accent-[var(--sw-accent)]"
                 />
                 <div className="min-w-0 flex-1">
-                  <SessionCard entry={entry} progressLine={progress[entry.session.id]} />
+                  <SessionCard
+                    entry={entry}
+                    progressLine={progress[entry.session.id]}
+                    onContextMenu={(event) =>
+                      openMenu(event, sessionMenu(entry.session, entry.annotation, navigate))
+                    }
+                  />
                 </div>
               </div>
             ))}
@@ -242,7 +255,11 @@ function HomePage() {
                 const sessions = detail?.sessions ?? [];
                 const recent = sessions.filter(({ status }) => !ACTIVE.has(status)).slice(0, 4);
                 return (
-                  <div key={project.id} className="rounded-2xl bg-card shadow-sm">
+                  <div
+                    key={project.id}
+                    onContextMenu={(event) => openMenu(event, projectMenu(project, navigate))}
+                    className="rounded-2xl bg-card shadow-sm"
+                  >
                     <div className="flex flex-wrap items-center justify-between gap-3 border-b border-rule-faint px-5 py-3.5">
                       <div className="min-w-0">
                         <Link
@@ -287,6 +304,9 @@ function HomePage() {
                         return (
                           <div
                             key={session.id}
+                            onContextMenu={(event) =>
+                              openMenu(event, sessionMenu(session, annotation, navigate))
+                            }
                             className={`flex items-center justify-between gap-3 px-5 py-3 ${sessionIndex === 0 ? "" : "border-t border-rule-faint"}`}
                           >
                             <Link
@@ -337,6 +357,7 @@ function HomePage() {
           </div>
         </section>
       </div>
+      {menuElement}
     </AppShell>
   );
 }
@@ -400,15 +421,18 @@ function ChangeStatsChip({ changeId }: { readonly changeId: string }) {
 function SessionCard({
   entry,
   progressLine,
+  onContextMenu,
 }: {
   readonly entry: SessionEntry;
   readonly progressLine: string | undefined;
+  readonly onContextMenu?: React.MouseEventHandler;
 }) {
   const { session, project, annotation } = entry;
   return (
     <Link
       to="/sessions/$sessionId"
       params={{ sessionId: session.id }}
+      onContextMenu={onContextMenu}
       className="block rounded-2xl bg-card p-5 no-underline shadow-sm transition-shadow hover:shadow-md"
     >
       <div className="flex items-center justify-between gap-4">
@@ -431,15 +455,18 @@ function ReviewRow({
   session,
   project,
   changeId,
+  onContextMenu,
 }: {
   readonly session: SessionDto;
   readonly project: string;
   readonly changeId: string;
+  readonly onContextMenu?: React.MouseEventHandler;
 }) {
   return (
     <Link
       to="/changes/$changeId"
       params={{ changeId }}
+      onContextMenu={onContextMenu}
       className="block rounded-2xl bg-card p-5 no-underline shadow-sm transition-shadow hover:shadow-md"
     >
       <div className="flex items-center justify-between gap-4">
