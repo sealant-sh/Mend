@@ -20,6 +20,7 @@ import {
   sessionDetailQuery,
   sessionTranscriptQuery,
 } from "#/lib/queries";
+import { useResolvedDark } from "#/lib/theme";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 
 export const Route = createFileRoute("/sessions/$sessionId")({
@@ -100,6 +101,7 @@ function SessionPage() {
   const [labelDraft, setLabelDraft] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<"idle" | "armed" | "working">("idle");
   const navigate = useNavigate();
+  const dark = useResolvedDark();
   useWorkbenchEvents();
 
   const saveLabel = () => {
@@ -295,7 +297,12 @@ function SessionPage() {
                   </div>
                   {/* Keyed on the PLATFORM session: `mend continue` reopens the
                       session with a fresh PTY, and the pane must reconnect. */}
-                  <SessionTerminal key={session.sealantSessionId} sessionId={session.id} />
+                  {/* Keyed on theme too: the terminal snapshots CSS variables at
+                      attach, and a remount replays the record into the new palette. */}
+                  <SessionTerminal
+                    key={`${session.sealantSessionId}:${dark ? "dark" : "light"}`}
+                    sessionId={session.id}
+                  />
                 </div>
               </>
             ) : (

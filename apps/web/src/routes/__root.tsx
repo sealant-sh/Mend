@@ -26,6 +26,13 @@ export const Route = createRootRoute({
       { name: "robots", content: "noindex" },
     ],
     links: [{ rel: "stylesheet", href: appCss }],
+    scripts: [
+      {
+        // No-flash: resolve the stored theme (or the OS) before first paint.
+        // Mirrors lib/theme.ts — same key, same resolution.
+        children: `(function(){try{var t=localStorage.getItem("mend-theme");if(t==="dark"||((t===null||t==="system")&&window.matchMedia("(prefers-color-scheme: dark)").matches)){document.documentElement.classList.add("dark");}}catch(e){}})();`,
+      },
+    ],
   }),
   component: RootComponent,
 });

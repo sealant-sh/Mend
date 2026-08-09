@@ -3,6 +3,7 @@ import { useState } from "react";
 
 import { AppShell } from "#/components/shell";
 import { sealantConnection, type SealantConnectionDto } from "#/lib/api";
+import { setThemePreference, useThemePreference, type ThemePreference } from "#/lib/theme";
 
 export const Route = createFileRoute("/settings")({
   ssr: false,
@@ -24,6 +25,7 @@ function SettingsPage() {
         </p>
       </div>
       <div className="max-w-2xl space-y-6">
+        <ThemePanel />
         <SealantConnectionPanel connection={connection} />
       </div>
     </AppShell>
@@ -47,6 +49,42 @@ const STATUS_COPY: Record<
   },
   unreachable: { word: "Unreachable", dotClass: "bg-danger-dot", textClass: "text-danger" },
 };
+
+const THEME_OPTIONS: ReadonlyArray<{ readonly value: ThemePreference; readonly label: string }> = [
+  { value: "system", label: "System" },
+  { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" },
+];
+
+/** Light and dark are one structure (DESIGN.md §1); System tracks the OS live. */
+function ThemePanel() {
+  const preference = useThemePreference();
+  return (
+    <section className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
+      <h2 className="font-sans text-sm font-semibold">Theme</h2>
+      <p className="mt-1 text-sm text-muted-foreground">
+        The warm-dark counterpart of the same system — identical structure, cobalt brightened to
+        read on dark.
+      </p>
+      <div className="mt-4 flex gap-2">
+        {THEME_OPTIONS.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => setThemePreference(option.value)}
+            className={`rounded-xl border px-4 py-1.5 font-sans text-sm font-medium shadow-xs transition-colors ${
+              preference === option.value
+                ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
+                : "border-border bg-card text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
 
 function SealantConnectionPanel({ connection }: { readonly connection: SealantConnectionDto }) {
   const router = useRouter();
