@@ -17,6 +17,8 @@ export const InferenceContext = Schema.Literals([
   "change-reading",
   // The composed review tour — same reading, guided-walkthrough output.
   "change-tour",
+  // The suggestion pass — same reading, concrete replacement proposals.
+  "change-suggesting",
 ]);
 export type InferenceContext = typeof InferenceContext.Type;
 
@@ -32,6 +34,8 @@ export const InferenceToolName = Schema.Literals([
   "publish_brief",
   // change-reading: one draft review comment per call, evidence enforced.
   "draft_finding",
+  // change-suggesting: one draft suggestion per call, precision enforced.
+  "draft_suggestion",
   // The harness process's actual output — where TUI-session work is visible
   // (the timeline stores PTY payloads content-addressed, not readable).
   "read_terminal",

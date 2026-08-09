@@ -288,6 +288,9 @@ export type SessionStatusDto =
   | "failed"
   | "stopped";
 
+/** A project's stance on one review-automation switch; inherit follows Settings. */
+export type AutomationChoiceDto = "inherit" | "on" | "off";
+
 export interface ProjectDto {
   readonly id: string;
   readonly name: string;
@@ -295,6 +298,8 @@ export interface ProjectDto {
   readonly storePath: string;
   readonly defaultBranch: string;
   readonly adoptedSha: string | null;
+  readonly autoTour: AutomationChoiceDto;
+  readonly autoSuggest: AutomationChoiceDto;
   readonly createdAt: string;
 }
 
@@ -409,6 +414,9 @@ export interface ReviewCommentDto {
   readonly authorKind: "reviewer" | "mend";
   readonly authorName: string;
   readonly body: string;
+  /** `suggestion` carries a concrete replacement for the anchored lines. */
+  readonly kind: "note" | "suggestion";
+  readonly suggestion: string | null;
   readonly state: "draft" | "open" | "addressed" | "dismissed";
   readonly evidence: ReadonlyArray<RecordLinkDto>;
   readonly sentToSessionId: string | null;
@@ -448,6 +456,55 @@ export const changeTour = (changeId: string) =>
 /** Queue tour composition; the tour arrives over SSE when written. */
 export const composeTour = (changeId: string) =>
   post<{ readonly queued: boolean }>(`/api/changes/${changeId}/tour`, {});
+
+/** Queue the suggestion pass; suggestions land as draft comments over SSE. */
+export const suggestChange = (changeId: string) =>
+  post<{ readonly queued: boolean }>(`/api/changes/${changeId}/suggest`, {});
+
+/**
+ * A machine pass's recorded outcome: what ran over this change and what came
+ * of it. Zero findings on a completed pass is an outcome, not an absence.
+ */
+export interface ChangePassDto {
+  readonly changeId: string;
+  readonly kind: "tour" | "read" | "suggest";
+  readonly status: "running" | "completed" | "failed";
+  readonly detail: string | null;
+  readonly findings: number | null;
+  readonly startedAt: string;
+  readonly finishedAt: string | null;
+}
+
+export const changePasses = (changeId: string) =>
+  request<ReadonlyArray<ChangePassDto>>(`/api/changes/${changeId}/passes`);
+
+/** Product settings, one document; PUT replaces it (edit what GET returned). */
+export interface SettingsDto {
+  readonly prMode: "draft-immediately" | "pr-on-approval";
+  readonly concurrency: number;
+  readonly autoTour: boolean;
+  readonly autoSuggest: boolean;
+}
+
+export const getSettings = () => request<SettingsDto>("/api/settings");
+
+export const putSettings = (settings: SettingsDto) =>
+  request<SettingsDto>("/api/settings", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(settings),
+  });
+
+/** The project's automation overrides, replaced together. */
+export const setProjectAutomation = (
+  projectId: string,
+  choices: { readonly autoTour: AutomationChoiceDto; readonly autoSuggest: AutomationChoiceDto },
+) =>
+  request<ProjectDto>(`/api/projects/${projectId}/automation`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(choices),
+  });
 
 /** A workbench SSE event — pointers only; clients re-read through the API. */
 export interface WorkbenchEventDto {

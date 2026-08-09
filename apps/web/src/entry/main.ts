@@ -9,6 +9,8 @@ import { Auth } from "@mend/auth";
 import {
   BriefCommentsRepo,
   BriefsRepo,
+  ChangePassesRepo,
+  ChangePassesRepoLive,
   ChangesRepo,
   ChangeToursRepo,
   CheckpointsRepo,
@@ -27,10 +29,14 @@ import {
   SessionsRepo,
   SettingsRepo,
 } from "@mend/db";
+import type { ChangeId } from "@mend/domain";
 import {
   BriefCompiler,
   ChangeReader,
+  ChangeSuggester,
+  ChangeSuggesterLive,
   ComposeTourJob,
+  InferenceError,
   CommentRouter,
   CompileBriefJob,
   FailureSummarizer,
@@ -38,12 +44,14 @@ import {
   ReadChangeJob,
   RouteCommentJob,
   sealantProviderLayer,
+  SuggestChangeJob,
   SummarizeFailureJob,
   TourComposer,
 } from "@mend/inference";
 import {
   Dispatcher,
   JobRunner,
+  ReviewPrepLive,
   runStarterLayer,
   SessionNotifierLive,
   startRunToolLayer,
@@ -86,6 +94,7 @@ const DatabaseLive = Layer.mergeAll(
   CheckpointsRepo.layer,
   ReviewCommentsRepo.layer,
   ChangeToursRepo.layer,
+  ChangePassesRepoLive,
   FollowUpsRepo.layer,
   PushDevicesRepo.layer,
 ).pipe(Layer.provideMerge(MigratorLive.pipe(Layer.provideMerge(PgLive))));
@@ -165,6 +174,7 @@ const decodeSummarizeFailureJob = Schema.decodeUnknownEffect(SummarizeFailureJob
 const decodeRouteCommentJob = Schema.decodeUnknownEffect(RouteCommentJob);
 const decodeReadChangeJob = Schema.decodeUnknownEffect(ReadChangeJob);
 const decodeComposeTourJob = Schema.decodeUnknownEffect(ComposeTourJob);
+const decodeSuggestChangeJob = Schema.decodeUnknownEffect(SuggestChangeJob);
 
 /** The inference job workers: a failed handler dies into the engine's retry. */
 const InferenceWorkersLive = Layer.effectDiscard(
@@ -175,15 +185,39 @@ const InferenceWorkersLive = Layer.effectDiscard(
     const router = yield* CommentRouter;
     const reader = yield* ChangeReader;
     const tourComposer = yield* TourComposer;
+    const suggester = yield* ChangeSuggester;
+    const passes = yield* ChangePassesRepo;
+    // Every change pass records its outcome — running, completed with a
+    // count, or failed with the error's own words — so the review page can
+    // state what ran instead of leaving "drafted nothing" and "never ran"
+    // looking identical. Failures still propagate into pg-boss retry.
+    const recorded = (
+      kind: "tour" | "read" | "suggest",
+      changeId: ChangeId,
+      pass: Effect.Effect<number | void, InferenceError>,
+    ) =>
+      passes.begin(changeId, kind).pipe(
+        Effect.andThen(pass),
+        Effect.tap((findings) =>
+          passes.complete(changeId, kind, typeof findings === "number" ? findings : null),
+        ),
+        Effect.tapError((error) => passes.fail(changeId, kind, error.message)),
+      );
     yield* jobs.work("read-change", (payload) =>
       decodeReadChangeJob(payload).pipe(
-        Effect.flatMap((job) => reader.read(job)),
+        Effect.flatMap((job) => recorded("read", job.changeId, reader.read(job))),
         Effect.orDie,
       ),
     );
     yield* jobs.work("compose-tour", (payload) =>
       decodeComposeTourJob(payload).pipe(
-        Effect.flatMap((job) => tourComposer.compose(job)),
+        Effect.flatMap((job) => recorded("tour", job.changeId, tourComposer.compose(job))),
+        Effect.orDie,
+      ),
+    );
+    yield* jobs.work("suggest-change", (payload) =>
+      decodeSuggestChangeJob(payload).pipe(
+        Effect.flatMap((job) => recorded("suggest", job.changeId, suggester.suggest(job))),
         Effect.orDie,
       ),
     );
@@ -220,6 +254,8 @@ const WorkerLive = Layer.mergeAll(
   SessionEngineLive,
   // Pushes to registered phones when a session settles or waits on the user.
   SessionNotifierLive,
+  // Queues tour + suggestion passes at settle, per the automation cascade.
+  ReviewPrepLive,
 ).pipe(
   Layer.provide(Dispatcher.layer),
   Layer.provide(BriefCompiler.layer),
@@ -227,6 +263,7 @@ const WorkerLive = Layer.mergeAll(
   Layer.provide(CommentRouter.layer),
   Layer.provide(ChangeReader.layer),
   Layer.provide(TourComposer.layer),
+  Layer.provide(ChangeSuggesterLive),
   Layer.provide(liveToolsLayer),
   // start_run: the one tool that reaches the run machinery.
   Layer.provide(startRunToolLayer),

@@ -1,5 +1,6 @@
 export * from "./brief-compiler.ts";
 export * from "./change-reader.ts";
+export * from "./change-suggester.ts";
 export * from "./comment-router.ts";
 export * from "./dev-provider.ts";
 export * from "./failure-summarizer.ts";

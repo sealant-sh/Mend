@@ -52,6 +52,27 @@ export function CommentStateActions({ comment }: { readonly comment: ReviewComme
 }
 
 /**
+ * A suggestion's proposed replacement, verbatim — the exact lines the pass
+ * would put at the anchor. Null on a suggestion means the fix is deletion.
+ * Rendered as machine fact (mono, recessed), never re-phrased.
+ */
+export function SuggestionBlock({ comment }: { readonly comment: ReviewCommentDto }) {
+  if (comment.kind !== "suggestion") return null;
+  return (
+    <div className="mt-2">
+      <p className="font-mono text-[10.5px] text-label">
+        {comment.suggestion === null ? "suggested: delete these lines" : "suggested replacement"}
+      </p>
+      {comment.suggestion !== null && (
+        <pre className="mt-1 overflow-x-auto rounded-lg bg-[var(--sw-sunken)] px-3 py-2 font-mono text-[12px] leading-relaxed text-ink-2">
+          {comment.suggestion}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+/**
  * The finding's links into the session record — the reason it was allowed to
  * exist. Sequences address the platform record; excerpts are what was there.
  */

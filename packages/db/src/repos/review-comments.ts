@@ -1,7 +1,12 @@
 import { PgClient } from "@effect/sql-pg";
 import { type ChangeId, ReviewCommentId, type SessionId } from "@mend/domain";
 import { RecordLink } from "@mend/domain/workbench";
-import { ReviewComment, type CommentAuthor, type CommentState } from "@mend/domain/workbench";
+import {
+  ReviewComment,
+  type CommentAuthor,
+  type CommentKind,
+  type CommentState,
+} from "@mend/domain/workbench";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -24,9 +29,12 @@ export interface NewReviewComment {
   readonly authorKind: CommentAuthor;
   readonly authorName: string;
   readonly body: string;
+  /** Defaults to `note`; the suggestion pass writes `suggestion` + the replacement text. */
+  readonly kind?: CommentKind;
+  readonly suggestion?: string | null;
   /** Reviewer comments are born `open`; Mend's findings are born `draft` (§7.3). */
   readonly state: CommentState;
-  /** Links into the session record — required on Mend-authored findings. */
+  /** Links into the session record — required on record-grounded Mend findings. */
   readonly evidence?: ReadonlyArray<RecordLink>;
 }
 
@@ -76,9 +84,10 @@ export class ReviewCommentsRepo extends Context.Service<
         // Sequences ride jsonb as decimal strings — the RecordLink codec's wire shape.
         const evidence = yield* encodeEvidence(comment.evidence ?? []).pipe(Effect.orDie);
         const rows = yield* sql`
-          INSERT INTO review_comments (id, change_id, file, line, end_line, author_kind, author_name, body, state, evidence)
+          INSERT INTO review_comments (id, change_id, file, line, end_line, author_kind, author_name, body, kind, suggestion, state, evidence)
           VALUES (${id}, ${comment.changeId}, ${comment.file}, ${comment.line}, ${comment.endLine},
-                  ${comment.authorKind}, ${comment.authorName}, ${comment.body}, ${comment.state},
+                  ${comment.authorKind}, ${comment.authorName}, ${comment.body},
+                  ${comment.kind ?? "note"}, ${comment.suggestion ?? null}, ${comment.state},
                   ${JSON.stringify(evidence)}::jsonb)
           RETURNING *`.pipe(Effect.orDie);
         const created = yield* decodeRow(rows[0]);

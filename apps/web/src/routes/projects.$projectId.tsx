@@ -14,6 +14,9 @@ import {
   removeReference,
   removeSession,
   selectProjectReferences,
+  setProjectAutomation,
+  type AutomationChoiceDto,
+  type ProjectDto,
 } from "#/lib/api";
 import {
   projectDetailQuery,
@@ -183,12 +186,85 @@ function ProjectPage() {
           <aside className="flex flex-col gap-10 lg:border-l lg:border-rule lg:pl-8">
             <ReferencesSection projectId={projectId} />
             <MountsSection projectId={projectId} />
+            <ReviewAutomationSection project={project} />
             <RemoveProjectSection projectId={projectId} />
           </aside>
         </div>
       </div>
       {menuElement}
     </AppShell>
+  );
+}
+
+const AUTOMATION_ROWS: ReadonlyArray<{
+  readonly key: "autoTour" | "autoSuggest";
+  readonly label: string;
+}> = [
+  { key: "autoTour", label: "Description & tour" },
+  { key: "autoSuggest", label: "Suggest fixes" },
+];
+
+const AUTOMATION_CHOICES: ReadonlyArray<{
+  readonly value: AutomationChoiceDto;
+  readonly label: string;
+}> = [
+  { value: "inherit", label: "inherit" },
+  { value: "on", label: "on" },
+  { value: "off", label: "off" },
+];
+
+/**
+ * This project's stance on the review-automation switches: what Mend runs
+ * when a session settles. `inherit` follows the Settings defaults; the
+ * override is the project's own word either way.
+ */
+function ReviewAutomationSection({ project }: { readonly project: ProjectDto }) {
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const choose = (key: "autoTour" | "autoSuggest", value: AutomationChoiceDto) => {
+    if (project[key] === value) return;
+    setBusy(key);
+    void setProjectAutomation(project.id, {
+      autoTour: key === "autoTour" ? value : project.autoTour,
+      autoSuggest: key === "autoSuggest" ? value : project.autoSuggest,
+    })
+      .then(() => queryClient.invalidateQueries({ queryKey: ["project", project.id] }))
+      .finally(() => setBusy(null));
+  };
+
+  return (
+    <section>
+      <p className="border-b border-rule pb-2 text-xs font-medium text-label">Review automation</p>
+      <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
+        What Mend runs when a session settles here. Inherit follows the defaults in Settings.
+      </p>
+      <div className="mt-3 flex flex-col gap-3">
+        {AUTOMATION_ROWS.map((row) => (
+          <div key={row.key} className="flex items-center justify-between gap-2">
+            <p className="min-w-0 truncate font-sans text-[13px] font-medium text-foreground">
+              {row.label}
+            </p>
+            <div className="flex shrink-0 gap-1">
+              {AUTOMATION_CHOICES.map((choice) => (
+                <button
+                  key={choice.value}
+                  type="button"
+                  disabled={busy !== null}
+                  onClick={() => choose(row.key, choice.value)}
+                  className={`rounded-lg border px-2 py-1 font-mono text-[11px] transition-colors disabled:opacity-50 ${
+                    project[row.key] === choice.value
+                      ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
+                      : "border-border bg-card text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {choice.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 

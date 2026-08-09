@@ -1,0 +1,29 @@
+import { Schema } from "effect";
+
+import { ChangeId } from "../ids.ts";
+
+/** Which machine pass over a change: tour composition, the record-grounded read, the suggestion pass. */
+export const PassKind = Schema.Literals(["tour", "read", "suggest"]);
+export type PassKind = typeof PassKind.Type;
+
+export const PassStatus = Schema.Literals(["running", "completed", "failed"]);
+export type PassStatus = typeof PassStatus.Type;
+
+/**
+ * The durable answer to "did Mend run over this change, and what came of
+ * it". One row per (change, kind), replaced on each run. Status is a process
+ * fact (running · completed · failed), `findings` counts what the pass
+ * drafted (null where the kind has no count — the tour), `detail` carries a
+ * failure's own words. Zero findings on a completed pass is an outcome the
+ * UI states out loud — silence and "nothing cleared the bar" must never
+ * look the same.
+ */
+export class ChangePass extends Schema.Class<ChangePass>("ChangePass")({
+  changeId: ChangeId,
+  kind: PassKind,
+  status: PassStatus,
+  detail: Schema.NullOr(Schema.String),
+  findings: Schema.NullOr(Schema.Int),
+  startedAt: Schema.Date,
+  finishedAt: Schema.NullOr(Schema.Date),
+}) {}
