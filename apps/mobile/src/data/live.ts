@@ -60,6 +60,15 @@ export interface ChangedFileDto {
   readonly deletions: number;
 }
 
+export interface SessionChangeDto {
+  readonly id: string;
+  readonly projectId: string;
+  readonly sessionId: string;
+  readonly branch: string;
+  readonly baseSha: string;
+  readonly headSha: string | null;
+}
+
 /** The server answered and said no — carries its own words when it gave any. */
 export class ApiError extends Error {
   constructor(
@@ -70,7 +79,8 @@ export class ApiError extends Error {
   }
 }
 
-const api = async <T>(method: "GET" | "POST", route: string, body?: unknown): Promise<T> => {
+/** Shared by the review data module — one transport, one error shape. */
+export const api = async <T>(method: "GET" | "POST", route: string, body?: unknown): Promise<T> => {
   const config = await loadConfig();
   if (config.url === "") throw new ApiError("Set the server URL in Settings first.", 0);
   const response = await fetch(`${config.url}/api${route}`, {
@@ -205,14 +215,15 @@ export const useAllSessions = () => {
   });
 };
 
-export const useSession = (id: string) =>
+export const useSession = (id: string | null) =>
   useQuery({
     queryKey: ["session", id],
+    enabled: id !== null,
     queryFn: () =>
       api<{
         readonly session: SessionDto;
         readonly checkpoints: ReadonlyArray<{ readonly sha: string; readonly trigger: string }>;
-        readonly change: { readonly id: string } | null;
+        readonly change: SessionChangeDto | null;
       }>("GET", `/sessions/${id}`),
     refetchInterval: 5_000,
   });
@@ -223,6 +234,7 @@ export const useChangeDiff = (changeId: string | null) =>
     enabled: changeId !== null,
     queryFn: () =>
       api<{
+        readonly change: SessionChangeDto;
         readonly diff: string;
         readonly files: ReadonlyArray<ChangedFileDto>;
       }>("GET", `/changes/${changeId}/diff`),
