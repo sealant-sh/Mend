@@ -7,25 +7,26 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
-## 2026-08-09 · 0.9.0 · PTY output is unreadable through the record read surface
+## 2026-08-09 · 0.9.0 · Scrollback serves the PTY stream; the SDK's IoStream type hides it
+
+**Corrected the same day it was filed** — the first version of this entry claimed PTY output was
+unreachable through the record read surface. Wrong: the control plane serves it fine; only the SDK's
+type surface hides it.
 
 **What Mend needed.** "Mend reads the change" (plan §7.3) reviews a settled session against its
 record. For a TUI session (`mend claude`), the agent's visible work — its reasoning, the commands it
 narrated, the checks it showed — lives in the PTY stream.
 
-**What exists today.** The timeline's `ioChunk pty-out` entries carry content-addressed SHA-256
-references, not payloads (correct for the timeline). The re-materializing surface,
-`run.record.scrollback(processId, stream)`, types `stream` as `IoStream = "stdout" | "stderr"` and
-returns **0 chunks on both** for a PTY-backed process whose record holds ~1,500 `pty-out` chunks
-(verified against a live run: `commands()` returns the bootstrap; both scrollback streams empty).
-Net effect: for TUI runs, no public surface can read what the terminal showed — the machine review
-pass can only observe process starts and hashes, and honestly reports that it cannot attest anything
-else.
+**What exists today.** `GET /v1/runs/:id/scrollback?processId=…&stream=pty` returns the byte-exact
+PTY content (verified live: 154KB for a real session run). But the SDK types
+`scrollback(processId, stream)` with `IoStream = "stdout" | "stderr"` — no `"pty"` — so no typed
+caller can ask for the stream that matters most for TUI runs, and the natural probe ("try stdout")
+returns 0 bytes with no hint that a third stream exists. Mend bridges with one commented cast in its
+client wrapper.
 
-**Suggested surface.** Either admit the PTY stream into scrollback (`stream: "pty"` or make
-`scrollback(processId)` default to the process's PTY when it has one), or expose payload resolution
-for `ioChunk` refs (`record.chunk(ref)`). Byte-exact is already the scrollback contract; the PTY is
-the one stream where it matters most.
+**Suggested surface.** Widen `IoStream` to `"pty" | "stdout" | "stderr"` (the server already accepts
+it) and mention in the `scrollback` doc that PTY-backed processes ride `"pty"` — a types-and-docs
+release, no server change.
 
 ## 2026-08-01 · 0.8.1 · Plural mounts with read-only — the plan's original shape, plus `:ro`
 

@@ -138,11 +138,15 @@ export class SealantClient extends Context.Service<
     readonly recordCommands: (
       run: Run,
     ) => Effect.Effect<readonly RunCommand[], SealantPlatformError>;
-    /** Byte-exact scrollback for one process's output stream, concatenated. */
+    /**
+     * Byte-exact scrollback for one process's output stream, concatenated.
+     * "pty" is served by the control plane but missing from the SDK's
+     * IoStream type (PLATFORM-FEEDBACK.md 2026-08-09) — verified live.
+     */
     readonly recordScrollback: (
       run: Run,
       processId: string,
-      stream: "stdout" | "stderr",
+      stream: "pty" | "stdout" | "stderr",
     ) => Effect.Effect<Uint8Array, SealantPlatformError>;
     /** The before/after of what a run changed: file list plus the unified diff. */
     readonly runChanges: (run: Run) => Effect.Effect<
@@ -320,11 +324,17 @@ export class SealantClient extends Context.Service<
       );
 
       const recordScrollback = Effect.fn("SealantClient.recordScrollback")(
-        (run: Run, processId: string, stream: "stdout" | "stderr") =>
+        (run: Run, processId: string, stream: "pty" | "stdout" | "stderr") =>
           wrap(async () => {
             const chunks: Array<Uint8Array> = [];
             let total = 0;
-            for await (const chunk of run.record.scrollback(processId, stream)) {
+            // The wire accepts "pty" (verified: 150KB+ served for a live PTY run);
+            // only the SDK's IoStream type omits it. The cast bridges that gap
+            // until the type widens upstream.
+            for await (const chunk of run.record.scrollback(
+              processId,
+              stream as "stdout" | "stderr",
+            )) {
               chunks.push(chunk);
               total += chunk.length;
             }

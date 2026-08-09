@@ -208,7 +208,12 @@ export const makeSessionChangePass = (deps: {
           let output = "";
           let totalChars = 0;
           if (processId !== null && processId !== undefined) {
-            const bytes = yield* sealant.recordScrollback(sdkRun, processId, "stdout");
+            // A TUI session's output rides the PTY stream; exec-style
+            // processes ride stdout. Try the PTY first, fall back.
+            let bytes = yield* sealant.recordScrollback(sdkRun, processId, "pty");
+            if (bytes.length === 0) {
+              bytes = yield* sealant.recordScrollback(sdkRun, processId, "stdout");
+            }
             const text = stripAnsi(new TextDecoder().decode(bytes));
             totalChars = text.length;
             const tail = Math.min(Math.max(input.tailChars ?? 30_000, 1_000), 120_000);
