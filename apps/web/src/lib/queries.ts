@@ -3,6 +3,7 @@ import { QueryClient, queryOptions } from "@tanstack/react-query";
 import {
   changeComments,
   changeDiff,
+  changeStats,
   listActiveSessions,
   listProjects,
   listReferences,
@@ -90,4 +91,12 @@ export const sessionTranscriptQuery = (sessionId: string) =>
   queryOptions({
     queryKey: ["session", sessionId, "transcript"],
     queryFn: () => sessionTranscript(sessionId),
+  });
+
+/** Lazy per-row diff stats; a git spawn per fetch, so cache generously. */
+export const changeStatsQuery = (changeId: string) =>
+  queryOptions({
+    queryKey: ["change", changeId, "stats"],
+    queryFn: () => changeStats(changeId),
+    staleTime: 60_000,
   });

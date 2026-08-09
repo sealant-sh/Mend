@@ -9,7 +9,13 @@ import { Panel, PanelRow } from "@/components/panel";
 import { Screen, ScreenHeader } from "@/components/screen";
 import { SessionRow } from "@/components/session-row";
 import { MonoText, UiText } from "@/components/typography";
-import { toSession, useAllSessions, useProjects, useSessionActions } from "@/data/live";
+import {
+  annotationDetail,
+  toSession,
+  useAllSessions,
+  useProjects,
+  useSessionActions,
+} from "@/data/live";
 
 const HARNESSES = ["claude", "codex", "opencode"] as const;
 
@@ -76,10 +82,11 @@ export default function ProjectsScreen() {
                 ))}
               </View>
             </PanelRow>
-            {sessions.map(({ session }) => (
+            {sessions.map(({ session, annotation }) => (
               <SessionRow
                 key={session.id}
                 session={toSession(session, project.name)}
+                detail={annotationDetail(annotation, session.summary)}
                 onPress={() =>
                   router.push({ pathname: "/session/[id]", params: { id: session.id } })
                 }

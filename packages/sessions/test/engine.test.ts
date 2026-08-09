@@ -204,6 +204,7 @@ const changesLayer = (world: World) =>
           }
         }
       }),
+    annotationsForProject: () => Effect.succeed([]),
   });
 
 const checkpointsLayer = (world: World) =>

@@ -315,10 +315,29 @@ export interface SessionDto {
   readonly createdAt: string;
 }
 
+/** List decoration for one session — DB-cheap review facts, no git involved. */
+export interface SessionAnnotationDto {
+  readonly sessionId: string;
+  readonly changeId: string | null;
+  readonly openComments: number;
+  readonly totalComments: number;
+  readonly pendingFollowUp: boolean;
+}
+
 export interface ProjectDetailDto {
   readonly project: ProjectDto;
   readonly sessions: ReadonlyArray<SessionDto>;
+  readonly annotations: ReadonlyArray<SessionAnnotationDto>;
 }
+
+/** Diff stats without the diff — cheap enough for a visible list row. */
+export interface ChangeStatsDto {
+  readonly files: number;
+  readonly additions: number;
+  readonly deletions: number;
+}
+
+export const changeStats = (id: string) => request<ChangeStatsDto>(`/api/changes/${id}/stats`);
 
 export interface CheckpointDto {
   readonly id: string;

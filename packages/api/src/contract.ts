@@ -245,9 +245,23 @@ export class AdoptProject extends Schema.Class<AdoptProject>("AdoptProject")({
   source: Schema.String,
 }) {}
 
+/**
+ * List decoration for one session — the DB-cheap review facts (plan §6.1:
+ * "which local changes have not been reviewed"). Diff stats stay behind
+ * /changes/:id/stats; git is never spawned for a list.
+ */
+export class SessionAnnotation extends Schema.Class<SessionAnnotation>("SessionAnnotation")({
+  sessionId: Schema.String,
+  changeId: Schema.NullOr(ChangeId),
+  openComments: Schema.Int,
+  totalComments: Schema.Int,
+  pendingFollowUp: Schema.Boolean,
+}) {}
+
 export class ProjectDetail extends Schema.Class<ProjectDetail>("ProjectDetail")({
   project: Project,
   sessions: Schema.Array(Session),
+  annotations: Schema.Array(SessionAnnotation),
 }) {}
 
 const projectsGroup = HttpApiGroup.make("projects")
@@ -533,11 +547,25 @@ export class SetCommentStateRequest extends Schema.Class<SetCommentStateRequest>
   state: Schema.Literals(["open", "addressed", "dismissed"]),
 }) {}
 
+/** Diff stats without the diff — cheap enough for a visible list row. */
+export class ChangeStats extends Schema.Class<ChangeStats>("ChangeStats")({
+  files: Schema.Int,
+  additions: Schema.Int,
+  deletions: Schema.Int,
+}) {}
+
 const sessionChangesGroup = HttpApiGroup.make("sessionChanges")
   .add(
     HttpApiEndpoint.get("diff", "/changes/:id/diff", {
       params: { id: ChangeId },
       success: ChangeDiff,
+      error: Schema.Union([NotFound, StoreFailure]),
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("stats", "/changes/:id/stats", {
+      params: { id: ChangeId },
+      success: ChangeStats,
       error: Schema.Union([NotFound, StoreFailure]),
     }),
   )

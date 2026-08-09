@@ -143,15 +143,42 @@ export const useProjects = () =>
     refetchInterval: 15_000,
   });
 
+/** List decoration for one session — DB-cheap review facts, no git involved. */
+export interface SessionAnnotationDto {
+  readonly sessionId: string;
+  readonly changeId: string | null;
+  readonly openComments: number;
+  readonly totalComments: number;
+  readonly pendingFollowUp: boolean;
+}
+
+interface ProjectDetailDto {
+  readonly project: ProjectDto;
+  readonly sessions: ReadonlyArray<SessionDto>;
+  readonly annotations: ReadonlyArray<SessionAnnotationDto>;
+}
+
+/** The row's mono second line, from what the annotation can say cheaply. */
+export const annotationDetail = (
+  annotation: SessionAnnotationDto | undefined,
+  summary: string | null,
+): string | null => {
+  const parts: Array<string> = [];
+  if (annotation !== undefined && annotation.openComments > 0) {
+    parts.push(
+      `${annotation.openComments} open comment${annotation.openComments === 1 ? "" : "s"}`,
+    );
+  }
+  if (annotation?.pendingFollowUp === true) parts.push("follow-up pending");
+  if (parts.length === 0) return summary;
+  return parts.join(" · ");
+};
+
 export const useProjectSessions = (projectId: string | null) =>
   useQuery({
     queryKey: ["project", projectId],
     enabled: projectId !== null,
-    queryFn: () =>
-      api<{ readonly project: ProjectDto; readonly sessions: ReadonlyArray<SessionDto> }>(
-        "GET",
-        `/projects/${projectId}`,
-      ),
+    queryFn: () => api<ProjectDetailDto>("GET", `/projects/${projectId}`),
     refetchInterval: 10_000,
   });
 
@@ -163,10 +190,13 @@ export const useAllSessions = () => {
     queryFn: async () => {
       const details = await Promise.all(
         (projects.data ?? []).map((project) =>
-          api<{ readonly sessions: ReadonlyArray<SessionDto> }>(
-            "GET",
-            `/projects/${project.id}`,
-          ).then((detail) => detail.sessions.map((s) => ({ session: s, project }))),
+          api<ProjectDetailDto>("GET", `/projects/${project.id}`).then((detail) =>
+            detail.sessions.map((s) => ({
+              session: s,
+              project,
+              annotation: detail.annotations.find((row) => row.sessionId === s.id),
+            })),
+          ),
         ),
       );
       return details.flat();

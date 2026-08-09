@@ -19,10 +19,12 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 import {
   ChangeDiff,
   ChangedFileView,
+  ChangeStats,
   CurrentUser,
   MendApi,
   NotFound,
   ProjectDetail,
+  SessionAnnotation,
   SessionDetail,
   StoreFailure,
   SessionTranscript,
@@ -87,11 +89,17 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
       Effect.gen(function* () {
         const projects = yield* ProjectsRepo;
         const sessions = yield* SessionsRepo;
+        const changes = yield* SessionChangesRepo;
         const project = yield* projects
           .byId(params.id)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         const projectSessions = yield* sessions.listForProject(params.id);
-        return new ProjectDetail({ project, sessions: projectSessions });
+        const annotations = yield* changes.annotationsForProject(params.id);
+        return new ProjectDetail({
+          project,
+          sessions: projectSessions,
+          annotations: annotations.map((row) => new SessionAnnotation(row)),
+        });
       }),
     ),
 );
@@ -461,6 +469,32 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
           change,
           diff,
           files: files.map((file) => new ChangedFileView(file)),
+        });
+      }),
+    )
+    .handle("stats", ({ params }) =>
+      Effect.gen(function* () {
+        const changes = yield* SessionChangesRepo;
+        const sessions = yield* SessionsRepo;
+        const projects = yield* ProjectsRepo;
+        const store = yield* Store;
+        const change = yield* changes
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        const session = yield* sessions
+          .byId(change.sessionId)
+          .pipe(Effect.mapError(() => new NotFound({ id: change.sessionId })));
+        const project = yield* projects
+          .byId(change.projectId)
+          .pipe(Effect.mapError(() => new NotFound({ id: change.projectId })));
+        const worktree = worktreePathOf(project.storePath, session.worktree);
+        const files = yield* store
+          .changedFiles(worktree, change.baseSha, null)
+          .pipe(Effect.mapError(toFailure));
+        return new ChangeStats({
+          files: files.length,
+          additions: files.reduce((sum, file) => sum + file.additions, 0),
+          deletions: files.reduce((sum, file) => sum + file.deletions, 0),
         });
       }),
     )

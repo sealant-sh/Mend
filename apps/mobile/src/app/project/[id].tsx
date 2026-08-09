@@ -10,7 +10,7 @@ import { Panel, PanelRow } from "@/components/panel";
 import { Screen, ScreenHeader, SectionLabel } from "@/components/screen";
 import { SessionRow } from "@/components/session-row";
 import { BodyText, MonoText } from "@/components/typography";
-import { toSession, useProjectSessions, useSessionActions } from "@/data/live";
+import { annotationDetail, toSession, useProjectSessions, useSessionActions } from "@/data/live";
 
 const HARNESSES = ["claude", "codex", "opencode"] as const;
 
@@ -86,7 +86,10 @@ export default function ProjectScreen() {
             <SessionRow
               key={session.id}
               session={toSession(session, project.name)}
-              detail={session.summary}
+              detail={annotationDetail(
+                detail.data?.annotations.find((row) => row.sessionId === session.id),
+                session.summary,
+              )}
               first={index === 0}
               onPress={() => router.push({ pathname: "/session/[id]", params: { id: session.id } })}
             />

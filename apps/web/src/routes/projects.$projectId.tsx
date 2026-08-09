@@ -45,7 +45,7 @@ const HARNESSES: ReadonlyArray<{ readonly name: string; readonly argv: ReadonlyA
 
 function ProjectPage() {
   const { projectId } = Route.useParams();
-  const { project, sessions } = useSuspenseQuery(projectDetailQuery(projectId)).data;
+  const { project, sessions, annotations } = useSuspenseQuery(projectDetailQuery(projectId)).data;
   const navigate = useNavigate();
   const [starting, setStarting] = useState<string | null>(null);
   useWorkbenchEvents();
@@ -109,28 +109,52 @@ function ProjectPage() {
                 way it runs in its own worktree, recorded.
               </p>
             ) : (
-              sessions.map((session, index) => (
-                <Link
-                  key={session.id}
-                  to="/sessions/$sessionId"
-                  params={{ sessionId: session.id }}
-                  className={`flex items-center justify-between gap-4 px-5 py-4 no-underline transition-colors hover:bg-secondary ${index === 0 ? "" : "border-t border-rule-faint"}`}
-                >
-                  <div className="min-w-0">
-                    <p className="font-sans text-sm font-medium text-foreground">
-                      {session.harness}
-                      {session.label === null ? "" : ` — ${session.label}`}
-                    </p>
-                    <p className="mt-1 truncate font-mono text-xs text-faint">
-                      {session.branch} · base {session.baseSha.slice(0, 12)}
-                    </p>
+              sessions.map((session, index) => {
+                const annotation = annotations.find((row) => row.sessionId === session.id);
+                return (
+                  <div
+                    key={session.id}
+                    className={`flex items-center justify-between gap-4 px-5 py-4 transition-colors hover:bg-secondary ${index === 0 ? "" : "border-t border-rule-faint"}`}
+                  >
+                    <Link
+                      to="/sessions/$sessionId"
+                      params={{ sessionId: session.id }}
+                      className="min-w-0 flex-1 no-underline"
+                    >
+                      <p className="font-sans text-sm font-medium text-foreground">
+                        {session.harness}
+                        {session.label === null ? "" : ` — ${session.label}`}
+                      </p>
+                      <p className="mt-1 truncate font-mono text-xs text-faint">
+                        {session.branch} · base {session.baseSha.slice(0, 12)}
+                        {annotation !== undefined && annotation.openComments > 0 && (
+                          <span className="text-ink-2">
+                            {" "}
+                            · {annotation.openComments} open comment
+                            {annotation.openComments === 1 ? "" : "s"}
+                          </span>
+                        )}
+                        {annotation?.pendingFollowUp === true && (
+                          <span className="text-warning"> · follow-up pending</span>
+                        )}
+                      </p>
+                    </Link>
+                    {annotation?.changeId != null && (
+                      <Link
+                        to="/changes/$changeId"
+                        params={{ changeId: annotation.changeId }}
+                        className="shrink-0 font-sans text-xs font-medium text-muted-foreground no-underline transition-colors hover:text-foreground"
+                      >
+                        Review
+                      </Link>
+                    )}
+                    <SessionStatusDot
+                      status={session.status}
+                      recorded={session.sealantRunId !== null}
+                    />
                   </div>
-                  <SessionStatusDot
-                    status={session.status}
-                    recorded={session.sealantRunId !== null}
-                  />
-                </Link>
-              ))
+                );
+              })
             )}
           </div>
         </section>

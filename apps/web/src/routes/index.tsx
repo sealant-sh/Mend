@@ -1,4 +1,4 @@
-import { useSuspenseQueries, useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useSuspenseQueries, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useState } from "react";
 
@@ -8,10 +8,12 @@ import {
   createSession,
   launchSession,
   resumeSession,
+  stopSession,
+  type SessionAnnotationDto,
   type SessionDto,
   type WorkbenchEventDto,
 } from "#/lib/api";
-import { projectDetailQuery, projectsQuery, queryClient } from "#/lib/queries";
+import { changeStatsQuery, projectDetailQuery, projectsQuery, queryClient } from "#/lib/queries";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 
 export const Route = createFileRoute("/")({
@@ -30,11 +32,17 @@ const ACTIVE = new Set(["starting", "running", "waiting", "idle"]);
 /** How each harness launches — mirrors the CLI; the server records either way. */
 const HARNESSES = ["claude", "codex", "opencode"] as const;
 
+interface SessionEntry {
+  readonly session: SessionDto;
+  readonly project: string;
+  readonly annotation: SessionAnnotationDto | undefined;
+}
+
 /**
- * The home screen: EVERYTHING at a glance — what needs you, what runs, and
- * every project with its recent sessions, startable and rejoinable in place.
- * No click-through to see your own work: a session is a continuous piece of
- * work you rejoin, not a run that happened.
+ * The home screen answers plan §6.1's questions in order: what waits on me,
+ * what has a delivery pending, which changes nobody reviewed yet, what runs,
+ * what settled. Every row carries its review facts (open comments, follow-up)
+ * — the DB-cheap annotations; diff stats load lazily per visible change.
  */
 function HomePage() {
   const projects = useSuspenseQuery(projectsQuery).data;
@@ -44,6 +52,7 @@ function HomePage() {
   const [progress, setProgress] = useState<Readonly<Record<string, string>>>({});
   const navigate = useNavigate();
   const [busy, setBusy] = useState<string | null>(null);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
 
   const onEvent = useCallback((event: WorkbenchEventDto) => {
     if (event.type === "session-progress" && event.sessionId !== undefined) {
@@ -54,20 +63,36 @@ function HomePage() {
   }, []);
   useWorkbenchEvents(onEvent);
 
-  const allSessions = details.flatMap((detail, index) =>
+  const allSessions: ReadonlyArray<SessionEntry> = details.flatMap((detail, index) =>
     (detail.data?.sessions ?? []).map((session) => ({
       session,
       project: projects[index]?.name ?? "",
+      annotation: detail.data?.annotations.find((row) => row.sessionId === session.id),
     })),
   );
   const waiting = allSessions.filter(({ session }) => session.status === "waiting");
   const live = allSessions.filter(
     ({ session }) => session.status !== "waiting" && ACTIVE.has(session.status),
   );
+  const needsDelivery = allSessions.filter(
+    ({ session, annotation }) =>
+      !ACTIVE.has(session.status) && annotation?.pendingFollowUp === true,
+  );
+  // Unreviewed: the session settled with a change nobody has commented on and
+  // no follow-up in flight. The diff-stat chip says whether there is anything
+  // to read; "no file changes" is an honest answer, not a hidden row.
+  const readyToReview = allSessions.filter(
+    ({ session, annotation }) =>
+      session.status === "completed" &&
+      annotation?.changeId != null &&
+      annotation.totalComments === 0 &&
+      !annotation.pendingFollowUp,
+  );
 
   /** Fire a fresh session on a project and land in its workbench. */
   const start = (projectId: string, harness: string) => {
-    setBusy(`${projectId}:${harness}`);
+    const key = `${projectId}:${harness}`;
+    setBusy(key);
     void createSession(projectId, harness)
       .then((session) => {
         void launchSession(session.id, [harness])
@@ -92,6 +117,28 @@ function HomePage() {
     void navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } });
   };
 
+  const toggleSelected = (sessionId: string) => {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else next.add(sessionId);
+      return next;
+    });
+  };
+
+  const stopSelected = () => {
+    const ids = live.map(({ session }) => session.id).filter((id) => selected.has(id));
+    if (ids.length === 0) return;
+    setBusy("stop-selected");
+    void Promise.allSettled(ids.map((id) => stopSession(id))).finally(() => {
+      setSelected(new Set());
+      setBusy(null);
+      void queryClient.invalidateQueries();
+    });
+  };
+
+  const selectedLiveCount = live.filter(({ session }) => selected.has(session.id)).length;
+
   return (
     <AppShell>
       <div className="mx-auto max-w-[1000px]">
@@ -102,31 +149,71 @@ function HomePage() {
         <p className="mt-2 text-sm text-muted-foreground">
           {allSessions.length === 0
             ? "Nothing yet — adopt a repository and start a session."
-            : `${waiting.length === 0 ? "Nothing waiting on you" : `${waiting.length} waiting`} · ${live.length} live · ${projects.length} project${projects.length === 1 ? "" : "s"}`}
+            : `${waiting.length === 0 ? "Nothing waiting on you" : `${waiting.length} waiting`} · ${live.length} live · ${readyToReview.length} to review · ${projects.length} project${projects.length === 1 ? "" : "s"}`}
         </p>
 
         {waiting.length > 0 && (
           <Section label="Needs you">
-            {waiting.map(({ session, project }) => (
-              <SessionRow
+            {waiting.map((entry) => (
+              <SessionCard
+                key={entry.session.id}
+                entry={entry}
+                progressLine={progress[entry.session.id]}
+              />
+            ))}
+          </Section>
+        )}
+
+        {needsDelivery.length > 0 && (
+          <Section label="Needs delivery">
+            {needsDelivery.map((entry) => (
+              <SessionCard key={entry.session.id} entry={entry} progressLine={undefined} />
+            ))}
+          </Section>
+        )}
+
+        {readyToReview.length > 0 && (
+          <Section label="Ready to review">
+            {readyToReview.map(({ session, project, annotation }) => (
+              <ReviewRow
                 key={session.id}
                 session={session}
                 project={project}
-                progressLine={progress[session.id]}
+                changeId={annotation?.changeId ?? ""}
               />
             ))}
           </Section>
         )}
 
         {live.length > 0 && (
-          <Section label="Live">
-            {live.map(({ session, project }) => (
-              <SessionRow
-                key={session.id}
-                session={session}
-                project={project}
-                progressLine={progress[session.id]}
-              />
+          <Section
+            label="Live"
+            action={
+              selectedLiveCount > 0 ? (
+                <button
+                  type="button"
+                  disabled={busy !== null}
+                  onClick={stopSelected}
+                  className="rounded-xl border border-border bg-card px-3 py-1 font-sans text-xs font-medium text-foreground shadow-xs disabled:opacity-50"
+                >
+                  {busy === "stop-selected" ? "Stopping…" : `Stop ${selectedLiveCount} selected`}
+                </button>
+              ) : null
+            }
+          >
+            {live.map((entry) => (
+              <div key={entry.session.id} className="flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  checked={selected.has(entry.session.id)}
+                  onChange={() => toggleSelected(entry.session.id)}
+                  aria-label={`select ${entry.session.harness} session`}
+                  className="mt-6 size-3.5 shrink-0 accent-[var(--sw-accent)]"
+                />
+                <div className="min-w-0 flex-1">
+                  <SessionCard entry={entry} progressLine={progress[entry.session.id]} />
+                </div>
+              </div>
             ))}
           </Section>
         )}
@@ -151,7 +238,8 @@ function HomePage() {
               </div>
             ) : (
               projects.map((project, index) => {
-                const sessions = details[index]?.data?.sessions ?? [];
+                const detail = details[index]?.data;
+                const sessions = detail?.sessions ?? [];
                 const recent = sessions.filter(({ status }) => !ACTIVE.has(status)).slice(0, 4);
                 return (
                   <div key={project.id} className="rounded-2xl bg-card shadow-sm">
@@ -171,17 +259,20 @@ function HomePage() {
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="text-xs text-label">start:</span>
-                        {HARNESSES.map((harness) => (
-                          <button
-                            key={harness}
-                            type="button"
-                            disabled={busy !== null}
-                            onClick={() => start(project.id, harness)}
-                            className="rounded-xl border border-border bg-card px-3 py-1.5 font-mono text-xs text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-50"
-                          >
-                            {busy === `${project.id}:${harness}` ? "starting…" : harness}
-                          </button>
-                        ))}
+                        {HARNESSES.map((harness) => {
+                          const key = `${project.id}:${harness}`;
+                          return (
+                            <button
+                              key={harness}
+                              type="button"
+                              disabled={busy === key}
+                              onClick={() => start(project.id, harness)}
+                              className="rounded-xl border border-border bg-card px-3 py-1.5 font-mono text-xs text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-50"
+                            >
+                              {busy === key ? "starting…" : harness}
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
                     {recent.length === 0 ? (
@@ -189,40 +280,55 @@ function HomePage() {
                         no settled sessions yet
                       </p>
                     ) : (
-                      recent.map((session, sessionIndex) => (
-                        <div
-                          key={session.id}
-                          className={`flex items-center justify-between gap-3 px-5 py-3 ${sessionIndex === 0 ? "" : "border-t border-rule-faint"}`}
-                        >
-                          <Link
-                            to="/sessions/$sessionId"
-                            params={{ sessionId: session.id }}
-                            className="min-w-0 flex-1 no-underline"
+                      recent.map((session, sessionIndex) => {
+                        const annotation = detail?.annotations.find(
+                          (row) => row.sessionId === session.id,
+                        );
+                        return (
+                          <div
+                            key={session.id}
+                            className={`flex items-center justify-between gap-3 px-5 py-3 ${sessionIndex === 0 ? "" : "border-t border-rule-faint"}`}
                           >
-                            <p className="truncate font-sans text-sm text-foreground">
-                              {session.harness}
-                              {session.label === null ? "" : ` — ${session.label}`}
-                            </p>
-                            <p className="mt-0.5 truncate font-mono text-[11px] text-faint">
-                              {session.settledAt === null
-                                ? session.branch
-                                : `settled ${new Date(session.settledAt).toLocaleString()}`}
-                            </p>
-                          </Link>
-                          <SessionStatusDot
-                            status={session.status}
-                            recorded={session.sealantRunId !== null}
-                          />
-                          <button
-                            type="button"
-                            disabled={busy !== null}
-                            onClick={() => rejoin(session)}
-                            className="shrink-0 rounded-xl border border-border bg-card px-3 py-1.5 font-sans text-xs font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-50"
-                          >
-                            {busy === session.id ? "resuming…" : "Resume"}
-                          </button>
-                        </div>
-                      ))
+                            <Link
+                              to="/sessions/$sessionId"
+                              params={{ sessionId: session.id }}
+                              className="min-w-0 flex-1 no-underline"
+                            >
+                              <p className="truncate font-sans text-sm text-foreground">
+                                {session.harness}
+                                {session.label === null ? "" : ` — ${session.label}`}
+                              </p>
+                              <p className="mt-0.5 truncate font-mono text-[11px] text-faint">
+                                {session.settledAt === null
+                                  ? session.branch
+                                  : `settled ${new Date(session.settledAt).toLocaleString()}`}
+                                <AnnotationSuffix annotation={annotation} />
+                              </p>
+                            </Link>
+                            <SessionStatusDot
+                              status={session.status}
+                              recorded={session.sealantRunId !== null}
+                            />
+                            {annotation?.changeId != null && (
+                              <Link
+                                to="/changes/$changeId"
+                                params={{ changeId: annotation.changeId }}
+                                className="shrink-0 font-sans text-xs font-medium text-muted-foreground no-underline transition-colors hover:text-foreground"
+                              >
+                                Review
+                              </Link>
+                            )}
+                            <button
+                              type="button"
+                              disabled={busy === session.id}
+                              onClick={() => rejoin(session)}
+                              className="shrink-0 rounded-xl border border-border bg-card px-3 py-1.5 font-sans text-xs font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-50"
+                            >
+                              {busy === session.id ? "resuming…" : "Resume"}
+                            </button>
+                          </div>
+                        );
+                      })
                     )}
                   </div>
                 );
@@ -237,28 +343,68 @@ function HomePage() {
 
 function Section({
   label,
+  action,
   children,
 }: {
   readonly label: string;
+  readonly action?: React.ReactNode;
   readonly children: React.ReactNode;
 }) {
   return (
     <section className="mt-9">
-      <p className="text-xs font-medium text-label">{label}</p>
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-medium text-label">{label}</p>
+        {action}
+      </div>
       <div className="mt-3 flex flex-col gap-3">{children}</div>
     </section>
   );
 }
 
-function SessionRow({
-  session,
-  project,
+/** The review facts appended to a row's mono line — silent when there is nothing to say. */
+function AnnotationSuffix({
+  annotation,
+}: {
+  readonly annotation: SessionAnnotationDto | undefined;
+}) {
+  if (annotation === undefined) return null;
+  return (
+    <>
+      {annotation.openComments > 0 && (
+        <span className="text-ink-2">
+          {" "}
+          · {annotation.openComments} open comment{annotation.openComments === 1 ? "" : "s"}
+        </span>
+      )}
+      {annotation.pendingFollowUp && <span className="text-warning"> · follow-up pending</span>}
+    </>
+  );
+}
+
+/** Lazy diff stats for one change — one cached git spawn per visible row. */
+function ChangeStatsChip({ changeId }: { readonly changeId: string }) {
+  const stats = useQuery(changeStatsQuery(changeId));
+  if (stats.data === undefined) return null;
+  if (stats.data.files === 0) {
+    return <span className="text-faint"> · no file changes</span>;
+  }
+  return (
+    <span className="text-ink-2">
+      {" "}
+      · {stats.data.files} file{stats.data.files === 1 ? "" : "s"} · +{stats.data.additions} −
+      {stats.data.deletions}
+    </span>
+  );
+}
+
+function SessionCard({
+  entry,
   progressLine,
 }: {
-  readonly session: SessionDto;
-  readonly project: string;
+  readonly entry: SessionEntry;
   readonly progressLine: string | undefined;
 }) {
+  const { session, project, annotation } = entry;
   return (
     <Link
       to="/sessions/$sessionId"
@@ -274,6 +420,40 @@ function SessionRow({
       </div>
       <p className="mt-3 truncate font-mono text-xs text-faint">
         {progressLine ?? `${session.branch} · worktree ${session.worktree}`}
+        <AnnotationSuffix annotation={annotation} />
+      </p>
+    </Link>
+  );
+}
+
+/** An unreviewed change: straight to the review, stats up front. */
+function ReviewRow({
+  session,
+  project,
+  changeId,
+}: {
+  readonly session: SessionDto;
+  readonly project: string;
+  readonly changeId: string;
+}) {
+  return (
+    <Link
+      to="/changes/$changeId"
+      params={{ changeId }}
+      className="block rounded-2xl bg-card p-5 no-underline shadow-sm transition-shadow hover:shadow-md"
+    >
+      <div className="flex items-center justify-between gap-4">
+        <p className="font-sans text-sm font-medium text-foreground">
+          {session.harness} · {project}
+          {session.label === null ? "" : ` — ${session.label}`}
+        </p>
+        <span className="font-sans text-xs font-medium text-primary">Review →</span>
+      </div>
+      <p className="mt-3 truncate font-mono text-xs text-faint">
+        {session.settledAt === null
+          ? session.branch
+          : `settled ${new Date(session.settledAt).toLocaleString()}`}
+        <ChangeStatsChip changeId={changeId} />
       </p>
     </Link>
   );

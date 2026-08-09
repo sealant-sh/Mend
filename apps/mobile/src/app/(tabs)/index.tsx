@@ -8,7 +8,7 @@ import { Panel } from "@/components/panel";
 import { Screen, ScreenHeader } from "@/components/screen";
 import { SessionRow } from "@/components/session-row";
 import { Eyebrow, MonoText } from "@/components/typography";
-import { ACTIVE, toSession, useAllSessions } from "@/data/live";
+import { ACTIVE, annotationDetail, toSession, useAllSessions } from "@/data/live";
 import { useEvidenceTheme } from "@/theme/evidence";
 
 function GroupLabel({ label }: { readonly label: string }) {
@@ -23,9 +23,10 @@ function GroupLabel({ label }: { readonly label: string }) {
 export default function NowScreen() {
   const router = useRouter();
   const all = useAllSessions();
-  const rows = (all.data ?? []).map(({ session, project }) => ({
+  const rows = (all.data ?? []).map(({ session, project, annotation }) => ({
     dto: session,
     view: toSession(session, project.name),
+    detail: annotationDetail(annotation, session.summary),
   }));
 
   const openSession = (id: string) => router.push({ pathname: "/session/[id]", params: { id } });
@@ -66,8 +67,13 @@ export default function NowScreen() {
         items.length === 0 ? null : (
           <Panel key={label}>
             <GroupLabel label={label} />
-            {items.map(({ view }) => (
-              <SessionRow key={view.id} session={view} onPress={() => openSession(view.id)} />
+            {items.map(({ view, detail }) => (
+              <SessionRow
+                key={view.id}
+                session={view}
+                detail={detail}
+                onPress={() => openSession(view.id)}
+              />
             ))}
           </Panel>
         ),
