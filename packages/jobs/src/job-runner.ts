@@ -45,7 +45,7 @@ export class JobRunner extends Context.Service<
     Effect.gen(function* () {
       const databaseUrl = yield* Config.redacted("DATABASE_URL").pipe(
         Config.orElse(() =>
-          Config.succeed(Redacted.make("postgres://mend:mend@localhost:5433/mend")),
+          Config.succeed(Redacted.make("postgres://mend:mend@localhost:5434/mend")),
         ),
       );
 

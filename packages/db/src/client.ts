@@ -9,7 +9,7 @@ import { Config, Redacted, String as Str } from "effect";
 export const PgLive = PgClient.layerConfig({
   url: Config.redacted("DATABASE_URL").pipe(
     // The dev-compose default; every real deployment sets DATABASE_URL.
-    Config.orElse(() => Config.succeed(Redacted.make("postgres://mend:mend@localhost:5433/mend"))),
+    Config.orElse(() => Config.succeed(Redacted.make("postgres://mend:mend@localhost:5434/mend"))),
   ),
   applicationName: Config.succeed("mend"),
   transformResultNames: Config.succeed(Str.snakeToCamel),
