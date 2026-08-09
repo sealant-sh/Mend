@@ -388,6 +388,18 @@ const projectMounts = Effect.gen(function* () {
     ALTER TABLE agent_sessions ADD COLUMN extra_mounts jsonb NOT NULL DEFAULT '[]'`;
 });
 
+/**
+ * "Mend reads the change" (plan §7.3, M2.5): machine findings land as draft
+ * review comments carrying links into the session record. The evidence lives
+ * on the comment row — `(sealantRunId, sequence, excerpt)` entries, sequences
+ * as decimal strings (jsonb has no bigint).
+ */
+const reviewCommentEvidence = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE review_comments ADD COLUMN evidence jsonb NOT NULL DEFAULT '[]'`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -400,4 +412,5 @@ export const migrations = {
   "0008_push_devices": pushDevices,
   "0009_references": references,
   "0010_project_mounts": projectMounts,
+  "0011_review_comment_evidence": reviewCommentEvidence,
 };

@@ -376,6 +376,13 @@ export interface ChangeDiffDto {
   readonly files: ReadonlyArray<ChangedFileDto>;
 }
 
+/** A finding's link into the session record; sequence is a decimal string. */
+export interface RecordLinkDto {
+  readonly sealantRunId: string;
+  readonly sequence: string;
+  readonly excerpt: string;
+}
+
 export interface ReviewCommentDto {
   readonly id: string;
   readonly changeId: string;
@@ -386,9 +393,14 @@ export interface ReviewCommentDto {
   readonly authorName: string;
   readonly body: string;
   readonly state: "draft" | "open" | "addressed" | "dismissed";
+  readonly evidence: ReadonlyArray<RecordLinkDto>;
   readonly sentToSessionId: string | null;
   readonly createdAt: string;
 }
+
+/** Queue the machine pass; findings arrive as draft comments over SSE. */
+export const readChange = (changeId: string) =>
+  post<{ readonly queued: boolean }>(`/api/changes/${changeId}/read`, {});
 
 /** A workbench SSE event — pointers only; clients re-read through the API. */
 export interface WorkbenchEventDto {

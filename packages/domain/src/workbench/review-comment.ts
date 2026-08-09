@@ -15,6 +15,21 @@ export const CommentState = Schema.Literals(["draft", "open", "addressed", "dism
 export type CommentState = typeof CommentState.Type;
 
 /**
+ * A finding's link back to the session record: `(sealantRunId, sequence)`
+ * addresses the exact timeline entry; the excerpt is denormalized so the
+ * comment renders without a platform round-trip. The workbench analogue of
+ * the queue-era EvidencePointer — sessions are backed by platform runs, so
+ * the run id here is the platform's, not a Mend row id.
+ */
+export class RecordLink extends Schema.Class<RecordLink>("RecordLink")({
+  sealantRunId: Schema.String,
+  // BigInt in the domain, a decimal string on every wire — sequences can
+  // pass 2^53 and JSON has no bigint.
+  sequence: Schema.BigIntFromString,
+  excerpt: Schema.String,
+}) {}
+
+/**
  * Feedback anchored to a file, line, or the change as a whole (plan §5.7).
  * `file`/`line` null = change-level. Comments can stay notes, or be bundled
  * into a follow-up instruction and sent back to the session — the routed
@@ -32,6 +47,8 @@ export class ReviewComment extends Schema.Class<ReviewComment>("ReviewComment")(
   authorName: Schema.String,
   body: Schema.String,
   state: CommentState,
+  /** Links to the session record — non-empty on every Mend-authored finding. */
+  evidence: Schema.Array(RecordLink),
   /** The session a bundled follow-up was sent to, once sent. */
   sentToSessionId: Schema.NullOr(SessionId),
   createdAt: Schema.Date,

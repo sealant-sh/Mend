@@ -13,6 +13,8 @@ export const InferenceContext = Schema.Literals([
   "failure-comment",
   "comment-routing",
   "run-audit-qa",
+  // "Mend reads the change" (plan §7.3) — the workbench machine review pass.
+  "change-reading",
 ]);
 export type InferenceContext = typeof InferenceContext.Type;
 
@@ -26,6 +28,8 @@ export const InferenceToolName = Schema.Literals([
   "reply_on_brief",
   "start_run",
   "publish_brief",
+  // change-reading: one draft review comment per call, evidence enforced.
+  "draft_finding",
 ]);
 export type InferenceToolName = typeof InferenceToolName.Type;
 

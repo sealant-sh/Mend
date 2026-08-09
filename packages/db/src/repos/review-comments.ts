@@ -1,5 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import { type ChangeId, ReviewCommentId, type SessionId } from "@mend/domain";
+import { RecordLink } from "@mend/domain/workbench";
 import { ReviewComment, type CommentAuthor, type CommentState } from "@mend/domain/workbench";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -25,7 +26,11 @@ export interface NewReviewComment {
   readonly body: string;
   /** Reviewer comments are born `open`; Mend's findings are born `draft` (§7.3). */
   readonly state: CommentState;
+  /** Links into the session record — required on Mend-authored findings. */
+  readonly evidence?: ReadonlyArray<RecordLink>;
 }
+
+const encodeEvidence = Schema.encodeEffect(Schema.Array(RecordLink));
 
 /** Review comments on a session change (plan §5.7) — reviewer's and Mend's, one pipeline. */
 export class ReviewCommentsRepo extends Context.Service<
@@ -68,10 +73,13 @@ export class ReviewCommentsRepo extends Context.Service<
 
       const create = Effect.fn("ReviewCommentsRepo.create")(function* (comment: NewReviewComment) {
         const id = crypto.randomUUID();
+        // Sequences ride jsonb as decimal strings — the RecordLink codec's wire shape.
+        const evidence = yield* encodeEvidence(comment.evidence ?? []).pipe(Effect.orDie);
         const rows = yield* sql`
-          INSERT INTO review_comments (id, change_id, file, line, end_line, author_kind, author_name, body, state)
+          INSERT INTO review_comments (id, change_id, file, line, end_line, author_kind, author_name, body, state, evidence)
           VALUES (${id}, ${comment.changeId}, ${comment.file}, ${comment.line}, ${comment.endLine},
-                  ${comment.authorKind}, ${comment.authorName}, ${comment.body}, ${comment.state})
+                  ${comment.authorKind}, ${comment.authorName}, ${comment.body}, ${comment.state},
+                  ${JSON.stringify(evidence)}::jsonb)
           RETURNING *`.pipe(Effect.orDie);
         const created = yield* decodeRow(rows[0]);
         yield* notify(created.id, comment.changeId);

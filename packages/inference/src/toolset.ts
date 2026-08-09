@@ -35,7 +35,7 @@ const decodeFailed = (tool: InferenceToolName, error: { readonly message: string
   new InferenceToolError({ tool, message: `input did not match the schema: ${error.message}` });
 
 /** Decode wire input, run the call, encode the result for the transcript. */
-const makeTool = <I, A>(options: {
+export const makeTool = <I, A>(options: {
   readonly name: InferenceToolName;
   readonly description: string;
   readonly inputSchema: ToolInputSchema;

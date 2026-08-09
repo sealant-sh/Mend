@@ -28,10 +28,12 @@ import {
 } from "@mend/db";
 import {
   BriefCompiler,
+  ChangeReader,
   CommentRouter,
   CompileBriefJob,
   FailureSummarizer,
   liveToolsLayer,
+  ReadChangeJob,
   RouteCommentJob,
   sealantProviderLayer,
   SummarizeFailureJob,
@@ -157,6 +159,7 @@ const ServerLive = Layer.unwrap(
 const decodeCompileBriefJob = Schema.decodeUnknownEffect(CompileBriefJob);
 const decodeSummarizeFailureJob = Schema.decodeUnknownEffect(SummarizeFailureJob);
 const decodeRouteCommentJob = Schema.decodeUnknownEffect(RouteCommentJob);
+const decodeReadChangeJob = Schema.decodeUnknownEffect(ReadChangeJob);
 
 /** The inference job workers: a failed handler dies into the engine's retry. */
 const InferenceWorkersLive = Layer.effectDiscard(
@@ -165,6 +168,13 @@ const InferenceWorkersLive = Layer.effectDiscard(
     const compiler = yield* BriefCompiler;
     const summarizer = yield* FailureSummarizer;
     const router = yield* CommentRouter;
+    const reader = yield* ChangeReader;
+    yield* jobs.work("read-change", (payload) =>
+      decodeReadChangeJob(payload).pipe(
+        Effect.flatMap((job) => reader.read(job)),
+        Effect.orDie,
+      ),
+    );
     yield* jobs.work("brief", (payload) =>
       decodeCompileBriefJob(payload).pipe(
         Effect.flatMap((job) => compiler.compile(job)),
@@ -203,6 +213,7 @@ const WorkerLive = Layer.mergeAll(
   Layer.provide(BriefCompiler.layer),
   Layer.provide(FailureSummarizer.layer),
   Layer.provide(CommentRouter.layer),
+  Layer.provide(ChangeReader.layer),
   Layer.provide(liveToolsLayer),
   // start_run: the one tool that reaches the run machinery.
   Layer.provide(startRunToolLayer),

@@ -11,6 +11,7 @@ import {
   SessionsRepo,
 } from "@mend/db";
 import { FollowUp } from "@mend/domain/workbench";
+import { JobRunner } from "@mend/jobs";
 import { SessionEngine } from "@mend/sessions";
 import { Store, worktreePathOf } from "@mend/store";
 import { Effect } from "effect";
@@ -470,6 +471,23 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
           diff,
           files: files.map((file) => new ChangedFileView(file)),
         });
+      }),
+    )
+    .handle("read", ({ params }) =>
+      Effect.gen(function* () {
+        const changes = yield* SessionChangesRepo;
+        const jobs = yield* JobRunner;
+        yield* changes.byId(params.id).pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        // One pass at a time per change (the key dedups while queued/active);
+        // a finished pass can be re-requested and reads the newer state.
+        yield* jobs
+          .enqueue({
+            name: "read-change",
+            payload: { changeId: params.id },
+            idempotencyKey: `read-change:${params.id}`,
+          })
+          .pipe(Effect.orDie);
+        return { queued: true };
       }),
     )
     .handle("stats", ({ params }) =>

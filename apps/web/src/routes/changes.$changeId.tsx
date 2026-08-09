@@ -2,13 +2,14 @@ import { useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
 
-import { CommentStateActions } from "#/components/comment-state";
+import { CommentStateActions, EvidenceLines } from "#/components/comment-state";
 import { WorkbenchDiff } from "#/components/diff";
 import { FollowUpBanner } from "#/components/follow-up";
 import { AppShell } from "#/components/shell";
 import {
   createFollowUp,
   postChangeComment,
+  readChange,
   type ReviewCommentDto,
   type SessionChangeDto,
 } from "#/lib/api";
@@ -64,14 +65,17 @@ function ChangePage() {
           <h1 className="font-display text-3xl font-medium tracking-tight text-foreground">
             {change.branch.replace(/^mend\/session\//, "session ")}
           </h1>
-          <button
-            type="button"
-            disabled={openUnsent.length === 0}
-            onClick={() => setSendOpen(true)}
-            className="rounded-xl bg-primary px-4 py-2 font-sans text-sm font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-opacity disabled:opacity-50"
-          >
-            Send review to session
-          </button>
+          <div className="flex items-center gap-2">
+            <ReadChangeButton changeId={changeId} />
+            <button
+              type="button"
+              disabled={openUnsent.length === 0}
+              onClick={() => setSendOpen(true)}
+              className="rounded-xl bg-primary px-4 py-2 font-sans text-sm font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-opacity disabled:opacity-50"
+            >
+              Send review to session
+            </button>
+          </div>
         </div>
         <p className="mt-2 font-mono text-xs text-faint">
           worktree vs {change.baseSha.slice(0, 12)} · {files.length} file
@@ -137,6 +141,37 @@ function ChangePage() {
   );
 }
 
+/**
+ * "Read this change" (plan §7.3): Mend reads the diff against the record and
+ * drafts evidence-linked findings. The pass runs asynchronously; drafts land
+ * as comments over SSE, each awaiting accept/edit/dismiss. On-demand only —
+ * the human loop is never gated on the machine pass.
+ */
+function ReadChangeButton({ changeId }: { readonly changeId: string }) {
+  const [state, setState] = useState<"idle" | "queueing" | "reading">("idle");
+  const request = () => {
+    setState("queueing");
+    void readChange(changeId)
+      .then(() => setState("reading"))
+      .catch(() => setState("idle"));
+  };
+  return (
+    <button
+      type="button"
+      disabled={state !== "idle"}
+      onClick={request}
+      title="Mend reads the diff against the session record and drafts evidence-linked findings"
+      className="rounded-xl border border-border bg-card px-4 py-2 font-sans text-sm font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-60"
+    >
+      {state === "reading"
+        ? "Mend is reading — drafts land below"
+        : state === "queueing"
+          ? "…"
+          : "Read this change"}
+    </button>
+  );
+}
+
 // ─── Change-level comments ──────────────────────────────────────────────────
 
 function ChangeComments({
@@ -175,6 +210,7 @@ function ChangeComments({
               {comment.sentToSessionId === null ? comment.state : "sent to session"}
             </p>
             <p className="mt-1.5 text-[13.5px] leading-relaxed text-ink-2">{comment.body}</p>
+            <EvidenceLines comment={comment} />
             <CommentStateActions comment={comment} />
           </div>
         ))}

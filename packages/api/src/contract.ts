@@ -592,6 +592,15 @@ const sessionChangesGroup = HttpApiGroup.make("sessionChanges")
       error: NotFound,
     }),
   )
+  .add(
+    // "Read this change" (plan §7.3): queue the machine pass; findings land
+    // asynchronously as draft comments and arrive over the normal SSE path.
+    HttpApiEndpoint.post("read", "/changes/:id/read", {
+      params: { id: ChangeId },
+      success: Schema.Struct({ queued: Schema.Boolean }),
+      error: NotFound,
+    }),
+  )
   .middleware(AuthMiddleware);
 
 /**

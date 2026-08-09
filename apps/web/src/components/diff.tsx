@@ -7,7 +7,7 @@ import {
 import { FileDiff } from "@pierre/diffs/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { CommentStateActions } from "#/components/comment-state";
+import { CommentStateActions, EvidenceLines } from "#/components/comment-state";
 import { postChangeComment, type ReviewCommentDto } from "#/lib/api";
 import { queryClient } from "#/lib/queries";
 
@@ -389,6 +389,7 @@ function InlineComment({ comment }: { readonly comment: ReviewCommentDto }) {
         {comment.sentToSessionId === null ? comment.state : "sent to session"}
       </p>
       <p className="mt-1 text-[13.5px] leading-relaxed text-ink-2">{comment.body}</p>
+      <EvidenceLines comment={comment} />
       <CommentStateActions comment={comment} />
     </div>
   );
