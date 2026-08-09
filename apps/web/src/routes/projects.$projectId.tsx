@@ -2,13 +2,12 @@ import { useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
+import { useContextMenu } from "#/components/context-menu";
 import { AppShell } from "#/components/shell";
 import { SessionStatusDot } from "#/components/status";
 import {
   addProjectMount,
   addReference,
-  createSession,
-  launchSession,
   refreshReference,
   removeProject,
   removeProjectMount,
@@ -24,6 +23,7 @@ import {
   referencesQuery,
 } from "#/lib/queries";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
+import { HARNESSES, LIVE_STATES, sessionMenu, startSession } from "#/lib/workbench-menus";
 
 export const Route = createFileRoute("/projects/$projectId")({
   ssr: false,
@@ -38,21 +38,13 @@ export const Route = createFileRoute("/projects/$projectId")({
   component: ProjectPage,
 });
 
-const LIVE_STATES = new Set(["starting", "running", "waiting", "idle"]);
-
-/** How each harness launches — mirrors the CLI's map; the server records either way. */
-const HARNESSES: ReadonlyArray<{ readonly name: string; readonly argv: ReadonlyArray<string> }> = [
-  { name: "claude", argv: ["claude"] },
-  { name: "codex", argv: ["codex"] },
-  { name: "opencode", argv: ["opencode"] },
-];
-
 function ProjectPage() {
   const { projectId } = Route.useParams();
   const { project, sessions, annotations } = useSuspenseQuery(projectDetailQuery(projectId)).data;
   const navigate = useNavigate();
   const [starting, setStarting] = useState<string | null>(null);
   const [clearing, setClearing] = useState<"idle" | "armed" | "working">("idle");
+  const { openMenu, menuElement } = useContextMenu();
   useWorkbenchEvents();
 
   const live = sessions.filter((session) => LIVE_STATES.has(session.status));
@@ -73,24 +65,9 @@ function ProjectPage() {
     });
   };
 
-  /**
-   * Fire a session from here: create the row, kick the supervised launch, and
-   * go straight to the session page — its terminal pane attaches the moment
-   * the workspace is ready. The launch promise outlives the navigation (same
-   * SPA); a failure settles the session server-side, so the page shows it.
-   */
-  const start = (harness: string, argv: ReadonlyArray<string>) => {
+  const start = (harness: string) => {
     setStarting(harness);
-    void createSession(projectId, harness)
-      .then((session) => {
-        void launchSession(session.id, argv)
-          .catch(() => undefined)
-          .finally(() => {
-            void queryClient.invalidateQueries({ queryKey: ["session", session.id] });
-          });
-        return navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } });
-      })
-      .finally(() => setStarting(null));
+    void startSession(navigate, projectId, harness).finally(() => setStarting(null));
   };
 
   return (
@@ -114,13 +91,13 @@ function ProjectPage() {
                 <span className="text-xs text-label">start a session:</span>
                 {HARNESSES.map((harness) => (
                   <button
-                    key={harness.name}
+                    key={harness}
                     type="button"
                     disabled={starting !== null}
-                    onClick={() => start(harness.name, harness.argv)}
+                    onClick={() => start(harness)}
                     className="rounded-xl border border-border bg-card px-3 py-1.5 font-mono text-xs text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-50"
                   >
-                    {starting === harness.name ? "starting…" : harness.name}
+                    {starting === harness ? "starting…" : harness}
                   </button>
                 ))}
               </div>
@@ -138,6 +115,9 @@ function ProjectPage() {
                   return (
                     <div
                       key={session.id}
+                      onContextMenu={(event) =>
+                        openMenu(event, sessionMenu(session, annotation, navigate))
+                      }
                       className={`flex items-center justify-between gap-4 px-5 py-4 transition-colors hover:bg-secondary ${index === 0 ? "" : "border-t border-rule-faint"}`}
                     >
                       <Link
@@ -207,6 +187,7 @@ function ProjectPage() {
           </aside>
         </div>
       </div>
+      {menuElement}
     </AppShell>
   );
 }

@@ -1,11 +1,13 @@
 import { useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
+import { useContextMenu } from "#/components/context-menu";
 import { AppShell } from "#/components/shell";
 import { adoptProject } from "#/lib/api";
 import { projectsQuery, queryClient } from "#/lib/queries";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
+import { projectMenu } from "#/lib/workbench-menus";
 
 export const Route = createFileRoute("/projects/")({
   ssr: false,
@@ -17,6 +19,8 @@ export const Route = createFileRoute("/projects/")({
 
 function ProjectsPage() {
   const projects = useSuspenseQuery(projectsQuery).data;
+  const navigate = useNavigate();
+  const { openMenu, menuElement } = useContextMenu();
   useWorkbenchEvents();
 
   return (
@@ -44,6 +48,7 @@ function ProjectsPage() {
                 key={project.id}
                 to="/projects/$projectId"
                 params={{ projectId: project.id }}
+                onContextMenu={(event) => openMenu(event, projectMenu(project, navigate))}
                 className="rounded-2xl bg-card p-5 no-underline shadow-sm transition-shadow hover:shadow-md"
               >
                 <div className="flex items-center justify-between gap-4">
@@ -58,6 +63,7 @@ function ProjectsPage() {
           )}
         </div>
       </div>
+      {menuElement}
     </AppShell>
   );
 }
