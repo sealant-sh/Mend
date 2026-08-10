@@ -11,6 +11,12 @@ npm install -g @sealant/mend
 
 Requires Node 22+ and a running Mend server.
 
+Run bare `mend` for the interactive dashboard. Highlight a session and press `v` to review its
+accumulated change in the terminal: navigate files and hunks, switch between unified and split
+diffs, reveal whitespace, select line ranges, add line or whole-change comments, inspect linked
+evidence, and draft a follow-up for the same session. Press `y` to deliver a pending follow-up and
+relaunch that session, or `o` to continue the review in the web app.
+
 ## Commands
 
 ```
@@ -51,5 +57,6 @@ can reach the server. When a session settles, Mend harvests the harness's own st
 so `mend resume` restores it natively (a Claude session resumes with its memory intact, even across
 machines), and `--with` carries the conversation into a different harness.
 
-The reviewable object is the session's accumulated local change — worktree versus base — in the Mend
-web app, with the session record beside it. No issue tracker or pull request required.
+The reviewable object is the session's accumulated local change — worktree versus base — with the
+session record beside it. Review it in the terminal dashboard or the Mend web app. No issue tracker
+or pull request required.
