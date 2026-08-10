@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { HARNESS_STATE, distillOpeningPrompt, extractTranscript } from "./harness-state.ts";
+import {
+  HARNESS_STATE,
+  distillOpeningPrompt,
+  extractTranscript,
+  nativeResumeArgv,
+} from "./harness-state.ts";
 
 const claudeJsonl = [
   JSON.stringify({ type: "summary", summary: "ignored" }),
@@ -89,5 +94,34 @@ describe("transcript adapters", () => {
         "/root/.codex/sessions/2026/07/25/rollout-2026-07-25T22-11-00-0f9a2c3d-1111-2222-3333-444455556666.jsonl",
       ),
     ).toBe("0f9a2c3d-1111-2222-3333-444455556666");
+  });
+
+  it("resumes a saved Codex session by provider id", () => {
+    expect(nativeResumeArgv("codex", "codex-session-id", ["codex"])).toEqual([
+      "codex",
+      "resume",
+      "codex-session-id",
+    ]);
+    expect(nativeResumeArgv("codex", "codex-session-id", ["codex", "continue the review"])).toEqual(
+      ["codex", "resume", "codex-session-id", "continue the review"],
+    );
+  });
+
+  it("does not wrap an argv that already resumes natively", () => {
+    expect(
+      nativeResumeArgv("codex", "saved-session-id", ["codex", "resume", "requested-session-id"]),
+    ).toEqual(["codex", "resume", "requested-session-id"]);
+    expect(
+      nativeResumeArgv("claude", "saved-session-id", [
+        "claude",
+        "--resume",
+        "requested-session-id",
+      ]),
+    ).toEqual(["claude", "--resume", "requested-session-id"]);
+  });
+
+  it("leaves launches without resumable native state unchanged", () => {
+    expect(nativeResumeArgv("codex", null, ["codex"])).toEqual(["codex"]);
+    expect(nativeResumeArgv("opencode", "session-id", ["opencode"])).toEqual(["opencode"]);
   });
 });

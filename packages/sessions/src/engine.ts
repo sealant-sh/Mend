@@ -25,6 +25,7 @@ import {
   HARNESS_STATE,
   distillOpeningPrompt,
   extractTranscript,
+  nativeResumeArgv,
   type HarnessStateManifest,
 } from "./harness-state.ts";
 import {
@@ -628,17 +629,7 @@ export class SessionEngine extends Context.Service<
               Effect.ignore,
             );
           }
-          if (
-            session.harness === "claude" &&
-            manifest.providerSessionId !== null &&
-            shapedArgv[0] === "claude" &&
-            !shapedArgv.includes("--resume") &&
-            !shapedArgv.includes("-r") &&
-            !shapedArgv.includes("--continue")
-          ) {
-            const [, ...tail] = shapedArgv;
-            shapedArgv = ["claude", "--resume", manifest.providerSessionId, ...tail];
-          }
+          shapedArgv = nativeResumeArgv(session.harness, manifest.providerSessionId, shapedArgv);
         }
 
         if (nativeImport !== null) {
