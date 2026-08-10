@@ -1,8 +1,11 @@
 import {
+  InferenceCallId,
   MendSettings,
   type ChangeId,
   type CheckpointId,
   type ContextSnapshotId,
+  type InferenceContext,
+  type InferenceToolName,
   type ProjectId,
   type ProjectMountId,
   type SealantRunId,
@@ -77,6 +80,15 @@ export const settings = pgTable("settings", {
   key: text().primaryKey(),
   value: jsonb().$type<typeof MendSettings.Encoded>().notNull(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
+export const inferenceCalls = pgTable("inference_calls", {
+  id: text().$type<InferenceCallId>().primaryKey(),
+  context: text().$type<InferenceContext>().notNull(),
+  tool: text().$type<InferenceToolName>(),
+  input: jsonb().$type<unknown>().notNull(),
+  output: jsonb().$type<unknown>().notNull(),
+  occurredAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
 
 export const contextSnapshots = pgTable("context_snapshots", {
@@ -205,6 +217,7 @@ export const checkpoints = pgTable(
 export type ProjectRow = typeof projects.$inferSelect;
 export type ProjectMountRow = typeof projectMounts.$inferSelect;
 export type SettingsRow = typeof settings.$inferSelect;
+export type InferenceCallRow = typeof inferenceCalls.$inferSelect;
 export type ContextSnapshotRow = typeof contextSnapshots.$inferSelect;
 export type AgentSessionRow = typeof agentSessions.$inferSelect;
 export type SessionRunRow = typeof sessionRuns.$inferSelect;

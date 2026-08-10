@@ -15,7 +15,7 @@ import {
   ChangeToursRepo,
   CheckpointsRepoLive,
   FollowUpsRepo,
-  InferenceCallsRepo,
+  InferenceCallsRepoLive,
   IssuesRepo,
   MendDBLive,
   MigratorLive,
@@ -85,6 +85,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   ProjectsRepoLive,
   ProjectMountsRepoLive,
   SettingsRepoLive,
+  InferenceCallsRepoLive,
 ).pipe(Layer.provideMerge(MendDBLive));
 
 const DatabaseLive = Layer.mergeAll(
@@ -94,7 +95,6 @@ const DatabaseLive = Layer.mergeAll(
   ChangesRepo.layer,
   BriefsRepo.layer,
   BriefCommentsRepo.layer,
-  InferenceCallsRepo.layer,
   // Workbench repos (plan §5; docs/M0-INVENTORY.md).
   ReferencesRepo.layer,
   SessionsRepo.layer,
