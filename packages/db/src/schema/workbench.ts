@@ -23,6 +23,8 @@ import type {
   CommentAuthor,
   CommentKind,
   CommentState,
+  PassKind,
+  PassStatus,
   RecordLink,
   TourStop,
   SessionExtraMount,
@@ -37,6 +39,7 @@ import {
   integer,
   jsonb,
   snakeCase,
+  primaryKey,
   text,
   timestamp,
   unique,
@@ -274,6 +277,23 @@ export const changeTours = pgTable("change_tours", {
   createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
 
+export const changePasses = pgTable(
+  "change_passes",
+  {
+    changeId: text()
+      .$type<ChangeId>()
+      .notNull()
+      .references(() => sessionChanges.id, { onDelete: "cascade" }),
+    kind: text().$type<PassKind>().notNull(),
+    status: text().$type<PassStatus>().notNull(),
+    detail: text(),
+    findings: integer(),
+    startedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp({ mode: "date", withTimezone: true }),
+  },
+  (table) => [primaryKey({ columns: [table.changeId, table.kind] })],
+);
+
 export const checkpoints = pgTable(
   "checkpoints",
   {
@@ -309,4 +329,5 @@ export type SessionChangeRow = typeof sessionChanges.$inferSelect;
 export type FollowUpRow = typeof followUps.$inferSelect;
 export type ReviewCommentRow = typeof reviewComments.$inferSelect;
 export type ChangeTourRow = typeof changeTours.$inferSelect;
+export type ChangePassRow = typeof changePasses.$inferSelect;
 export type CheckpointRow = typeof checkpoints.$inferSelect;
