@@ -5,6 +5,7 @@ import {
   agentSessions,
   checkpoints,
   contextSnapshots,
+  projectMounts,
   projects,
   sessionChanges,
   sessionRuns,
@@ -60,6 +61,25 @@ describe("workbench Drizzle schema", () => {
     );
     expect(activeRunIndex?.config.unique).toBe(true);
     expect(activeRunIndex?.config.where).toBeDefined();
+  });
+
+  it("matches project mount ownership and uniqueness constraints", () => {
+    const config = getTableConfig(projectMounts);
+    expect(config.name).toBe("project_mounts");
+    expect(config.columns.map((column) => column.name)).toEqual([
+      "id",
+      "project_id",
+      "name",
+      "host_path",
+      "read_only",
+      "created_at",
+      "updated_at",
+    ]);
+    expect(config.foreignKeys[0]?.onDelete).toBe("cascade");
+    expect(config.uniqueConstraints.map((constraint) => constraint.name).toSorted()).toEqual([
+      "project_mounts_project_id_host_path_key",
+      "project_mounts_project_id_name_key",
+    ]);
   });
 
   it("keeps destructive ownership and nullable evidence links explicit", () => {

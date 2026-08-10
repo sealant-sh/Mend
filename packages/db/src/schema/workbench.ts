@@ -3,6 +3,7 @@ import type {
   CheckpointId,
   ContextSnapshotId,
   ProjectId,
+  ProjectMountId,
   SealantRunId,
   SealantWorkspaceId,
   SessionId,
@@ -50,6 +51,26 @@ export const projects = pgTable("projects", {
   createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
+
+export const projectMounts = pgTable(
+  "project_mounts",
+  {
+    id: text().$type<ProjectMountId>().primaryKey(),
+    projectId: text()
+      .$type<ProjectId>()
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text().notNull(),
+    hostPath: text().notNull(),
+    readOnly: boolean().notNull().default(true),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("project_mounts_project_id_name_key").on(table.projectId, table.name),
+    unique("project_mounts_project_id_host_path_key").on(table.projectId, table.hostPath),
+  ],
+);
 
 export const contextSnapshots = pgTable("context_snapshots", {
   id: text().$type<ContextSnapshotId>().primaryKey(),
@@ -175,6 +196,7 @@ export const checkpoints = pgTable(
 );
 
 export type ProjectRow = typeof projects.$inferSelect;
+export type ProjectMountRow = typeof projectMounts.$inferSelect;
 export type ContextSnapshotRow = typeof contextSnapshots.$inferSelect;
 export type AgentSessionRow = typeof agentSessions.$inferSelect;
 export type SessionRunRow = typeof sessionRuns.$inferSelect;
