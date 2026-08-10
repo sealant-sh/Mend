@@ -1,5 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
-import { type SessionId, type Sha } from "@mend/domain";
+import { type SealantRunId, type SessionId, type Sha } from "@mend/domain";
 import { Checkpoint, type CheckpointTrigger } from "@mend/domain/workbench";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -15,12 +15,13 @@ export interface NewCheckpoint {
   readonly sessionId: SessionId;
   readonly ref: string;
   readonly sha: Sha;
+  readonly sealantRunId: SealantRunId | null;
   readonly seq: bigint;
   readonly trigger: CheckpointTrigger;
 }
 
 /**
- * The checkpoint index (plan §5.6): `(hidden git ref, record seq)` pairs.
+ * The checkpoint index (plan §5.6): hidden git ref plus exact record pointer.
  * The refs themselves live in the store's bare repo; this table is how the
  * review picks two of them without touching git.
  */
@@ -48,9 +49,9 @@ export class CheckpointsRepo extends Context.Service<
       const create = Effect.fn("CheckpointsRepo.create")(function* (checkpoint: NewCheckpoint) {
         const id = crypto.randomUUID();
         const rows = yield* sql`
-          INSERT INTO checkpoints (id, session_id, ref, sha, seq, trigger)
+          INSERT INTO checkpoints (id, session_id, ref, sha, sealant_run_id, seq, trigger)
           VALUES (${id}, ${checkpoint.sessionId}, ${checkpoint.ref}, ${checkpoint.sha},
-                  ${String(checkpoint.seq)}, ${checkpoint.trigger})
+                  ${checkpoint.sealantRunId}, ${String(checkpoint.seq)}, ${checkpoint.trigger})
           RETURNING *`.pipe(Effect.orDie);
         return yield* decodeRow(rows[0]);
       });
@@ -60,7 +61,7 @@ export class CheckpointsRepo extends Context.Service<
       ) {
         const rows = yield* sql`
           SELECT * FROM checkpoints WHERE session_id = ${sessionId}
-          ORDER BY seq ASC, created_at ASC`.pipe(Effect.orDie);
+          ORDER BY created_at ASC, id ASC`.pipe(Effect.orDie);
         return yield* Effect.forEach(rows, decodeRow);
       });
 
@@ -69,7 +70,7 @@ export class CheckpointsRepo extends Context.Service<
       ) {
         const rows = yield* sql`
           SELECT * FROM checkpoints WHERE session_id = ${sessionId}
-          ORDER BY seq DESC, created_at DESC LIMIT 1`.pipe(Effect.orDie);
+          ORDER BY created_at DESC, id DESC LIMIT 1`.pipe(Effect.orDie);
         const row = rows[0];
         return row === undefined ? null : yield* decodeRow(row);
       });

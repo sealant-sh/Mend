@@ -9,10 +9,11 @@ import {
   ReferencesRepo,
   SessionChangesRepo,
   SessionNotFoundError,
+  SessionRunsRepo,
   SessionsRepo,
 } from "@mend/db";
 import { SealantRunId, SealantWorkspaceId, SessionId, type ProjectId } from "@mend/domain";
-import type { Checkpoint, CheckpointTrigger, Session } from "@mend/domain/workbench";
+import type { Checkpoint, CheckpointTrigger, Session, SessionRun } from "@mend/domain/workbench";
 import { SessionExtraMount, SessionReferenceMount } from "@mend/domain/workbench";
 import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import { GitError, Store, sessionStatePathOf, worktreePathOf } from "@mend/store";
@@ -196,6 +197,7 @@ export class SessionEngine extends Context.Service<
     Effect.gen(function* () {
       const sealant = yield* SealantClient;
       const sessions = yield* SessionsRepo;
+      const sessionRuns = yield* SessionRunsRepo;
       const projects = yield* ProjectsRepo;
       const changes = yield* SessionChangesRepo;
       const checkpoints = yield* CheckpointsRepo;
@@ -213,7 +215,7 @@ export class SessionEngine extends Context.Service<
       const takeCheckpoint = Effect.fn("SessionEngine.takeCheckpoint")(function* (
         session: Session,
         trigger: CheckpointTrigger,
-        seq: bigint,
+        cursor: { readonly sealantRunId: SealantRunId | null; readonly sequence: bigint },
       ) {
         const worktree = yield* worktreeOf(session);
         const previous = yield* checkpoints.latestForSession(session.id);
@@ -228,14 +230,19 @@ export class SessionEngine extends Context.Service<
           sessionId: session.id,
           ref: snapshot.ref,
           sha: snapshot.sha,
-          seq,
+          sealantRunId: cursor.sealantRunId,
+          seq: cursor.sequence,
           trigger,
         });
       });
 
       /** A checkpoint that cannot be taken is a gap, carried as content — never a crash. */
-      const tryCheckpoint = (session: Session, trigger: CheckpointTrigger, seq: bigint) =>
-        takeCheckpoint(session, trigger, seq).pipe(
+      const tryCheckpoint = (
+        session: Session,
+        trigger: CheckpointTrigger,
+        cursor: { readonly sealantRunId: SealantRunId | null; readonly sequence: bigint },
+      ) =>
+        takeCheckpoint(session, trigger, cursor).pipe(
           Effect.catch((error) =>
             Effect.logWarning("session engine: checkpoint failed").pipe(
               Effect.annotateLogs({ sessionId: session.id, trigger, error: String(error) }),
@@ -255,12 +262,15 @@ export class SessionEngine extends Context.Service<
 
       const supervise = Effect.fn("SessionEngine.supervise")(function* (
         session: Session,
+        sessionRun: SessionRun,
         sdkRun: SdkRun,
-        from: bigint,
       ) {
-        yield* sealant.recordStream(sdkRun, { from }).pipe(
+        yield* sealant.recordStream(sdkRun, { from: sessionRun.lastSeenSequence }).pipe(
           Stream.tap((entry) =>
             Effect.gen(function* () {
+              yield* sessionRuns.saveLastSeenSequence(sessionRun.sealantRunId, entry.sequence);
+              // Denormalized latest-run progress for existing list/UI contracts only. Supervision
+              // never reads this session-level mirror.
               yield* sessions.saveLastSeenSequence(session.id, entry.sequence);
               yield* sessions.notifyProgress(session.id, entry.sequence, entry.summary);
             }),
@@ -279,13 +289,17 @@ export class SessionEngine extends Context.Service<
         const summary =
           settled.result.summary ??
           (outcome === "failed" ? `harness exited with code ${settled.result.exitCode}` : null);
+        yield* sessionRuns.settle(sessionRun.sealantRunId, outcome, summary);
         yield* sessions.settle(session.id, outcome, summary);
 
         // The settle boundary is a turn boundary: snapshot, then let the
         // change row's head follow the snapshot.
         const current = yield* sessions.byId(session.id).pipe(Effect.orElseSucceed(() => session));
-        const seq = current.lastSeenSequence;
-        yield* tryCheckpoint(current, "turn-boundary", seq);
+        const currentRun = yield* sessionRuns.bySealantRunId(sessionRun.sealantRunId);
+        yield* tryCheckpoint(current, "turn-boundary", {
+          sealantRunId: sessionRun.sealantRunId,
+          sequence: currentRun?.lastSeenSequence ?? sessionRun.lastSeenSequence,
+        });
         yield* refreshChangeHead(current).pipe(Effect.ignore);
         yield* sweepWorkspace(session.id);
       });
@@ -295,8 +309,17 @@ export class SessionEngine extends Context.Service<
         Effect.gen(function* () {
           const current = yield* sessions.byId(sessionId);
           if (current.settledAt !== null) return;
+          const sessionRun = yield* sessionRuns.bySealantRunId(sealantRunId);
+          if (sessionRun === null) {
+            yield* sessions.settle(
+              sessionId,
+              "failed",
+              `run ${sealantRunId} is missing from the session record index`,
+            );
+            return;
+          }
           const sdkRun = yield* sealant.getRun(sealantRunId);
-          yield* supervise(current, sdkRun, current.lastSeenSequence);
+          yield* supervise(current, sessionRun, sdkRun);
         }).pipe(
           Effect.tapError((error) =>
             Effect.logWarning("session engine: supervision interrupted; retrying").pipe(
@@ -337,7 +360,7 @@ export class SessionEngine extends Context.Service<
           baseSha: worktree.baseSha,
           contextSnapshotId: null,
         });
-        yield* tryCheckpoint(session, "session-start", 0n);
+        yield* tryCheckpoint(session, "session-start", { sealantRunId: null, sequence: 0n });
         yield* changes.ensureForSession(project.id, session.id, worktree.branch, worktree.baseSha);
         return session;
       });
@@ -347,7 +370,17 @@ export class SessionEngine extends Context.Service<
         sealantRunId: SealantRunId,
         workspaceId: SealantWorkspaceId,
       ) {
-        yield* sessions.byId(sessionId);
+        const session = yield* sessions.byId(sessionId);
+        const existing = yield* sessionRuns.bySealantRunId(sealantRunId);
+        if (existing === null) {
+          yield* sessionRuns.create({
+            sessionId,
+            harness: session.harness,
+            sealantRunId,
+            sealantWorkspaceId: workspaceId,
+            sealantSessionId: null,
+          });
+        }
         yield* sessions.setSealantIds(sessionId, sealantRunId, workspaceId);
         yield* sessions.setStatus(sessionId, "running");
         yield* forkSupervision(sessionId, sealantRunId);
@@ -893,14 +926,22 @@ export class SessionEngine extends Context.Service<
             Effect.tapError(() => sealant.stopWorkspace(workspace).pipe(Effect.ignore)),
             settleOnFailure,
           );
+        const sealantRunId = SealantRunId.make(pty.runId);
+        yield* sessionRuns.create({
+          sessionId,
+          harness: session.harness,
+          sealantRunId,
+          sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
+          sealantSessionId: pty.id,
+        });
         yield* sessions.setSealantIds(
           sessionId,
-          SealantRunId.make(pty.runId),
+          sealantRunId,
           SealantWorkspaceId.make(workspace.id),
         );
         yield* sessions.setSealantSessionId(sessionId, pty.id);
         yield* sessions.setStatus(sessionId, "running");
-        yield* forkSupervision(sessionId, SealantRunId.make(pty.runId));
+        yield* forkSupervision(sessionId, sealantRunId);
 
         // The run heartbeats past the PTY's exit (the workspace stays warm), so
         // settle on the SESSION's lifecycle: poll status until it leaves
@@ -937,13 +978,22 @@ export class SessionEngine extends Context.Service<
             if (current.settledAt !== null) return;
             const outcome =
               status.exitCode === undefined || status.exitCode === 0 ? "completed" : "failed";
+            yield* sessionRuns.settle(
+              sealantRunId,
+              outcome,
+              status.exitCode === undefined ? null : `exited with code ${status.exitCode}`,
+            );
             yield* sessions.settle(
               sessionId,
               outcome,
               status.exitCode === undefined ? null : `exited with code ${status.exitCode}`,
             );
             const settled = yield* sessions.byId(sessionId);
-            yield* tryCheckpoint(settled, "turn-boundary", settled.lastSeenSequence);
+            const settledRun = yield* sessionRuns.bySealantRunId(sealantRunId);
+            yield* tryCheckpoint(settled, "turn-boundary", {
+              sealantRunId,
+              sequence: settledRun?.lastSeenSequence ?? 0n,
+            });
             yield* refreshChangeHead(settled).pipe(Effect.ignore);
             yield* sweepWorkspace(sessionId);
             return;
@@ -958,7 +1008,11 @@ export class SessionEngine extends Context.Service<
         trigger: CheckpointTrigger,
       ) {
         const session = yield* sessions.byId(sessionId);
-        const checkpoint = yield* takeCheckpoint(session, trigger, session.lastSeenSequence);
+        const latestRun = yield* sessionRuns.latestForSession(sessionId);
+        const checkpoint = yield* takeCheckpoint(session, trigger, {
+          sealantRunId: latestRun?.sealantRunId ?? null,
+          sequence: latestRun?.lastSeenSequence ?? 0n,
+        });
         yield* refreshChangeHead(session).pipe(Effect.ignore);
         return checkpoint;
       });
@@ -1112,8 +1166,15 @@ export class SessionEngine extends Context.Service<
 
       const stop = Effect.fn("SessionEngine.stop")(function* (sessionId: SessionId) {
         const session = yield* sessions.byId(sessionId);
+        const activeRun = yield* sessionRuns.activeForSession(sessionId);
+        if (activeRun !== null) {
+          yield* sessionRuns.settle(activeRun.sealantRunId, "stopped", null);
+        }
         yield* sessions.settle(sessionId, "stopped", null);
-        yield* tryCheckpoint(session, "user-mark", session.lastSeenSequence);
+        yield* tryCheckpoint(session, "user-mark", {
+          sealantRunId: activeRun?.sealantRunId ?? null,
+          sequence: activeRun?.lastSeenSequence ?? 0n,
+        });
         yield* refreshChangeHead(session).pipe(Effect.ignore);
         // The workspace outlives the PTY just long enough to harvest, then
         // dies; forked so a stop request answers immediately. If this process
@@ -1123,22 +1184,31 @@ export class SessionEngine extends Context.Service<
 
       /** Re-attach to sessions that were live when the last process died. */
       const resume = Effect.fn("SessionEngine.resume")(function* () {
-        const unsettled = yield* sessions.listUnsettled();
-        for (const session of unsettled) {
-          if (session.sealantRunId === null) {
-            yield* sessions.settle(
-              session.id,
-              "failed",
-              "process restarted before the harness started",
-            );
-            continue;
-          }
-          yield* forkSupervision(session.id, session.sealantRunId);
+        const activeRuns = yield* sessionRuns.listActive();
+        const reattached = new Set<string>();
+        for (const sessionRun of activeRuns) {
+          const session = yield* sessions
+            .byId(sessionRun.sessionId)
+            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+          if (session === null || session.settledAt !== null) continue;
+          reattached.add(session.id);
+          yield* forkSupervision(session.id, sessionRun.sealantRunId);
           yield* Effect.logInfo("session engine: re-attached").pipe(
             Effect.annotateLogs({
               sessionId: session.id,
-              from: String(session.lastSeenSequence),
+              sealantRunId: sessionRun.sealantRunId,
+              from: String(sessionRun.lastSeenSequence),
             }),
+          );
+        }
+
+        const unsettled = yield* sessions.listUnsettled();
+        for (const session of unsettled) {
+          if (reattached.has(session.id)) continue;
+          yield* sessions.settle(
+            session.id,
+            "failed",
+            "process restarted before the harness started",
           );
         }
       });

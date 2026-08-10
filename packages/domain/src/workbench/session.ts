@@ -28,10 +28,9 @@ export const SessionStatus = Schema.Literals([
 export type SessionStatus = typeof SessionStatus.Type;
 
 /**
- * One supervised coding-agent process in its own store worktree (plan §5.5).
- * At the Sealant layer a session is backed by a run and its durable record —
- * evidence is addressed by `(sealantRunId, sequence)` exactly as before. The
- * recording stays in Sealant; this row is Mend's index over it.
+ * One logical coding-agent conversation in its own store worktree (plan §5.5). A settled-session
+ * resume starts another Sealant run; SessionRun owns the ordered membership and per-run cursors.
+ * The recording stays in Sealant and evidence addresses it by `(sealantRunId, sequence)`.
  */
 export class Session extends Schema.Class<Session>("Session")({
   id: SessionId,
@@ -53,15 +52,19 @@ export class Session extends Schema.Class<Session>("Session")({
   referenceMounts: Schema.Array(SessionReferenceMount),
   /** Project folders mounted beside the worktree at launch — what the agent could see. */
   extraMounts: Schema.Array(SessionExtraMount),
+  /** Latest run pointer retained for list/API compatibility; SessionRun is authoritative. */
   sealantRunId: Schema.NullOr(SealantRunId),
+  /** Latest workspace pointer used for active control and settle-time harvesting. */
   sealantWorkspaceId: Schema.NullOr(SealantWorkspaceId),
-  /** The platform's interactive PTY session id (0.7.0) — the reattach handle. */
+  /** Latest platform interactive PTY session id — the live reattach handle. */
   sealantSessionId: Schema.NullOr(Schema.String),
   status: SessionStatus,
   /** What the harness reported at settle, when anything. */
   summary: Schema.NullOr(Schema.String),
-  /** Last record sequence the supervisor persisted — crash-resume re-attaches from here. */
+  /** Latest run's progress mirror for list surfaces; supervision reads the per-run cursor. */
   lastSeenSequence: Schema.BigInt,
+  /** False for migrated sessions whose previously overwritten run ids cannot be recovered. */
+  recordHistoryComplete: Schema.Boolean,
   startedAt: Schema.NullOr(Schema.Date),
   settledAt: Schema.NullOr(Schema.Date),
   createdAt: Schema.Date,
