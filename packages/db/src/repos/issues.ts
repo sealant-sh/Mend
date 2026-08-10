@@ -1,10 +1,13 @@
 import { PgClient } from "@effect/sql-pg";
 import { Issue, IssueId, IssueSource, type IssueStage, type RunId } from "@mend/domain";
+import { and, asc, count, desc, eq, ne } from "drizzle-orm";
 import { Effect, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
 
+import { MendDB } from "../client.ts";
 import { IssueNotFoundError } from "../errors.ts";
 import { notifyEvent } from "../events.ts";
+import { issues } from "../schema/workbench.ts";
 
 /** Manual entry is just another intake; tracker layers arrive with M5. */
 export class NewIssue extends Schema.Class<NewIssue>("NewIssue")({
@@ -24,8 +27,6 @@ export class QueueMove extends Schema.Class<QueueMove>("QueueMove")({
   /** Target index within queued, 0 = top. Appends when null. */
   position: Schema.NullOr(Schema.Int),
 }) {}
-
-const decodeIssue = Schema.decodeUnknownEffect(Issue);
 
 export class IssuesRepo extends Context.Service<
   IssuesRepo,
@@ -49,31 +50,36 @@ export class IssuesRepo extends Context.Service<
     readonly topOfQueued: () => Effect.Effect<Option.Option<Issue>>;
     readonly countByStage: (stage: IssueStage) => Effect.Effect<number>;
   }
->()("@mend/db/IssuesRepo") {
-  static readonly layer = Layer.effect(
+>()("@mend/db/IssuesRepo") {}
+
+const toIssue = (row: typeof issues.$inferSelect): Issue => new Issue(row);
+
+export const IssuesRepoLive: Layer.Layer<IssuesRepo, never, MendDB | PgClient.PgClient> =
+  Layer.effect(
     IssuesRepo,
     Effect.gen(function* () {
+      const db = yield* MendDB;
       const sql = yield* PgClient.PgClient;
-
-      const decodeRow = (row: unknown) => decodeIssue(row).pipe(Effect.orDie);
 
       const updateStage = Effect.fn("IssuesRepo.updateStage")(function* (
         id: IssueId,
         stage: IssueStage,
         options?: { readonly failureRunId?: RunId },
       ) {
-        const failureRunId = options?.failureRunId ?? null;
-        const rows = yield* sql`
-          UPDATE issues
-          SET stage = ${stage},
-              position = NULL,
-              last_failure_run_id = COALESCE(${failureRunId}, last_failure_run_id),
-              updated_at = now()
-          WHERE id = ${id}
-          RETURNING *`.pipe(Effect.orDie);
-        const row = rows[0];
+        const failureRunId = options?.failureRunId;
+        const [row] = yield* db
+          .update(issues)
+          .set({
+            stage,
+            position: null,
+            updatedAt: new Date(),
+            ...(failureRunId === undefined ? {} : { lastFailureRunId: failureRunId }),
+          })
+          .where(eq(issues.id, id))
+          .returning()
+          .pipe(Effect.orDie);
         if (row === undefined) return yield* new IssueNotFoundError({ issueId: id });
-        const issue = yield* decodeRow(row);
+        const issue = toIssue(row);
         yield* notifyEvent(sql, { type: "issue", issueId: id });
         return issue;
       });
@@ -83,63 +89,79 @@ export class IssuesRepo extends Context.Service<
         id: IssueId,
         index: number | null,
       ) {
-        return yield* sql
-          .withTransaction(
+        const issue = yield* db
+          .transaction((tx) =>
             Effect.gen(function* () {
-              const exists = yield* sql`SELECT id FROM issues WHERE id = ${id} FOR UPDATE`.pipe(
-                Effect.orDie,
-              );
+              const exists = yield* tx
+                .select({ id: issues.id })
+                .from(issues)
+                .where(eq(issues.id, id))
+                .for("update");
               if (exists.length === 0) return yield* new IssueNotFoundError({ issueId: id });
 
-              const rows = yield* sql`
-              SELECT id FROM issues WHERE stage = 'queued' AND id <> ${id}
-              ORDER BY position ASC NULLS LAST, updated_at ASC
-              FOR UPDATE`.pipe(Effect.orDie);
-              const others = rows.map((row) => (row as { id: string }).id);
+              const rows = yield* tx
+                .select({ id: issues.id })
+                .from(issues)
+                .where(and(eq(issues.stage, "queued"), ne(issues.id, id)))
+                .orderBy(asc(issues.position), asc(issues.updatedAt))
+                .for("update");
+              const others = rows.map((row) => row.id);
               const at =
                 index === null ? others.length : Math.max(0, Math.min(index, others.length));
               const ordered = [...others.slice(0, at), id, ...others.slice(at)];
 
               for (const [position, issueId] of ordered.entries()) {
-                yield* sql`
-                UPDATE issues
-                SET stage = 'queued', position = ${position}, updated_at = now()
-                WHERE id = ${issueId}`.pipe(Effect.orDie);
+                yield* tx
+                  .update(issues)
+                  .set({ stage: "queued", position, updatedAt: new Date() })
+                  .where(eq(issues.id, issueId));
               }
 
-              const updated = yield* sql`SELECT * FROM issues WHERE id = ${id}`.pipe(Effect.orDie);
-              return yield* decodeRow(updated[0]);
+              const [updated] = yield* tx.select().from(issues).where(eq(issues.id, id)).limit(1);
+              if (updated === undefined) return yield* Effect.die("queued issue disappeared");
+              return toIssue(updated);
             }),
           )
           .pipe(
-            Effect.catchTag("SqlError", (error) => Effect.die(error)),
-            Effect.tap(() => notifyEvent(sql, { type: "issue", issueId: id })),
+            Effect.catchTags({
+              EffectDrizzleQueryError: (error) => Effect.die(error),
+              SqlError: (error) => Effect.die(error),
+            }),
           );
+        yield* notifyEvent(sql, { type: "issue", issueId: id });
+        return issue;
       });
 
       const create = Effect.fn("IssuesRepo.create")(function* (input: NewIssue) {
-        const id = crypto.randomUUID();
-        const rows = yield* sql`
-          INSERT INTO issues (id, source, external_ref, repository, title, body)
-          VALUES (${id}, ${input.source}, ${input.externalRef}, ${input.repository}, ${input.title}, ${input.body})
-          RETURNING *`.pipe(Effect.orDie);
-        const issue = yield* decodeRow(rows[0]);
+        const [row] = yield* db
+          .insert(issues)
+          .values({ id: IssueId.make(crypto.randomUUID()), ...input })
+          .returning()
+          .pipe(Effect.orDie);
+        if (row === undefined) return yield* Effect.die("issue insert returned no row");
+        const issue = toIssue(row);
         yield* notifyEvent(sql, { type: "issue", issueId: issue.id });
         return issue;
       });
 
       const list = Effect.fn("IssuesRepo.list")(function* () {
-        const rows = yield* sql`
-          SELECT * FROM issues
-          ORDER BY position ASC NULLS LAST, created_at DESC`.pipe(Effect.orDie);
-        return yield* Effect.forEach(rows, decodeRow);
+        const rows = yield* db
+          .select()
+          .from(issues)
+          .orderBy(asc(issues.position), desc(issues.createdAt))
+          .pipe(Effect.orDie);
+        return rows.map(toIssue);
       });
 
       const byId = Effect.fn("IssuesRepo.byId")(function* (id: IssueId) {
-        const rows = yield* sql`SELECT * FROM issues WHERE id = ${id}`.pipe(Effect.orDie);
-        const row = rows[0];
+        const [row] = yield* db
+          .select()
+          .from(issues)
+          .where(eq(issues.id, id))
+          .limit(1)
+          .pipe(Effect.orDie);
         if (row === undefined) return yield* new IssueNotFoundError({ issueId: id });
-        return yield* decodeRow(row);
+        return toIssue(row);
       });
 
       const move = Effect.fn("IssuesRepo.move")(function* (id: IssueId, queueMove: QueueMove) {
@@ -160,19 +182,23 @@ export class IssuesRepo extends Context.Service<
       );
 
       const topOfQueued = Effect.fn("IssuesRepo.topOfQueued")(function* () {
-        const rows = yield* sql`
-          SELECT * FROM issues WHERE stage = 'queued'
-          ORDER BY position ASC NULLS LAST, created_at ASC
-          LIMIT 1`.pipe(Effect.orDie);
-        const row = rows[0];
+        const [row] = yield* db
+          .select()
+          .from(issues)
+          .where(eq(issues.stage, "queued"))
+          .orderBy(asc(issues.position), asc(issues.createdAt))
+          .limit(1)
+          .pipe(Effect.orDie);
         if (row === undefined) return Option.none<Issue>();
-        return Option.some(yield* decodeRow(row));
+        return Option.some(toIssue(row));
       });
 
       const countByStage = Effect.fn("IssuesRepo.countByStage")(function* (stage: IssueStage) {
-        const rows = yield* sql`
-          SELECT count(*)::int AS count FROM issues WHERE stage = ${stage}`.pipe(Effect.orDie);
-        const row = rows[0] as { count: number } | undefined;
+        const [row] = yield* db
+          .select({ count: count() })
+          .from(issues)
+          .where(eq(issues.stage, stage))
+          .pipe(Effect.orDie);
         return row?.count ?? 0;
       });
 
@@ -189,4 +215,3 @@ export class IssuesRepo extends Context.Service<
       };
     }),
   );
-}

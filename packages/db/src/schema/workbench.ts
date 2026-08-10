@@ -1,16 +1,33 @@
 import {
+  BriefCommentId,
+  BriefDocument,
+  EvidencePointer,
+  FailureBrief,
   FollowUpId,
   InferenceCallId,
+  IssueId,
   MendSettings,
+  ReviewQuestionId,
   ReviewCommentId,
+  type BriefId,
   type ChangeId,
   type CheckpointId,
+  type CommentAuthorKind,
   type ContextSnapshotId,
+  type Disposition,
+  type Freshness,
   type InferenceContext,
   type InferenceToolName,
+  type IssueSource,
+  type IssueStage,
   type ProjectId,
   type ProjectMountId,
   type ReferenceId,
+  type RoutedAction,
+  type RunId,
+  type RunKind,
+  type RunOutcome,
+  type RunStatus,
   type SealantRunId,
   type SealantWorkspaceId,
   type SessionId,
@@ -47,13 +64,137 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 
-/**
- * Runtime schema for the first repository migration slice. Additional table groups move here with
- * the small PR that converts their repositories; the existing migrations remain authoritative
- * until that incremental conversion is complete.
- */
+/** Runtime schema for Mend-owned product state; the existing migrations remain authoritative. */
 /** Keep TypeScript properties idiomatic while matching Mend's existing snake_case schema. */
 const pgTable = snakeCase.table;
+
+export const issues = pgTable(
+  "issues",
+  {
+    id: text().$type<IssueId>().primaryKey(),
+    source: text().$type<IssueSource>().notNull(),
+    externalRef: text(),
+    repository: text().notNull(),
+    title: text().notNull(),
+    body: text().notNull().default(""),
+    stage: text().$type<IssueStage>().notNull().default("triage"),
+    position: integer(),
+    lastFailureRunId: text().$type<RunId>(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("issues_stage_position_idx").on(table.stage, table.position)],
+);
+
+export const changes = pgTable("changes", {
+  id: text().$type<ChangeId>().primaryKey(),
+  issueId: text()
+    .$type<IssueId>()
+    .notNull()
+    .unique()
+    .references(() => issues.id, { onDelete: "cascade" }),
+  branch: text().notNull(),
+  baseSha: text().$type<Sha>(),
+  headSha: text().$type<Sha>(),
+  prNumber: integer(),
+  prUrl: text(),
+  freshness: text().$type<Freshness>().notNull().default("current"),
+  movedBaseSha: text().$type<Sha>(),
+  createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
+export const runs = pgTable(
+  "runs",
+  {
+    id: text().$type<RunId>().primaryKey(),
+    issueId: text()
+      .$type<IssueId>()
+      .notNull()
+      .references(() => issues.id, { onDelete: "cascade" }),
+    changeId: text()
+      .$type<ChangeId>()
+      .references(() => changes.id, { onDelete: "set null" }),
+    kind: text().$type<RunKind>().notNull(),
+    sealantRunId: text().$type<SealantRunId>(),
+    sealantWorkspaceId: text().$type<SealantWorkspaceId>(),
+    status: text().$type<RunStatus>().notNull().default("queued"),
+    outcome: text().$type<RunOutcome>(),
+    summary: text(),
+    lastSeenSequence: bigint({ mode: "bigint" }).notNull().default(0n),
+    startedAt: timestamp({ mode: "date", withTimezone: true }),
+    settledAt: timestamp({ mode: "date", withTimezone: true }),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    failureBrief: jsonb().$type<typeof FailureBrief.Encoded>(),
+  },
+  (table) => [index("runs_issue_idx").on(table.issueId)],
+);
+
+export const briefs = pgTable("briefs", {
+  id: text().$type<BriefId>().primaryKey(),
+  changeId: text()
+    .$type<ChangeId>()
+    .notNull()
+    .unique()
+    .references(() => changes.id, { onDelete: "cascade" }),
+  currentVersion: integer().notNull().default(1),
+  document: jsonb().$type<typeof BriefDocument.Encoded>().notNull(),
+  createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
+export const briefVersions = pgTable(
+  "brief_versions",
+  {
+    briefId: text()
+      .$type<BriefId>()
+      .notNull()
+      .references(() => briefs.id, { onDelete: "cascade" }),
+    version: integer().notNull(),
+    document: jsonb().$type<typeof BriefDocument.Encoded>().notNull(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.briefId, table.version] })],
+);
+
+export const reviewQuestions = pgTable(
+  "review_questions",
+  {
+    id: text().$type<ReviewQuestionId>().primaryKey(),
+    briefId: text()
+      .$type<BriefId>()
+      .notNull()
+      .references(() => briefs.id, { onDelete: "cascade" }),
+    index: integer().notNull(),
+    question: text().notNull(),
+    disposition: text().$type<Disposition>().notNull(),
+    evidence: jsonb()
+      .$type<ReadonlyArray<typeof EvidencePointer.Encoded>>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+  },
+  (table) => [unique("review_questions_brief_id_index_key").on(table.briefId, table.index)],
+);
+
+export const briefComments = pgTable(
+  "brief_comments",
+  {
+    id: text().$type<BriefCommentId>().primaryKey(),
+    briefId: text()
+      .$type<BriefId>()
+      .notNull()
+      .references(() => briefs.id, { onDelete: "cascade" }),
+    thread: text().notNull(),
+    authorKind: text().$type<CommentAuthorKind>().notNull(),
+    authorName: text().notNull(),
+    body: text().notNull(),
+    routedAction: text().$type<RoutedAction>(),
+    routedRunId: text().$type<RunId>(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("brief_comments_brief_idx").on(table.briefId, table.createdAt)],
+);
 
 export const projects = pgTable("projects", {
   id: text().$type<ProjectId>().primaryKey(),
@@ -347,6 +488,13 @@ export const checkpoints = pgTable(
 );
 
 export type ProjectRow = typeof projects.$inferSelect;
+export type IssueRow = typeof issues.$inferSelect;
+export type ChangeRow = typeof changes.$inferSelect;
+export type RunRow = typeof runs.$inferSelect;
+export type BriefRow = typeof briefs.$inferSelect;
+export type BriefVersionRow = typeof briefVersions.$inferSelect;
+export type ReviewQuestionRow = typeof reviewQuestions.$inferSelect;
+export type BriefCommentRow = typeof briefComments.$inferSelect;
 export type ProjectMountRow = typeof projectMounts.$inferSelect;
 export type ReferenceRepoRow = typeof referenceRepos.$inferSelect;
 export type ProjectReferenceRow = typeof projectReferences.$inferSelect;

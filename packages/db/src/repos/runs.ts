@@ -11,10 +11,13 @@ import {
   type SealantRunId,
   type SealantWorkspaceId,
 } from "@mend/domain";
+import { and, asc, desc, eq, inArray, lt } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
+import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
+import { runs } from "../schema/workbench.ts";
 
 export class RunNotFoundError extends Schema.TaggedErrorClass<RunNotFoundError>()(
   "RunNotFoundError",
@@ -23,12 +26,7 @@ export class RunNotFoundError extends Schema.TaggedErrorClass<RunNotFoundError>(
   },
 ) {}
 
-// pg returns bigint columns as strings; decode through the wire shape.
-const RunRow = Schema.Struct({
-  ...Run.fields,
-  lastSeenSequence: Schema.BigIntFromString,
-});
-const decodeRun = Schema.decodeUnknownEffect(RunRow);
+const decodeRun = Schema.decodeUnknownEffect(Run);
 
 /**
  * The index of harness executions (ARCHITECTURE.md §3): status, outcome, and
@@ -60,137 +58,158 @@ export class RunsRepo extends Context.Service<
     /** The failure mini-brief, summed from the recording after a failed settle. */
     readonly saveFailureBrief: (id: RunId, brief: FailureBrief) => Effect.Effect<void>;
   }
->()("@mend/db/RunsRepo") {
-  static readonly layer = Layer.effect(
-    RunsRepo,
-    Effect.gen(function* () {
-      const sql = yield* PgClient.PgClient;
+>()("@mend/db/RunsRepo") {}
 
-      const decodeRow = (row: unknown) =>
-        decodeRun(row).pipe(
-          Effect.map((decoded) => new Run(decoded)),
-          Effect.orDie,
-        );
-
-      const create = Effect.fn("RunsRepo.create")(function* (issueId: IssueId, kind: RunKind) {
-        const id = crypto.randomUUID();
-        const rows = yield* sql`
-          INSERT INTO runs (id, issue_id, kind)
-          VALUES (${id}, ${issueId}, ${kind})
-          RETURNING *`.pipe(Effect.orDie);
-        const run = yield* decodeRow(rows[0]);
-        yield* notifyEvent(sql, { type: "run", runId: run.id, issueId });
-        return run;
-      });
-
-      const byId = Effect.fn("RunsRepo.byId")(function* (id: RunId) {
-        const rows = yield* sql`SELECT * FROM runs WHERE id = ${id}`.pipe(Effect.orDie);
-        const row = rows[0];
-        if (row === undefined) return yield* new RunNotFoundError({ runId: id });
-        return yield* decodeRow(row);
-      });
-
-      const listForIssue = Effect.fn("RunsRepo.listForIssue")(function* (issueId: IssueId) {
-        const rows = yield* sql`
-          SELECT * FROM runs WHERE issue_id = ${issueId}
-          ORDER BY created_at DESC`.pipe(Effect.orDie);
-        return yield* Effect.forEach(rows, decodeRow);
-      });
-
-      const listUnsettled = Effect.fn("RunsRepo.listUnsettled")(function* () {
-        const rows = yield* sql`
-          SELECT * FROM runs WHERE status IN ('queued', 'running')
-          ORDER BY created_at ASC`.pipe(Effect.orDie);
-        return yield* Effect.forEach(rows, decodeRow);
-      });
-
-      const setSealantIds = Effect.fn("RunsRepo.setSealantIds")(function* (
-        id: RunId,
-        sealantRunId: SealantRunId,
-        workspaceId: SealantWorkspaceId,
-      ) {
-        yield* sql`
-          UPDATE runs
-          SET sealant_run_id = ${sealantRunId}, sealant_workspace_id = ${workspaceId}, updated_at = now()
-          WHERE id = ${id}`.pipe(Effect.orDie);
-      });
-
-      const setStatus = Effect.fn("RunsRepo.setStatus")(function* (id: RunId, status: RunStatus) {
-        yield* sql`
-          UPDATE runs
-          SET status = ${status},
-              started_at = CASE WHEN ${status} = 'running' THEN now() ELSE started_at END,
-              updated_at = now()
-          WHERE id = ${id}`.pipe(Effect.orDie);
-        const issueId = yield* issueIdOf(id);
-        yield* notifyEvent(sql, { type: "run", runId: id, issueId });
-      });
-
-      const linkChange = Effect.fn("RunsRepo.linkChange")(function* (
-        id: RunId,
-        changeId: ChangeId,
-      ) {
-        yield* sql`
-          UPDATE runs SET change_id = ${changeId}, updated_at = now()
-          WHERE id = ${id}`.pipe(Effect.orDie);
-      });
-
-      const saveLastSeenSequence = Effect.fn("RunsRepo.saveLastSeenSequence")(function* (
-        id: RunId,
-        sequence: bigint,
-      ) {
-        yield* sql`
-          UPDATE runs SET last_seen_sequence = ${String(sequence)}, updated_at = now()
-          WHERE id = ${id} AND last_seen_sequence < ${String(sequence)}`.pipe(Effect.orDie);
-      });
-
-      const settle = Effect.fn("RunsRepo.settle")(function* (
-        id: RunId,
-        outcome: RunOutcome,
-        summary: string | null,
-      ) {
-        yield* sql`
-          UPDATE runs
-          SET status = ${outcome}, outcome = ${outcome}, summary = ${summary},
-              settled_at = now(), updated_at = now()
-          WHERE id = ${id}`.pipe(Effect.orDie);
-        const issueId = yield* issueIdOf(id);
-        yield* notifyEvent(sql, { type: "run", runId: id, issueId });
-      });
-
-      const saveFailureBrief = Effect.fn("RunsRepo.saveFailureBrief")(function* (
-        id: RunId,
-        brief: FailureBrief,
-      ) {
-        const encoded = yield* Schema.encodeEffect(FailureBrief)(brief).pipe(Effect.orDie);
-        yield* sql`
-          UPDATE runs SET failure_brief = ${JSON.stringify(encoded)}::jsonb, updated_at = now()
-          WHERE id = ${id}`.pipe(Effect.orDie);
-        const issueId = yield* issueIdOf(id);
-        yield* notifyEvent(sql, { type: "run", runId: id, issueId });
-      });
-
-      const issueIdOf = (id: RunId) =>
-        sql`SELECT issue_id FROM runs WHERE id = ${id}`.pipe(
-          Effect.orDie,
-          Effect.map((rows) => {
-            const row = rows[0] as { issueId: string } | undefined;
-            return row?.issueId ?? "";
-          }),
-        );
-
-      return {
-        create,
-        byId,
-        listForIssue,
-        listUnsettled,
-        setSealantIds,
-        setStatus,
-        linkChange,
-        saveLastSeenSequence,
-        settle,
-        saveFailureBrief,
-      };
-    }),
+const decodeRow = (row: typeof runs.$inferSelect) =>
+  decodeRun(row).pipe(
+    Effect.map((decoded) => new Run(decoded)),
+    Effect.orDie,
   );
-}
+
+export const RunsRepoLive: Layer.Layer<RunsRepo, never, MendDB | PgClient.PgClient> = Layer.effect(
+  RunsRepo,
+  Effect.gen(function* () {
+    const db = yield* MendDB;
+    const sql = yield* PgClient.PgClient;
+
+    const issueIdOf = Effect.fn("RunsRepo.issueIdOf")(function* (id: RunId) {
+      const [row] = yield* db
+        .select({ issueId: runs.issueId })
+        .from(runs)
+        .where(eq(runs.id, id))
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row?.issueId ?? "";
+    });
+
+    const create = Effect.fn("RunsRepo.create")(function* (issueId: IssueId, kind: RunKind) {
+      const [row] = yield* db
+        .insert(runs)
+        .values({ id: RunId.make(crypto.randomUUID()), issueId, kind })
+        .returning()
+        .pipe(Effect.orDie);
+      if (row === undefined) return yield* Effect.die("run insert returned no row");
+      const run = yield* decodeRow(row);
+      yield* notifyEvent(sql, { type: "run", runId: run.id, issueId });
+      return run;
+    });
+
+    const byId = Effect.fn("RunsRepo.byId")(function* (id: RunId) {
+      const [row] = yield* db
+        .select()
+        .from(runs)
+        .where(eq(runs.id, id))
+        .limit(1)
+        .pipe(Effect.orDie);
+      if (row === undefined) return yield* new RunNotFoundError({ runId: id });
+      return yield* decodeRow(row);
+    });
+
+    const listForIssue = Effect.fn("RunsRepo.listForIssue")(function* (issueId: IssueId) {
+      const rows = yield* db
+        .select()
+        .from(runs)
+        .where(eq(runs.issueId, issueId))
+        .orderBy(desc(runs.createdAt))
+        .pipe(Effect.orDie);
+      return yield* Effect.forEach(rows, decodeRow);
+    });
+
+    const listUnsettled = Effect.fn("RunsRepo.listUnsettled")(function* () {
+      const rows = yield* db
+        .select()
+        .from(runs)
+        .where(inArray(runs.status, ["queued", "running"]))
+        .orderBy(asc(runs.createdAt))
+        .pipe(Effect.orDie);
+      return yield* Effect.forEach(rows, decodeRow);
+    });
+
+    const setSealantIds = Effect.fn("RunsRepo.setSealantIds")(function* (
+      id: RunId,
+      sealantRunId: SealantRunId,
+      workspaceId: SealantWorkspaceId,
+    ) {
+      yield* db
+        .update(runs)
+        .set({ sealantRunId, sealantWorkspaceId: workspaceId, updatedAt: new Date() })
+        .where(eq(runs.id, id))
+        .pipe(Effect.orDie);
+    });
+
+    const setStatus = Effect.fn("RunsRepo.setStatus")(function* (id: RunId, status: RunStatus) {
+      yield* db
+        .update(runs)
+        .set({
+          status,
+          updatedAt: new Date(),
+          ...(status === "running" ? { startedAt: new Date() } : {}),
+        })
+        .where(eq(runs.id, id))
+        .pipe(Effect.orDie);
+      const issueId = yield* issueIdOf(id);
+      yield* notifyEvent(sql, { type: "run", runId: id, issueId });
+    });
+
+    const linkChange = Effect.fn("RunsRepo.linkChange")(function* (id: RunId, changeId: ChangeId) {
+      yield* db
+        .update(runs)
+        .set({ changeId, updatedAt: new Date() })
+        .where(eq(runs.id, id))
+        .pipe(Effect.orDie);
+    });
+
+    const saveLastSeenSequence = Effect.fn("RunsRepo.saveLastSeenSequence")(function* (
+      id: RunId,
+      sequence: bigint,
+    ) {
+      yield* db
+        .update(runs)
+        .set({ lastSeenSequence: sequence, updatedAt: new Date() })
+        .where(and(eq(runs.id, id), lt(runs.lastSeenSequence, sequence)))
+        .pipe(Effect.orDie);
+    });
+
+    const settle = Effect.fn("RunsRepo.settle")(function* (
+      id: RunId,
+      outcome: RunOutcome,
+      summary: string | null,
+    ) {
+      const now = new Date();
+      yield* db
+        .update(runs)
+        .set({ status: outcome, outcome, summary, settledAt: now, updatedAt: now })
+        .where(eq(runs.id, id))
+        .pipe(Effect.orDie);
+      const issueId = yield* issueIdOf(id);
+      yield* notifyEvent(sql, { type: "run", runId: id, issueId });
+    });
+
+    const saveFailureBrief = Effect.fn("RunsRepo.saveFailureBrief")(function* (
+      id: RunId,
+      brief: FailureBrief,
+    ) {
+      const encoded = yield* Schema.encodeEffect(FailureBrief)(brief).pipe(Effect.orDie);
+      yield* db
+        .update(runs)
+        .set({ failureBrief: encoded, updatedAt: new Date() })
+        .where(eq(runs.id, id))
+        .pipe(Effect.orDie);
+      const issueId = yield* issueIdOf(id);
+      yield* notifyEvent(sql, { type: "run", runId: id, issueId });
+    });
+
+    return {
+      create,
+      byId,
+      listForIssue,
+      listUnsettled,
+      setSealantIds,
+      setStatus,
+      linkChange,
+      saveLastSeenSequence,
+      settle,
+      saveFailureBrief,
+    };
+  }),
+);

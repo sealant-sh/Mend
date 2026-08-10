@@ -3,24 +3,99 @@ import { describe, expect, it } from "vitest";
 
 import {
   agentSessions,
+  briefComments,
+  briefVersions,
+  briefs,
   changePasses,
   changeTours,
+  changes,
   checkpoints,
   contextSnapshots,
   followUps,
   inferenceCalls,
+  issues,
   projectMounts,
   projectReferences,
   projects,
   pushDevices,
   referenceRepos,
+  reviewQuestions,
   reviewComments,
+  runs,
   sessionChanges,
   sessionRuns,
   settings,
 } from "../src/schema/workbench.ts";
 
-describe("workbench Drizzle schema", () => {
+describe("Mend Drizzle schema", () => {
+  it("maps the retiring issue, change, and run graph", () => {
+    expect([issues, changes, runs].map((table) => getTableConfig(table).name)).toEqual([
+      "issues",
+      "changes",
+      "runs",
+    ]);
+    expect(getTableConfig(issues).columns.map((column) => column.name)).toEqual([
+      "id",
+      "source",
+      "external_ref",
+      "repository",
+      "title",
+      "body",
+      "stage",
+      "position",
+      "last_failure_run_id",
+      "created_at",
+      "updated_at",
+    ]);
+    expect(getTableConfig(issues).indexes[0]?.config.name).toBe("issues_stage_position_idx");
+    expect(getTableConfig(changes).columns[1]?.isUnique).toBe(true);
+    expect(getTableConfig(changes).foreignKeys[0]?.onDelete).toBe("cascade");
+    expect(getTableConfig(runs).columns.map((column) => column.name)).toEqual([
+      "id",
+      "issue_id",
+      "change_id",
+      "kind",
+      "sealant_run_id",
+      "sealant_workspace_id",
+      "status",
+      "outcome",
+      "summary",
+      "last_seen_sequence",
+      "started_at",
+      "settled_at",
+      "created_at",
+      "updated_at",
+      "failure_brief",
+    ]);
+    expect(runs.lastSeenSequence.getSQLType()).toBe("bigint");
+    expect(runs.failureBrief.getSQLType()).toBe("jsonb");
+    expect(getTableConfig(runs).foreignKeys.map((foreignKey) => foreignKey.onDelete)).toEqual([
+      "cascade",
+      "set null",
+    ]);
+  });
+
+  it("maps living briefs, immutable versions, question indexes, and comments", () => {
+    expect(
+      [briefs, briefVersions, reviewQuestions, briefComments].map(
+        (table) => getTableConfig(table).name,
+      ),
+    ).toEqual(["briefs", "brief_versions", "review_questions", "brief_comments"]);
+    expect(briefs.document.getSQLType()).toBe("jsonb");
+    expect(briefVersions.document.getSQLType()).toBe("jsonb");
+    expect(reviewQuestions.evidence.getSQLType()).toBe("jsonb");
+    expect(
+      getTableConfig(briefVersions).primaryKeys[0]?.columns.map((column) => column.name),
+    ).toEqual(["brief_id", "version"]);
+    expect(getTableConfig(reviewQuestions).uniqueConstraints[0]?.name).toBe(
+      "review_questions_brief_id_index_key",
+    );
+    expect(getTableConfig(briefComments).indexes[0]?.config.name).toBe("brief_comments_brief_idx");
+    for (const table of [briefs, briefVersions, reviewQuestions, briefComments]) {
+      expect(getTableConfig(table).foreignKeys[0]?.onDelete).toBe("cascade");
+    }
+  });
+
   it("maps the session graph to the existing PostgreSQL table and column names", () => {
     expect(
       [projects, contextSnapshots, agentSessions, sessionRuns, sessionChanges, checkpoints].map(

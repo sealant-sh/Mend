@@ -3,6 +3,34 @@ import { defineRelations } from "drizzle-orm";
 import * as schema from "./workbench.ts";
 
 export const relations = defineRelations(schema, (r) => ({
+  issues: {
+    change: r.one.changes({ from: r.issues.id, to: r.changes.issueId }),
+    runs: r.many.runs({ from: r.issues.id, to: r.runs.issueId }),
+  },
+  changes: {
+    issue: r.one.issues({ from: r.changes.issueId, to: r.issues.id }),
+    runs: r.many.runs({ from: r.changes.id, to: r.runs.changeId }),
+    brief: r.one.briefs({ from: r.changes.id, to: r.briefs.changeId }),
+  },
+  runs: {
+    issue: r.one.issues({ from: r.runs.issueId, to: r.issues.id }),
+    change: r.one.changes({ from: r.runs.changeId, to: r.changes.id }),
+  },
+  briefs: {
+    change: r.one.changes({ from: r.briefs.changeId, to: r.changes.id }),
+    versions: r.many.briefVersions({ from: r.briefs.id, to: r.briefVersions.briefId }),
+    questions: r.many.reviewQuestions({ from: r.briefs.id, to: r.reviewQuestions.briefId }),
+    comments: r.many.briefComments({ from: r.briefs.id, to: r.briefComments.briefId }),
+  },
+  briefVersions: {
+    brief: r.one.briefs({ from: r.briefVersions.briefId, to: r.briefs.id }),
+  },
+  reviewQuestions: {
+    brief: r.one.briefs({ from: r.reviewQuestions.briefId, to: r.briefs.id }),
+  },
+  briefComments: {
+    brief: r.one.briefs({ from: r.briefComments.briefId, to: r.briefs.id }),
+  },
   projects: {
     sessions: r.many.agentSessions({ from: r.projects.id, to: r.agentSessions.projectId }),
     changes: r.many.sessionChanges({ from: r.projects.id, to: r.sessionChanges.projectId }),

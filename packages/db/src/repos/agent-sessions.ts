@@ -13,10 +13,13 @@ import {
   type SessionReferenceMount,
   type SessionStatus,
 } from "@mend/domain/workbench";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, ne, sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
+import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
+import { agentSessions } from "../schema/workbench.ts";
 
 export class SessionNotFoundError extends Schema.TaggedErrorClass<SessionNotFoundError>()(
   "SessionNotFoundError",
@@ -24,13 +27,6 @@ export class SessionNotFoundError extends Schema.TaggedErrorClass<SessionNotFoun
     sessionId: Schema.String,
   },
 ) {}
-
-// pg returns bigint columns as strings; decode through the wire shape.
-const SessionRow = Schema.Struct({
-  ...Session.fields,
-  lastSeenSequence: Schema.BigIntFromString,
-});
-const decodeSession = Schema.decodeUnknownEffect(SessionRow);
 
 export interface NewSession {
   /** Caller-supplied: the engine names the worktree after the id before the row exists. */
@@ -99,44 +95,41 @@ export class SessionsRepo extends Context.Service<
     readonly remove: (id: SessionId) => Effect.Effect<void>;
     readonly setHarness: (id: SessionId, harness: string) => Effect.Effect<void>;
   }
->()("@mend/db/SessionsRepo") {
-  static readonly layer = Layer.effect(
+>()("@mend/db/SessionsRepo") {}
+
+const toSession = (row: typeof agentSessions.$inferSelect): Session => new Session(row);
+
+export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClient.PgClient> =
+  Layer.effect(
     SessionsRepo,
     Effect.gen(function* () {
-      const sql = yield* PgClient.PgClient;
+      const db = yield* MendDB;
+      const pg = yield* PgClient.PgClient;
 
-      const decodeRow = (row: unknown) =>
-        decodeSession(row).pipe(
-          Effect.map((decoded) => new Session(decoded)),
-          Effect.orDie,
-        );
+      const projectIdOf = Effect.fn("SessionsRepo.projectIdOf")(function* (id: SessionId) {
+        const [row] = yield* db
+          .select({ projectId: agentSessions.projectId })
+          .from(agentSessions)
+          .where(eq(agentSessions.id, id))
+          .limit(1)
+          .pipe(Effect.orDie);
+        return row?.projectId ?? "";
+      });
 
-      const projectIdOf = (id: SessionId) =>
-        sql`SELECT project_id FROM agent_sessions WHERE id = ${id}`.pipe(
-          Effect.orDie,
-          Effect.map((rows) => {
-            const row = rows[0] as { projectId: string } | undefined;
-            return row?.projectId ?? "";
-          }),
-        );
-
-      const notify = (id: SessionId) =>
-        Effect.gen(function* () {
-          const projectId = yield* projectIdOf(id);
-          yield* notifyEvent(sql, { type: "session", sessionId: id, projectId });
-        });
+      const notify = Effect.fn("SessionsRepo.notify")(function* (id: SessionId) {
+        const projectId = yield* projectIdOf(id);
+        yield* notifyEvent(pg, { type: "session", sessionId: id, projectId });
+      });
 
       const create = Effect.fn("SessionsRepo.create")(function* (session: NewSession) {
-        const rows = yield* sql`
-          INSERT INTO agent_sessions
-            (id, project_id, harness, label, worktree, branch, base_sha, context_snapshot_id,
-             record_history_complete)
-          VALUES (${session.id}, ${session.projectId}, ${session.harness}, ${session.label},
-                  ${session.worktree}, ${session.branch}, ${session.baseSha},
-                  ${session.contextSnapshotId}, true)
-          RETURNING *`.pipe(Effect.orDie);
-        const created = yield* decodeRow(rows[0]);
-        yield* notifyEvent(sql, {
+        const [row] = yield* db
+          .insert(agentSessions)
+          .values({ ...session, recordHistoryComplete: true })
+          .returning()
+          .pipe(Effect.orDie);
+        if (row === undefined) return yield* Effect.die("session insert returned no row");
+        const created = toSession(row);
+        yield* notifyEvent(pg, {
           type: "session",
           sessionId: created.id,
           projectId: session.projectId,
@@ -145,45 +138,62 @@ export class SessionsRepo extends Context.Service<
       });
 
       const byId = Effect.fn("SessionsRepo.byId")(function* (id: SessionId) {
-        const rows = yield* sql`SELECT * FROM agent_sessions WHERE id = ${id}`.pipe(Effect.orDie);
-        const row = rows[0];
+        const [row] = yield* db
+          .select()
+          .from(agentSessions)
+          .where(eq(agentSessions.id, id))
+          .limit(1)
+          .pipe(Effect.orDie);
         if (row === undefined) return yield* new SessionNotFoundError({ sessionId: id });
-        return yield* decodeRow(row);
+        return toSession(row);
       });
 
       const listForProject = Effect.fn("SessionsRepo.listForProject")(function* (
         projectId: ProjectId,
       ) {
-        const rows = yield* sql`
-          SELECT * FROM agent_sessions WHERE project_id = ${projectId}
-          ORDER BY created_at DESC`.pipe(Effect.orDie);
-        return yield* Effect.forEach(rows, decodeRow);
+        const rows = yield* db
+          .select()
+          .from(agentSessions)
+          .where(eq(agentSessions.projectId, projectId))
+          .orderBy(desc(agentSessions.createdAt))
+          .pipe(Effect.orDie);
+        return rows.map(toSession);
       });
 
       const listActive = Effect.fn("SessionsRepo.listActive")(function* () {
-        const rows = yield* sql`
-          SELECT * FROM agent_sessions
-          WHERE status IN ('starting', 'running', 'waiting', 'idle')
-          ORDER BY created_at DESC`.pipe(Effect.orDie);
-        return yield* Effect.forEach(rows, decodeRow);
+        const rows = yield* db
+          .select()
+          .from(agentSessions)
+          .where(inArray(agentSessions.status, ["starting", "running", "waiting", "idle"]))
+          .orderBy(desc(agentSessions.createdAt))
+          .pipe(Effect.orDie);
+        return rows.map(toSession);
       });
 
       const listUnsettled = Effect.fn("SessionsRepo.listUnsettled")(function* () {
-        const rows = yield* sql`
-          SELECT * FROM agent_sessions
-          WHERE settled_at IS NULL AND status <> 'starting'
-          ORDER BY created_at ASC`.pipe(Effect.orDie);
-        return yield* Effect.forEach(rows, decodeRow);
+        const rows = yield* db
+          .select()
+          .from(agentSessions)
+          .where(and(isNull(agentSessions.settledAt), ne(agentSessions.status, "starting")))
+          .orderBy(asc(agentSessions.createdAt))
+          .pipe(Effect.orDie);
+        return rows.map(toSession);
       });
 
       const listRecentlySettled = Effect.fn("SessionsRepo.listRecentlySettled")(function* () {
-        const rows = yield* sql`
-          SELECT * FROM agent_sessions
-          WHERE settled_at IS NOT NULL
-            AND settled_at > now() - interval '24 hours'
-            AND sealant_workspace_id IS NOT NULL
-          ORDER BY settled_at DESC`.pipe(Effect.orDie);
-        return yield* Effect.forEach(rows, decodeRow);
+        const rows = yield* db
+          .select()
+          .from(agentSessions)
+          .where(
+            and(
+              isNotNull(agentSessions.settledAt),
+              gt(agentSessions.settledAt, sql`now() - interval '24 hours'`),
+              isNotNull(agentSessions.sealantWorkspaceId),
+            ),
+          )
+          .orderBy(desc(agentSessions.settledAt))
+          .pipe(Effect.orDie);
+        return rows.map(toSession);
       });
 
       const setSealantIds = Effect.fn("SessionsRepo.setSealantIds")(function* (
@@ -191,62 +201,77 @@ export class SessionsRepo extends Context.Service<
         sealantRunId: SealantRunId,
         workspaceId: SealantWorkspaceId,
       ) {
-        yield* sql`
-          UPDATE agent_sessions
-          SET sealant_run_id = ${sealantRunId}, sealant_workspace_id = ${workspaceId},
-              last_seen_sequence = 0, updated_at = now()
-          WHERE id = ${id}`.pipe(Effect.orDie);
+        yield* db
+          .update(agentSessions)
+          .set({
+            sealantRunId,
+            sealantWorkspaceId: workspaceId,
+            lastSeenSequence: 0n,
+            updatedAt: new Date(),
+          })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
       });
 
       const setSealantSessionId = Effect.fn("SessionsRepo.setSealantSessionId")(function* (
         id: SessionId,
         sealantSessionId: string,
       ) {
-        yield* sql`
-          UPDATE agent_sessions SET sealant_session_id = ${sealantSessionId}, updated_at = now()
-          WHERE id = ${id}`.pipe(Effect.orDie);
+        yield* db
+          .update(agentSessions)
+          .set({ sealantSessionId, updatedAt: new Date() })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
       });
 
       const setProviderSessionId = Effect.fn("SessionsRepo.setProviderSessionId")(function* (
         id: SessionId,
         providerId: string,
       ) {
-        yield* sql`
-          UPDATE agent_sessions SET provider_session_id = ${providerId}, updated_at = now()
-          WHERE id = ${id}`.pipe(Effect.orDie);
+        yield* db
+          .update(agentSessions)
+          .set({ providerSessionId: providerId, updatedAt: new Date() })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
       });
 
       const setReferenceMounts = Effect.fn("SessionsRepo.setReferenceMounts")(function* (
         id: SessionId,
         mounts: ReadonlyArray<SessionReferenceMount>,
       ) {
-        yield* sql`
-          UPDATE agent_sessions
-          SET reference_mounts = ${JSON.stringify(mounts)}, updated_at = now()
-          WHERE id = ${id}`.pipe(Effect.orDie);
+        yield* db
+          .update(agentSessions)
+          .set({ referenceMounts: mounts, updatedAt: new Date() })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
       });
 
       const setExtraMounts = Effect.fn("SessionsRepo.setExtraMounts")(function* (
         id: SessionId,
         mounts: ReadonlyArray<SessionExtraMount>,
       ) {
-        yield* sql`
-          UPDATE agent_sessions
-          SET extra_mounts = ${JSON.stringify(mounts)}, updated_at = now()
-          WHERE id = ${id}`.pipe(Effect.orDie);
+        yield* db
+          .update(agentSessions)
+          .set({ extraMounts: mounts, updatedAt: new Date() })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
       });
 
       const setStatus = Effect.fn("SessionsRepo.setStatus")(function* (
         id: SessionId,
         status: SessionStatus,
       ) {
-        yield* sql`
-          UPDATE agent_sessions
-          SET status = ${status},
-              started_at = CASE WHEN ${status} = 'running' THEN COALESCE(started_at, now())
-                           ELSE started_at END,
-              updated_at = now()
-          WHERE id = ${id}`.pipe(Effect.orDie);
+        yield* db
+          .update(agentSessions)
+          .set({
+            status,
+            updatedAt: new Date(),
+            ...(status === "running"
+              ? { startedAt: sql`COALESCE(${agentSessions.startedAt}, now())` }
+              : {}),
+          })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
         yield* notify(id);
       });
 
@@ -254,9 +279,11 @@ export class SessionsRepo extends Context.Service<
         id: SessionId,
         sequence: bigint,
       ) {
-        yield* sql`
-          UPDATE agent_sessions SET last_seen_sequence = ${String(sequence)}, updated_at = now()
-          WHERE id = ${id} AND last_seen_sequence < ${String(sequence)}`.pipe(Effect.orDie);
+        yield* db
+          .update(agentSessions)
+          .set({ lastSeenSequence: sequence, updatedAt: new Date() })
+          .where(and(eq(agentSessions.id, id), lt(agentSessions.lastSeenSequence, sequence)))
+          .pipe(Effect.orDie);
       });
 
       const notifyProgress = Effect.fn("SessionsRepo.notifyProgress")(function* (
@@ -265,7 +292,7 @@ export class SessionsRepo extends Context.Service<
         line: string,
       ) {
         const projectId = yield* projectIdOf(id);
-        yield* notifyEvent(sql, {
+        yield* notifyEvent(pg, {
           type: "session-progress",
           sessionId: id,
           projectId,
@@ -284,10 +311,12 @@ export class SessionsRepo extends Context.Service<
         // "stopped" with "failed · harness exited with code -1" — every user
         // stop read as a crash. `reopen` clears settled_at, so a resumed
         // session settles again normally.
-        yield* sql`
-          UPDATE agent_sessions
-          SET status = ${outcome}, summary = ${summary}, settled_at = now(), updated_at = now()
-          WHERE id = ${id} AND settled_at IS NULL`.pipe(Effect.orDie);
+        const now = new Date();
+        yield* db
+          .update(agentSessions)
+          .set({ status: outcome, summary, settledAt: now, updatedAt: now })
+          .where(and(eq(agentSessions.id, id), isNull(agentSessions.settledAt)))
+          .pipe(Effect.orDie);
         yield* notify(id);
       });
 
@@ -296,18 +325,22 @@ export class SessionsRepo extends Context.Service<
         id: SessionId,
         label: string | null,
       ) {
-        yield* sql`
-          UPDATE agent_sessions SET label = ${label}, updated_at = now()
-          WHERE id = ${id}`.pipe(Effect.orDie);
+        yield* db
+          .update(agentSessions)
+          .set({ label, updatedAt: new Date() })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
         yield* notify(id);
       });
 
       const remove = Effect.fn("SessionsRepo.remove")(function* (id: SessionId) {
-        const rows = yield* sql`
-          DELETE FROM agent_sessions WHERE id = ${id} RETURNING project_id`.pipe(Effect.orDie);
-        const row = rows[0] as { projectId: string } | undefined;
+        const [row] = yield* db
+          .delete(agentSessions)
+          .where(eq(agentSessions.id, id))
+          .returning({ projectId: agentSessions.projectId })
+          .pipe(Effect.orDie);
         if (row !== undefined) {
-          yield* notifyEvent(sql, { type: "session", sessionId: id, projectId: row.projectId });
+          yield* notifyEvent(pg, { type: "session", sessionId: id, projectId: row.projectId });
         }
       });
 
@@ -315,17 +348,20 @@ export class SessionsRepo extends Context.Service<
         id: SessionId,
         harness: string,
       ) {
-        yield* sql`
-          UPDATE agent_sessions SET harness = ${harness}, updated_at = now()
-          WHERE id = ${id}`.pipe(Effect.orDie);
+        yield* db
+          .update(agentSessions)
+          .set({ harness, updatedAt: new Date() })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
         yield* notify(id);
       });
 
       const reopen = Effect.fn("SessionsRepo.reopen")(function* (id: SessionId) {
-        yield* sql`
-          UPDATE agent_sessions
-          SET status = 'running', settled_at = NULL, updated_at = now()
-          WHERE id = ${id}`.pipe(Effect.orDie);
+        yield* db
+          .update(agentSessions)
+          .set({ status: "running", settledAt: null, updatedAt: new Date() })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
         yield* notify(id);
       });
 
@@ -352,4 +388,3 @@ export class SessionsRepo extends Context.Service<
       };
     }),
   );
-}
