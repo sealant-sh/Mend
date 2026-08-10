@@ -5,7 +5,9 @@ import { createRoot, useKeyboard, useRenderer, useTerminalDimensions } from "@op
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
+import { ReviewScreen } from "./review.tsx";
 import { HARNESS_COMMANDS, LIVE_STATUSES, matchProjectByCwd } from "./shared.ts";
+import { AMBER, BG, COBALT, FAINT, GREEN, INK, MUTED, RED, RULE, WASH } from "./tui-theme.ts";
 
 /**
  * The workbench dashboard (bare `mend`): oil-style navigation over the
@@ -14,7 +16,8 @@ import { HARNESS_COMMANDS, LIVE_STATUSES, matchProjectByCwd } from "./shared.ts"
  * one the web app uses) invalidates it from outside React, so there are no
  * data-fetching effects — components just read the query. It opens on the
  * cwd's project when one matches; `-`/`h` steps up to every project, enter
- * attaches or resumes, `n` starts a session, `e` renames one.
+ * attaches or resumes, `v` reviews its change, `n` starts a session, and
+ * `e` renames one.
  *
  * This module is imported lazily and only where node:ffi exists (Node 26
  * with --experimental-ffi — main.ts gates and re-execs), so every plain
@@ -47,6 +50,7 @@ interface SessionDto {
   readonly harness: string;
   readonly label: string | null;
   readonly branch: string;
+  readonly baseSha: string;
   readonly status: string;
   readonly summary: string | null;
   readonly createdAt: string;
@@ -54,6 +58,7 @@ interface SessionDto {
 
 interface SessionAnnotationDto {
   readonly sessionId: string;
+  readonly changeId: string | null;
   readonly openComments: number;
   readonly pendingFollowUp: boolean;
 }
@@ -63,21 +68,6 @@ interface ProjectDetailDto {
   readonly sessions: ReadonlyArray<SessionDto>;
   readonly annotations: ReadonlyArray<SessionAnnotationDto>;
 }
-
-// ─── palette: Evidence Review's restraint on a dark ground the TUI owns ─────
-// Neutral ink, one cobalt accent for what is active or selected, amber only
-// for what awaits judgment (waiting input, open comments, pending follow-up).
-
-const BG = "#101014";
-const INK = "#e2e2e6";
-const MUTED = "#9a9aa2";
-const FAINT = "#62626c";
-const RULE = "#3a3a46";
-const COBALT = "#5b8def";
-const WASH = "#1c2a47";
-const AMBER = "#d3a635";
-const GREEN = "#5f9e77";
-const RED = "#c0564c";
 
 const STATUS_GLYPH: Record<string, string> = {
   starting: "◌",
@@ -434,6 +424,11 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   const [busyStarted, setBusyStarted] = useState(0);
   const [status, setStatus] = useState<StatusMessage | null>(null);
   const [editing, setEditing] = useState<SessionDto | null>(null);
+  const [reviewing, setReviewing] = useState<{
+    readonly session: SessionDto;
+    readonly changeId: string;
+    readonly projectName: string;
+  } | null>(null);
   /** Set synchronously around attach/launch so keystrokes can't double-fire. */
   const lockRef = useRef(false);
 
@@ -589,6 +584,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   };
 
   useKeyboard((key) => {
+    if (reviewing !== null) return;
     if (lockRef.current) return;
     if (key.ctrl && key.name === "c") return onQuit();
     if (editing !== null) {
@@ -634,6 +630,20 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           openUrl(`${ctx.config.url}/sessions/${item.session.id}`);
           say(`opened · ${ctx.config.url}/sessions/${item.session.id.slice(0, 8)}…`);
         }
+        return;
+      }
+      case "v": {
+        const item = items[selectedIndex];
+        if (view.kind !== "sessions" || item === undefined || item.kind !== "session") return;
+        if (item.annotation?.changeId === null || item.annotation?.changeId === undefined) {
+          say("this session has no reviewable change yet");
+          return;
+        }
+        setReviewing({
+          session: item.session,
+          changeId: item.annotation.changeId,
+          projectName: detail?.project.name ?? "project",
+        });
         return;
       }
       case "r":
@@ -685,7 +695,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       </>
     );
     footerText =
-      " ↑↓/jk move · enter/l attach/resume · n new · e rename · o review · h/- projects · q quit";
+      " ↑↓/jk move · enter/l attach/resume · v review in TUI · o web · n new · e rename · h/- projects · q quit";
   } else {
     const forSession = view.session;
     title =
@@ -708,6 +718,22 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         ? failureReason.message
         : String(failureReason)
       : null;
+
+  if (reviewing !== null) {
+    return (
+      <ReviewScreen
+        ctx={ctx}
+        projectName={reviewing.projectName}
+        session={reviewing.session}
+        changeId={reviewing.changeId}
+        onBack={() => {
+          setReviewing(null);
+          refetch();
+        }}
+        onQuit={onQuit}
+      />
+    );
+  }
 
   return (
     <box flexGrow={1} flexDirection="column" backgroundColor={BG}>
@@ -844,7 +870,7 @@ export const runDashboard = async (ctx: DashboardContext): Promise<void> => {
   const scheduleInvalidate = (): void => {
     if (eventTimer !== null) clearTimeout(eventTimer);
     eventTimer = setTimeout(() => {
-      void queryClient.invalidateQueries({ queryKey: WORKBENCH_KEY });
+      void queryClient.invalidateQueries();
     }, 250);
   };
   const watch = async (): Promise<void> => {
