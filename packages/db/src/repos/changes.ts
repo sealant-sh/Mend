@@ -1,7 +1,10 @@
-import { PgClient } from "@effect/sql-pg";
 import { Change, ChangeId, type IssueId, type Sha } from "@mend/domain";
+import { eq, sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
+
+import { MendDB } from "../client.ts";
+import { changes } from "../schema/workbench.ts";
 
 export class ChangeNotFoundError extends Schema.TaggedErrorClass<ChangeNotFoundError>()(
   "ChangeNotFoundError",
@@ -9,8 +12,6 @@ export class ChangeNotFoundError extends Schema.TaggedErrorClass<ChangeNotFoundE
     id: Schema.String,
   },
 ) {}
-
-const decodeChange = Schema.decodeUnknownEffect(Change);
 
 /**
  * The change is one per issue (ARCHITECTURE.md §3): one branch, at most one PR
@@ -35,56 +36,63 @@ export class ChangesRepo extends Context.Service<
     readonly byId: (id: ChangeId) => Effect.Effect<Change, ChangeNotFoundError>;
     readonly byIssue: (issueId: IssueId) => Effect.Effect<Change, ChangeNotFoundError>;
   }
->()("@mend/db/ChangesRepo") {
-  static readonly layer = Layer.effect(
-    ChangesRepo,
-    Effect.gen(function* () {
-      const sql = yield* PgClient.PgClient;
+>()("@mend/db/ChangesRepo") {}
 
-      const decodeRow = (row: unknown) =>
-        decodeChange(row).pipe(
-          Effect.map((decoded) => new Change(decoded)),
-          Effect.orDie,
-        );
+const toChange = (row: typeof changes.$inferSelect): Change => new Change(row);
 
-      const ensureForIssue = Effect.fn("ChangesRepo.ensureForIssue")(function* (
-        issueId: IssueId,
-        facts: {
-          readonly branch: string;
-          readonly baseSha: Sha | null;
-          readonly headSha: Sha | null;
-        },
-      ) {
-        const id = crypto.randomUUID();
-        const rows = yield* sql`
-          INSERT INTO changes (id, issue_id, branch, base_sha, head_sha)
-          VALUES (${id}, ${issueId}, ${facts.branch}, ${facts.baseSha}, ${facts.headSha})
-          ON CONFLICT (issue_id) DO UPDATE
-          SET branch = CASE WHEN EXCLUDED.branch = '' THEN changes.branch ELSE EXCLUDED.branch END,
-              base_sha = COALESCE(changes.base_sha, EXCLUDED.base_sha),
-              head_sha = COALESCE(EXCLUDED.head_sha, changes.head_sha),
-              updated_at = now()
-          RETURNING *`.pipe(Effect.orDie);
-        return yield* decodeRow(rows[0]);
-      });
+export const ChangesRepoLive: Layer.Layer<ChangesRepo, never, MendDB> = Layer.effect(
+  ChangesRepo,
+  Effect.gen(function* () {
+    const db = yield* MendDB;
 
-      const byId = Effect.fn("ChangesRepo.byId")(function* (id: ChangeId) {
-        const rows = yield* sql`SELECT * FROM changes WHERE id = ${id}`.pipe(Effect.orDie);
-        const row = rows[0];
-        if (row === undefined) return yield* new ChangeNotFoundError({ id });
-        return yield* decodeRow(row);
-      });
+    const ensureForIssue = Effect.fn("ChangesRepo.ensureForIssue")(function* (
+      issueId: IssueId,
+      facts: {
+        readonly branch: string;
+        readonly baseSha: Sha | null;
+        readonly headSha: Sha | null;
+      },
+    ) {
+      const [row] = yield* db
+        .insert(changes)
+        .values({ id: ChangeId.make(crypto.randomUUID()), issueId, ...facts })
+        .onConflictDoUpdate({
+          target: changes.issueId,
+          set: {
+            branch: sql`CASE WHEN ${facts.branch} = '' THEN ${changes.branch} ELSE ${facts.branch} END`,
+            baseSha: sql`COALESCE(${changes.baseSha}, ${facts.baseSha})`,
+            headSha: sql`COALESCE(${facts.headSha}, ${changes.headSha})`,
+            updatedAt: new Date(),
+          },
+        })
+        .returning()
+        .pipe(Effect.orDie);
+      if (row === undefined) return yield* Effect.die("change upsert returned no row");
+      return toChange(row);
+    });
 
-      const byIssue = Effect.fn("ChangesRepo.byIssue")(function* (issueId: IssueId) {
-        const rows = yield* sql`SELECT * FROM changes WHERE issue_id = ${issueId}`.pipe(
-          Effect.orDie,
-        );
-        const row = rows[0];
-        if (row === undefined) return yield* new ChangeNotFoundError({ id: issueId });
-        return yield* decodeRow(row);
-      });
+    const byId = Effect.fn("ChangesRepo.byId")(function* (id: ChangeId) {
+      const [row] = yield* db
+        .select()
+        .from(changes)
+        .where(eq(changes.id, id))
+        .limit(1)
+        .pipe(Effect.orDie);
+      if (row === undefined) return yield* new ChangeNotFoundError({ id });
+      return toChange(row);
+    });
 
-      return { ensureForIssue, byId, byIssue };
-    }),
-  );
-}
+    const byIssue = Effect.fn("ChangesRepo.byIssue")(function* (issueId: IssueId) {
+      const [row] = yield* db
+        .select()
+        .from(changes)
+        .where(eq(changes.issueId, issueId))
+        .limit(1)
+        .pipe(Effect.orDie);
+      if (row === undefined) return yield* new ChangeNotFoundError({ id: issueId });
+      return toChange(row);
+    });
+
+    return { ensureForIssue, byId, byIssue };
+  }),
+);

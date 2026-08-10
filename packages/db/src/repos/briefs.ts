@@ -1,9 +1,19 @@
 import { PgClient } from "@effect/sql-pg";
-import { Brief, BriefDocument, BriefId, BriefVersion, type ChangeId } from "@mend/domain";
+import {
+  Brief,
+  BriefDocument,
+  BriefId,
+  BriefVersion,
+  ReviewQuestionId,
+  type ChangeId,
+} from "@mend/domain";
+import { desc, eq, sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
+import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
+import { briefVersions, briefs, changes, reviewQuestions } from "../schema/workbench.ts";
 
 export class BriefNotFoundError extends Schema.TaggedErrorClass<BriefNotFoundError>()(
   "BriefNotFoundError",
@@ -33,39 +43,57 @@ export class BriefsRepo extends Context.Service<
       document: BriefDocument,
     ) => Effect.Effect<{ readonly version: number }>;
   }
->()("@mend/db/BriefsRepo") {
-  static readonly layer = Layer.effect(
+>()("@mend/db/BriefsRepo") {}
+
+const decodeBriefRow = (row: typeof briefs.$inferSelect) =>
+  decodeBrief(row).pipe(
+    Effect.map((decoded) => new Brief(decoded)),
+    Effect.orDie,
+  );
+
+const decodeVersionRow = (row: typeof briefVersions.$inferSelect) =>
+  decodeVersion(row).pipe(
+    Effect.map((decoded) => new BriefVersion(decoded)),
+    Effect.orDie,
+  );
+
+export const BriefsRepoLive: Layer.Layer<BriefsRepo, never, MendDB | PgClient.PgClient> =
+  Layer.effect(
     BriefsRepo,
     Effect.gen(function* () {
-      const sql = yield* PgClient.PgClient;
+      const db = yield* MendDB;
+      const pg = yield* PgClient.PgClient;
 
-      const decodeBriefRow = (row: unknown) =>
-        decodeBrief(row).pipe(
-          Effect.map((decoded) => new Brief(decoded)),
-          Effect.orDie,
-        );
+      const issueIdOf = Effect.fn("BriefsRepo.issueIdOf")(function* (changeId: ChangeId) {
+        const [row] = yield* db
+          .select({ issueId: changes.issueId })
+          .from(changes)
+          .where(eq(changes.id, changeId))
+          .limit(1)
+          .pipe(Effect.orDie);
+        return row?.issueId ?? "";
+      });
 
       const byChange = Effect.fn("BriefsRepo.byChange")(function* (changeId: ChangeId) {
-        const rows = yield* sql`SELECT * FROM briefs WHERE change_id = ${changeId}`.pipe(
-          Effect.orDie,
-        );
-        const row = rows[0];
+        const [row] = yield* db
+          .select()
+          .from(briefs)
+          .where(eq(briefs.changeId, changeId))
+          .limit(1)
+          .pipe(Effect.orDie);
         if (row === undefined) return yield* new BriefNotFoundError({ changeId });
         return yield* decodeBriefRow(row);
       });
 
       const versions = Effect.fn("BriefsRepo.versions")(function* (changeId: ChangeId) {
-        const rows = yield* sql`
-          SELECT v.* FROM brief_versions v
-          JOIN briefs b ON b.id = v.brief_id
-          WHERE b.change_id = ${changeId}
-          ORDER BY v.version DESC`.pipe(Effect.orDie);
-        return yield* Effect.forEach(rows, (row) =>
-          decodeVersion(row).pipe(
-            Effect.map((decoded) => new BriefVersion(decoded)),
-            Effect.orDie,
-          ),
-        );
+        const rows = yield* db
+          .select({ version: briefVersions })
+          .from(briefVersions)
+          .innerJoin(briefs, eq(briefs.id, briefVersions.briefId))
+          .where(eq(briefs.changeId, changeId))
+          .orderBy(desc(briefVersions.version))
+          .pipe(Effect.orDie);
+        return yield* Effect.forEach(rows, ({ version }) => decodeVersionRow(version));
       });
 
       const publish = Effect.fn("BriefsRepo.publish")(function* (
@@ -75,30 +103,40 @@ export class BriefsRepo extends Context.Service<
         const encoded = yield* encodeDocument(document).pipe(Effect.orDie);
         const briefId = BriefId.make(crypto.randomUUID());
 
-        const version = yield* sql
-          .withTransaction(
+        const version = yield* db
+          .transaction((tx) =>
             Effect.gen(function* () {
-              const rows = yield* sql`
-              INSERT INTO briefs (id, change_id, current_version, document)
-              VALUES (${briefId}, ${changeId}, 1, ${JSON.stringify(encoded)}::jsonb)
-              ON CONFLICT (change_id) DO UPDATE
-              SET current_version = briefs.current_version + 1,
-                  document = EXCLUDED.document,
-                  updated_at = now()
-              RETURNING id, current_version`;
-              const row = rows[0] as { readonly id: string; readonly currentVersion: number };
+              const [row] = yield* tx
+                .insert(briefs)
+                .values({ id: briefId, changeId, currentVersion: 1, document: encoded })
+                .onConflictDoUpdate({
+                  target: briefs.changeId,
+                  set: {
+                    currentVersion: sql`${briefs.currentVersion} + 1`,
+                    document: encoded,
+                    updatedAt: new Date(),
+                  },
+                })
+                .returning({ id: briefs.id, currentVersion: briefs.currentVersion });
+              if (row === undefined) return yield* Effect.die("brief upsert returned no row");
 
-              yield* sql`
-              INSERT INTO brief_versions (brief_id, version, document)
-              VALUES (${row.id}, ${row.currentVersion}, ${JSON.stringify(encoded)}::jsonb)`;
+              yield* tx.insert(briefVersions).values({
+                briefId: row.id,
+                version: row.currentVersion,
+                document: encoded,
+              });
 
               // The index over the document's questions — replaced with it.
-              yield* sql`DELETE FROM review_questions WHERE brief_id = ${row.id}`;
-              for (const question of document.questions) {
-                yield* sql`
-                INSERT INTO review_questions (id, brief_id, index, question, disposition, evidence)
-                VALUES (${crypto.randomUUID()}, ${row.id}, ${question.index}, ${question.question},
-                        ${question.disposition}, ${JSON.stringify(serializeEvidence(question))}::jsonb)`;
+              yield* tx.delete(reviewQuestions).where(eq(reviewQuestions.briefId, row.id));
+              for (const question of encoded.questions) {
+                yield* tx.insert(reviewQuestions).values({
+                  id: ReviewQuestionId.make(crypto.randomUUID()),
+                  briefId: row.id,
+                  index: question.index,
+                  question: question.question,
+                  disposition: question.disposition,
+                  evidence: question.evidence,
+                });
               }
 
               return row.currentVersion;
@@ -107,34 +145,10 @@ export class BriefsRepo extends Context.Service<
           .pipe(Effect.orDie);
 
         const issueId = yield* issueIdOf(changeId);
-        yield* notifyEvent(sql, { type: "brief", changeId, issueId });
+        yield* notifyEvent(pg, { type: "brief", changeId, issueId });
         return { version };
       });
-
-      const issueIdOf = (changeId: ChangeId) =>
-        sql`SELECT issue_id FROM changes WHERE id = ${changeId}`.pipe(
-          Effect.orDie,
-          Effect.map((rows) => {
-            const row = rows[0] as { issueId: string } | undefined;
-            return row?.issueId ?? "";
-          }),
-        );
 
       return { byChange, versions, publish };
     }),
   );
-}
-
-/** Evidence pointers, JSON-safe (sequences as decimal strings). */
-const serializeEvidence = (question: {
-  readonly evidence: ReadonlyArray<{
-    readonly runId: string;
-    readonly sequence: bigint;
-    readonly excerpt: string;
-  }>;
-}) =>
-  question.evidence.map((pointer) => ({
-    runId: pointer.runId,
-    sequence: String(pointer.sequence),
-    excerpt: pointer.excerpt,
-  }));

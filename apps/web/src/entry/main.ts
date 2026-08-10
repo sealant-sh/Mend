@@ -7,16 +7,16 @@ import { NodeHttpServer, NodeRuntime } from "@effect/platform-node";
 import { EventsRoutes, GhLive, MendApiLive, TtyRoutes } from "@mend/api";
 import { Auth } from "@mend/auth";
 import {
-  BriefCommentsRepo,
-  BriefsRepo,
+  BriefCommentsRepoLive,
+  BriefsRepoLive,
   ChangePassesRepo,
   ChangePassesRepoLive,
-  ChangesRepo,
+  ChangesRepoLive,
   ChangeToursRepoLive,
   CheckpointsRepoLive,
   FollowUpsRepoLive,
   InferenceCallsRepoLive,
-  IssuesRepo,
+  IssuesRepoLive,
   MendDBLive,
   MigratorLive,
   PgLive,
@@ -25,10 +25,10 @@ import {
   PushDevicesRepoLive,
   ReferencesRepoLive,
   ReviewCommentsRepoLive,
-  RunsRepo,
+  RunsRepoLive,
   SessionChangesRepoLive,
   SessionRunsRepoLive,
-  SessionsRepo,
+  SessionsRepoLive,
   SettingsRepoLive,
 } from "@mend/db";
 import type { ChangeId } from "@mend/domain";
@@ -93,18 +93,17 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   ChangeToursRepoLive,
   ChangePassesRepoLive,
   ReferencesRepoLive,
+  IssuesRepoLive,
+  ChangesRepoLive,
+  RunsRepoLive,
+  BriefsRepoLive,
+  BriefCommentsRepoLive,
+  SessionsRepoLive,
 ).pipe(Layer.provideMerge(MendDBLive));
 
-const DatabaseLive = Layer.mergeAll(
-  DrizzleRepositoriesLive,
-  IssuesRepo.layer,
-  RunsRepo.layer,
-  ChangesRepo.layer,
-  BriefsRepo.layer,
-  BriefCommentsRepo.layer,
-  // Workbench repos (plan §5; docs/M0-INVENTORY.md).
-  SessionsRepo.layer,
-).pipe(Layer.provideMerge(MigratorLive.pipe(Layer.provideMerge(PgLive))));
+const DatabaseLive = DrizzleRepositoriesLive.pipe(
+  Layer.provideMerge(MigratorLive.pipe(Layer.provideMerge(PgLive))),
+);
 
 // ─── The central store (host-side git) + the session engine over it ────────
 // One instance each: the API handlers and the worker share them (memoized —
