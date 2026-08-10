@@ -9,6 +9,7 @@ import {
   projects,
   sessionChanges,
   sessionRuns,
+  settings,
 } from "../src/schema/workbench.ts";
 
 describe("workbench Drizzle schema", () => {
@@ -80,6 +81,14 @@ describe("workbench Drizzle schema", () => {
       "project_mounts_project_id_host_path_key",
       "project_mounts_project_id_name_key",
     ]);
+  });
+
+  it("maps the singleton settings document without changing its migration shape", () => {
+    const config = getTableConfig(settings);
+    expect(config.name).toBe("settings");
+    expect(config.columns.map((column) => column.name)).toEqual(["key", "value", "updated_at"]);
+    expect(config.columns[0]?.primary).toBe(true);
+    expect(config.columns[1]?.getSQLType()).toBe("jsonb");
   });
 
   it("keeps destructive ownership and nullable evidence links explicit", () => {

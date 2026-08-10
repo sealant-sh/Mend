@@ -29,7 +29,7 @@ import {
   SessionChangesRepo,
   SessionRunsRepoLive,
   SessionsRepo,
-  SettingsRepo,
+  SettingsRepoLive,
 } from "@mend/db";
 import type { ChangeId } from "@mend/domain";
 import {
@@ -84,6 +84,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   CheckpointsRepoLive,
   ProjectsRepoLive,
   ProjectMountsRepoLive,
+  SettingsRepoLive,
 ).pipe(Layer.provideMerge(MendDBLive));
 
 const DatabaseLive = Layer.mergeAll(
@@ -93,7 +94,6 @@ const DatabaseLive = Layer.mergeAll(
   ChangesRepo.layer,
   BriefsRepo.layer,
   BriefCommentsRepo.layer,
-  SettingsRepo.layer,
   InferenceCallsRepo.layer,
   // Workbench repos (plan §5; docs/M0-INVENTORY.md).
   ReferencesRepo.layer,

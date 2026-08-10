@@ -1,7 +1,10 @@
-import { PgClient } from "@effect/sql-pg";
 import { defaultSettings, MendSettings } from "@mend/domain";
+import { eq } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
+
+import { MendDB } from "../client.ts";
+import { settings as settingsTable } from "../schema/workbench.ts";
 
 const decodeSettings = Schema.decodeUnknownEffect(MendSettings);
 
@@ -12,30 +15,37 @@ export class SettingsRepo extends Context.Service<
     readonly get: () => Effect.Effect<MendSettings>;
     readonly set: (settings: MendSettings) => Effect.Effect<MendSettings>;
   }
->()("@mend/db/SettingsRepo") {
-  static readonly layer = Layer.effect(
-    SettingsRepo,
-    Effect.gen(function* () {
-      const sql = yield* PgClient.PgClient;
+>()("@mend/db/SettingsRepo") {}
 
-      const get = Effect.fn("SettingsRepo.get")(function* () {
-        const rows = yield* sql`SELECT value FROM settings WHERE key = 'mend'`.pipe(Effect.orDie);
-        const row = rows[0] as { value: unknown } | undefined;
-        if (row === undefined) return defaultSettings;
-        return yield* decodeSettings(row.value).pipe(Effect.orDie);
-      });
+export const SettingsRepoLive: Layer.Layer<SettingsRepo, never, MendDB> = Layer.effect(
+  SettingsRepo,
+  Effect.gen(function* () {
+    const db = yield* MendDB;
 
-      const set = Effect.fn("SettingsRepo.set")(function* (settings: MendSettings) {
-        const encoded = yield* Schema.encodeEffect(MendSettings)(settings).pipe(Effect.orDie);
-        yield* sql`
-          INSERT INTO settings (key, value) VALUES ('mend', ${JSON.stringify(encoded)}::jsonb)
-          ON CONFLICT (key) DO UPDATE SET value = ${JSON.stringify(encoded)}::jsonb, updated_at = now()`.pipe(
-          Effect.orDie,
-        );
-        return settings;
-      });
+    const get = Effect.fn("SettingsRepo.get")(function* () {
+      const [row] = yield* db
+        .select({ value: settingsTable.value })
+        .from(settingsTable)
+        .where(eq(settingsTable.key, "mend"))
+        .limit(1)
+        .pipe(Effect.orDie);
+      if (row === undefined) return defaultSettings;
+      return yield* decodeSettings(row.value).pipe(Effect.orDie);
+    });
 
-      return { get, set };
-    }),
-  );
-}
+    const set = Effect.fn("SettingsRepo.set")(function* (settings: MendSettings) {
+      const encoded = yield* Schema.encodeEffect(MendSettings)(settings).pipe(Effect.orDie);
+      yield* db
+        .insert(settingsTable)
+        .values({ key: "mend", value: encoded })
+        .onConflictDoUpdate({
+          target: settingsTable.key,
+          set: { value: encoded, updatedAt: new Date() },
+        })
+        .pipe(Effect.orDie);
+      return settings;
+    });
+
+    return { get, set };
+  }),
+);
