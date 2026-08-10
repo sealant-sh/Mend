@@ -5,6 +5,7 @@ import {
   agentSessions,
   checkpoints,
   contextSnapshots,
+  followUps,
   inferenceCalls,
   projectMounts,
   projects,
@@ -105,6 +106,25 @@ describe("workbench Drizzle schema", () => {
     ]);
     expect(config.columns[3]?.getSQLType()).toBe("jsonb");
     expect(config.columns[4]?.getSQLType()).toBe("jsonb");
+  });
+
+  it("maps follow-up ownership, status, and delivery timestamps", () => {
+    const config = getTableConfig(followUps);
+    expect(config.name).toBe("follow_ups");
+    expect(config.columns.map((column) => column.name)).toEqual([
+      "id",
+      "session_id",
+      "change_id",
+      "instruction",
+      "status",
+      "created_at",
+      "delivered_at",
+    ]);
+    expect(config.foreignKeys.map((foreignKey) => foreignKey.onDelete)).toEqual([
+      "cascade",
+      "cascade",
+    ]);
+    expect(config.indexes[0]?.config.name).toBe("follow_ups_session_idx");
   });
 
   it("keeps destructive ownership and nullable evidence links explicit", () => {

@@ -14,7 +14,7 @@ import {
   ChangesRepo,
   ChangeToursRepo,
   CheckpointsRepoLive,
-  FollowUpsRepo,
+  FollowUpsRepoLive,
   InferenceCallsRepoLive,
   IssuesRepo,
   MendDBLive,
@@ -86,6 +86,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   ProjectMountsRepoLive,
   SettingsRepoLive,
   InferenceCallsRepoLive,
+  FollowUpsRepoLive,
 ).pipe(Layer.provideMerge(MendDBLive));
 
 const DatabaseLive = Layer.mergeAll(
@@ -102,7 +103,6 @@ const DatabaseLive = Layer.mergeAll(
   ReviewCommentsRepo.layer,
   ChangeToursRepo.layer,
   ChangePassesRepoLive,
-  FollowUpsRepo.layer,
   PushDevicesRepo.layer,
 ).pipe(Layer.provideMerge(MigratorLive.pipe(Layer.provideMerge(PgLive))));
 

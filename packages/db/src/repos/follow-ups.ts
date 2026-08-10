@@ -1,8 +1,11 @@
-import { PgClient } from "@effect/sql-pg";
 import { FollowUpId, type ChangeId, type SessionId } from "@mend/domain";
 import { FollowUp } from "@mend/domain/workbench";
+import { and, desc, eq } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
+
+import { MendDB } from "../client.ts";
+import { followUps } from "../schema/workbench.ts";
 
 export class FollowUpNotFoundError extends Schema.TaggedErrorClass<FollowUpNotFoundError>()(
   "FollowUpNotFoundError",
@@ -10,8 +13,6 @@ export class FollowUpNotFoundError extends Schema.TaggedErrorClass<FollowUpNotFo
     sessionId: Schema.String,
   },
 ) {}
-
-const decodeFollowUp = Schema.decodeUnknownEffect(Schema.Struct(FollowUp.fields));
 
 /**
  * Assembled review bundles (plan §7.3). One pending follow-up per session at
@@ -29,52 +30,62 @@ export class FollowUpsRepo extends Context.Service<
     readonly pendingForSession: (sessionId: SessionId) => Effect.Effect<FollowUp | null>;
     readonly markDelivered: (id: FollowUpId) => Effect.Effect<void>;
   }
->()("@mend/db/FollowUpsRepo") {
-  static readonly layer = Layer.effect(
-    FollowUpsRepo,
-    Effect.gen(function* () {
-      const sql = yield* PgClient.PgClient;
+>()("@mend/db/FollowUpsRepo") {}
 
-      const decodeRow = (row: unknown) =>
-        decodeFollowUp(row).pipe(
-          Effect.map((decoded) => new FollowUp(decoded)),
-          Effect.orDie,
-        );
+const toFollowUp = (row: typeof followUps.$inferSelect): FollowUp => new FollowUp(row);
 
-      const create = Effect.fn("FollowUpsRepo.create")(function* (
-        sessionId: SessionId,
-        changeId: ChangeId,
-        instruction: string,
-      ) {
-        yield* sql`
-          UPDATE follow_ups SET status = 'superseded'
-          WHERE session_id = ${sessionId} AND status = 'pending'`.pipe(Effect.orDie);
-        const id = crypto.randomUUID();
-        const rows = yield* sql`
-          INSERT INTO follow_ups (id, session_id, change_id, instruction)
-          VALUES (${id}, ${sessionId}, ${changeId}, ${instruction})
-          RETURNING *`.pipe(Effect.orDie);
-        return yield* decodeRow(rows[0]);
-      });
+export const FollowUpsRepoLive: Layer.Layer<FollowUpsRepo, never, MendDB> = Layer.effect(
+  FollowUpsRepo,
+  Effect.gen(function* () {
+    const db = yield* MendDB;
 
-      const pendingForSession = Effect.fn("FollowUpsRepo.pendingForSession")(function* (
-        sessionId: SessionId,
-      ) {
-        const rows = yield* sql`
-          SELECT * FROM follow_ups
-          WHERE session_id = ${sessionId} AND status = 'pending'
-          ORDER BY created_at DESC LIMIT 1`.pipe(Effect.orDie);
-        const row = rows[0];
-        return row === undefined ? null : yield* decodeRow(row);
-      });
+    const create = Effect.fn("FollowUpsRepo.create")(
+      (sessionId: SessionId, changeId: ChangeId, instruction: string) =>
+        db
+          .transaction((tx) =>
+            Effect.gen(function* () {
+              yield* tx
+                .update(followUps)
+                .set({ status: "superseded" })
+                .where(and(eq(followUps.sessionId, sessionId), eq(followUps.status, "pending")));
+              const [created] = yield* tx
+                .insert(followUps)
+                .values({
+                  id: FollowUpId.make(crypto.randomUUID()),
+                  sessionId,
+                  changeId,
+                  instruction,
+                })
+                .returning();
+              if (created === undefined)
+                return yield* Effect.die("follow-up insert returned no row");
+              return toFollowUp(created);
+            }),
+          )
+          .pipe(Effect.orDie),
+    );
 
-      const markDelivered = Effect.fn("FollowUpsRepo.markDelivered")(function* (id: FollowUpId) {
-        yield* sql`
-          UPDATE follow_ups SET status = 'delivered', delivered_at = now()
-          WHERE id = ${id}`.pipe(Effect.orDie);
-      });
+    const pendingForSession = Effect.fn("FollowUpsRepo.pendingForSession")(function* (
+      sessionId: SessionId,
+    ) {
+      const [row] = yield* db
+        .select()
+        .from(followUps)
+        .where(and(eq(followUps.sessionId, sessionId), eq(followUps.status, "pending")))
+        .orderBy(desc(followUps.createdAt))
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row === undefined ? null : toFollowUp(row);
+    });
 
-      return { create, pendingForSession, markDelivered };
-    }),
-  );
-}
+    const markDelivered = Effect.fn("FollowUpsRepo.markDelivered")(function* (id: FollowUpId) {
+      yield* db
+        .update(followUps)
+        .set({ status: "delivered", deliveredAt: new Date() })
+        .where(eq(followUps.id, id))
+        .pipe(Effect.orDie);
+    });
+
+    return { create, pendingForSession, markDelivered };
+  }),
+);
