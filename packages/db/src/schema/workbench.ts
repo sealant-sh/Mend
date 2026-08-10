@@ -1,13 +1,14 @@
-import type {
-  ChangeId,
-  CheckpointId,
-  ContextSnapshotId,
-  ProjectId,
-  ProjectMountId,
-  SealantRunId,
-  SealantWorkspaceId,
-  SessionId,
-  Sha,
+import {
+  MendSettings,
+  type ChangeId,
+  type CheckpointId,
+  type ContextSnapshotId,
+  type ProjectId,
+  type ProjectMountId,
+  type SealantRunId,
+  type SealantWorkspaceId,
+  type SessionId,
+  type Sha,
 } from "@mend/domain";
 import type {
   AutomationChoice,
@@ -71,6 +72,12 @@ export const projectMounts = pgTable(
     unique("project_mounts_project_id_host_path_key").on(table.projectId, table.hostPath),
   ],
 );
+
+export const settings = pgTable("settings", {
+  key: text().primaryKey(),
+  value: jsonb().$type<typeof MendSettings.Encoded>().notNull(),
+  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
 
 export const contextSnapshots = pgTable("context_snapshots", {
   id: text().$type<ContextSnapshotId>().primaryKey(),
@@ -197,6 +204,7 @@ export const checkpoints = pgTable(
 
 export type ProjectRow = typeof projects.$inferSelect;
 export type ProjectMountRow = typeof projectMounts.$inferSelect;
+export type SettingsRow = typeof settings.$inferSelect;
 export type ContextSnapshotRow = typeof contextSnapshots.$inferSelect;
 export type AgentSessionRow = typeof agentSessions.$inferSelect;
 export type SessionRunRow = typeof sessionRuns.$inferSelect;
