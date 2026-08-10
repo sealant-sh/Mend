@@ -20,7 +20,7 @@ import {
   MendDBLive,
   MigratorLive,
   PgLive,
-  ProjectMountsRepo,
+  ProjectMountsRepoLive,
   ProjectsRepoLive,
   PushDevicesRepo,
   ReferencesRepo,
@@ -83,6 +83,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   SessionRunsRepoLive,
   CheckpointsRepoLive,
   ProjectsRepoLive,
+  ProjectMountsRepoLive,
 ).pipe(Layer.provideMerge(MendDBLive));
 
 const DatabaseLive = Layer.mergeAll(
@@ -95,7 +96,6 @@ const DatabaseLive = Layer.mergeAll(
   SettingsRepo.layer,
   InferenceCallsRepo.layer,
   // Workbench repos (plan §5; docs/M0-INVENTORY.md).
-  ProjectMountsRepo.layer,
   ReferencesRepo.layer,
   SessionsRepo.layer,
   SessionChangesRepo.layer,
