@@ -27,6 +27,8 @@ export interface CanonicalSession {
   readonly events: ReadonlyArray<CanonicalEvent>;
 }
 
+type ToolArgsFormat = "json" | "text";
+
 export type CanonicalEvent =
   | { readonly kind: "user"; readonly text: string }
   | { readonly kind: "assistant"; readonly text: string }
@@ -36,6 +38,7 @@ export type CanonicalEvent =
       /** Source harness's tool name; "shell" for plain command execution. */
       readonly name: string;
       readonly args: string;
+      readonly argsFormat: ToolArgsFormat;
       readonly output: string;
       /** Set when the tool is plain shell execution — every harness has a native form. */
       readonly command: string | null;
@@ -68,12 +71,45 @@ const asText = (content: unknown): string => {
 };
 
 const IMPORT_PREFIX = "imported_";
+const TOOL_INPUT_ENVELOPE = "$mend.toolInput";
+
+const canonicalToolArgs = (
+  input: unknown,
+): { readonly args: string; readonly argsFormat: ToolArgsFormat } => {
+  if (
+    typeof input === "object" &&
+    input !== null &&
+    !Array.isArray(input) &&
+    Object.keys(input).length === 1 &&
+    TOOL_INPUT_ENVELOPE in input
+  ) {
+    const envelope = input[TOOL_INPUT_ENVELOPE];
+    if (
+      typeof envelope === "object" &&
+      envelope !== null &&
+      "value" in envelope &&
+      typeof envelope.value === "string" &&
+      "format" in envelope &&
+      (envelope.format === "json" || envelope.format === "text")
+    ) {
+      return { args: envelope.value, argsFormat: envelope.format };
+    }
+  }
+  return { args: JSON.stringify(input ?? {}), argsFormat: "json" };
+};
 
 // ─── ingest: native → canonical ─────────────────────────────────────────────
 
+interface PendingTool {
+  readonly name: string;
+  readonly args: string;
+  readonly argsFormat: ToolArgsFormat;
+  readonly command: string | null;
+}
+
 const ingestClaude = (jsonl: string): CanonicalEvent[] => {
   const events: CanonicalEvent[] = [];
-  const pending = new Map<string, { name: string; args: string; command: string | null }>();
+  const pending = new Map<string, PendingTool>();
   for (const line of jsonl.split("\n")) {
     if (line.trim() === "") continue;
     let entry: {
@@ -110,7 +146,7 @@ const ingestClaude = (jsonl: string): CanonicalEvent[] => {
           pending.set(p.id, {
             name: shell ? "shell" : (p.name ?? "tool"),
             // Shell canonicalizes to `command`; args carry nothing extra.
-            args: shell ? "" : JSON.stringify(p.input ?? {}),
+            ...(shell ? { args: "", argsFormat: "json" } : canonicalToolArgs(p.input)),
             command: shell ? (input?.command ?? null) : null,
           });
         }
@@ -147,7 +183,7 @@ const ingestClaude = (jsonl: string): CanonicalEvent[] => {
 
 const ingestCodex = (jsonl: string): CanonicalEvent[] => {
   const events: CanonicalEvent[] = [];
-  const pending = new Map<string, { name: string; args: string; command: string | null }>();
+  const pending = new Map<string, PendingTool>();
   for (const line of jsonl.split("\n")) {
     if (line.trim() === "") continue;
     let entry: { readonly type?: string; readonly payload?: Record<string, unknown> };
@@ -183,7 +219,7 @@ const ingestCodex = (jsonl: string): CanonicalEvent[] => {
     ) {
       const rawArgs = p.arguments ?? p.input ?? "{}";
       let command: string | null = null;
-      if (p.name === "exec_command" || p.name === "shell") {
+      if (p.type === "function_call" && (p.name === "exec_command" || p.name === "shell")) {
         try {
           const parsed = JSON.parse(rawArgs) as {
             readonly cmd?: string;
@@ -207,7 +243,12 @@ const ingestCodex = (jsonl: string): CanonicalEvent[] => {
           : (p.name ?? "tool").startsWith(IMPORT_PREFIX)
             ? (p.name ?? "tool").slice(IMPORT_PREFIX.length)
             : (p.name ?? "tool");
-      pending.set(p.call_id, { name, args: command !== null ? "" : rawArgs, command });
+      pending.set(p.call_id, {
+        name,
+        args: command !== null ? "" : rawArgs,
+        argsFormat: p.type === "custom_tool_call" ? "text" : "json",
+        command,
+      });
     }
     if (
       (p.type === "function_call_output" || p.type === "custom_tool_call_output") &&
@@ -292,16 +333,27 @@ const emitCodex = (session: CanonicalSession, now: string): ConvertedNativeSessi
       call += 1;
       const callId = `call_mend${String(call).padStart(6, "0")}`;
       const shell = event.command !== null;
+      const functionCall = shell || event.argsFormat === "json";
+      push(
+        "response_item",
+        functionCall
+          ? {
+              type: "function_call",
+              name: shell ? "exec_command" : `${IMPORT_PREFIX}${event.name}`,
+              arguments: shell
+                ? JSON.stringify({ cmd: event.command, workdir: session.cwd })
+                : event.args,
+              call_id: callId,
+            }
+          : {
+              type: "custom_tool_call",
+              name: `${IMPORT_PREFIX}${event.name}`,
+              input: event.args,
+              call_id: callId,
+            },
+      );
       push("response_item", {
-        type: "function_call",
-        name: shell ? "exec_command" : `${IMPORT_PREFIX}${event.name}`,
-        arguments: shell
-          ? JSON.stringify({ cmd: event.command, workdir: session.cwd })
-          : event.args,
-        call_id: callId,
-      });
-      push("response_item", {
-        type: "function_call_output",
+        type: functionCall ? "function_call_output" : "custom_tool_call_output",
         call_id: callId,
         output: event.output,
       });
@@ -323,11 +375,16 @@ const emitCodex = (session: CanonicalSession, now: string): ConvertedNativeSessi
   };
 };
 
-const safeParse = (raw: string): unknown => {
+const claudeToolInput = (raw: string, format: ToolArgsFormat): unknown => {
+  if (format === "text") {
+    return { [TOOL_INPUT_ENVELOPE]: { format, value: raw } };
+  }
   try {
     return JSON.parse(raw) as unknown;
   } catch {
-    return { raw };
+    // Claude tool_use input must be JSON. Preserve malformed structured input
+    // explicitly too, so conversion never changes the canonical record.
+    return { [TOOL_INPUT_ENVELOPE]: { format, value: raw } };
   }
 };
 
@@ -387,7 +444,9 @@ const emitClaude = (session: CanonicalSession, now: string): ConvertedNativeSess
             type: "tool_use",
             id: toolUseId,
             name: shell ? "Bash" : event.name,
-            input: shell ? { command: event.command } : safeParse(event.args),
+            input: shell
+              ? { command: event.command }
+              : claudeToolInput(event.args, event.argsFormat),
           },
         ],
         "tool_use",

@@ -29,6 +29,35 @@ const claudeJsonl = [
   }),
 ].join("\n");
 
+const codexFreeformToolJsonl = (input: string, name = "exec") =>
+  [
+    JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "inspect the repository" }],
+      },
+    }),
+    JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call",
+        name,
+        input,
+        call_id: "call-freeform",
+      },
+    }),
+    JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call_output",
+        call_id: "call-freeform",
+        output: [{ type: "input_text", text: "On branch main" }],
+      },
+    }),
+  ].join("\n");
+
 describe("native session conversion", () => {
   it("claude → codex: a valid rollout with meta, messages, and a real shell item", () => {
     const converted = convertNativeSession("claude", "codex", claudeJsonl, {
@@ -107,6 +136,28 @@ describe("round-trip invariant", () => {
   it("claude fixture survives claude → claude-emit → canonical", () => {
     roundTrip("claude", claudeJsonl, "claude");
   });
+
+  it("preserves Codex free-form tool input through Claude", () => {
+    roundTrip(
+      "codex",
+      codexFreeformToolJsonl(
+        'const result = await tools.exec_command({ cmd: "git status" });\ntext(result.output);',
+      ),
+      "claude",
+    );
+  });
+
+  it("preserves JSON-looking Codex free-form tool input through both harnesses", () => {
+    const native = codexFreeformToolJsonl('{"looks":"structured"}');
+    roundTrip("codex", native, "claude");
+    roundTrip("codex", native, "codex");
+  });
+
+  it("does not reinterpret a free-form exec_command custom tool as a shell call", () => {
+    const native = codexFreeformToolJsonl('{"cmd":"git status"}', "exec_command");
+    roundTrip("codex", native, "claude");
+    roundTrip("codex", native, "codex");
+  });
 });
 
 // Real-session corpus: runs only where local session files exist (dev machine),
@@ -119,10 +170,33 @@ const codexCorpus = (() => {
     return null;
   }
 })();
+
+const isHarvestManifest = (
+  value: unknown,
+  harness: string,
+): value is { readonly harness: string; readonly capturedAt: string } =>
+  typeof value === "object" &&
+  value !== null &&
+  "harness" in value &&
+  value.harness === harness &&
+  "capturedAt" in value &&
+  typeof value.capturedAt === "string";
+
 const claudeCorpus = (() => {
   try {
-    const files = fs.globSync(`${process.env["HOME"]}/.mend/store/*/sessions/*/transcript.native`);
-    return files.toSorted().at(-1) ?? null;
+    const manifests = fs.globSync(`${process.env["HOME"]}/.mend/store/*/sessions/*/manifest.json`);
+    const transcripts = manifests.flatMap((manifestPath) => {
+      const manifest: unknown = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      if (!isHarvestManifest(manifest, "claude")) return [];
+      const transcriptPath = manifestPath.replace(/manifest\.json$/, "transcript.native");
+      return fs.existsSync(transcriptPath)
+        ? [{ capturedAt: manifest.capturedAt, transcriptPath }]
+        : [];
+    });
+    return (
+      transcripts.toSorted((left, right) => left.capturedAt.localeCompare(right.capturedAt)).at(-1)
+        ?.transcriptPath ?? null
+    );
   } catch {
     return null;
   }
