@@ -20,7 +20,9 @@ mend run -- <command...>              same, with an arbitrary command
 mend attach <session-id-prefix>       reattach this terminal to a running session
 mend continue [session-id]            resume a session with its pending review follow-up
 mend resume [session-id] [--with h]   rejoin a settled session (state restored; --with switches harness)
-mend status                           active sessions
+mend rejoin [session-id] [--harness h] attach if live, otherwise resume; newest live wins
+mend sessions [--all] [--project p] [--json]
+mend status                           active sessions (alias of mend sessions)
 ```
 
 ## Configuration
@@ -29,7 +31,16 @@ mend status                           active sessions
 | ------------------ | ------------------------------------------------- |
 | `MEND_URL`         | The Mend server (default `http://localhost:3105`) |
 | `MEND_TOKEN`       | Bearer token for that server                      |
+| `MEND_DETACH_KEY`  | Set to `none` when an outer multiplexer detaches  |
 | `~/.mend/cli.json` | `{ "url": ..., "token": ... }` — env vars win     |
+
+## Herdr
+
+When Mend attaches Codex, Claude Code, or OpenCode inside a Herdr pane, it reports that harness to
+Herdr for the lifetime of the attachment. The session therefore appears in Herdr's Agents sidebar
+whether it was started from the `mend` dashboard or a one-shot CLI command. Mend supplies Herdr's
+foreground-process hint rather than claiming lifecycle authority, so Herdr continues to derive
+working, idle, and blocked from its native agent screen rules.
 
 ## How it works
 

@@ -29,16 +29,23 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc src/main.ts --outDir dist --module nodenext --target es2022 --types node --skipLibCheck",
+    "build": "tsc src/main.ts src/dashboard.tsx --outDir dist --module nodenext --target es2023 --types node --skipLibCheck --allowImportingTsExtensions --rewriteRelativeImportExtensions --jsx react-jsx --jsxImportSource @opentui/react",
     "lint": "oxlint . --no-error-on-unmatched-pattern",
     "prepack": "pnpm run build",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
+  "dependencies": {
+    "@opentui/core": "^0.5.1",
+    "@opentui/react": "^0.5.1",
+    "@tanstack/react-query": "catalog:",
+    "react": "catalog:"
+  },
   "devDependencies": {
     "@effect/vitest": "catalog:",
     "@mend/typescript": "workspace:*",
     "@types/node": "catalog:",
+    "@types/react": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },

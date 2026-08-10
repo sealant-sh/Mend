@@ -26,10 +26,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-      # Node 24, NOT 22: trusted publishing needs the bundled npm >= 11.5.
+      # .node-version (26.x) also satisfies trusted publishing's npm >= 11.5 floor.
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version-file: .node-version
           cache: pnpm
           registry-url: https://registry.npmjs.org
       # --lockfile=false: CI must never write pnpm-lock.yaml (AGENTS.md).
