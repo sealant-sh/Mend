@@ -459,6 +459,61 @@ const changePasses = Effect.gen(function* () {
     )`;
 });
 
+/**
+ * A logical Mend session can span multiple Sealant runs: every settled-session resume creates a
+ * fresh platform record whose sequence space begins at one. Preserve that membership and keep the
+ * crash-resume cursor on the run it belongs to. Existing rows retain only their latest run pointer,
+ * so their pre-migration record coverage is marked incomplete rather than reconstructed.
+ */
+const sessionRunHistory = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+
+  yield* sql`
+    CREATE TABLE session_runs (
+      sealant_run_id text PRIMARY KEY,
+      session_id text NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      ordinal integer NOT NULL,
+      harness text NOT NULL,
+      sealant_workspace_id text NOT NULL,
+      sealant_session_id text,
+      status text NOT NULL,
+      summary text,
+      last_seen_sequence bigint NOT NULL DEFAULT 0,
+      started_at timestamptz NOT NULL DEFAULT now(),
+      settled_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE (session_id, ordinal)
+    )`;
+  yield* sql`
+    CREATE INDEX session_runs_session_idx ON session_runs (session_id, ordinal)`;
+  yield* sql`
+    CREATE UNIQUE INDEX session_runs_one_active_idx ON session_runs (session_id)
+    WHERE settled_at IS NULL`;
+
+  yield* sql`
+    ALTER TABLE agent_sessions
+      ADD COLUMN record_history_complete boolean NOT NULL DEFAULT false`;
+
+  // The latest pointer is all the old schema retained. Preserve it, but never claim it represents
+  // earlier overwritten runs.
+  yield* sql`
+    INSERT INTO session_runs
+      (sealant_run_id, session_id, ordinal, harness, sealant_workspace_id, sealant_session_id,
+       status, summary, last_seen_sequence, started_at, settled_at, created_at, updated_at)
+    SELECT sealant_run_id, id, 0, harness, sealant_workspace_id, sealant_session_id,
+           status, summary, last_seen_sequence, COALESCE(started_at, created_at), settled_at,
+           created_at, updated_at
+    FROM agent_sessions
+    WHERE sealant_run_id IS NOT NULL AND sealant_workspace_id IS NOT NULL`;
+
+  yield* sql`
+    ALTER TABLE checkpoints
+      ADD COLUMN sealant_run_id text REFERENCES session_runs(sealant_run_id) ON DELETE SET NULL`;
+  yield* sql`
+    CREATE INDEX checkpoints_session_created_idx ON checkpoints (session_id, created_at)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -475,4 +530,5 @@ export const migrations = {
   "0012_change_tours": changeTours,
   "0013_review_automation": reviewAutomation,
   "0014_change_passes": changePasses,
+  "0015_session_run_history": sessionRunHistory,
 };

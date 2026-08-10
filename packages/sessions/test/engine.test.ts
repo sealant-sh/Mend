@@ -14,16 +14,27 @@ import {
   ReferencesRepo,
   SessionChangesRepo,
   SessionNotFoundError,
+  SessionRunsRepo,
   SessionsRepo,
   type NewCheckpoint,
   type NewSession,
+  type NewSessionRun,
 } from "@mend/db";
-import { ChangeId, CheckpointId, ProjectId, SessionId, Sha } from "@mend/domain";
+import {
+  ChangeId,
+  CheckpointId,
+  ProjectId,
+  SealantRunId,
+  SealantWorkspaceId,
+  SessionId,
+  Sha,
+} from "@mend/domain";
 import {
   Change,
   Checkpoint,
   Project,
   Session,
+  SessionRun,
   type SessionExtraMount,
   type SessionReferenceMount,
 } from "@mend/domain/workbench";
@@ -36,7 +47,8 @@ import { Effect, Layer, Stream } from "effect";
 const sealantDeadLayer = Layer.succeed(SealantClient, {
   createWorkspace: () => Effect.die("not in test"),
   getWorkspace: () => Effect.die("not in test"),
-  getRun: () => Effect.die("not in test"),
+  // Some lifecycle tests only need supervision to remain attached while they inspect the index.
+  getRun: () => Effect.never,
   recordCommands: () => Effect.die("not in test"),
   recordScrollback: () => Effect.die("not in test"),
   runHarness: () => Effect.die("not in test"),
@@ -60,6 +72,7 @@ const now = () => new Date();
 interface World {
   readonly projects: Map<string, Project>;
   readonly sessions: Map<string, Session>;
+  readonly sessionRuns: Map<string, SessionRun>;
   readonly changes: Map<string, Change>;
   readonly checkpoints: Array<Checkpoint>;
 }
@@ -67,6 +80,7 @@ interface World {
 const makeWorld = (): World => ({
   projects: new Map(),
   sessions: new Map(),
+  sessionRuns: new Map(),
   changes: new Map(),
   checkpoints: [],
 });
@@ -134,6 +148,7 @@ const sessionsLayer = (world: World) => {
           status: "starting",
           summary: null,
           lastSeenSequence: 0n,
+          recordHistoryComplete: true,
           startedAt: null,
           settledAt: null,
           createdAt: now(),
@@ -159,7 +174,7 @@ const sessionsLayer = (world: World) => {
         ),
       ),
     setSealantIds: (id, sealantRunId, sealantWorkspaceId) =>
-      Effect.sync(() => update(id, { sealantRunId, sealantWorkspaceId })),
+      Effect.sync(() => update(id, { sealantRunId, sealantWorkspaceId, lastSeenSequence: 0n })),
     setSealantSessionId: (id, sealantSessionId) =>
       Effect.sync(() => update(id, { sealantSessionId })),
     setReferenceMounts: (id: string, mounts: ReadonlyArray<SessionReferenceMount>) =>
@@ -213,6 +228,48 @@ const changesLayer = (world: World) =>
     annotationsForProject: () => Effect.succeed([]),
   });
 
+const sessionRunsLayer = (world: World) => {
+  const listForSession = (sessionId: string) =>
+    [...world.sessionRuns.values()]
+      .filter((run) => run.sessionId === sessionId)
+      .toSorted((left, right) => left.ordinal - right.ordinal);
+  const update = (id: string, patch: Partial<SessionRun>) => {
+    const current = world.sessionRuns.get(id);
+    if (current !== undefined) {
+      world.sessionRuns.set(id, new SessionRun({ ...current, ...patch, updatedAt: now() }));
+    }
+  };
+  return Layer.succeed(SessionRunsRepo, {
+    create: (input: NewSessionRun) =>
+      Effect.sync(() => {
+        const run = new SessionRun({
+          ...input,
+          ordinal: listForSession(input.sessionId).length,
+          status: "running",
+          summary: null,
+          lastSeenSequence: 0n,
+          startedAt: now(),
+          settledAt: null,
+          createdAt: now(),
+          updatedAt: now(),
+        });
+        world.sessionRuns.set(run.sealantRunId, run);
+        return run;
+      }),
+    bySealantRunId: (id) => Effect.succeed(world.sessionRuns.get(id) ?? null),
+    listForSession: (sessionId) => Effect.succeed(listForSession(sessionId)),
+    latestForSession: (sessionId) => Effect.succeed(listForSession(sessionId).at(-1) ?? null),
+    activeForSession: (sessionId) =>
+      Effect.succeed(listForSession(sessionId).findLast((run) => run.settledAt === null) ?? null),
+    listActive: () =>
+      Effect.succeed([...world.sessionRuns.values()].filter((run) => run.settledAt === null)),
+    saveLastSeenSequence: (id, sequence) =>
+      Effect.sync(() => update(id, { lastSeenSequence: sequence })),
+    settle: (id, status, summary) =>
+      Effect.sync(() => update(id, { status, summary, settledAt: now() })),
+  });
+};
+
 const checkpointsLayer = (world: World) =>
   Layer.succeed(CheckpointsRepo, {
     create: (input: NewCheckpoint) =>
@@ -222,6 +279,7 @@ const checkpointsLayer = (world: World) =>
           sessionId: input.sessionId,
           ref: input.ref,
           sha: input.sha,
+          sealantRunId: input.sealantRunId,
           seq: input.seq,
           trigger: input.trigger,
           createdAt: now(),
@@ -288,6 +346,7 @@ const withEngine = <A, E>(
     Layer.provide(sealantDeadLayer),
     Layer.provide(projectsLayer(world)),
     Layer.provide(sessionsLayer(world)),
+    Layer.provide(sessionRunsLayer(world)),
     Layer.provide(changesLayer(world)),
     Layer.provide(checkpointsLayer(world)),
     Layer.provide(referencesEmptyLayer),
@@ -318,16 +377,80 @@ describe("SessionEngine", () => {
 
         expect(session.branch).toBe(`mend/session/${session.id}`);
         expect(session.status).toBe("starting");
+        expect(session.recordHistoryComplete).toBe(true);
         const worktree = path.join(tmp, "store", "fixture", "worktrees", session.worktree);
         expect(fs.existsSync(path.join(worktree, "app.ts"))).toBe(true);
 
         const cps = world.checkpoints.filter((c) => c.sessionId === session.id);
         expect(cps).toHaveLength(1);
         expect(cps[0]?.trigger).toBe("session-start");
+        expect(cps[0]?.sealantRunId).toBeNull();
         expect(cps[0]?.seq).toBe(0n);
 
         const change = world.changes.get(session.id);
         expect(change?.baseSha).toBe(session.baseSha);
+      }),
+    );
+  });
+
+  it("indexes every attached run with an independent sequence cursor", async () => {
+    await withEngine((world, tmp) =>
+      Effect.gen(function* () {
+        const project = yield* setup(tmp, world);
+        const engine = yield* SessionEngine;
+        const session = yield* engine.provision({
+          projectId: project.id,
+          harness: "codex",
+          label: null,
+          base: null,
+        });
+        const firstRunId = SealantRunId.make("sealant-run-1");
+        const secondRunId = SealantRunId.make("sealant-run-2");
+
+        yield* engine.attachRun(session.id, firstRunId, SealantWorkspaceId.make("workspace-1"));
+        const first = world.sessionRuns.get(firstRunId);
+        expect(first?.ordinal).toBe(0);
+        expect(first?.lastSeenSequence).toBe(0n);
+
+        if (first !== undefined) {
+          world.sessionRuns.set(
+            firstRunId,
+            new SessionRun({
+              ...first,
+              lastSeenSequence: 47n,
+              status: "completed",
+              settledAt: now(),
+              updatedAt: now(),
+            }),
+          );
+        }
+        const afterFirst = world.sessions.get(session.id);
+        if (afterFirst !== undefined) {
+          world.sessions.set(
+            session.id,
+            new Session({
+              ...afterFirst,
+              status: "completed",
+              settledAt: now(),
+              lastSeenSequence: 47n,
+              updatedAt: now(),
+            }),
+          );
+        }
+
+        yield* engine.attachRun(session.id, secondRunId, SealantWorkspaceId.make("workspace-2"));
+
+        const runs = [...world.sessionRuns.values()].toSorted(
+          (left, right) => left.ordinal - right.ordinal,
+        );
+        expect(runs).toHaveLength(2);
+        expect(runs.map((run) => run.sealantRunId)).toEqual([firstRunId, secondRunId]);
+        expect(runs.map((run) => run.lastSeenSequence)).toEqual([47n, 0n]);
+        expect(world.sessions.get(session.id)?.lastSeenSequence).toBe(0n);
+
+        const checkpoint = yield* engine.checkpointNow(session.id, "user-mark");
+        expect(checkpoint.sealantRunId).toBe(secondRunId);
+        expect(checkpoint.seq).toBe(0n);
       }),
     );
   });
@@ -439,6 +562,7 @@ describe("SessionEngine", () => {
       status: "running",
       summary: null,
       lastSeenSequence: 0n,
+      recordHistoryComplete: false,
       startedAt: now(),
       settledAt: null,
       createdAt: now(),
@@ -454,6 +578,7 @@ describe("SessionEngine", () => {
       Layer.provide(sealantDeadLayer),
       Layer.provide(projectsLayer(world)),
       Layer.provide(sessionsLayer(world)),
+      Layer.provide(sessionRunsLayer(world)),
       Layer.provide(changesLayer(world)),
       Layer.provide(checkpointsLayer(world)),
       Layer.provide(referencesEmptyLayer),

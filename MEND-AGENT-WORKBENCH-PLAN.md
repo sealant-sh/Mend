@@ -265,8 +265,11 @@ exact snapshot used by that session.
 
 ### 5.5 Session
 
-A session is one supervised coding-agent process associated with a project. At the Sealant layer, it
-is backed by a run and its durable execution record.
+A session is one logical supervised coding-agent conversation associated with a project and one
+worktree. At the Sealant layer, it is backed by one or more runs and their durable execution
+records, exactly one active at a time. Resuming a settled session starts a new run whose sequence
+space begins at one; Mend preserves the ordered run membership instead of pretending their sequences
+are global.
 
 A session contains or references:
 
@@ -304,16 +307,17 @@ merging the session branch into the project's default branch — belongs to publ
 #### Checkpoints and slices (decided 2026-07-25)
 
 A checkpoint is a cheap snapshot of the session worktree — a commit to a hidden ref that never
-touches the visible branch — stamped with the record sequence current when it was taken. The
-`(ref, seq)` pair joins the two truths: git carries what changed, the record carries why.
+touches the visible branch — stamped with the exact record pointer current when it was taken. The
+`(ref, Sealant run ID, seq)` tuple joins the two truths: git carries what changed, the record
+carries why. The session-start checkpoint has no run pointer because it predates the first process.
 Checkpoints are taken at session start, after each settled command the record observes, at turn
 boundaries where the adapter can mark them, whenever review opens, and on an explicit user mark.
 
 A reviewable slice is any two checkpoints: the diff is `refA..refB`; the evidence beside it is the
-record between `seqA` and `seqB`. "Review from here to here" is picking two marks. Per-turn
-(per-prompt) review is the special case where both checkpoints are adapter-marked turn boundaries;
-the generic adapter falls back to command-settle and manual marks. Turn metadata is never treated as
-stronger evidence than the record (§9.2).
+record span between their run-aware pointers. "Review from here to here" is picking two marks.
+Per-turn (per-prompt) review is the special case where both checkpoints are adapter-marked turn
+boundaries; the generic adapter falls back to command-settle and manual marks. Turn metadata is
+never treated as stronger evidence than the record (§9.2).
 
 ### 5.7 Review comment
 
@@ -1274,6 +1278,14 @@ understand the work.
 
 ### Decided
 
+- **2026-08-10 — Resumed sessions retain every Sealant run.** A Mend session is the stable logical
+  conversation, worktree, and change; each launch or settled-session resume creates an ordered
+  Sealant run with its own sequence space and supervision cursor. Mend stores only that membership
+  and stable record pointers — Sealant remains the raw-record owner. Checkpoints point to a hidden
+  git ref plus `(Sealant run ID, sequence)`. Sessions migrated from the former single-run pointer
+  are labeled as incomplete record history because overwritten run IDs cannot be reconstructed
+  honestly.
+
 - **2026-08-02 — Mobile adoption, discovered through the host's GitHub CLI.** Adoption joins the
   mobile capability set (§7.4): typing a clone URL on a phone was the real barrier, so the server
   asks its own `gh` for repositories to tap (`GET /api/github/status`, `GET /api/github/repos`, same
@@ -1303,11 +1315,11 @@ understand the work.
   every session write is supervised, so attribution is structural; BYO-agent identity rides the
   SDK's existing `credentials` and dotfiles options (present since 0.5.x).
 
-- **2026-07-25 — Checkpoint policy.** Checkpoints are `(hidden git ref, record seq)` pairs taken at
-  session start, command settles, adapter-known turn boundaries, review opens, and explicit user
-  marks. Any two checkpoints define a reviewable slice: `refA..refB` for the diff, `seqA..seqB` for
-  the evidence (§5.6). Per-session worktrees make slices clean — no other session can interleave
-  edits.
+- **2026-07-25 — Checkpoint policy.** Checkpoints are `(hidden git ref, Sealant run ID, record seq)`
+  tuples taken at session start, command settles, adapter-known turn boundaries, review opens, and
+  explicit user marks. Any two checkpoints define a reviewable slice: `refA..refB` for the diff and
+  the ordered run-aware record span for the evidence (§5.6). Per-session worktrees make slices clean
+  — no other session can interleave edits.
 - **2026-07-25 — Machine review pass ("Mend reads the change").** Mend performs an inference review
   over settled changes, grounded in the record: draft comments with dispositions, never verdicts;
   every finding must link to the record or ship with a runnable check (the evidential noise filter);

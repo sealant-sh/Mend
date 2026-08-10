@@ -49,8 +49,9 @@ export type SessionOutcome = "completed" | "failed" | "stopped";
 
 /**
  * The index of supervised agent sessions (plan §5.5) — table `agent_sessions`
- * (better-auth owns `"session"`). The recording stays in Sealant, addressed
- * by `(sealantRunId, sequence)`; `lastSeenSequence` is the crash-resume mark.
+ * (better-auth owns `"session"`). The recording stays in Sealant, addressed by
+ * `(sealantRunId, sequence)` through SessionRunsRepo. `lastSeenSequence` is only the latest run's
+ * denormalized progress for existing list contracts; it is not a supervision cursor.
  */
 export class SessionsRepo extends Context.Service<
   SessionsRepo,
@@ -128,10 +129,11 @@ export class SessionsRepo extends Context.Service<
       const create = Effect.fn("SessionsRepo.create")(function* (session: NewSession) {
         const rows = yield* sql`
           INSERT INTO agent_sessions
-            (id, project_id, harness, label, worktree, branch, base_sha, context_snapshot_id)
+            (id, project_id, harness, label, worktree, branch, base_sha, context_snapshot_id,
+             record_history_complete)
           VALUES (${session.id}, ${session.projectId}, ${session.harness}, ${session.label},
                   ${session.worktree}, ${session.branch}, ${session.baseSha},
-                  ${session.contextSnapshotId})
+                  ${session.contextSnapshotId}, true)
           RETURNING *`.pipe(Effect.orDie);
         const created = yield* decodeRow(rows[0]);
         yield* notifyEvent(sql, {
@@ -192,7 +194,7 @@ export class SessionsRepo extends Context.Service<
         yield* sql`
           UPDATE agent_sessions
           SET sealant_run_id = ${sealantRunId}, sealant_workspace_id = ${workspaceId},
-              updated_at = now()
+              last_seen_sequence = 0, updated_at = now()
           WHERE id = ${id}`.pipe(Effect.orDie);
       });
 

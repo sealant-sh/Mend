@@ -26,6 +26,7 @@ import {
   ReviewCommentsRepo,
   RunsRepo,
   SessionChangesRepo,
+  SessionRunsRepoLive,
   SessionsRepo,
   SettingsRepo,
 } from "@mend/db";
@@ -90,6 +91,7 @@ const DatabaseLive = Layer.mergeAll(
   ProjectMountsRepo.layer,
   ReferencesRepo.layer,
   SessionsRepo.layer,
+  SessionRunsRepoLive,
   SessionChangesRepo.layer,
   CheckpointsRepo.layer,
   ReviewCommentsRepo.layer,
