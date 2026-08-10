@@ -91,6 +91,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   SessionChangesRepoLive,
   PushDevicesRepoLive,
   ChangeToursRepoLive,
+  ChangePassesRepoLive,
 ).pipe(Layer.provideMerge(MendDBLive));
 
 const DatabaseLive = Layer.mergeAll(
@@ -103,7 +104,6 @@ const DatabaseLive = Layer.mergeAll(
   // Workbench repos (plan §5; docs/M0-INVENTORY.md).
   ReferencesRepo.layer,
   SessionsRepo.layer,
-  ChangePassesRepoLive,
 ).pipe(Layer.provideMerge(MigratorLive.pipe(Layer.provideMerge(PgLive))));
 
 // ─── The central store (host-side git) + the session engine over it ────────

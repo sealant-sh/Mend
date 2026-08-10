@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   agentSessions,
+  changePasses,
   changeTours,
   checkpoints,
   contextSnapshots,
@@ -189,6 +190,25 @@ describe("workbench Drizzle schema", () => {
       "cascade",
       "cascade",
     ]);
+  });
+
+  it("maps one machine-pass outcome per change and kind", () => {
+    const config = getTableConfig(changePasses);
+    expect(config.name).toBe("change_passes");
+    expect(config.columns.map((column) => column.name)).toEqual([
+      "change_id",
+      "kind",
+      "status",
+      "detail",
+      "findings",
+      "started_at",
+      "finished_at",
+    ]);
+    expect(config.primaryKeys[0]?.columns.map((column) => column.name)).toEqual([
+      "change_id",
+      "kind",
+    ]);
+    expect(config.foreignKeys[0]?.onDelete).toBe("cascade");
   });
 
   it("keeps destructive ownership and nullable evidence links explicit", () => {

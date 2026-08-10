@@ -1,10 +1,13 @@
 import { PgClient } from "@effect/sql-pg";
 import { type ChangeId } from "@mend/domain";
 import { ChangePass, type PassKind } from "@mend/domain/workbench";
+import { and, asc, eq } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
+import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
+import { changePasses, sessionChanges } from "../schema/workbench.ts";
 
 const decodePass = Schema.decodeUnknownEffect(Schema.Struct(ChangePass.fields));
 
@@ -30,80 +33,97 @@ export class ChangePassesRepo extends Context.Service<
   }
 >()("@mend/db/ChangePassesRepo") {}
 
-export const ChangePassesRepoLive: Layer.Layer<ChangePassesRepo, never, PgClient.PgClient> =
-  Layer.effect(
-    ChangePassesRepo,
-    Effect.gen(function* () {
-      const sql = yield* PgClient.PgClient;
-
-      const notify = (changeId: ChangeId) =>
-        sql`SELECT session_id, project_id FROM session_changes WHERE id = ${changeId}`.pipe(
-          Effect.orDie,
-          Effect.flatMap((rows) => {
-            const row = rows[0] as { sessionId: string; projectId: string } | undefined;
-            return row === undefined
-              ? Effect.void
-              : notifyEvent(sql, {
-                  type: "session-change",
-                  changeId,
-                  sessionId: row.sessionId,
-                  projectId: row.projectId,
-                });
-          }),
-        );
-
-      const begin = Effect.fn("ChangePassesRepo.begin")(function* (
-        changeId: ChangeId,
-        kind: PassKind,
-      ) {
-        yield* sql`
-          INSERT INTO change_passes (change_id, kind, status, detail, findings, started_at, finished_at)
-          VALUES (${changeId}, ${kind}, 'running', NULL, NULL, now(), NULL)
-          ON CONFLICT (change_id, kind) DO UPDATE SET
-            status = 'running', detail = NULL, findings = NULL,
-            started_at = now(), finished_at = NULL`.pipe(Effect.orDie);
-        yield* notify(changeId);
-      });
-
-      const complete = Effect.fn("ChangePassesRepo.complete")(function* (
-        changeId: ChangeId,
-        kind: PassKind,
-        findings: number | null,
-      ) {
-        yield* sql`
-          UPDATE change_passes
-          SET status = 'completed', findings = ${findings}, detail = NULL, finished_at = now()
-          WHERE change_id = ${changeId} AND kind = ${kind}`.pipe(Effect.orDie);
-        yield* notify(changeId);
-      });
-
-      const fail = Effect.fn("ChangePassesRepo.fail")(function* (
-        changeId: ChangeId,
-        kind: PassKind,
-        detail: string,
-      ) {
-        yield* sql`
-          UPDATE change_passes
-          SET status = 'failed', detail = ${detail.slice(0, 1000)}, finished_at = now()
-          WHERE change_id = ${changeId} AND kind = ${kind}`.pipe(Effect.orDie);
-        yield* notify(changeId);
-      });
-
-      const listForChange = Effect.fn("ChangePassesRepo.listForChange")(function* (
-        changeId: ChangeId,
-      ) {
-        const rows = yield* sql`
-          SELECT * FROM change_passes WHERE change_id = ${changeId} ORDER BY kind ASC`.pipe(
-          Effect.orDie,
-        );
-        return yield* Effect.forEach(rows, (row) =>
-          decodePass(row).pipe(
-            Effect.map((decoded) => new ChangePass(decoded)),
-            Effect.orDie,
-          ),
-        );
-      });
-
-      return { begin, complete, fail, listForChange };
-    }),
+const decodeRow = (row: typeof changePasses.$inferSelect) =>
+  decodePass(row).pipe(
+    Effect.map((decoded) => new ChangePass(decoded)),
+    Effect.orDie,
   );
+
+export const ChangePassesRepoLive: Layer.Layer<
+  ChangePassesRepo,
+  never,
+  MendDB | PgClient.PgClient
+> = Layer.effect(
+  ChangePassesRepo,
+  Effect.gen(function* () {
+    const db = yield* MendDB;
+    const sql = yield* PgClient.PgClient;
+
+    const notify = Effect.fn("ChangePassesRepo.notify")(function* (changeId: ChangeId) {
+      const [row] = yield* db
+        .select({ sessionId: sessionChanges.sessionId, projectId: sessionChanges.projectId })
+        .from(sessionChanges)
+        .where(eq(sessionChanges.id, changeId))
+        .limit(1)
+        .pipe(Effect.orDie);
+      if (row === undefined) return;
+      yield* notifyEvent(sql, {
+        type: "session-change",
+        changeId,
+        sessionId: row.sessionId,
+        projectId: row.projectId,
+      });
+    });
+
+    const begin = Effect.fn("ChangePassesRepo.begin")(function* (
+      changeId: ChangeId,
+      kind: PassKind,
+    ) {
+      yield* db
+        .insert(changePasses)
+        .values({ changeId, kind, status: "running", detail: null, findings: null })
+        .onConflictDoUpdate({
+          target: [changePasses.changeId, changePasses.kind],
+          set: {
+            status: "running",
+            detail: null,
+            findings: null,
+            startedAt: new Date(),
+            finishedAt: null,
+          },
+        })
+        .pipe(Effect.orDie);
+      yield* notify(changeId);
+    });
+
+    const complete = Effect.fn("ChangePassesRepo.complete")(function* (
+      changeId: ChangeId,
+      kind: PassKind,
+      findings: number | null,
+    ) {
+      yield* db
+        .update(changePasses)
+        .set({ status: "completed", findings, detail: null, finishedAt: new Date() })
+        .where(and(eq(changePasses.changeId, changeId), eq(changePasses.kind, kind)))
+        .pipe(Effect.orDie);
+      yield* notify(changeId);
+    });
+
+    const fail = Effect.fn("ChangePassesRepo.fail")(function* (
+      changeId: ChangeId,
+      kind: PassKind,
+      detail: string,
+    ) {
+      yield* db
+        .update(changePasses)
+        .set({ status: "failed", detail: detail.slice(0, 1000), finishedAt: new Date() })
+        .where(and(eq(changePasses.changeId, changeId), eq(changePasses.kind, kind)))
+        .pipe(Effect.orDie);
+      yield* notify(changeId);
+    });
+
+    const listForChange = Effect.fn("ChangePassesRepo.listForChange")(function* (
+      changeId: ChangeId,
+    ) {
+      const rows = yield* db
+        .select()
+        .from(changePasses)
+        .where(eq(changePasses.changeId, changeId))
+        .orderBy(asc(changePasses.kind))
+        .pipe(Effect.orDie);
+      return yield* Effect.forEach(rows, decodeRow);
+    });
+
+    return { begin, complete, fail, listForChange };
+  }),
+);
