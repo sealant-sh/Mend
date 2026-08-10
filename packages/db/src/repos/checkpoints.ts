@@ -1,15 +1,11 @@
-import { PgClient } from "@effect/sql-pg";
-import { type SealantRunId, type SessionId, type Sha } from "@mend/domain";
+import { CheckpointId, type SealantRunId, type SessionId, type Sha } from "@mend/domain";
 import { Checkpoint, type CheckpointTrigger } from "@mend/domain/workbench";
-import { Effect, Layer, Schema } from "effect";
+import { asc, count, desc, eq } from "drizzle-orm";
+import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
-// pg returns bigint columns as strings; decode through the wire shape.
-const CheckpointRow = Schema.Struct({
-  ...Checkpoint.fields,
-  seq: Schema.BigIntFromString,
-});
-const decodeCheckpoint = Schema.decodeUnknownEffect(CheckpointRow);
+import { MendDB } from "../client.ts";
+import { checkpoints } from "../schema/workbench.ts";
 
 export interface NewCheckpoint {
   readonly sessionId: SessionId;
@@ -34,59 +30,61 @@ export class CheckpointsRepo extends Context.Service<
     /** Next checkpoint index = count; the engine serializes per-session snapshots. */
     readonly countForSession: (sessionId: SessionId) => Effect.Effect<number>;
   }
->()("@mend/db/CheckpointsRepo") {
-  static readonly layer = Layer.effect(
-    CheckpointsRepo,
-    Effect.gen(function* () {
-      const sql = yield* PgClient.PgClient;
+>()("@mend/db/CheckpointsRepo") {}
 
-      const decodeRow = (row: unknown) =>
-        decodeCheckpoint(row).pipe(
-          Effect.map((decoded) => new Checkpoint(decoded)),
-          Effect.orDie,
-        );
+const toCheckpoint = (row: typeof checkpoints.$inferSelect): Checkpoint => new Checkpoint(row);
 
-      const create = Effect.fn("CheckpointsRepo.create")(function* (checkpoint: NewCheckpoint) {
-        const id = crypto.randomUUID();
-        const rows = yield* sql`
-          INSERT INTO checkpoints (id, session_id, ref, sha, sealant_run_id, seq, trigger)
-          VALUES (${id}, ${checkpoint.sessionId}, ${checkpoint.ref}, ${checkpoint.sha},
-                  ${checkpoint.sealantRunId}, ${String(checkpoint.seq)}, ${checkpoint.trigger})
-          RETURNING *`.pipe(Effect.orDie);
-        return yield* decodeRow(rows[0]);
-      });
+export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = Layer.effect(
+  CheckpointsRepo,
+  Effect.gen(function* () {
+    const db = yield* MendDB;
 
-      const listForSession = Effect.fn("CheckpointsRepo.listForSession")(function* (
-        sessionId: SessionId,
-      ) {
-        const rows = yield* sql`
-          SELECT * FROM checkpoints WHERE session_id = ${sessionId}
-          ORDER BY created_at ASC, id ASC`.pipe(Effect.orDie);
-        return yield* Effect.forEach(rows, decodeRow);
-      });
+    const create = Effect.fn("CheckpointsRepo.create")(function* (checkpoint: NewCheckpoint) {
+      const [created] = yield* db
+        .insert(checkpoints)
+        .values({ id: CheckpointId.make(crypto.randomUUID()), ...checkpoint })
+        .returning()
+        .pipe(Effect.orDie);
+      if (created === undefined) return yield* Effect.die("checkpoint insert returned no row");
+      return toCheckpoint(created);
+    });
 
-      const latestForSession = Effect.fn("CheckpointsRepo.latestForSession")(function* (
-        sessionId: SessionId,
-      ) {
-        const rows = yield* sql`
-          SELECT * FROM checkpoints WHERE session_id = ${sessionId}
-          ORDER BY created_at DESC, id DESC LIMIT 1`.pipe(Effect.orDie);
-        const row = rows[0];
-        return row === undefined ? null : yield* decodeRow(row);
-      });
+    const listForSession = Effect.fn("CheckpointsRepo.listForSession")(function* (
+      sessionId: SessionId,
+    ) {
+      const rows = yield* db
+        .select()
+        .from(checkpoints)
+        .where(eq(checkpoints.sessionId, sessionId))
+        .orderBy(asc(checkpoints.createdAt), asc(checkpoints.id))
+        .pipe(Effect.orDie);
+      return rows.map(toCheckpoint);
+    });
 
-      const countForSession = Effect.fn("CheckpointsRepo.countForSession")(function* (
-        sessionId: SessionId,
-      ) {
-        const rows = yield* sql`
-          SELECT count(*)::int AS n FROM checkpoints WHERE session_id = ${sessionId}`.pipe(
-          Effect.orDie,
-        );
-        const row = rows[0] as { n: number } | undefined;
-        return row?.n ?? 0;
-      });
+    const latestForSession = Effect.fn("CheckpointsRepo.latestForSession")(function* (
+      sessionId: SessionId,
+    ) {
+      const [row] = yield* db
+        .select()
+        .from(checkpoints)
+        .where(eq(checkpoints.sessionId, sessionId))
+        .orderBy(desc(checkpoints.createdAt), desc(checkpoints.id))
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row === undefined ? null : toCheckpoint(row);
+    });
 
-      return { create, listForSession, latestForSession, countForSession };
-    }),
-  );
-}
+    const countForSession = Effect.fn("CheckpointsRepo.countForSession")(function* (
+      sessionId: SessionId,
+    ) {
+      const [row] = yield* db
+        .select({ value: count() })
+        .from(checkpoints)
+        .where(eq(checkpoints.sessionId, sessionId))
+        .pipe(Effect.orDie);
+      return row?.value ?? 0;
+    });
+
+    return { create, listForSession, latestForSession, countForSession };
+  }),
+);
