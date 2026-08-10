@@ -22,7 +22,7 @@ import {
   PgLive,
   ProjectMountsRepoLive,
   ProjectsRepoLive,
-  PushDevicesRepo,
+  PushDevicesRepoLive,
   ReferencesRepo,
   ReviewCommentsRepoLive,
   RunsRepo,
@@ -89,6 +89,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   FollowUpsRepoLive,
   ReviewCommentsRepoLive,
   SessionChangesRepoLive,
+  PushDevicesRepoLive,
 ).pipe(Layer.provideMerge(MendDBLive));
 
 const DatabaseLive = Layer.mergeAll(
@@ -103,7 +104,6 @@ const DatabaseLive = Layer.mergeAll(
   SessionsRepo.layer,
   ChangeToursRepo.layer,
   ChangePassesRepoLive,
-  PushDevicesRepo.layer,
 ).pipe(Layer.provideMerge(MigratorLive.pipe(Layer.provideMerge(PgLive))));
 
 // ─── The central store (host-side git) + the session engine over it ────────

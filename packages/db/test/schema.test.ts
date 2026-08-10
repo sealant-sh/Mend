@@ -9,6 +9,7 @@ import {
   inferenceCalls,
   projectMounts,
   projects,
+  pushDevices,
   reviewComments,
   sessionChanges,
   sessionRuns,
@@ -107,6 +108,18 @@ describe("workbench Drizzle schema", () => {
     ]);
     expect(config.columns[3]?.getSQLType()).toBe("jsonb");
     expect(config.columns[4]?.getSQLType()).toBe("jsonb");
+  });
+
+  it("maps push device identity and activity timestamps", () => {
+    const config = getTableConfig(pushDevices);
+    expect(config.name).toBe("push_devices");
+    expect(config.columns.map((column) => column.name)).toEqual([
+      "token",
+      "platform",
+      "created_at",
+      "last_seen_at",
+    ]);
+    expect(config.columns[0]?.primary).toBe(true);
   });
 
   it("maps follow-up ownership, status, and delivery timestamps", () => {
