@@ -469,6 +469,16 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           Effect.catchTag("SealantPlatformError", (error) =>
             Effect.fail(new StoreFailure({ message: error.message })),
           ),
+          Effect.catchTags({
+            HarnessStateNotFoundError: (error) =>
+              Effect.fail(new StoreFailure({ message: error.message })),
+            HarnessStateIOError: (error) =>
+              Effect.fail(new StoreFailure({ message: error.message })),
+            HarnessStateInvalidError: (error) =>
+              Effect.fail(new StoreFailure({ message: error.message })),
+            HarnessStateCommandError: (error) =>
+              Effect.fail(new StoreFailure({ message: error.message })),
+          }),
         );
       }),
     )
@@ -485,6 +495,16 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           Effect.catchTag("SealantPlatformError", (error) =>
             Effect.fail(new StoreFailure({ message: error.message })),
           ),
+          Effect.catchTags({
+            HarnessStateNotFoundError: (error) =>
+              Effect.fail(new StoreFailure({ message: error.message })),
+            HarnessStateIOError: (error) =>
+              Effect.fail(new StoreFailure({ message: error.message })),
+            HarnessStateInvalidError: (error) =>
+              Effect.fail(new StoreFailure({ message: error.message })),
+            HarnessStateCommandError: (error) =>
+              Effect.fail(new StoreFailure({ message: error.message })),
+          }),
         );
       }),
     )

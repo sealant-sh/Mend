@@ -28,7 +28,7 @@ import {
   type SessionReferenceMount,
 } from "@mend/domain/workbench";
 import { SealantClient } from "@mend/sealant";
-import { SessionEngine } from "@mend/sessions";
+import { HarnessStateNotFoundError, SessionEngine } from "@mend/sessions";
 import { Store, StoreConfig } from "@mend/store";
 import { Effect, Layer, Stream } from "effect";
 
@@ -384,6 +384,35 @@ describe("SessionEngine", () => {
           (c) => c.sessionId === session.id && c.trigger === "user-mark",
         );
         expect(marks).toHaveLength(1);
+      }),
+    );
+  });
+
+  it("refuses to resume a settled session without saved harness state", async () => {
+    await withEngine((world, tmp) =>
+      Effect.gen(function* () {
+        const project = yield* setup(tmp, world);
+        const engine = yield* SessionEngine;
+        const session = yield* engine.provision({
+          projectId: project.id,
+          harness: "codex",
+          label: null,
+          base: null,
+        });
+        world.sessions.set(
+          session.id,
+          new Session({
+            ...session,
+            status: "completed",
+            settledAt: now(),
+            updatedAt: now(),
+          }),
+        );
+
+        const error = yield* engine.resumeSession(session.id, null).pipe(Effect.flip, Effect.orDie);
+
+        expect(error).toBeInstanceOf(HarnessStateNotFoundError);
+        expect(error.message).toContain(String(session.id));
       }),
     );
   });

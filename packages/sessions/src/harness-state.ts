@@ -12,12 +12,122 @@
  *   manifest.json          { harness, providerSessionId, capturedAt }
  */
 
-export interface HarnessStateManifest {
-  readonly harness: string;
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+
+import { Effect, Schema } from "effect";
+
+export const HarnessStateManifest = Schema.Struct({
+  harness: Schema.String,
   /** The harness's OWN session id — what a native resume addresses. */
-  readonly providerSessionId: string | null;
-  readonly capturedAt: string;
-}
+  providerSessionId: Schema.NullOr(Schema.String),
+  capturedAt: Schema.String,
+});
+export type HarnessStateManifest = typeof HarnessStateManifest.Type;
+
+export class HarnessStateNotFoundError extends Schema.TaggedErrorClass<HarnessStateNotFoundError>()(
+  "HarnessStateNotFoundError",
+  {
+    sessionId: Schema.String,
+    path: Schema.String,
+    message: Schema.String,
+  },
+) {}
+
+export class HarnessStateIOError extends Schema.TaggedErrorClass<HarnessStateIOError>()(
+  "HarnessStateIOError",
+  {
+    sessionId: Schema.String,
+    operation: Schema.Literals([
+      "read-manifest",
+      "clear-manifest",
+      "write-archive",
+      "write-transcript",
+      "write-canonical",
+      "write-manifest",
+      "stage-archive",
+      "read-transcript",
+      "stage-import",
+    ]),
+    path: Schema.String,
+    message: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {}
+
+export class HarnessStateInvalidError extends Schema.TaggedErrorClass<HarnessStateInvalidError>()(
+  "HarnessStateInvalidError",
+  {
+    sessionId: Schema.String,
+    path: Schema.String,
+    message: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {}
+
+export class HarnessStateCommandError extends Schema.TaggedErrorClass<HarnessStateCommandError>()(
+  "HarnessStateCommandError",
+  {
+    sessionId: Schema.String,
+    harness: Schema.String,
+    operation: Schema.Literals([
+      "capture-archive",
+      "locate-transcript",
+      "read-transcript",
+      "identify-session",
+      "restore-archive",
+      "import-session",
+    ]),
+    exitCode: Schema.Number,
+    stderr: Schema.String,
+    message: Schema.String,
+  },
+) {}
+
+export type HarnessStateError =
+  | HarnessStateNotFoundError
+  | HarnessStateIOError
+  | HarnessStateInvalidError
+  | HarnessStateCommandError;
+
+const isMissingFile = (cause: unknown): boolean =>
+  typeof cause === "object" && cause !== null && "code" in cause && cause.code === "ENOENT";
+
+/** Read and validate the commit marker for a harvested harness session. */
+export const readHarnessStateManifest = (stateDir: string, sessionId: string) => {
+  const manifestPath = path.join(stateDir, "manifest.json");
+  return Effect.tryPromise({
+    try: () => fs.readFile(manifestPath, "utf8"),
+    catch: (cause) =>
+      isMissingFile(cause)
+        ? new HarnessStateNotFoundError({
+            sessionId,
+            path: manifestPath,
+            message: `Saved harness state is missing for session ${sessionId}.`,
+          })
+        : new HarnessStateIOError({
+            sessionId,
+            operation: "read-manifest",
+            path: manifestPath,
+            message: `Could not read the saved harness-state manifest for session ${sessionId}.`,
+            cause,
+          }),
+  }).pipe(
+    Effect.flatMap((raw) =>
+      Schema.decodeUnknownEffect(Schema.fromJsonString(HarnessStateManifest))(raw).pipe(
+        Effect.mapError(
+          (cause) =>
+            new HarnessStateInvalidError({
+              sessionId,
+              path: manifestPath,
+              message: `Saved harness state is invalid for session ${sessionId}.`,
+              cause,
+            }),
+        ),
+      ),
+    ),
+  );
+};
 
 interface HarnessStateShape {
   /** `$HOME`-relative directories/files that hold the harness's session state. */
