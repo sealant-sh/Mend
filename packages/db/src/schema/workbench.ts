@@ -24,6 +24,7 @@ import type {
   CommentKind,
   CommentState,
   RecordLink,
+  TourStop,
   SessionExtraMount,
   SessionReferenceMount,
   SessionStatus,
@@ -255,6 +256,24 @@ export const reviewComments = pgTable(
   (table) => [index("review_comments_change_idx").on(table.changeId, table.createdAt)],
 );
 
+export const changeTours = pgTable("change_tours", {
+  id: text().primaryKey(),
+  changeId: text()
+    .$type<ChangeId>()
+    .notNull()
+    .unique()
+    .references(() => sessionChanges.id, { onDelete: "cascade" }),
+  sessionId: text()
+    .$type<SessionId>()
+    .notNull()
+    .references(() => agentSessions.id, { onDelete: "cascade" }),
+  summary: text().notNull(),
+  approach: text(),
+  stops: jsonb().$type<ReadonlyArray<typeof TourStop.Encoded>>().notNull(),
+  diffDigest: text().notNull(),
+  createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
 export const checkpoints = pgTable(
   "checkpoints",
   {
@@ -289,4 +308,5 @@ export type SessionRunRow = typeof sessionRuns.$inferSelect;
 export type SessionChangeRow = typeof sessionChanges.$inferSelect;
 export type FollowUpRow = typeof followUps.$inferSelect;
 export type ReviewCommentRow = typeof reviewComments.$inferSelect;
+export type ChangeTourRow = typeof changeTours.$inferSelect;
 export type CheckpointRow = typeof checkpoints.$inferSelect;
