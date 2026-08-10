@@ -9,6 +9,7 @@ import {
   inferenceCalls,
   projectMounts,
   projects,
+  reviewComments,
   sessionChanges,
   sessionRuns,
   settings,
@@ -125,6 +126,34 @@ describe("workbench Drizzle schema", () => {
       "cascade",
     ]);
     expect(config.indexes[0]?.config.name).toBe("follow_ups_session_idx");
+  });
+
+  it("maps review comment anchors, evidence, and notification ownership", () => {
+    const config = getTableConfig(reviewComments);
+    expect(config.name).toBe("review_comments");
+    expect(config.columns.map((column) => column.name)).toEqual([
+      "id",
+      "change_id",
+      "file",
+      "line",
+      "author_kind",
+      "author_name",
+      "body",
+      "state",
+      "sent_to_session_id",
+      "created_at",
+      "updated_at",
+      "end_line",
+      "evidence",
+      "kind",
+      "suggestion",
+    ]);
+    expect(config.columns[12]?.getSQLType()).toBe("jsonb");
+    expect(config.foreignKeys.map((foreignKey) => foreignKey.onDelete)).toEqual([
+      "cascade",
+      "set null",
+    ]);
+    expect(config.indexes[0]?.config.name).toBe("review_comments_change_idx");
   });
 
   it("keeps destructive ownership and nullable evidence links explicit", () => {

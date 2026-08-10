@@ -30,6 +30,10 @@ export const relations = defineRelations(schema, (r) => ({
       to: r.checkpoints.sessionId,
     }),
     followUps: r.many.followUps({ from: r.agentSessions.id, to: r.followUps.sessionId }),
+    sentReviewComments: r.many.reviewComments({
+      from: r.agentSessions.id,
+      to: r.reviewComments.sentToSessionId,
+    }),
   },
   sessionRuns: {
     session: r.one.agentSessions({ from: r.sessionRuns.sessionId, to: r.agentSessions.id }),
@@ -42,10 +46,24 @@ export const relations = defineRelations(schema, (r) => ({
     project: r.one.projects({ from: r.sessionChanges.projectId, to: r.projects.id }),
     session: r.one.agentSessions({ from: r.sessionChanges.sessionId, to: r.agentSessions.id }),
     followUps: r.many.followUps({ from: r.sessionChanges.id, to: r.followUps.changeId }),
+    reviewComments: r.many.reviewComments({
+      from: r.sessionChanges.id,
+      to: r.reviewComments.changeId,
+    }),
   },
   followUps: {
     session: r.one.agentSessions({ from: r.followUps.sessionId, to: r.agentSessions.id }),
     change: r.one.sessionChanges({ from: r.followUps.changeId, to: r.sessionChanges.id }),
+  },
+  reviewComments: {
+    change: r.one.sessionChanges({
+      from: r.reviewComments.changeId,
+      to: r.sessionChanges.id,
+    }),
+    sentToSession: r.one.agentSessions({
+      from: r.reviewComments.sentToSessionId,
+      to: r.agentSessions.id,
+    }),
   },
   checkpoints: {
     session: r.one.agentSessions({ from: r.checkpoints.sessionId, to: r.agentSessions.id }),
