@@ -23,7 +23,7 @@ import {
   ProjectMountsRepoLive,
   ProjectsRepoLive,
   PushDevicesRepoLive,
-  ReferencesRepo,
+  ReferencesRepoLive,
   ReviewCommentsRepoLive,
   RunsRepo,
   SessionChangesRepoLive,
@@ -92,6 +92,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   PushDevicesRepoLive,
   ChangeToursRepoLive,
   ChangePassesRepoLive,
+  ReferencesRepoLive,
 ).pipe(Layer.provideMerge(MendDBLive));
 
 const DatabaseLive = Layer.mergeAll(
@@ -102,7 +103,6 @@ const DatabaseLive = Layer.mergeAll(
   BriefsRepo.layer,
   BriefCommentsRepo.layer,
   // Workbench repos (plan §5; docs/M0-INVENTORY.md).
-  ReferencesRepo.layer,
   SessionsRepo.layer,
 ).pipe(Layer.provideMerge(MigratorLive.pipe(Layer.provideMerge(PgLive))));
 

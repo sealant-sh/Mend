@@ -7,9 +7,26 @@ export const relations = defineRelations(schema, (r) => ({
     sessions: r.many.agentSessions({ from: r.projects.id, to: r.agentSessions.projectId }),
     changes: r.many.sessionChanges({ from: r.projects.id, to: r.sessionChanges.projectId }),
     mounts: r.many.projectMounts({ from: r.projects.id, to: r.projectMounts.projectId }),
+    references: r.many.projectReferences({
+      from: r.projects.id,
+      to: r.projectReferences.projectId,
+    }),
   },
   projectMounts: {
     project: r.one.projects({ from: r.projectMounts.projectId, to: r.projects.id }),
+  },
+  referenceRepos: {
+    projects: r.many.projectReferences({
+      from: r.referenceRepos.id,
+      to: r.projectReferences.referenceId,
+    }),
+  },
+  projectReferences: {
+    project: r.one.projects({ from: r.projectReferences.projectId, to: r.projects.id }),
+    reference: r.one.referenceRepos({
+      from: r.projectReferences.referenceId,
+      to: r.referenceRepos.id,
+    }),
   },
   contextSnapshots: {
     sessions: r.many.agentSessions({
