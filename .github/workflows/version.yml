@@ -34,7 +34,7 @@ jobs:
       - run: pnpm install --lockfile=false --ignore-scripts
       - uses: changesets/action@v1
         with:
-          version: pnpm changeset version
+          version: pnpm version-packages
           commit: "chore: version packages"
           title: "chore: version packages"
         env:

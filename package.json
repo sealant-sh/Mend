@@ -18,7 +18,8 @@
     "lint:types": "oxlint . --type-aware --type-check",
     "test": "turbo test",
     "test:watch": "vitest",
-    "typecheck": "turbo typecheck --ui=tui"
+    "typecheck": "turbo typecheck --ui=tui",
+    "version-packages": "changeset version && pnpm format:fix"
   },
   "dependencies": {
     "effect": "catalog:"
