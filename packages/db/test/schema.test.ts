@@ -5,6 +5,7 @@ import {
   agentSessions,
   checkpoints,
   contextSnapshots,
+  inferenceCalls,
   projectMounts,
   projects,
   sessionChanges,
@@ -89,6 +90,21 @@ describe("workbench Drizzle schema", () => {
     expect(config.columns.map((column) => column.name)).toEqual(["key", "value", "updated_at"]);
     expect(config.columns[0]?.primary).toBe(true);
     expect(config.columns[1]?.getSQLType()).toBe("jsonb");
+  });
+
+  it("maps the append-only inference audit record", () => {
+    const config = getTableConfig(inferenceCalls);
+    expect(config.name).toBe("inference_calls");
+    expect(config.columns.map((column) => column.name)).toEqual([
+      "id",
+      "context",
+      "tool",
+      "input",
+      "output",
+      "occurred_at",
+    ]);
+    expect(config.columns[3]?.getSQLType()).toBe("jsonb");
+    expect(config.columns[4]?.getSQLType()).toBe("jsonb");
   });
 
   it("keeps destructive ownership and nullable evidence links explicit", () => {

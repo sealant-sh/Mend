@@ -1,7 +1,23 @@
-import { PgClient } from "@effect/sql-pg";
-import type { InferenceContext, InferenceToolName } from "@mend/domain";
+import { InferenceCallId, type InferenceContext, type InferenceToolName } from "@mend/domain";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
+
+import { MendDB } from "../client.ts";
+import { inferenceCalls } from "../schema/workbench.ts";
+
+interface NewInferenceCall {
+  readonly context: InferenceContext;
+  readonly tool: InferenceToolName | null;
+  readonly input: unknown;
+  readonly output: unknown;
+}
+
+/** Drizzle must receive a non-null value so its JSONB codec can serialize JSON null. */
+const jsonNull = Object.freeze({ toJSON: (): null => null });
+const toJsonbValue = (value: unknown): unknown =>
+  value === null || value === undefined || typeof value === "function" || typeof value === "symbol"
+    ? jsonNull
+    : value;
 
 /**
  * The interface-inference audit trail (ARCHITECTURE.md §3, `inference_calls`).
@@ -11,33 +27,27 @@ import * as Context from "effect/Context";
 export class InferenceCallsRepo extends Context.Service<
   InferenceCallsRepo,
   {
-    readonly record: (call: {
-      readonly context: InferenceContext;
-      readonly tool: InferenceToolName | null;
-      readonly input: unknown;
-      readonly output: unknown;
-    }) => Effect.Effect<void>;
+    readonly record: (call: NewInferenceCall) => Effect.Effect<void>;
   }
->()("@mend/db/InferenceCallsRepo") {
-  static readonly layer = Layer.effect(
-    InferenceCallsRepo,
-    Effect.gen(function* () {
-      const sql = yield* PgClient.PgClient;
+>()("@mend/db/InferenceCallsRepo") {}
 
-      const record = Effect.fn("InferenceCallsRepo.record")(function* (call: {
-        readonly context: InferenceContext;
-        readonly tool: InferenceToolName | null;
-        readonly input: unknown;
-        readonly output: unknown;
-      }) {
-        yield* sql`
-          INSERT INTO inference_calls (id, context, tool, input, output)
-          VALUES (${crypto.randomUUID()}, ${call.context}, ${call.tool}, ${JSON.stringify(call.input) ?? "null"}::jsonb, ${JSON.stringify(call.output) ?? "null"}::jsonb)`.pipe(
-          Effect.orDie,
-        );
-      });
+export const InferenceCallsRepoLive: Layer.Layer<InferenceCallsRepo, never, MendDB> = Layer.effect(
+  InferenceCallsRepo,
+  Effect.gen(function* () {
+    const db = yield* MendDB;
 
-      return { record };
-    }),
-  );
-}
+    const record = Effect.fn("InferenceCallsRepo.record")(function* (call: NewInferenceCall) {
+      yield* db
+        .insert(inferenceCalls)
+        .values({
+          id: InferenceCallId.make(crypto.randomUUID()),
+          ...call,
+          input: toJsonbValue(call.input),
+          output: toJsonbValue(call.output),
+        })
+        .pipe(Effect.orDie);
+    });
+
+    return { record };
+  }),
+);
