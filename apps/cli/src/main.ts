@@ -315,15 +315,7 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
   say(`${green("✓ recording")} · workspace mounts the worktree${detachHint()}`);
   say("");
   await attachOrExit(config, session.id, session.harness);
-  const settled = await api<{ readonly session: SessionDto }>(
-    config,
-    "GET",
-    `/sessions/${session.id}`,
-  );
-  say("");
-  say(`${green("✓")} session ${settled.session.status} · recorded`);
-  say(`${cobalt("  review")} · ${config.url}/sessions/${session.id}`);
-  process.exit(0);
+  exitAfterSessionEnd(config, session.id);
 };
 
 // ─── the terminal bridge: raw stdin/stdout against the platform PTY ─────────
@@ -338,11 +330,6 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
  * caller decides what each outcome means (commands exit, the dashboard
  * resumes).
  */
-const writeTtyFrame = (event: MessageEvent) => {
-  if (typeof event.data === "string") return; // control frames ({"t":"end"}) — close follows
-  process.stdout.write(Buffer.from(event.data as ArrayBuffer));
-};
-
 const attachTty = async (
   config: CliConfig,
   sessionId: string,
@@ -366,10 +353,13 @@ const attachTty = async (
     return "unavailable";
   }
   const stopHerdrHint = hintHerdrAttachment(harness);
-  const closed = new Promise<void>((resolve) => {
-    if (ws.readyState === WebSocket.CLOSED) resolve();
-    else ws.addEventListener("close", () => resolve(), { once: true });
+  let finishAttachment: (() => void) | undefined;
+  const finished = new Promise<void>((resolve) => {
+    finishAttachment = resolve;
   });
+  const onClose = () => finishAttachment?.();
+  if (ws.readyState === WebSocket.CLOSED) finishAttachment?.();
+  else ws.addEventListener("close", onClose, { once: true });
   const sendResize = () => {
     if (ws.readyState !== WebSocket.OPEN) return;
     ws.send(
@@ -384,6 +374,25 @@ const attachTty = async (
   const rawTty = process.stdin.isTTY === true;
   let rawModeEnabled = false;
   let detached = false;
+  const onTtyFrame = (event: MessageEvent) => {
+    if (typeof event.data !== "string") {
+      process.stdout.write(Buffer.from(event.data));
+      return;
+    }
+    try {
+      const frame: unknown = JSON.parse(event.data);
+      if (typeof frame !== "object" || frame === null || !("t" in frame) || frame.t !== "end") {
+        return;
+      }
+      // Session lifecycle is authoritative. Start detaching immediately instead
+      // of holding the user's terminal for the later close handshake and Mend's
+      // settle/checkpoint/harvest work.
+      ws.close();
+      finishAttachment?.();
+    } catch {
+      // Unknown text control frame — ignore.
+    }
+  };
   const onKeys = (data: Buffer) => {
     if (detachKeyEnabled && data.includes(0x1d)) {
       // Ctrl+] — detach, leave the session running.
@@ -404,13 +413,14 @@ const attachTty = async (
     }
     process.stdin.resume();
     process.stdin.on("data", onKeys);
-    ws.addEventListener("message", writeTtyFrame);
-    await closed;
+    ws.addEventListener("message", onTtyFrame);
+    await finished;
     return detached ? "detached" : "ended";
   } finally {
     process.stdin.off("data", onKeys);
     process.stdout.off("resize", onWinch);
-    ws.removeEventListener("message", writeTtyFrame);
+    ws.removeEventListener("message", onTtyFrame);
+    ws.removeEventListener("close", onClose);
     if (rawModeEnabled) process.stdin.setRawMode(false);
     process.stdin.pause();
     if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close();
@@ -439,6 +449,14 @@ const finishAttach = (
 const attachOrExit = async (config: CliConfig, sessionId: string, harness: string) =>
   finishAttach(config, sessionId, await attachTty(config, sessionId, harness, 0n));
 
+/** Return terminal control as soon as the terminal reports the observed end. */
+const exitAfterSessionEnd = (config: CliConfig, sessionId: string): never => {
+  say("");
+  say(`${green("✓")} session ended`);
+  say(`${cobalt("  review")} · ${config.url}/sessions/${sessionId}`);
+  process.exit(0);
+};
+
 /** Reattach a terminal to a running session (full scrollback replay, then live). */
 const attach = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const prefix = args.find((a) => !a.startsWith("--"));
@@ -449,9 +467,7 @@ const attach = async (config: CliConfig, args: ReadonlyArray<string>) => {
   say(`${green("✓")} attaching to ${match.harness} · ${dim(match.id.slice(0, 8))}${detachHint()}`);
   say("");
   await attachOrExit(config, match.id, match.harness);
-  say("");
-  say(`${green("✓")} session settled`);
-  process.exit(0);
+  exitAfterSessionEnd(config, match.id);
 };
 
 // ─── supervised run: platform workspace + PTY + record ──────────────────────
@@ -613,15 +629,7 @@ const continueSession = async (config: CliConfig, args: ReadonlyArray<string>) =
   say(`${green("✓ recording")} · workspace mounts the worktree${detachHint()}`);
   say("");
   await attachOrExit(config, session.id, session.harness);
-  const settled = await api<{ readonly session: SessionDto }>(
-    config,
-    "GET",
-    `/sessions/${session.id}`,
-  );
-  say("");
-  say(`${green("✓")} session ${settled.session.status} · recorded`);
-  say(`${cobalt("  review")} · ${config.url}/sessions/${session.id}`);
-  process.exit(0);
+  exitAfterSessionEnd(config, session.id);
 };
 
 // ─── resume: rejoin a session — same worktree, restored harness state ───────
@@ -670,15 +678,7 @@ const resumeCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
   say(`${green("✓ recording")} · same worktree, conversation restored${detachHint()}`);
   say("");
   await attachOrExit(config, match.id, withHarness ?? match.harness);
-  const settled = await api<{ readonly session: SessionDto }>(
-    config,
-    "GET",
-    `/sessions/${match.id}`,
-  );
-  say("");
-  say(`${green("✓")} session ${settled.session.status} · recorded`);
-  say(`${cobalt("  review")} · ${config.url}/sessions/${match.id}`);
-  process.exit(0);
+  exitAfterSessionEnd(config, match.id);
 };
 
 // ─── rejoin: one entrypoint for an outer multiplexer ────────────────────────
@@ -778,15 +778,7 @@ const rejoinCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
     outcome = await attachTty(config, session.id, session.harness, 0n);
   }
   finishAttach(config, session.id, outcome);
-  const settled = await api<{ readonly session: SessionDto }>(
-    config,
-    "GET",
-    `/sessions/${session.id}`,
-  );
-  say("");
-  say(`${green("✓")} session ${settled.session.status} · recorded`);
-  say(`${cobalt("  review")} · ${config.url}/sessions/${session.id}`);
-  process.exit(0);
+  exitAfterSessionEnd(config, session.id);
 };
 
 // ─── projects · sessions: the workbench at a glance ─────────────────────────

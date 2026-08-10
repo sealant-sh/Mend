@@ -1,0 +1,41 @@
+# Versioning only: consume pending changesets on main and open/update the Version Packages PR.
+# Publishing remains tag-triggered and environment-gated in release-cli.yml.
+name: Version
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: version-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Open version PR
+    if: github.repository == 'sealant-sh/Mend'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      # CI resolves package.json without modifying the intentionally frozen lockfile.
+      - run: pnpm install --lockfile=false --ignore-scripts
+      - uses: changesets/action@v1
+        with:
+          version: pnpm changeset version
+          commit: "chore: version packages"
+          title: "chore: version packages"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
