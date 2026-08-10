@@ -7,10 +7,13 @@ import {
   type CommentKind,
   type CommentState,
 } from "@mend/domain/workbench";
+import { asc, eq } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
+import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
+import { reviewComments, sessionChanges } from "../schema/workbench.ts";
 
 export class ReviewCommentNotFoundError extends Schema.TaggedErrorClass<ReviewCommentNotFoundError>()(
   "ReviewCommentNotFoundError",
@@ -53,86 +56,116 @@ export class ReviewCommentsRepo extends Context.Service<
     /** Records which session a bundled follow-up carrying this comment went to. */
     readonly markSent: (id: ReviewCommentId, sessionId: SessionId) => Effect.Effect<void>;
   }
->()("@mend/db/ReviewCommentsRepo") {
-  static readonly layer = Layer.effect(
-    ReviewCommentsRepo,
-    Effect.gen(function* () {
-      const sql = yield* PgClient.PgClient;
+>()("@mend/db/ReviewCommentsRepo") {}
 
-      const decodeRow = (row: unknown) =>
-        decodeComment(row).pipe(
-          Effect.map((decoded) => new ReviewComment(decoded)),
-          Effect.orDie,
-        );
-
-      const notify = (id: ReviewCommentId, changeId: ChangeId) =>
-        sql`SELECT project_id FROM session_changes WHERE id = ${changeId}`.pipe(
-          Effect.orDie,
-          Effect.flatMap((rows) => {
-            const row = rows[0] as { projectId: string } | undefined;
-            return notifyEvent(sql, {
-              type: "review-comment",
-              commentId: id,
-              changeId,
-              projectId: row?.projectId ?? "",
-            });
-          }),
-        );
-
-      const create = Effect.fn("ReviewCommentsRepo.create")(function* (comment: NewReviewComment) {
-        const id = crypto.randomUUID();
-        // Sequences ride jsonb as decimal strings — the RecordLink codec's wire shape.
-        const evidence = yield* encodeEvidence(comment.evidence ?? []).pipe(Effect.orDie);
-        const rows = yield* sql`
-          INSERT INTO review_comments (id, change_id, file, line, end_line, author_kind, author_name, body, kind, suggestion, state, evidence)
-          VALUES (${id}, ${comment.changeId}, ${comment.file}, ${comment.line}, ${comment.endLine},
-                  ${comment.authorKind}, ${comment.authorName}, ${comment.body},
-                  ${comment.kind ?? "note"}, ${comment.suggestion ?? null}, ${comment.state},
-                  ${JSON.stringify(evidence)}::jsonb)
-          RETURNING *`.pipe(Effect.orDie);
-        const created = yield* decodeRow(rows[0]);
-        yield* notify(created.id, comment.changeId);
-        return created;
-      });
-
-      const byId = Effect.fn("ReviewCommentsRepo.byId")(function* (id: ReviewCommentId) {
-        const rows = yield* sql`SELECT * FROM review_comments WHERE id = ${id}`.pipe(Effect.orDie);
-        const row = rows[0];
-        if (row === undefined) return yield* new ReviewCommentNotFoundError({ commentId: id });
-        return yield* decodeRow(row);
-      });
-
-      const listForChange = Effect.fn("ReviewCommentsRepo.listForChange")(function* (
-        changeId: ChangeId,
-      ) {
-        const rows = yield* sql`
-          SELECT * FROM review_comments WHERE change_id = ${changeId}
-          ORDER BY created_at ASC`.pipe(Effect.orDie);
-        return yield* Effect.forEach(rows, decodeRow);
-      });
-
-      const setState = Effect.fn("ReviewCommentsRepo.setState")(function* (
-        id: ReviewCommentId,
-        state: CommentState,
-      ) {
-        const rows = yield* sql`
-          UPDATE review_comments SET state = ${state}, updated_at = now()
-          WHERE id = ${id}
-          RETURNING change_id`.pipe(Effect.orDie);
-        const row = rows[0] as { changeId: ChangeId } | undefined;
-        if (row !== undefined) yield* notify(id, row.changeId);
-      });
-
-      const markSent = Effect.fn("ReviewCommentsRepo.markSent")(function* (
-        id: ReviewCommentId,
-        sessionId: SessionId,
-      ) {
-        yield* sql`
-          UPDATE review_comments SET sent_to_session_id = ${sessionId}, updated_at = now()
-          WHERE id = ${id}`.pipe(Effect.orDie);
-      });
-
-      return { create, byId, listForChange, setState, markSent };
-    }),
+const decodeRow = (row: unknown) =>
+  decodeComment(row).pipe(
+    Effect.map((decoded) => new ReviewComment(decoded)),
+    Effect.orDie,
   );
-}
+
+export const ReviewCommentsRepoLive: Layer.Layer<
+  ReviewCommentsRepo,
+  never,
+  MendDB | PgClient.PgClient
+> = Layer.effect(
+  ReviewCommentsRepo,
+  Effect.gen(function* () {
+    const db = yield* MendDB;
+    const sql = yield* PgClient.PgClient;
+
+    const notify = Effect.fn("ReviewCommentsRepo.notify")(function* (
+      id: ReviewCommentId,
+      changeId: ChangeId,
+    ) {
+      const [row] = yield* db
+        .select({ projectId: sessionChanges.projectId })
+        .from(sessionChanges)
+        .where(eq(sessionChanges.id, changeId))
+        .limit(1)
+        .pipe(Effect.orDie);
+      yield* notifyEvent(sql, {
+        type: "review-comment",
+        commentId: id,
+        changeId,
+        projectId: row?.projectId ?? "",
+      });
+    });
+
+    const create = Effect.fn("ReviewCommentsRepo.create")(function* (comment: NewReviewComment) {
+      // Sequences ride JSONB as decimal strings — the RecordLink codec's wire shape.
+      const evidence = yield* encodeEvidence(comment.evidence ?? []).pipe(Effect.orDie);
+      const [row] = yield* db
+        .insert(reviewComments)
+        .values({
+          id: ReviewCommentId.make(crypto.randomUUID()),
+          changeId: comment.changeId,
+          file: comment.file,
+          line: comment.line,
+          endLine: comment.endLine,
+          authorKind: comment.authorKind,
+          authorName: comment.authorName,
+          body: comment.body,
+          kind: comment.kind ?? "note",
+          suggestion: comment.suggestion ?? null,
+          state: comment.state,
+          evidence,
+        })
+        .returning()
+        .pipe(Effect.orDie);
+      if (row === undefined) return yield* Effect.die("review comment insert returned no row");
+      const created = yield* decodeRow(row);
+      yield* notify(created.id, comment.changeId);
+      return created;
+    });
+
+    const byId = Effect.fn("ReviewCommentsRepo.byId")(function* (id: ReviewCommentId) {
+      const [row] = yield* db
+        .select()
+        .from(reviewComments)
+        .where(eq(reviewComments.id, id))
+        .limit(1)
+        .pipe(Effect.orDie);
+      if (row === undefined) return yield* new ReviewCommentNotFoundError({ commentId: id });
+      return yield* decodeRow(row);
+    });
+
+    const listForChange = Effect.fn("ReviewCommentsRepo.listForChange")(function* (
+      changeId: ChangeId,
+    ) {
+      const rows = yield* db
+        .select()
+        .from(reviewComments)
+        .where(eq(reviewComments.changeId, changeId))
+        .orderBy(asc(reviewComments.createdAt))
+        .pipe(Effect.orDie);
+      return yield* Effect.forEach(rows, decodeRow);
+    });
+
+    const setState = Effect.fn("ReviewCommentsRepo.setState")(function* (
+      id: ReviewCommentId,
+      state: CommentState,
+    ) {
+      const [row] = yield* db
+        .update(reviewComments)
+        .set({ state, updatedAt: new Date() })
+        .where(eq(reviewComments.id, id))
+        .returning({ changeId: reviewComments.changeId })
+        .pipe(Effect.orDie);
+      if (row !== undefined) yield* notify(id, row.changeId);
+    });
+
+    const markSent = Effect.fn("ReviewCommentsRepo.markSent")(function* (
+      id: ReviewCommentId,
+      sessionId: SessionId,
+    ) {
+      yield* db
+        .update(reviewComments)
+        .set({ sentToSessionId: sessionId, updatedAt: new Date() })
+        .where(eq(reviewComments.id, id))
+        .pipe(Effect.orDie);
+    });
+
+    return { create, byId, listForChange, setState, markSent };
+  }),
+);

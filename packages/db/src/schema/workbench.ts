@@ -2,6 +2,7 @@ import {
   FollowUpId,
   InferenceCallId,
   MendSettings,
+  ReviewCommentId,
   type ChangeId,
   type CheckpointId,
   type ContextSnapshotId,
@@ -19,6 +20,10 @@ import type {
   CheckpointTrigger,
   ContextItem,
   FollowUpStatus,
+  CommentAuthor,
+  CommentKind,
+  CommentState,
+  RecordLink,
   SessionExtraMount,
   SessionReferenceMount,
   SessionStatus,
@@ -213,6 +218,36 @@ export const followUps = pgTable(
   (table) => [index("follow_ups_session_idx").on(table.sessionId, table.createdAt)],
 );
 
+export const reviewComments = pgTable(
+  "review_comments",
+  {
+    id: text().$type<ReviewCommentId>().primaryKey(),
+    changeId: text()
+      .$type<ChangeId>()
+      .notNull()
+      .references(() => sessionChanges.id, { onDelete: "cascade" }),
+    file: text(),
+    line: integer(),
+    authorKind: text().$type<CommentAuthor>().notNull(),
+    authorName: text().notNull(),
+    body: text().notNull(),
+    state: text().$type<CommentState>().notNull().default("open"),
+    sentToSessionId: text()
+      .$type<SessionId>()
+      .references(() => agentSessions.id, { onDelete: "set null" }),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    endLine: integer(),
+    evidence: jsonb()
+      .$type<ReadonlyArray<typeof RecordLink.Encoded>>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    kind: text().$type<CommentKind>().notNull().default("note"),
+    suggestion: text(),
+  },
+  (table) => [index("review_comments_change_idx").on(table.changeId, table.createdAt)],
+);
+
 export const checkpoints = pgTable(
   "checkpoints",
   {
@@ -245,4 +280,5 @@ export type AgentSessionRow = typeof agentSessions.$inferSelect;
 export type SessionRunRow = typeof sessionRuns.$inferSelect;
 export type SessionChangeRow = typeof sessionChanges.$inferSelect;
 export type FollowUpRow = typeof followUps.$inferSelect;
+export type ReviewCommentRow = typeof reviewComments.$inferSelect;
 export type CheckpointRow = typeof checkpoints.$inferSelect;
