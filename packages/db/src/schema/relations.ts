@@ -29,6 +29,7 @@ export const relations = defineRelations(schema, (r) => ({
       from: r.agentSessions.id,
       to: r.checkpoints.sessionId,
     }),
+    followUps: r.many.followUps({ from: r.agentSessions.id, to: r.followUps.sessionId }),
   },
   sessionRuns: {
     session: r.one.agentSessions({ from: r.sessionRuns.sessionId, to: r.agentSessions.id }),
@@ -40,6 +41,11 @@ export const relations = defineRelations(schema, (r) => ({
   sessionChanges: {
     project: r.one.projects({ from: r.sessionChanges.projectId, to: r.projects.id }),
     session: r.one.agentSessions({ from: r.sessionChanges.sessionId, to: r.agentSessions.id }),
+    followUps: r.many.followUps({ from: r.sessionChanges.id, to: r.followUps.changeId }),
+  },
+  followUps: {
+    session: r.one.agentSessions({ from: r.followUps.sessionId, to: r.agentSessions.id }),
+    change: r.one.sessionChanges({ from: r.followUps.changeId, to: r.sessionChanges.id }),
   },
   checkpoints: {
     session: r.one.agentSessions({ from: r.checkpoints.sessionId, to: r.agentSessions.id }),

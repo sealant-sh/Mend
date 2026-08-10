@@ -1,4 +1,5 @@
 import {
+  FollowUpId,
   InferenceCallId,
   MendSettings,
   type ChangeId,
@@ -17,6 +18,7 @@ import type {
   AutomationChoice,
   CheckpointTrigger,
   ContextItem,
+  FollowUpStatus,
   SessionExtraMount,
   SessionReferenceMount,
   SessionStatus,
@@ -191,6 +193,26 @@ export const sessionChanges = pgTable("session_changes", {
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
 
+export const followUps = pgTable(
+  "follow_ups",
+  {
+    id: text().$type<FollowUpId>().primaryKey(),
+    sessionId: text()
+      .$type<SessionId>()
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: "cascade" }),
+    changeId: text()
+      .$type<ChangeId>()
+      .notNull()
+      .references(() => sessionChanges.id, { onDelete: "cascade" }),
+    instruction: text().notNull(),
+    status: text().$type<FollowUpStatus>().notNull().default("pending"),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    deliveredAt: timestamp({ mode: "date", withTimezone: true }),
+  },
+  (table) => [index("follow_ups_session_idx").on(table.sessionId, table.createdAt)],
+);
+
 export const checkpoints = pgTable(
   "checkpoints",
   {
@@ -222,4 +244,5 @@ export type ContextSnapshotRow = typeof contextSnapshots.$inferSelect;
 export type AgentSessionRow = typeof agentSessions.$inferSelect;
 export type SessionRunRow = typeof sessionRuns.$inferSelect;
 export type SessionChangeRow = typeof sessionChanges.$inferSelect;
+export type FollowUpRow = typeof followUps.$inferSelect;
 export type CheckpointRow = typeof checkpoints.$inferSelect;
