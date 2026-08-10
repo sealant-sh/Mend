@@ -1,10 +1,13 @@
 import { PgClient } from "@effect/sql-pg";
 import { ProjectId, type Sha } from "@mend/domain";
 import { Project, type AutomationChoice } from "@mend/domain/workbench";
+import { asc, eq } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
+import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
+import { projects } from "../schema/workbench.ts";
 
 export class ProjectNotFoundError extends Schema.TaggedErrorClass<ProjectNotFoundError>()(
   "ProjectNotFoundError",
@@ -12,8 +15,6 @@ export class ProjectNotFoundError extends Schema.TaggedErrorClass<ProjectNotFoun
     projectId: Schema.String,
   },
 ) {}
-
-const decodeProject = Schema.decodeUnknownEffect(Schema.Struct(Project.fields));
 
 export interface NewProject {
   readonly name: string;
@@ -39,70 +40,80 @@ export class ProjectsRepo extends Context.Service<
     /** Hard delete — sessions and everything under them cascade. */
     readonly remove: (id: ProjectId) => Effect.Effect<void>;
   }
->()("@mend/db/ProjectsRepo") {
-  static readonly layer = Layer.effect(
+>()("@mend/db/ProjectsRepo") {}
+
+const toProject = (row: typeof projects.$inferSelect): Project => new Project(row);
+
+export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClient.PgClient> =
+  Layer.effect(
     ProjectsRepo,
     Effect.gen(function* () {
+      const db = yield* MendDB;
       const sql = yield* PgClient.PgClient;
 
-      const decodeRow = (row: unknown) =>
-        decodeProject(row).pipe(
-          Effect.map((decoded) => new Project(decoded)),
-          Effect.orDie,
-        );
-
       const create = Effect.fn("ProjectsRepo.create")(function* (project: NewProject) {
-        const id = crypto.randomUUID();
-        const rows = yield* sql`
-          INSERT INTO projects (id, name, origin_url, store_path, default_branch, adopted_sha)
-          VALUES (${id}, ${project.name}, ${project.originUrl}, ${project.storePath},
-                  ${project.defaultBranch}, ${project.adoptedSha})
-          RETURNING *`.pipe(Effect.orDie);
-        const created = yield* decodeRow(rows[0]);
+        const [row] = yield* db
+          .insert(projects)
+          .values({ id: ProjectId.make(crypto.randomUUID()), ...project })
+          .returning()
+          .pipe(Effect.orDie);
+        if (row === undefined) return yield* Effect.die("project insert returned no row");
+        const created = toProject(row);
         yield* notifyEvent(sql, { type: "project", projectId: created.id });
         return created;
       });
 
       const byId = Effect.fn("ProjectsRepo.byId")(function* (id: ProjectId) {
-        const rows = yield* sql`SELECT * FROM projects WHERE id = ${id}`.pipe(Effect.orDie);
-        const row = rows[0];
+        const [row] = yield* db
+          .select()
+          .from(projects)
+          .where(eq(projects.id, id))
+          .limit(1)
+          .pipe(Effect.orDie);
         if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
-        return yield* decodeRow(row);
+        return toProject(row);
       });
 
       const byName = Effect.fn("ProjectsRepo.byName")(function* (name: string) {
-        const rows = yield* sql`SELECT * FROM projects WHERE name = ${name}`.pipe(Effect.orDie);
-        const row = rows[0];
-        return row === undefined ? null : yield* decodeRow(row);
+        const [row] = yield* db
+          .select()
+          .from(projects)
+          .where(eq(projects.name, name))
+          .limit(1)
+          .pipe(Effect.orDie);
+        return row === undefined ? null : toProject(row);
       });
 
       const list = Effect.fn("ProjectsRepo.list")(function* () {
-        const rows = yield* sql`SELECT * FROM projects ORDER BY name ASC`.pipe(Effect.orDie);
-        return yield* Effect.forEach(rows, decodeRow);
+        const rows = yield* db
+          .select()
+          .from(projects)
+          .orderBy(asc(projects.name))
+          .pipe(Effect.orDie);
+        return rows.map(toProject);
       });
 
       const setAutomation = Effect.fn("ProjectsRepo.setAutomation")(function* (
         id: ProjectId,
         choices: { readonly autoTour: AutomationChoice; readonly autoSuggest: AutomationChoice },
       ) {
-        const rows = yield* sql`
-          UPDATE projects
-          SET auto_tour = ${choices.autoTour}, auto_suggest = ${choices.autoSuggest}, updated_at = now()
-          WHERE id = ${id}
-          RETURNING *`.pipe(Effect.orDie);
-        const row = rows[0];
+        const [row] = yield* db
+          .update(projects)
+          .set({ ...choices, updatedAt: new Date() })
+          .where(eq(projects.id, id))
+          .returning()
+          .pipe(Effect.orDie);
         if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
-        const updated = yield* decodeRow(row);
+        const updated = toProject(row);
         yield* notifyEvent(sql, { type: "project", projectId: id });
         return updated;
       });
 
       const remove = Effect.fn("ProjectsRepo.remove")(function* (id: ProjectId) {
-        yield* sql`DELETE FROM projects WHERE id = ${id}`.pipe(Effect.orDie);
+        yield* db.delete(projects).where(eq(projects.id, id)).pipe(Effect.orDie);
         yield* notifyEvent(sql, { type: "project", projectId: id });
       });
 
       return { create, byId, byName, list, setAutomation, remove };
     }),
   );
-}

@@ -21,7 +21,7 @@ import {
   MigratorLive,
   PgLive,
   ProjectMountsRepo,
-  ProjectsRepo,
+  ProjectsRepoLive,
   PushDevicesRepo,
   ReferencesRepo,
   ReviewCommentsRepo,
@@ -79,12 +79,14 @@ import {
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 // ─── Data: Postgres, migrated before anything reads it ─────────────────────
-const DrizzleSessionRecordsLive = Layer.merge(SessionRunsRepoLive, CheckpointsRepoLive).pipe(
-  Layer.provideMerge(MendDBLive),
-);
+const DrizzleRepositoriesLive = Layer.mergeAll(
+  SessionRunsRepoLive,
+  CheckpointsRepoLive,
+  ProjectsRepoLive,
+).pipe(Layer.provideMerge(MendDBLive));
 
 const DatabaseLive = Layer.mergeAll(
-  DrizzleSessionRecordsLive,
+  DrizzleRepositoriesLive,
   IssuesRepo.layer,
   RunsRepo.layer,
   ChangesRepo.layer,
@@ -93,7 +95,6 @@ const DatabaseLive = Layer.mergeAll(
   SettingsRepo.layer,
   InferenceCallsRepo.layer,
   // Workbench repos (plan §5; docs/M0-INVENTORY.md).
-  ProjectsRepo.layer,
   ProjectMountsRepo.layer,
   ReferencesRepo.layer,
   SessionsRepo.layer,
