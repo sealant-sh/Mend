@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   agentSessions,
+  changeTours,
   checkpoints,
   contextSnapshots,
   followUps,
@@ -167,6 +168,27 @@ describe("workbench Drizzle schema", () => {
       "set null",
     ]);
     expect(config.indexes[0]?.config.name).toBe("review_comments_change_idx");
+  });
+
+  it("maps one composed tour per change with encoded stops", () => {
+    const config = getTableConfig(changeTours);
+    expect(config.name).toBe("change_tours");
+    expect(config.columns.map((column) => column.name)).toEqual([
+      "id",
+      "change_id",
+      "session_id",
+      "summary",
+      "approach",
+      "stops",
+      "diff_digest",
+      "created_at",
+    ]);
+    expect(config.columns[5]?.getSQLType()).toBe("jsonb");
+    expect(config.columns[1]?.isUnique).toBe(true);
+    expect(config.foreignKeys.map((foreignKey) => foreignKey.onDelete)).toEqual([
+      "cascade",
+      "cascade",
+    ]);
   });
 
   it("keeps destructive ownership and nullable evidence links explicit", () => {

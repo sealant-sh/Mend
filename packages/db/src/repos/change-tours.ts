@@ -1,14 +1,16 @@
 import { PgClient } from "@effect/sql-pg";
 import type { ChangeId, SessionId } from "@mend/domain";
 import { ChangeTour, TourStop } from "@mend/domain/workbench";
+import { eq } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
+import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
+import { changeTours, sessionChanges } from "../schema/workbench.ts";
 
 const decodeTour = Schema.decodeUnknownEffect(Schema.Struct(ChangeTour.fields));
 const encodeStops = Schema.encodeEffect(Schema.Array(TourStop));
-const decodeStops = Schema.decodeUnknownEffect(Schema.Array(TourStop));
 
 export interface NewChangeTour {
   readonly changeId: ChangeId;
@@ -26,66 +28,72 @@ export class ChangeToursRepo extends Context.Service<
     readonly upsert: (tour: NewChangeTour) => Effect.Effect<ChangeTour>;
     readonly byChange: (changeId: ChangeId) => Effect.Effect<ChangeTour | null>;
   }
->()("@mend/db/ChangeToursRepo") {
-  static readonly layer = Layer.effect(
+>()("@mend/db/ChangeToursRepo") {}
+
+const decodeRow = (row: typeof changeTours.$inferSelect) =>
+  decodeTour(row).pipe(
+    Effect.map((decoded) => new ChangeTour(decoded)),
+    Effect.orDie,
+  );
+
+export const ChangeToursRepoLive: Layer.Layer<ChangeToursRepo, never, MendDB | PgClient.PgClient> =
+  Layer.effect(
     ChangeToursRepo,
     Effect.gen(function* () {
+      const db = yield* MendDB;
       const sql = yield* PgClient.PgClient;
 
-      // stops arrive from jsonb; decode them through the codec so sequences
-      // come back as bigints exactly like every other wire.
-      const decodeRow = (row: unknown) =>
-        Effect.gen(function* () {
-          const raw = row as { readonly stops?: unknown };
-          const decoded = yield* decodeTour({
-            ...(row as Record<string, unknown>),
-            stops: [],
-          }).pipe(Effect.orDie);
-          const stops = yield* decodeStops(raw.stops ?? []).pipe(Effect.orDie);
-          return new ChangeTour({ ...decoded, stops });
+      const notify = Effect.fn("ChangeToursRepo.notify")(function* (
+        changeId: ChangeId,
+        sessionId: SessionId,
+      ) {
+        const [row] = yield* db
+          .select({ projectId: sessionChanges.projectId })
+          .from(sessionChanges)
+          .where(eq(sessionChanges.id, changeId))
+          .limit(1)
+          .pipe(Effect.orDie);
+        yield* notifyEvent(sql, {
+          type: "session-change",
+          changeId,
+          sessionId,
+          projectId: row?.projectId ?? "",
         });
-
-      const notify = (changeId: ChangeId, sessionId: SessionId) =>
-        sql`SELECT project_id FROM session_changes WHERE id = ${changeId}`.pipe(
-          Effect.orDie,
-          Effect.flatMap((rows) => {
-            const row = rows[0] as { projectId: string } | undefined;
-            return notifyEvent(sql, {
-              type: "session-change",
-              changeId,
-              sessionId,
-              projectId: row?.projectId ?? "",
-            });
-          }),
-        );
+      });
 
       const upsert = Effect.fn("ChangeToursRepo.upsert")(function* (tour: NewChangeTour) {
-        const id = crypto.randomUUID();
         const stops = yield* encodeStops(tour.stops).pipe(Effect.orDie);
-        const rows = yield* sql`
-          INSERT INTO change_tours (id, change_id, session_id, summary, approach, stops, diff_digest)
-          VALUES (${id}, ${tour.changeId}, ${tour.sessionId}, ${tour.summary}, ${tour.approach},
-                  ${JSON.stringify(stops)}::jsonb, ${tour.diffDigest})
-          ON CONFLICT (change_id) DO UPDATE SET
-            summary = EXCLUDED.summary,
-            approach = EXCLUDED.approach,
-            stops = EXCLUDED.stops,
-            diff_digest = EXCLUDED.diff_digest,
-            created_at = now()
-          RETURNING *`.pipe(Effect.orDie);
-        const created = yield* decodeRow(rows[0]);
+        const [row] = yield* db
+          .insert(changeTours)
+          .values({ id: crypto.randomUUID(), ...tour, stops })
+          .onConflictDoUpdate({
+            target: changeTours.changeId,
+            set: {
+              summary: tour.summary,
+              approach: tour.approach,
+              stops,
+              diffDigest: tour.diffDigest,
+              createdAt: new Date(),
+            },
+          })
+          .returning()
+          .pipe(Effect.orDie);
+        if (row === undefined) return yield* Effect.die("change tour upsert returned no row");
+        const created = yield* decodeRow(row);
         yield* notify(tour.changeId, tour.sessionId);
         return created;
       });
 
       const byChange = Effect.fn("ChangeToursRepo.byChange")(function* (changeId: ChangeId) {
-        const rows = yield* sql`
-          SELECT * FROM change_tours WHERE change_id = ${changeId}`.pipe(Effect.orDie);
-        const row = rows[0];
+        const [row] = yield* db
+          .select()
+          .from(changeTours)
+          .where(eq(changeTours.changeId, changeId))
+          .limit(1)
+          .pipe(Effect.orDie);
         return row === undefined ? null : yield* decodeRow(row);
       });
 
       return { upsert, byChange };
     }),
   );
-}
