@@ -10,8 +10,10 @@ import {
   followUps,
   inferenceCalls,
   projectMounts,
+  projectReferences,
   projects,
   pushDevices,
+  referenceRepos,
   reviewComments,
   sessionChanges,
   sessionRuns,
@@ -86,6 +88,40 @@ describe("workbench Drizzle schema", () => {
     expect(config.uniqueConstraints.map((constraint) => constraint.name).toSorted()).toEqual([
       "project_mounts_project_id_host_path_key",
       "project_mounts_project_id_name_key",
+    ]);
+  });
+
+  it("maps reference repositories and per-project selection", () => {
+    const referenceConfig = getTableConfig(referenceRepos);
+    expect(referenceConfig.name).toBe("reference_repos");
+    expect(referenceConfig.columns.map((column) => column.name)).toEqual([
+      "id",
+      "name",
+      "origin_url",
+      "path",
+      "pinned_ref",
+      "head_sha",
+      "refreshed_at",
+      "created_at",
+      "updated_at",
+    ]);
+    expect(referenceConfig.columns[1]?.isUnique).toBe(true);
+    expect(referenceConfig.columns[3]?.isUnique).toBe(true);
+
+    const selectionConfig = getTableConfig(projectReferences);
+    expect(selectionConfig.name).toBe("project_references");
+    expect(selectionConfig.columns.map((column) => column.name)).toEqual([
+      "project_id",
+      "reference_id",
+      "created_at",
+    ]);
+    expect(selectionConfig.primaryKeys[0]?.columns.map((column) => column.name)).toEqual([
+      "project_id",
+      "reference_id",
+    ]);
+    expect(selectionConfig.foreignKeys.map((foreignKey) => foreignKey.onDelete)).toEqual([
+      "cascade",
+      "cascade",
     ]);
   });
 

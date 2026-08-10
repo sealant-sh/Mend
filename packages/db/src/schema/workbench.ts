@@ -10,6 +10,7 @@ import {
   type InferenceToolName,
   type ProjectId,
   type ProjectMountId,
+  type ReferenceId,
   type SealantRunId,
   type SealantWorkspaceId,
   type SessionId,
@@ -85,6 +86,34 @@ export const projectMounts = pgTable(
     unique("project_mounts_project_id_name_key").on(table.projectId, table.name),
     unique("project_mounts_project_id_host_path_key").on(table.projectId, table.hostPath),
   ],
+);
+
+export const referenceRepos = pgTable("reference_repos", {
+  id: text().$type<ReferenceId>().primaryKey(),
+  name: text().notNull().unique(),
+  originUrl: text().notNull(),
+  path: text().notNull().unique(),
+  pinnedRef: text(),
+  headSha: text().$type<Sha>(),
+  refreshedAt: timestamp({ mode: "date", withTimezone: true }),
+  createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
+export const projectReferences = pgTable(
+  "project_references",
+  {
+    projectId: text()
+      .$type<ProjectId>()
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    referenceId: text()
+      .$type<ReferenceId>()
+      .notNull()
+      .references(() => referenceRepos.id, { onDelete: "cascade" }),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.projectId, table.referenceId] })],
 );
 
 export const settings = pgTable("settings", {
@@ -319,6 +348,8 @@ export const checkpoints = pgTable(
 
 export type ProjectRow = typeof projects.$inferSelect;
 export type ProjectMountRow = typeof projectMounts.$inferSelect;
+export type ReferenceRepoRow = typeof referenceRepos.$inferSelect;
+export type ProjectReferenceRow = typeof projectReferences.$inferSelect;
 export type SettingsRow = typeof settings.$inferSelect;
 export type InferenceCallRow = typeof inferenceCalls.$inferSelect;
 export type PushDeviceRow = typeof pushDevices.$inferSelect;
