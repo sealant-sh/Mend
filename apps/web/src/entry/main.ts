@@ -17,6 +17,7 @@ import {
   FollowUpsRepo,
   InferenceCallsRepo,
   IssuesRepo,
+  MendDBLive,
   MigratorLive,
   PgLive,
   ProjectMountsRepo,
@@ -79,6 +80,7 @@ const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..
 
 // ─── Data: Postgres, migrated before anything reads it ─────────────────────
 const DatabaseLive = Layer.mergeAll(
+  MendDBLive,
   IssuesRepo.layer,
   RunsRepo.layer,
   ChangesRepo.layer,
