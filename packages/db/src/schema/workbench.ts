@@ -98,6 +98,13 @@ export const inferenceCalls = pgTable("inference_calls", {
   occurredAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
 
+export const pushDevices = pgTable("push_devices", {
+  token: text().primaryKey(),
+  platform: text().notNull(),
+  createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  lastSeenAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
 export const contextSnapshots = pgTable("context_snapshots", {
   id: text().$type<ContextSnapshotId>().primaryKey(),
   packName: text(),
@@ -275,6 +282,7 @@ export type ProjectRow = typeof projects.$inferSelect;
 export type ProjectMountRow = typeof projectMounts.$inferSelect;
 export type SettingsRow = typeof settings.$inferSelect;
 export type InferenceCallRow = typeof inferenceCalls.$inferSelect;
+export type PushDeviceRow = typeof pushDevices.$inferSelect;
 export type ContextSnapshotRow = typeof contextSnapshots.$inferSelect;
 export type AgentSessionRow = typeof agentSessions.$inferSelect;
 export type SessionRunRow = typeof sessionRuns.$inferSelect;
