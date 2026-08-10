@@ -13,7 +13,7 @@ import {
   ChangePassesRepoLive,
   ChangesRepo,
   ChangeToursRepo,
-  CheckpointsRepo,
+  CheckpointsRepoLive,
   FollowUpsRepo,
   InferenceCallsRepo,
   IssuesRepo,
@@ -79,8 +79,12 @@ import {
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 // ─── Data: Postgres, migrated before anything reads it ─────────────────────
+const DrizzleSessionRecordsLive = Layer.merge(SessionRunsRepoLive, CheckpointsRepoLive).pipe(
+  Layer.provideMerge(MendDBLive),
+);
+
 const DatabaseLive = Layer.mergeAll(
-  MendDBLive,
+  DrizzleSessionRecordsLive,
   IssuesRepo.layer,
   RunsRepo.layer,
   ChangesRepo.layer,
@@ -93,9 +97,7 @@ const DatabaseLive = Layer.mergeAll(
   ProjectMountsRepo.layer,
   ReferencesRepo.layer,
   SessionsRepo.layer,
-  SessionRunsRepoLive,
   SessionChangesRepo.layer,
-  CheckpointsRepo.layer,
   ReviewCommentsRepo.layer,
   ChangeToursRepo.layer,
   ChangePassesRepoLive,

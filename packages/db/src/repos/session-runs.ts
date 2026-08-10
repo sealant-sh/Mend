@@ -1,14 +1,11 @@
-import { PgClient } from "@effect/sql-pg";
 import { type SealantRunId, type SealantWorkspaceId, type SessionId } from "@mend/domain";
 import { SessionRun } from "@mend/domain/workbench";
-import { Effect, Layer, Schema } from "effect";
+import { and, asc, desc, eq, isNull, lt, max } from "drizzle-orm";
+import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
-const SessionRunRow = Schema.Struct({
-  ...SessionRun.fields,
-  lastSeenSequence: Schema.BigIntFromString,
-});
-const decodeSessionRun = Schema.decodeUnknownEffect(SessionRunRow);
+import { MendDB } from "../client.ts";
+import { sessionRuns } from "../schema/workbench.ts";
 
 export interface NewSessionRun {
   readonly sessionId: SessionId;
@@ -42,110 +39,130 @@ export class SessionRunsRepo extends Context.Service<
   }
 >()("@mend/db/SessionRunsRepo") {}
 
-export const SessionRunsRepoLive: Layer.Layer<SessionRunsRepo, never, PgClient.PgClient> =
-  Layer.effect(
-    SessionRunsRepo,
-    Effect.gen(function* () {
-      const sql = yield* PgClient.PgClient;
+const toSessionRun = (row: typeof sessionRuns.$inferSelect): SessionRun => new SessionRun(row);
 
-      const decodeRow = (row: unknown) =>
-        decodeSessionRun(row).pipe(
-          Effect.map((decoded) => new SessionRun(decoded)),
-          Effect.orDie,
-        );
+export const SessionRunsRepoLive: Layer.Layer<SessionRunsRepo, never, MendDB> = Layer.effect(
+  SessionRunsRepo,
+  Effect.gen(function* () {
+    const db = yield* MendDB;
 
-      const create = Effect.fn("SessionRunsRepo.create")(function* (input: NewSessionRun) {
-        const rows = yield* sql`
-          INSERT INTO session_runs
-            (sealant_run_id, session_id, ordinal, harness, sealant_workspace_id,
-             sealant_session_id, status)
-          VALUES (
-            ${input.sealantRunId}, ${input.sessionId},
-            (SELECT COALESCE(MAX(ordinal) + 1, 0) FROM session_runs
-             WHERE session_id = ${input.sessionId}),
-            ${input.harness}, ${input.sealantWorkspaceId}, ${input.sealantSessionId}, 'running'
-          )
-          RETURNING *`.pipe(Effect.orDie);
-        return yield* decodeRow(rows[0]);
-      });
+    const create = Effect.fn("SessionRunsRepo.create")((input: NewSessionRun) =>
+      db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            const [current] = yield* tx
+              .select({ ordinal: max(sessionRuns.ordinal) })
+              .from(sessionRuns)
+              .where(eq(sessionRuns.sessionId, input.sessionId));
+            const [created] = yield* tx
+              .insert(sessionRuns)
+              .values({
+                ...input,
+                ordinal: (current?.ordinal ?? -1) + 1,
+                status: "running",
+              })
+              .returning();
+            if (created === undefined)
+              return yield* Effect.die("session run insert returned no row");
+            return toSessionRun(created);
+          }),
+        )
+        .pipe(Effect.orDie),
+    );
 
-      const bySealantRunId = Effect.fn("SessionRunsRepo.bySealantRunId")(function* (
-        id: SealantRunId,
-      ) {
-        const rows = yield* sql`
-          SELECT * FROM session_runs WHERE sealant_run_id = ${id}`.pipe(Effect.orDie);
-        const row = rows[0];
-        return row === undefined ? null : yield* decodeRow(row);
-      });
+    const bySealantRunId = Effect.fn("SessionRunsRepo.bySealantRunId")(function* (
+      id: SealantRunId,
+    ) {
+      const [row] = yield* db
+        .select()
+        .from(sessionRuns)
+        .where(eq(sessionRuns.sealantRunId, id))
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row === undefined ? null : toSessionRun(row);
+    });
 
-      const listForSession = Effect.fn("SessionRunsRepo.listForSession")(function* (
-        sessionId: SessionId,
-      ) {
-        const rows = yield* sql`
-          SELECT * FROM session_runs WHERE session_id = ${sessionId}
-          ORDER BY ordinal ASC`.pipe(Effect.orDie);
-        return yield* Effect.forEach(rows, decodeRow);
-      });
+    const listForSession = Effect.fn("SessionRunsRepo.listForSession")(function* (
+      sessionId: SessionId,
+    ) {
+      const rows = yield* db
+        .select()
+        .from(sessionRuns)
+        .where(eq(sessionRuns.sessionId, sessionId))
+        .orderBy(asc(sessionRuns.ordinal))
+        .pipe(Effect.orDie);
+      return rows.map(toSessionRun);
+    });
 
-      const latestForSession = Effect.fn("SessionRunsRepo.latestForSession")(function* (
-        sessionId: SessionId,
-      ) {
-        const rows = yield* sql`
-          SELECT * FROM session_runs WHERE session_id = ${sessionId}
-          ORDER BY ordinal DESC LIMIT 1`.pipe(Effect.orDie);
-        const row = rows[0];
-        return row === undefined ? null : yield* decodeRow(row);
-      });
+    const latestForSession = Effect.fn("SessionRunsRepo.latestForSession")(function* (
+      sessionId: SessionId,
+    ) {
+      const [row] = yield* db
+        .select()
+        .from(sessionRuns)
+        .where(eq(sessionRuns.sessionId, sessionId))
+        .orderBy(desc(sessionRuns.ordinal))
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row === undefined ? null : toSessionRun(row);
+    });
 
-      const activeForSession = Effect.fn("SessionRunsRepo.activeForSession")(function* (
-        sessionId: SessionId,
-      ) {
-        const rows = yield* sql`
-          SELECT * FROM session_runs
-          WHERE session_id = ${sessionId} AND settled_at IS NULL
-          ORDER BY ordinal DESC LIMIT 1`.pipe(Effect.orDie);
-        const row = rows[0];
-        return row === undefined ? null : yield* decodeRow(row);
-      });
+    const activeForSession = Effect.fn("SessionRunsRepo.activeForSession")(function* (
+      sessionId: SessionId,
+    ) {
+      const [row] = yield* db
+        .select()
+        .from(sessionRuns)
+        .where(and(eq(sessionRuns.sessionId, sessionId), isNull(sessionRuns.settledAt)))
+        .orderBy(desc(sessionRuns.ordinal))
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row === undefined ? null : toSessionRun(row);
+    });
 
-      const listActive = Effect.fn("SessionRunsRepo.listActive")(function* () {
-        const rows = yield* sql`
-          SELECT * FROM session_runs WHERE settled_at IS NULL
-          ORDER BY created_at ASC`.pipe(Effect.orDie);
-        return yield* Effect.forEach(rows, decodeRow);
-      });
+    const listActive = Effect.fn("SessionRunsRepo.listActive")(function* () {
+      const rows = yield* db
+        .select()
+        .from(sessionRuns)
+        .where(isNull(sessionRuns.settledAt))
+        .orderBy(asc(sessionRuns.createdAt))
+        .pipe(Effect.orDie);
+      return rows.map(toSessionRun);
+    });
 
-      const saveLastSeenSequence = Effect.fn("SessionRunsRepo.saveLastSeenSequence")(function* (
-        id: SealantRunId,
-        sequence: bigint,
-      ) {
-        yield* sql`
-          UPDATE session_runs
-          SET last_seen_sequence = ${String(sequence)}, updated_at = now()
-          WHERE sealant_run_id = ${id}
-            AND last_seen_sequence < ${String(sequence)}`.pipe(Effect.orDie);
-      });
+    const saveLastSeenSequence = Effect.fn("SessionRunsRepo.saveLastSeenSequence")(function* (
+      id: SealantRunId,
+      sequence: bigint,
+    ) {
+      yield* db
+        .update(sessionRuns)
+        .set({ lastSeenSequence: sequence, updatedAt: new Date() })
+        .where(and(eq(sessionRuns.sealantRunId, id), lt(sessionRuns.lastSeenSequence, sequence)))
+        .pipe(Effect.orDie);
+    });
 
-      const settle = Effect.fn("SessionRunsRepo.settle")(function* (
-        id: SealantRunId,
-        outcome: SessionRunOutcome,
-        summary: string | null,
-      ) {
-        yield* sql`
-          UPDATE session_runs
-          SET status = ${outcome}, summary = ${summary}, settled_at = now(), updated_at = now()
-          WHERE sealant_run_id = ${id} AND settled_at IS NULL`.pipe(Effect.orDie);
-      });
+    const settle = Effect.fn("SessionRunsRepo.settle")(function* (
+      id: SealantRunId,
+      outcome: SessionRunOutcome,
+      summary: string | null,
+    ) {
+      const now = new Date();
+      yield* db
+        .update(sessionRuns)
+        .set({ status: outcome, summary, settledAt: now, updatedAt: now })
+        .where(and(eq(sessionRuns.sealantRunId, id), isNull(sessionRuns.settledAt)))
+        .pipe(Effect.orDie);
+    });
 
-      return {
-        create,
-        bySealantRunId,
-        listForSession,
-        latestForSession,
-        activeForSession,
-        listActive,
-        saveLastSeenSequence,
-        settle,
-      };
-    }),
-  );
+    return {
+      create,
+      bySealantRunId,
+      listForSession,
+      latestForSession,
+      activeForSession,
+      listActive,
+      saveLastSeenSequence,
+      settle,
+    };
+  }),
+);
