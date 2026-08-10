@@ -56,6 +56,36 @@ export const HARNESS_STATE: Record<string, HarnessStateShape> = {
   },
 };
 
+/** Turn a normal harness launch into that harness's native session resume. */
+export const nativeResumeArgv = (
+  harness: string,
+  providerSessionId: string | null,
+  argv: ReadonlyArray<string>,
+): ReadonlyArray<string> => {
+  if (providerSessionId === null) return argv;
+  switch (harness) {
+    case "claude": {
+      if (
+        argv[0] !== "claude" ||
+        argv.includes("--resume") ||
+        argv.includes("-r") ||
+        argv.includes("--continue")
+      ) {
+        return argv;
+      }
+      const [, ...tail] = argv;
+      return ["claude", "--resume", providerSessionId, ...tail];
+    }
+    case "codex": {
+      if (argv[0] !== "codex" || argv[1] === "resume") return argv;
+      const [, ...tail] = argv;
+      return ["codex", "resume", providerSessionId, ...tail];
+    }
+    default:
+      return argv;
+  }
+};
+
 // ---------------------------------------------------------------------------
 // Transcript adapters — native session files → one normalized shape. This is
 // the seam that makes a saved session openable anywhere: a target harness
