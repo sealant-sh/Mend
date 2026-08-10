@@ -7,6 +7,7 @@ export interface ChangedFileLike {
 }
 
 export type ReviewLineKind = "context" | "addition" | "deletion";
+export type ReviewFileStatus = "added" | "deleted" | "renamed" | "modified";
 
 export interface ReviewLine {
   readonly kind: ReviewLineKind;
@@ -30,6 +31,9 @@ export interface ReviewHunk {
 export interface ReviewFile extends ChangedFileLike {
   readonly patch: string;
   readonly filetype: string | undefined;
+  readonly status: ReviewFileStatus;
+  readonly binary: boolean;
+  readonly likelyGenerated: boolean;
   readonly lines: ReadonlyArray<ReviewLine>;
   readonly hunks: ReadonlyArray<ReviewHunk>;
   readonly unifiedRows: number;
@@ -69,6 +73,35 @@ const filetypeOf = (name: string): string | undefined => {
   const extension = path.extname(name).slice(1).toLowerCase();
   return extension === "" ? undefined : (FILETYPE_BY_EXTENSION[extension] ?? extension);
 };
+
+const statusOf = (patch: string): ReviewFileStatus => {
+  if (/^new file mode /m.test(patch)) return "added";
+  if (/^deleted file mode /m.test(patch)) return "deleted";
+  if (/^rename (?:from|to) /m.test(patch)) return "renamed";
+  return "modified";
+};
+
+const isLikelyGenerated = (name: string): boolean =>
+  /(^|\/)(?:dist|build|generated)(?:\/|$)/i.test(name) ||
+  /(?:\.generated\.|\.min\.(?:js|css)$|(?:^|\/)(?:pnpm-lock\.yaml|package-lock\.json|yarn\.lock)$)/i.test(
+    name,
+  );
+
+/** A legible terminal whitespace mode that preserves git's control prefixes. */
+export const visibleWhitespace = (patch: string): string =>
+  patch
+    .split("\n")
+    .map((line) => {
+      const hunkContent =
+        (line.startsWith("+") && !line.startsWith("+++")) ||
+        (line.startsWith("-") && !line.startsWith("---")) ||
+        line.startsWith(" ");
+      if (!hunkContent) return line;
+      const prefix = line.slice(0, 1);
+      const content = line.slice(1).replaceAll("\t", "→····").replaceAll(" ", "·");
+      return `${prefix}${content}`;
+    })
+    .join("\n");
 
 /**
  * Git is the source of this wire value, so a file begins only at a column-zero
@@ -173,6 +206,9 @@ const parseRows = (
             unifiedRow,
             splitRow: splitRow + deletionOffset,
             hunk: hunkIndex,
+            // ReviewComment persists a line number but no old/new side. Like
+            // the web review, deletions therefore abstain instead of storing
+            // a confidently wrong new-file anchor.
             commentable: false,
           });
           oldLine += 1;
@@ -210,7 +246,15 @@ export const buildReviewFiles = (
   return stats.map((stat, index) => {
     const patch = patches[index] ?? "";
     const rows = parseRows(patch);
-    return { ...stat, patch, filetype: filetypeOf(stat.path), ...rows };
+    return {
+      ...stat,
+      patch,
+      filetype: filetypeOf(stat.path),
+      status: statusOf(patch),
+      binary: /^Binary files |^GIT binary patch$/m.test(patch),
+      likelyGenerated: isLikelyGenerated(stat.path),
+      ...rows,
+    };
   });
 };
 

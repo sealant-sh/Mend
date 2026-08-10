@@ -13,8 +13,9 @@ Requires Node 22+ and a running Mend server.
 
 Run bare `mend` for the interactive dashboard. Highlight a session and press `v` to review its
 accumulated change in the terminal: navigate files and hunks, switch between unified and split
-diffs, add line or whole-change comments, inspect linked evidence, and draft a follow-up for the
-same session. Press `o` when you want to continue the review in the web app.
+diffs, reveal whitespace, select line ranges, add line or whole-change comments, inspect linked
+evidence, and draft a follow-up for the same session. Press `y` to deliver a pending follow-up and
+relaunch that session, or `o` to continue the review in the web app.
 
 ## Commands
 

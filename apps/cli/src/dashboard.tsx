@@ -1,12 +1,12 @@
-import { spawn } from "node:child_process";
-
 import { CliRenderEvents, createCliRenderer, type ScrollBoxRenderable } from "@opentui/core";
 import { createRoot, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
+import { reviewTargetForSession } from "./review-workflow.ts";
 import { ReviewScreen } from "./review.tsx";
 import { HARNESS_COMMANDS, LIVE_STATUSES, matchProjectByCwd } from "./shared.ts";
+import { openUrl } from "./terminal.ts";
 import { AMBER, BG, COBALT, FAINT, GREEN, INK, MUTED, RED, RULE, WASH } from "./tui-theme.ts";
 
 /**
@@ -70,13 +70,13 @@ interface ProjectDetailDto {
 }
 
 const STATUS_GLYPH: Record<string, string> = {
-  starting: "◌",
-  running: "▸",
-  waiting: "◆",
-  idle: "∙",
-  completed: "✓",
-  failed: "✗",
-  stopped: "■",
+  starting: "○",
+  running: "●",
+  waiting: "●",
+  idle: "●",
+  completed: "●",
+  failed: "●",
+  stopped: "○",
 };
 
 const STATUS_COLOR: Record<string, string> = {
@@ -98,13 +98,6 @@ const timeAgo = (iso: string): string => {
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h ago`;
   return `${Math.floor(hours / 24)}d ago`;
-};
-
-const openUrl = (target: string): void => {
-  const opener = process.platform === "darwin" ? "open" : "xdg-open";
-  const child = spawn(opener, [target], { detached: true, stdio: "ignore" });
-  child.on("error", () => undefined);
-  child.unref();
 };
 
 // ─── server state: one cache entry, invalidated by the event stream ─────────
@@ -331,7 +324,7 @@ const ProjectRow = ({
         <span fg={MUTED}>{project.defaultBranch.padEnd(branchWidth)}</span>
         <span>{"  "}</span>
         <span fg={total === 0 ? FAINT : MUTED}>{counts}</span>
-        {liveText === "" ? null : <span fg={GREEN}>{liveText}</span>}
+        {liveText === "" ? null : <span fg={COBALT}>{liveText}</span>}
         {openText === "" ? null : <span fg={AMBER}>{openText}</span>}
         <span fg={FAINT}>
           {pad}
@@ -635,15 +628,16 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       case "v": {
         const item = items[selectedIndex];
         if (view.kind !== "sessions" || item === undefined || item.kind !== "session") return;
-        if (item.annotation?.changeId === null || item.annotation?.changeId === undefined) {
+        const target = reviewTargetForSession(
+          item.session,
+          item.annotation,
+          detail?.project.name ?? "project",
+        );
+        if (target === null) {
           say("this session has no reviewable change yet");
           return;
         }
-        setReviewing({
-          session: item.session,
-          changeId: item.annotation.changeId,
-          projectName: detail?.project.name ?? "project",
-        });
+        setReviewing(target);
         return;
       }
       case "r":
@@ -678,7 +672,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           {projects.length} project{projects.length === 1 ? "" : "s"}
         </span>
         <span fg={FAINT}> · </span>
-        <span fg={liveTotal > 0 ? GREEN : FAINT}>{liveTotal} live</span>
+        <span fg={liveTotal > 0 ? COBALT : FAINT}>{liveTotal} live</span>
       </>
     );
     footerText = " ↑↓/jk move · enter/l open project · r refresh · q quit";
@@ -691,7 +685,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         <span fg={COBALT}>{name}</span>
         <span fg={FAINT}> {detail?.project.defaultBranch ?? ""}</span>
         <span fg={FAINT}> · </span>
-        <span fg={live > 0 ? GREEN : FAINT}>{live} live</span>
+        <span fg={live > 0 ? COBALT : FAINT}>{live} live</span>
       </>
     );
     footerText =

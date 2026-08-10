@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { assembleReviewInstruction, buildReviewFiles } from "./review-model.ts";
+import { assembleReviewInstruction, buildReviewFiles, visibleWhitespace } from "./review-model.ts";
 
 const PATCH = `diff --git a/src/greet.ts b/src/greet.ts
 index 1111111..2222222 100644
@@ -33,6 +33,9 @@ describe("buildReviewFiles", () => {
       additions: 2,
       deletions: 1,
       filetype: "typescript",
+      status: "modified",
+      binary: false,
+      likelyGenerated: false,
       unifiedRows: 5,
       splitRows: 4,
     });
@@ -91,6 +94,42 @@ describe("buildReviewFiles", () => {
       },
     ]);
     expect(files[0]?.patch.startsWith("diff --git a/src/greet.ts b/src/greet.ts\n")).toBe(true);
+  });
+
+  it("classifies file status and changes that need explicit terminal handling", () => {
+    const files = buildReviewFiles(
+      `diff --git a/assets/logo.png b/assets/logo.png
+new file mode 100644
+index 0000000..1111111
+Binary files /dev/null and b/assets/logo.png differ
+diff --git a/src/client.generated.ts b/src/client.generated.ts
+similarity index 98%
+rename from src/client.ts
+rename to src/client.generated.ts
+`,
+      [
+        { path: "assets/logo.png", additions: 0, deletions: 0 },
+        { path: "src/client.generated.ts", additions: 1, deletions: 1 },
+      ],
+    );
+
+    expect(files[0]).toMatchObject({ status: "added", binary: true, likelyGenerated: false });
+    expect(files[1]).toMatchObject({ status: "renamed", binary: false, likelyGenerated: true });
+  });
+});
+
+describe("visibleWhitespace", () => {
+  it("marks spaces and tabs in hunk content without changing git control lines", () => {
+    const patch = `diff --git a/a.ts b/a.ts
+--- a/a.ts
++++ b/a.ts
+@@ -1 +1 @@
+-const a = 1;
++const\tb = 2;${" "}
+`;
+
+    expect(visibleWhitespace(patch)).toContain("+const→····b·=·2;·\n");
+    expect(visibleWhitespace(patch)).toContain("+++ b/a.ts\n");
   });
 });
 

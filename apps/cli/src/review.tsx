@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 
 import {
   RGBA,
@@ -11,7 +11,15 @@ import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-import { assembleReviewInstruction, buildReviewFiles, type ReviewFile } from "./review-model.ts";
+import {
+  assembleReviewInstruction,
+  buildReviewFiles,
+  visibleWhitespace,
+  type ReviewFile,
+} from "./review-model.ts";
+import { commentRange, deliverReview } from "./review-workflow.ts";
+import { LIVE_STATUSES } from "./shared.ts";
+import { openUrl } from "./terminal.ts";
 import {
   ADD_WASH,
   AMBER,
@@ -21,10 +29,15 @@ import {
   FAINT,
   GREEN,
   INK,
+  INK_2,
   MUTED,
   PANEL,
   RED,
   RULE,
+  SYNTAX_FUNCTION,
+  SYNTAX_KEYWORD,
+  SYNTAX_NUMBER,
+  SYNTAX_STRING,
   WASH,
 } from "./tui-theme.ts";
 
@@ -95,6 +108,7 @@ interface ChangeTourDto {
   readonly summary: string;
   readonly approach: string | null;
   readonly stops: ReadonlyArray<TourStopDto>;
+  readonly diffDigest: string;
   readonly createdAt: string;
 }
 
@@ -118,6 +132,7 @@ interface ReviewData {
   readonly tour: ChangeTourDto | null;
   readonly passes: ReadonlyArray<ChangePassDto>;
   readonly followUp: FollowUpDto | null;
+  readonly sessionStatus: string;
 }
 
 type Focus = "files" | "diff" | "comments";
@@ -135,11 +150,11 @@ const REVIEW_KEY = (changeId: string) => ["review", changeId] as const;
 const EDITOR_KEY_BINDINGS = [{ name: "return", ctrl: true, action: "submit" }] as const;
 
 const syntaxStyle = SyntaxStyle.fromStyles({
-  keyword: { fg: RGBA.fromHex("#c8a0e8") },
-  string: { fg: RGBA.fromHex("#8fc49f") },
+  keyword: { fg: RGBA.fromHex(SYNTAX_KEYWORD) },
+  string: { fg: RGBA.fromHex(SYNTAX_STRING) },
   comment: { fg: RGBA.fromHex(FAINT), italic: true },
-  number: { fg: RGBA.fromHex("#dfbd78") },
-  function: { fg: RGBA.fromHex("#8eb7ef") },
+  number: { fg: RGBA.fromHex(SYNTAX_NUMBER) },
+  function: { fg: RGBA.fromHex(SYNTAX_FUNCTION) },
   variable: { fg: RGBA.fromHex(INK) },
   default: { fg: RGBA.fromHex(INK) },
 });
@@ -150,22 +165,24 @@ const truncate = (text: string, width: number): string => {
   return oneLine.length <= width ? oneLine : `${oneLine.slice(0, width - 1)}…`;
 };
 
-const openUrl = (target: string): void => {
-  const opener = process.platform === "darwin" ? "open" : "xdg-open";
-  const child = spawn(opener, [target], { detached: true, stdio: "ignore" });
-  child.on("error", () => undefined);
-  child.unref();
-};
-
 const fetchReview = async (ctx: ReviewContext, changeId: string): Promise<ReviewData> => {
   const wire = await ctx.api<ChangeDiffDto>("GET", `/changes/${changeId}/diff`);
-  const [comments, tour, passes, followUp] = await Promise.all([
+  const [comments, tour, passes, followUp, sessionDetail] = await Promise.all([
     ctx.api<ReadonlyArray<ReviewCommentDto>>("GET", `/changes/${changeId}/comments`),
     ctx.api<ChangeTourDto | null>("GET", `/changes/${changeId}/tour`),
     ctx.api<ReadonlyArray<ChangePassDto>>("GET", `/changes/${changeId}/passes`),
     ctx.api<FollowUpDto | null>("GET", `/sessions/${wire.change.sessionId}/follow-up`),
+    ctx.api<{ readonly session: ReviewSession }>("GET", `/sessions/${wire.change.sessionId}`),
   ]);
-  return { wire, files: buildReviewFiles(wire.diff, wire.files), comments, tour, passes, followUp };
+  return {
+    wire,
+    files: buildReviewFiles(wire.diff, wire.files),
+    comments,
+    tour,
+    passes,
+    followUp,
+    sessionStatus: sessionDetail.session.status,
+  };
 };
 
 const commentPriority = (comment: ReviewCommentDto): number =>
@@ -178,10 +195,9 @@ const orderedComments = (comments: ReadonlyArray<ReviewCommentDto>) =>
   });
 
 const stateColor = (state: ReviewCommentDto["state"]): string =>
-  state === "draft" || state === "open" ? AMBER : state === "addressed" ? GREEN : FAINT;
+  state === "draft" || state === "open" ? AMBER : state === "addressed" ? INK_2 : FAINT;
 
-const stateGlyph = (state: ReviewCommentDto["state"]): string =>
-  state === "draft" ? "◌" : state === "open" ? "●" : state === "addressed" ? "✓" : "×";
+const stateGlyph = (state: ReviewCommentDto["state"]): string => (state === "open" ? "●" : "○");
 
 const anchorOf = (comment: ReviewCommentDto): string =>
   comment.file === null
@@ -190,10 +206,10 @@ const anchorOf = (comment: ReviewCommentDto): string =>
 
 const passFact = (pass: ChangePassDto): { readonly text: string; readonly color: string } => {
   const label = pass.kind === "suggest" ? "suggestions" : pass.kind;
-  if (pass.status === "running") return { text: `${label} running`, color: COBALT };
-  if (pass.status === "failed") return { text: `${label} failed`, color: RED };
+  if (pass.status === "running") return { text: `● ${label} running`, color: COBALT };
+  if (pass.status === "failed") return { text: `● ${label} failed`, color: RED };
   return {
-    text: `${label} observed · ${pass.findings ?? 0} ${pass.kind === "tour" ? "stops" : "drafts"}`,
+    text: `● ${label} observed · ${pass.findings ?? 0} ${pass.kind === "tour" ? "stops" : "drafts"}`,
     color: GREEN,
   };
 };
@@ -203,13 +219,18 @@ const FileRow = ({ file, selected }: { readonly file: ReviewFile; readonly selec
     <text height={1} bg="transparent">
       <span fg={selected ? COBALT : FAINT}>{selected ? "▌ " : "  "}</span>
       <span fg={INK}>{file.path}</span>
+      {file.binary ? <span fg={AMBER}> · binary</span> : null}
+      {file.likelyGenerated ? <span fg={FAINT}> · inferred · likely generated</span> : null}
     </text>
     <text height={1} bg="transparent">
       <span>{"    "}</span>
       <span fg={GREEN}>+{file.additions}</span>
       <span fg={FAINT}> </span>
       <span fg={RED}>−{file.deletions}</span>
-      <span fg={FAINT}> · {file.hunks.length} hunks</span>
+      <span fg={FAINT}>
+        {" "}
+        · {file.status} · {file.hunks.length} hunks
+      </span>
     </text>
   </box>
 );
@@ -241,20 +262,26 @@ const CommentRow = ({
 
 const Description = ({
   data,
+  tourIndex,
+  stale,
   width,
   height,
 }: {
   readonly data: ReviewData;
+  readonly tourIndex: number;
+  readonly stale: boolean;
   readonly width: number;
   readonly height: number;
 }) => {
   const passFacts = data.passes.map(passFact);
+  const tourStop = data.tour?.stops[tourIndex] ?? null;
+  const stopEvidence = tourStop?.evidence[0] ?? null;
   return (
     <box
       height={height}
       border
       borderStyle="rounded"
-      borderColor={data.tour === null ? RULE : COBALT}
+      borderColor={stale ? AMBER : data.tour === null ? RULE : COBALT}
       title=" change description "
       titleAlignment="left"
       backgroundColor={PANEL}
@@ -263,18 +290,59 @@ const Description = ({
       paddingX={1}
     >
       <text height={1} bg="transparent">
-        <span fg={INK}>
-          {data.tour === null
-            ? "No description yet — t composes one from the diff and session record."
-            : truncate(data.tour.summary, Math.max(20, width - 8))}
-        </span>
+        {data.tour === null ? (
+          <span fg={INK}>
+            No description yet — t composes one from the diff and session record.
+          </span>
+        ) : (
+          <>
+            <span fg={COBALT}>Mend uses inference · </span>
+            {stale ? <span fg={AMBER}>diff changed since · </span> : null}
+            <span fg={INK}>{truncate(data.tour.summary, Math.max(20, width - 50))}</span>
+          </>
+        )}
       </text>
-      {height >= 5 ? (
+      {height >= 5 && data.tour !== null ? (
         <text height={1} bg="transparent">
-          <span fg={FAINT}>
-            {data.tour?.approach === null || data.tour?.approach === undefined
-              ? "The diff remains available while inference is absent."
-              : `from the record · ${truncate(data.tour.approach, Math.max(20, width - 26))}`}
+          {tourStop === null ? (
+            <span fg={FAINT}>
+              inferred approach · {truncate(data.tour.approach ?? "No tour stops yet.", width - 24)}
+            </span>
+          ) : (
+            <>
+              <span fg={COBALT}>
+                stop {tourIndex + 1}/{data.tour.stops.length} · {tourStop.title}
+              </span>
+              <span fg={FAINT}>
+                {tourStop.file === null
+                  ? " · change"
+                  : ` · ${tourStop.file}${tourStop.line === null ? "" : `:${tourStop.line}`}`}
+                {tourStop.grounded ? " · direct record" : " · inferred reading"}
+              </span>
+            </>
+          )}
+        </text>
+      ) : null}
+      {height >= 6 && tourStop !== null ? (
+        <text height={1} bg="transparent">
+          <span fg={COBALT}>
+            {tourStop.grounded ? "record-grounded narration · " : "inferred narration · "}
+          </span>
+          <span fg={MUTED}>{truncate(tourStop.narration, Math.max(20, width - 24))}</span>
+        </text>
+      ) : null}
+      {height >= 7 && tourStop !== null ? (
+        <text height={1} bg="transparent">
+          <span fg={stopEvidence === null ? AMBER : COBALT}>
+            {stopEvidence === null
+              ? "no direct evidence · "
+              : `evidence seq ${stopEvidence.sequence} · `}
+          </span>
+          <span fg={MUTED}>
+            {truncate(
+              stopEvidence?.excerpt ?? "this stop is labeled inferred",
+              Math.max(20, width - 26),
+            )}
           </span>
         </text>
       ) : null}
@@ -290,6 +358,52 @@ const Description = ({
           ))
         )}
         {data.followUp?.status === "pending" ? <span fg={AMBER}> · follow-up pending</span> : null}
+      </text>
+    </box>
+  );
+};
+
+const CompactTourEvidence = ({
+  stop,
+  index,
+  total,
+  width,
+}: {
+  readonly stop: TourStopDto;
+  readonly index: number;
+  readonly total: number;
+  readonly width: number;
+}) => {
+  const evidence = stop.evidence[0] ?? null;
+  return (
+    <box
+      height={5}
+      border
+      borderStyle="rounded"
+      borderColor={stop.grounded ? COBALT : RULE}
+      title={` tour stop ${index + 1}/${total} · ${stop.grounded ? "direct record" : "inferred reading"} `}
+      titleAlignment="left"
+      backgroundColor={PANEL}
+      flexShrink={0}
+      flexDirection="column"
+      paddingX={1}
+    >
+      <text height={1} fg={INK} bg="transparent">
+        {truncate(stop.narration, Math.max(12, width - 6))}
+      </text>
+      <text height={1} bg="transparent">
+        <span fg={evidence === null ? AMBER : COBALT}>
+          {evidence === null ? "no direct record link · " : `seq ${evidence.sequence} · `}
+        </span>
+        <span fg={MUTED}>
+          {truncate(
+            evidence?.excerpt ?? "the narration is an inferred reading",
+            Math.max(12, width - 26),
+          )}
+        </span>
+      </text>
+      <text height={1} fg={FAINT} bg="transparent">
+        , previous stop · . next stop
       </text>
     </box>
   );
@@ -404,7 +518,7 @@ export function ReviewScreen({
   const queryClient = useQueryClient();
   const { width, height } = useTerminalDimensions();
   const wide = width >= 100;
-  const descriptionHeight = height >= 30 ? 6 : 4;
+  const descriptionHeight = height >= 30 ? 7 : 5;
   const { data, failureReason, isFetching } = useQuery({
     queryKey: REVIEW_KEY(changeId),
     queryFn: () => fetchReview(ctx, changeId),
@@ -415,11 +529,17 @@ export function ReviewScreen({
   const [fileIndex, setFileIndex] = useState(0);
   const [anchorIndex, setAnchorIndex] = useState(0);
   const [commentIndex, setCommentIndex] = useState(0);
+  const [tourIndex, setTourIndex] = useState(0);
   const [view, setView] = useState<DiffView>("unified");
   const [wrap, setWrap] = useState(false);
+  const [showWhitespace, setShowWhitespace] = useState(false);
+  const [rangeStart, setRangeStart] = useState<number | null>(null);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
+  const [checkpointState, setCheckpointState] = useState<"recording" | "recorded" | "failed">(
+    "recording",
+  );
   const lockRef = useRef(false);
   const editorRef = useRef<TextareaRenderable | null>(null);
   const diffRef = useRef<DiffRenderable | null>(null);
@@ -428,7 +548,18 @@ export function ReviewScreen({
   const commentScrollRef = useRef<ScrollBoxRenderable | null>(null);
   const checkpointedRef = useRef(false);
 
-  const files = data?.files ?? [];
+  const files = useMemo(() => {
+    const order: Readonly<Record<ReviewFile["status"], number>> = {
+      added: 0,
+      modified: 1,
+      renamed: 2,
+      deleted: 3,
+    };
+    return (data?.files ?? []).toSorted(
+      (left, right) =>
+        order[left.status] - order[right.status] || left.path.localeCompare(right.path),
+    );
+  }, [data?.files]);
   const selectedFile = files[Math.min(fileIndex, Math.max(0, files.length - 1))] ?? null;
   const anchors = useMemo(
     () => selectedFile?.lines.filter((line) => line.commentable) ?? [],
@@ -450,28 +581,36 @@ export function ReviewScreen({
             (comment.endLine ?? comment.line) >= selectedAnchor.newLine,
         ) ?? null);
   const detailComment = focus === "comments" ? selectedComment : lineComment;
+  const tourStops = data?.tour?.stops ?? [];
+  const activeTourIndex = Math.min(tourIndex, Math.max(0, tourStops.length - 1));
+  const activeTourStop = tourStops[activeTourIndex] ?? null;
+  const tourStale = useMemo(
+    () =>
+      data?.tour === null || data?.tour === undefined
+        ? false
+        : createHash("sha256").update(data.wire.diff).digest("hex") !== data.tour.diffDigest,
+    [data?.tour, data?.wire.diff],
+  );
 
   const refresh = (): void => {
     void queryClient.invalidateQueries({ queryKey: REVIEW_KEY(changeId) });
   };
 
-  useEffect(() => {
+  const recordReviewCheckpoint = (): void => {
     if (checkpointedRef.current) return;
     checkpointedRef.current = true;
+    setCheckpointState("recording");
     void ctx
       .api("POST", `/sessions/${session.id}/checkpoints`, { trigger: "review-open" })
-      .catch(() => undefined);
-  }, [ctx, session.id]);
+      .then(() => setCheckpointState("recorded"))
+      .catch((error: unknown) => {
+        checkpointedRef.current = false;
+        setCheckpointState("failed");
+        setStatus(`Checkpoint not recorded · ${errorMessage(error)} · K retries`);
+      });
+  };
 
-  useEffect(() => {
-    setFileIndex((current) => Math.min(current, Math.max(0, files.length - 1)));
-  }, [files.length]);
-  useEffect(() => {
-    setAnchorIndex(0);
-  }, [selectedFile?.path]);
-  useEffect(() => {
-    setCommentIndex((current) => Math.min(current, Math.max(0, comments.length - 1)));
-  }, [comments.length]);
+  useEffect(recordReviewCheckpoint, [ctx, session.id]);
 
   useEffect(() => {
     fileScrollRef.current?.scrollTo(Math.max(0, fileIndex * 2 - 2));
@@ -489,33 +628,85 @@ export function ReviewScreen({
     // semantic colors there. Unified has one fact per row, so cobalt can mark
     // the active comment anchor without lying about either side.
     if (view !== "unified" || selectedAnchor === null || diffRef.current === null) return;
-    diffRef.current.setLineColor(selectedAnchor.unifiedRow, { gutter: COBALT, content: WASH });
+    const start = rangeStart === null ? selectedAnchor.newLine : rangeStart;
+    const selectedLine = selectedAnchor.newLine;
+    const highlighted =
+      start === null || selectedLine === null
+        ? [selectedAnchor]
+        : anchors.filter(
+            (anchor) =>
+              anchor.newLine !== null &&
+              anchor.newLine >= Math.min(start, selectedLine) &&
+              anchor.newLine <= Math.max(start, selectedLine),
+          );
+    for (const anchor of highlighted) {
+      diffRef.current.setLineColor(anchor.unifiedRow, { gutter: COBALT, content: WASH });
+    }
     return () => {
       if (diffRef.current === null) return;
-      const content =
-        selectedAnchor.kind === "addition"
-          ? ADD_WASH
-          : selectedAnchor.kind === "deletion"
-            ? DELETE_WASH
-            : "transparent";
-      diffRef.current.setLineColor(selectedAnchor.unifiedRow, {
-        gutter: "transparent",
-        content,
-      });
+      for (const anchor of highlighted) {
+        const content =
+          anchor.kind === "addition"
+            ? ADD_WASH
+            : anchor.kind === "deletion"
+              ? DELETE_WASH
+              : "transparent";
+        diffRef.current.setLineColor(anchor.unifiedRow, {
+          gutter: "transparent",
+          content,
+        });
+      }
     };
-  }, [selectedAnchor, view]);
+  }, [anchors, rangeStart, selectedAnchor, view]);
 
   const moveFile = (delta: number): void => {
     if (files.length === 0) return;
-    setFileIndex((current) => Math.max(0, Math.min(files.length - 1, current + delta)));
+    setFileIndex((current) => {
+      const next = Math.max(0, Math.min(files.length - 1, current + delta));
+      if (next !== current) {
+        setAnchorIndex(0);
+        setRangeStart(null);
+      }
+      return next;
+    });
   };
   const moveAnchor = (delta: number): void => {
     if (anchors.length === 0) return;
     setAnchorIndex((current) => Math.max(0, Math.min(anchors.length - 1, current + delta)));
   };
+  const navigateToAnchor = (file: string | null, line: number | null): void => {
+    if (file === null) return;
+    const nextFileIndex = files.findIndex((candidate) => candidate.path === file);
+    if (nextFileIndex < 0) return;
+    const nextFile = files[nextFileIndex];
+    const nextAnchorIndex =
+      line === null
+        ? 0
+        : (nextFile?.lines.findIndex(
+            (candidate) => candidate.newLine !== null && candidate.newLine >= line,
+          ) ?? -1);
+    setFileIndex(nextFileIndex);
+    setAnchorIndex(Math.max(0, nextAnchorIndex));
+    setRangeStart(null);
+  };
+  const selectComment = (index: number): void => {
+    const next = comments[index];
+    if (next === undefined) return;
+    setCommentIndex(index);
+    navigateToAnchor(next.file, next.line);
+  };
   const moveComment = (delta: number): void => {
     if (comments.length === 0) return;
-    setCommentIndex((current) => Math.max(0, Math.min(comments.length - 1, current + delta)));
+    const current = Math.min(commentIndex, comments.length - 1);
+    selectComment(Math.max(0, Math.min(comments.length - 1, current + delta)));
+  };
+  const moveTour = (delta: number): void => {
+    if (tourStops.length === 0) return;
+    const current = Math.min(tourIndex, tourStops.length - 1);
+    const nextIndex = Math.max(0, Math.min(tourStops.length - 1, current + delta));
+    const stop = tourStops[nextIndex];
+    setTourIndex(nextIndex);
+    if (stop !== undefined) navigateToAnchor(stop.file, stop.line);
   };
   const moveHunk = (delta: number): void => {
     if (selectedFile === null || selectedAnchor === null) return;
@@ -530,12 +721,16 @@ export function ReviewScreen({
     lockRef.current = value;
     setBusy(value);
   };
-  const runAction = async (label: string, action: () => Promise<unknown>): Promise<void> => {
+  const runAction = async (
+    label: string,
+    action: () => Promise<unknown>,
+    completed = `${label} · requested`,
+  ): Promise<void> => {
     setWorking(true);
     setStatus(`${label}…`);
     try {
       await action();
-      setStatus(`${label} · requested`);
+      setStatus(completed);
       refresh();
     } catch (error) {
       setStatus(errorMessage(error));
@@ -549,16 +744,22 @@ export function ReviewScreen({
       setEditor({ kind: "comment", file: null, line: null, endLine: null });
       return;
     }
+    if (selectedFile?.status === "deleted" && selectedAnchor === null) {
+      setStatus("Deleted-side anchors are not persisted · use C for a change comment");
+      return;
+    }
     if (selectedFile === null || selectedAnchor?.newLine === null || selectedAnchor === null) {
       setStatus("No new-side line selected");
       return;
     }
+    const range = commentRange(rangeStart, selectedAnchor.newLine);
     setEditor({
       kind: "comment",
       file: selectedFile.path,
-      line: selectedAnchor.newLine,
-      endLine: null,
+      line: range.line,
+      endLine: range.endLine === range.line ? null : range.endLine,
     });
+    setRangeStart(null);
   };
 
   const openSendEditor = (): void => {
@@ -595,7 +796,7 @@ export function ReviewScreen({
         setStatus(editor.file === null ? "Change comment saved" : "Inline comment saved");
       } else {
         await ctx.api("POST", `/sessions/${session.id}/follow-up`, { instruction: value });
-        setStatus("Follow-up saved · mend continue delivers it to the session");
+        setStatus("Follow-up saved · y delivers it and relaunches the same session");
       }
       setEditor(null);
       refresh();
@@ -613,6 +814,23 @@ export function ReviewScreen({
     );
   };
 
+  const deliverAndRelaunch = (): void => {
+    if (data?.followUp?.status !== "pending") {
+      setStatus("No pending follow-up — s assembles the open review comments first");
+      return;
+    }
+    if (LIVE_STATUSES.has(data.sessionStatus)) {
+      setStatus("The session is live — deliver the pending follow-up once it settles");
+      return;
+    }
+    const instruction = data.followUp.instruction;
+    void runAction(
+      "Delivering review and relaunching the same session",
+      () => deliverReview(ctx.api, session, instruction),
+      "Review delivered · the same session is running · diff updates live",
+    );
+  };
+
   const focusOrder: ReadonlyArray<Focus> = wide
     ? ["files", "diff", "comments"]
     : ["diff", "comments"];
@@ -620,7 +838,11 @@ export function ReviewScreen({
     const index = focusOrder.indexOf(focus);
     const direction = backwards ? -1 : 1;
     const next = (index + direction + focusOrder.length) % focusOrder.length;
-    setFocus(focusOrder[next] ?? "diff");
+    const nextFocus = focusOrder[next] ?? "diff";
+    if (nextFocus === "comments" && selectedComment !== null) {
+      navigateToAnchor(selectedComment.file, selectedComment.line);
+    }
+    setFocus(nextFocus);
   };
 
   useKeyboard((key) => {
@@ -637,6 +859,11 @@ export function ReviewScreen({
       setStatus("Refreshing live change…");
       return refresh();
     }
+    if (key.name === "k" && key.shift) {
+      if (checkpointState !== "failed") return;
+      recordReviewCheckpoint();
+      return;
+    }
     if (key.name === "o") {
       openUrl(`${ctx.config.url}/changes/${changeId}`);
       setStatus("Opened web review");
@@ -644,6 +871,9 @@ export function ReviewScreen({
     }
     if (key.name === "c" && key.shift) return openCommentEditor(true);
     if (key.name === "s") return openSendEditor();
+    if (key.name === "y") return deliverAndRelaunch();
+    if (key.name === ",") return moveTour(-1);
+    if (key.name === ".") return moveTour(1);
     if (key.name === "t") {
       return void runAction(
         data?.tour === null ? "Compose description and tour" : "Recompose tour",
@@ -677,6 +907,10 @@ export function ReviewScreen({
       }
       if (key.name === "x") return updateComment("dismissed");
       if (key.name === "u" && selectedComment !== null) return updateComment("open");
+      if (key.name === "return" || key.name === "linefeed" || key.name === "l") {
+        if (selectedComment !== null) navigateToAnchor(selectedComment.file, selectedComment.line);
+        return setFocus("diff");
+      }
       return;
     }
     if (key.name === "j" || key.name === "down") return moveAnchor(1);
@@ -686,9 +920,21 @@ export function ReviewScreen({
     if (key.name === "]") return moveHunk(1);
     if (key.name === "[") return moveHunk(-1);
     if (key.name === "c") return openCommentEditor(false);
+    if (key.name === "v") {
+      if (selectedAnchor?.newLine === null || selectedAnchor === null) {
+        setStatus("Select a new-side line before starting a range");
+        return;
+      }
+      setRangeStart((current) => (current === null ? selectedAnchor.newLine : null));
+      setStatus(
+        rangeStart === null ? `Range starts at line ${selectedAnchor.newLine}` : "Range cleared",
+      );
+      return;
+    }
     if (key.name === "d" && wide)
       return setView((current) => (current === "unified" ? "split" : "unified"));
     if (key.name === "w") return setWrap((current) => !current);
+    if (key.name === "z") return setShowWhitespace((current) => !current);
   });
 
   if (data === undefined) {
@@ -715,14 +961,18 @@ export function ReviewScreen({
       : view === "unified"
         ? Math.max(1, selectedFile.unifiedRows)
         : Math.max(1, selectedFile.splitRows);
+  const displayPatch =
+    selectedFile === null || !showWhitespace
+      ? (selectedFile?.patch ?? "")
+      : visibleWhitespace(selectedFile.patch);
   const footer =
     editor !== null
       ? " ctrl+enter save · esc cancel"
       : focus === "files"
         ? " files · ↑↓/jk move · enter review · tab pane · esc back · q quit"
         : focus === "comments"
-          ? " comments · ↑↓/jk move · a accept/address · x dismiss · u reopen · tab pane"
-          : " diff · ↑↓/jk lines · n/p files · [/ ] hunks · c inline · C change · d layout · w wrap";
+          ? " comments · ↑↓/jk move · enter anchor · a accept/address · x dismiss · u reopen · tab pane"
+          : ` diff · ↑↓/jk lines · n/p files · [/ ] hunks · v range${rangeStart === null ? "" : `:${rangeStart}`} · c inline · C change · d layout · w wrap · z whitespace`;
 
   const sidebar: ReactNode = wide ? (
     <box width={36} flexShrink={0} flexDirection="column" backgroundColor={BG}>
@@ -749,7 +999,14 @@ export function ReviewScreen({
           }}
         >
           {files.map((file, index) => (
-            <FileRow key={file.path} file={file} selected={index === fileIndex} />
+            <box key={file.path} flexShrink={0} flexDirection="column">
+              {index === 0 || files[index - 1]?.status !== file.status ? (
+                <text height={1} fg={FAINT} bg="transparent">
+                  {`  ${file.status}`}
+                </text>
+              ) : null}
+              <FileRow file={file} selected={index === fileIndex} />
+            </box>
           ))}
         </scrollbox>
       </box>
@@ -803,6 +1060,13 @@ export function ReviewScreen({
             · {session.harness} {session.id.slice(0, 8)}
           </span>
           {isFetching ? <span fg={COBALT}> · syncing</span> : null}
+          <span fg={checkpointState === "failed" ? AMBER : FAINT}>
+            {checkpointState === "recording"
+              ? " · checkpointing"
+              : checkpointState === "failed"
+                ? " · checkpoint incomplete"
+                : " · checkpoint recorded"}
+          </span>
         </text>
         <text height={1} bg="transparent">
           <span fg={FAINT}> {data.wire.change.branch.replace(/^mend\/session\//, "session ")}</span>
@@ -814,7 +1078,13 @@ export function ReviewScreen({
         </text>
       </box>
 
-      <Description data={data} width={width} height={descriptionHeight} />
+      <Description
+        data={data}
+        tourIndex={activeTourIndex}
+        stale={tourStale}
+        width={width}
+        height={descriptionHeight}
+      />
 
       <box flexGrow={1} minHeight={0} flexDirection="row" backgroundColor={BG}>
         {sidebar}
@@ -826,19 +1096,21 @@ export function ReviewScreen({
             title={
               selectedFile === null
                 ? " diff "
-                : ` ${selectedFile.path} · ${view}${wrap ? " · wrapped" : ""} `
+                : ` ${selectedFile.path} · ${view}${selectedFile.likelyGenerated ? " · inferred likely generated" : ""}${showWhitespace ? " · whitespace" : ""}${wrap ? " · wrapped" : ""} `
             }
             titleAlignment="left"
             backgroundColor={PANEL}
             flexGrow={1}
             minHeight={0}
           >
-            {selectedFile === null || selectedFile.patch === "" ? (
+            {selectedFile === null || selectedFile.patch === "" || selectedFile.binary ? (
               <box flexGrow={1} alignItems="center" justifyContent="center">
                 <text fg={FAINT} bg="transparent">
                   {files.length === 0
                     ? "The worktree matches its base — nothing to review yet."
-                    : "This file has no renderable text patch."}
+                    : selectedFile?.binary === true
+                      ? "Binary change — text diff unavailable; statistics remain reviewable."
+                      : "This file has no renderable text patch."}
                 </text>
               </box>
             ) : (
@@ -856,9 +1128,9 @@ export function ReviewScreen({
                 }}
               >
                 <diff
-                  key={`${selectedFile.path}-${view}-${wrap}`}
+                  key={`${selectedFile.path}-${view}-${wrap}-${showWhitespace}`}
                   ref={diffRef}
-                  diff={selectedFile.patch}
+                  diff={displayPatch}
                   view={view}
                   syncScroll
                   {...(selectedFile.filetype === undefined
@@ -889,9 +1161,18 @@ export function ReviewScreen({
               </scrollbox>
             )}
           </box>
-          {detailComment === null ? null : (
+          {focus === "comments" && detailComment !== null ? (
             <EvidenceCard comment={detailComment} width={wide ? width - 38 : width} />
-          )}
+          ) : height < 30 && activeTourStop !== null ? (
+            <CompactTourEvidence
+              stop={activeTourStop}
+              index={activeTourIndex}
+              total={tourStops.length}
+              width={width}
+            />
+          ) : detailComment !== null ? (
+            <EvidenceCard comment={detailComment} width={wide ? width - 38 : width} />
+          ) : null}
         </box>
       </box>
 
@@ -905,7 +1186,7 @@ export function ReviewScreen({
       )}
       <text height={1} fg={status === "" ? FAINT : AMBER} bg="transparent">
         {status === ""
-          ? " m read · g suggest · t tour · s send review · o web · r refresh"
+          ? ` m read · g suggest · t tour · ,/. tour stops · s draft review${data.followUp?.status === "pending" ? " · y deliver & relaunch" : ""} · o web · r refresh`
           : ` ${status}`}
       </text>
       <text height={1} fg={FAINT} bg="transparent">
