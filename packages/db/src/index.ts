@@ -3,6 +3,7 @@ export * from "./errors.ts";
 export * from "./events.ts";
 export * from "./migrations.ts";
 export * from "./migrator.ts";
+export * from "./schema/index.ts";
 export * from "./repos/agent-sessions.ts";
 export * from "./repos/brief-comments.ts";
 export * from "./repos/briefs.ts";
