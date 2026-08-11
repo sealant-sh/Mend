@@ -893,14 +893,14 @@ export class SessionEngine extends Context.Service<
           settleOnFailure,
         );
 
-        // A relaunch restores the harness's own saved state into the fresh
-        // workspace before the harness starts, and — where the harness
-        // supports it — turns the launch into a NATIVE resume. Automatic:
-        // state was harvested at the previous settle, nothing was asked of
-        // the user. Cross-harness state never restores; that path goes
-        // through the transcript adapters instead.
+        // A relaunch restores the ORIGINAL harness's saved state into the
+        // fresh workspace before anything starts — for a same-harness launch
+        // that also turns it into a NATIVE resume (load-bearing: a failure
+        // settles the launch); for a cross-harness or shell launch it is
+        // best-effort context riding beside the import. Automatic: state was
+        // harvested at the previous settle, nothing was asked of the user.
         let shapedArgv = argv;
-        if (manifest !== null && manifest.harness === session.harness) {
+        if (manifest !== null) {
           const tarName = `.mend-harness-state-${session.id.slice(0, 8)}.tgz`;
           const archivePath = path.join(stateDir, "harness-state.tar.gz");
           const stagedPath = path.join(worktree, tarName);
@@ -911,7 +911,7 @@ export class SessionEngine extends Context.Service<
                 sessionId,
                 operation: "stage-archive",
                 path: archivePath,
-                message: `Could not stage saved ${session.harness} state for session ${sessionId}.`,
+                message: `Could not stage saved ${manifest.harness} state for session ${sessionId}.`,
                 cause,
               }),
           }).pipe(
@@ -929,11 +929,11 @@ export class SessionEngine extends Context.Service<
                 : Effect.fail(
                     new HarnessStateCommandError({
                       sessionId,
-                      harness: session.harness,
+                      harness: manifest.harness,
                       operation: "restore-archive",
                       exitCode: result.exitCode,
                       stderr: result.stderr,
-                      message: `Could not restore saved ${session.harness} state for session ${sessionId}.`,
+                      message: `Could not restore saved ${manifest.harness} state for session ${sessionId}.`,
                     }),
                   ),
             ),
@@ -942,24 +942,44 @@ export class SessionEngine extends Context.Service<
               Effect.promise(() => fs.rm(stagedPath, { force: true })).pipe(Effect.ignore),
             ),
           );
-          yield* restore.pipe(
-            Effect.tapError((error) =>
-              sessions
-                .settle(sessionId, "failed", `resume failed: ${error.message}`)
-                .pipe(Effect.andThen(sealant.stopWorkspace(workspace)), Effect.ignore),
-            ),
-          );
-          shapedArgv = nativeResumeArgv(session.harness, manifest.providerSessionId, shapedArgv);
+          if (manifest.harness === session.harness) {
+            yield* restore.pipe(
+              Effect.tapError((error) =>
+                sessions
+                  .settle(sessionId, "failed", `resume failed: ${error.message}`)
+                  .pipe(Effect.andThen(sealant.stopWorkspace(workspace)), Effect.ignore),
+              ),
+            );
+            shapedArgv = nativeResumeArgv(session.harness, manifest.providerSessionId, shapedArgv);
+          } else {
+            yield* restore.pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("session engine: original-state restore failed").pipe(
+                  Effect.annotateLogs({
+                    sessionId,
+                    harness: manifest.harness,
+                    error: String(error),
+                  }),
+                ),
+              ),
+            );
+          }
         }
 
-        if (nativeImport !== null) {
-          // Cross-harness open: place the CONVERTED native session into the
-          // fresh workspace's $HOME so the target harness resumes it as its
-          // own — full history, its own session id, no distillation.
-          const importDir = path.join(worktree, ".mend-native-import");
-          const importState = Effect.tryPromise({
+        // Stage a converted session's files into the worktree and copy them
+        // into the workspace $HOME. Distinct dir per placement so parallel
+        // imports never collide.
+        const placeConvertedFiles = (
+          files: ConvertedNativeSession["files"],
+          dirName: string,
+        ): Effect.Effect<
+          void,
+          HarnessStateIOError | HarnessStateCommandError | SealantPlatformError
+        > => {
+          const importDir = path.join(worktree, dirName);
+          return Effect.tryPromise({
             try: async () => {
-              for (const file of nativeImport.files) {
+              for (const file of files) {
                 const target = path.join(importDir, file.path);
                 await fs.mkdir(path.dirname(target), { recursive: true });
                 await fs.writeFile(target, file.content);
@@ -970,7 +990,7 @@ export class SessionEngine extends Context.Service<
                 sessionId,
                 operation: "stage-import",
                 path: importDir,
-                message: `Could not stage the converted ${session.harness} session state.`,
+                message: `Could not stage the converted session state for session ${sessionId}.`,
                 cause,
               }),
           }).pipe(
@@ -978,7 +998,7 @@ export class SessionEngine extends Context.Service<
               sealant.exec(workspace, [
                 "sh",
                 "-c",
-                'cp -a /workspace/repo/.mend-native-import/. "$HOME"/ && rm -rf /workspace/repo/.mend-native-import',
+                `cp -a "/workspace/repo/${dirName}/." "$HOME"/ && rm -rf "/workspace/repo/${dirName}"`,
               ]),
             ),
             Effect.flatMap((result) =>
@@ -991,7 +1011,7 @@ export class SessionEngine extends Context.Service<
                       operation: "import-session",
                       exitCode: result.exitCode,
                       stderr: result.stderr,
-                      message: `Could not import converted ${session.harness} state for session ${sessionId}.`,
+                      message: `Could not import converted state for session ${sessionId}.`,
                     }),
                   ),
             ),
@@ -1001,13 +1021,53 @@ export class SessionEngine extends Context.Service<
               ),
             ),
           );
-          yield* importState.pipe(
+        };
+
+        if (nativeImport !== null) {
+          // Cross-harness open: place the CONVERTED native session into the
+          // fresh workspace's $HOME so the target harness resumes it as its
+          // own — full history, its own session id, no distillation.
+          yield* placeConvertedFiles(nativeImport.files, ".mend-native-import").pipe(
             Effect.tapError((error) =>
               sessions
                 .settle(sessionId, "failed", `resume failed: ${error.message}`)
                 .pipe(Effect.andThen(sealant.stopWorkspace(workspace)), Effect.ignore),
             ),
           );
+        }
+
+        // The conversation lands EVERYWHERE: the workspace image carries every
+        // supported harness, so harnesses not already covered — by the
+        // original restore or the target import — get the saved conversation
+        // converted into their own native format. A mend shell (or the agent
+        // itself, switched mid-session) then opens it in place. Best-effort:
+        // a missing transcript or failed conversion never fails a launch.
+        if (manifest !== null) {
+          const covered = new Set<string>([manifest.harness]);
+          if (nativeImport !== null) covered.add(session.harness);
+          const uncovered = ["claude", "codex"].filter((h) => !covered.has(h));
+          if (uncovered.length > 0) {
+            const transcriptPath = path.join(stateDir, "transcript.native");
+            const native = yield* Effect.tryPromise({
+              try: () => fs.readFile(transcriptPath, "utf8"),
+              catch: () => new Error("transcript unavailable"),
+            }).pipe(Effect.orElseSucceed(() => ""));
+            for (const other of uncovered) {
+              if (native === "") break;
+              const converted = convertNativeSession(manifest.harness, other, native, {
+                cwd: "/workspace/repo",
+                now: new Date().toISOString(),
+              });
+              if (converted === null) continue;
+              yield* placeConvertedFiles(converted.files, `.mend-native-import-${other}`).pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("session engine: sibling-harness import failed").pipe(
+                    Effect.annotateLogs({ sessionId, harness: other, error: String(error) }),
+                  ),
+                ),
+              );
+            }
+          }
         }
 
         if (selectedReferences.length > 0) {
@@ -1258,42 +1318,16 @@ export class SessionEngine extends Context.Service<
         // restored when it exists — and none required, because the session
         // that died before harvesting is exactly the one worth a shell. The
         // session keeps its harness identity; only this launch runs a shell.
-        // Beyond the original harness's own state, the conversation is also
-        // laid down CONVERTED for the other supported harness, so either
-        // agent opens it natively from inside the shell (the workspace image
-        // carries every supported harness CLI).
+        // launchInternal lays the conversation down for every supported
+        // harness, so either agent opens it natively from inside the shell.
         if (target === "shell") {
           const project = yield* projects.byId(session.projectId);
           const stateDir = sessionStatePathOf(project.storePath, session.id);
           const manifest = yield* readHarnessStateManifest(stateDir, session.id).pipe(
             Effect.catchTag("HarnessStateNotFoundError", () => Effect.succeed(null)),
           );
-          let shellImport: ConvertedNativeSession | null = null;
-          if (manifest !== null) {
-            const other =
-              manifest.harness === "codex"
-                ? "claude"
-                : manifest.harness === "claude"
-                  ? "codex"
-                  : null;
-            if (other !== null) {
-              // Best-effort: an unreadable or inconvertible transcript never
-              // blocks the shell — the original state still restores.
-              const transcriptPath = path.join(stateDir, "transcript.native");
-              const native = yield* Effect.tryPromise({
-                try: () => fs.readFile(transcriptPath, "utf8"),
-                catch: () => new Error("transcript unavailable"),
-              }).pipe(Effect.orElseSucceed(() => ""));
-              if (native !== "") {
-                shellImport = convertNativeSession(manifest.harness, other, native, {
-                  cwd: "/workspace/repo",
-                  now: new Date().toISOString(),
-                });
-              }
-            }
-          }
           yield* sessions.reopen(sessionId);
-          return yield* launchInternal(sessionId, ["bash"], shellImport, manifest);
+          return yield* launchInternal(sessionId, ["bash"], null, manifest);
         }
         const defaultArgv = HARNESS_ARGV[target];
         if (defaultArgv === undefined) {
