@@ -289,27 +289,21 @@ export class ProjectAutomationRequest extends Schema.Class<ProjectAutomationRequ
   autoSuggest: AutomationChoice,
 }) {}
 
-export class HostToolSuggestionView extends Schema.Class<HostToolSuggestionView>(
-  "HostToolSuggestionView",
-)({
+export const HostToolSuggestionView = Schema.Struct({
   executable: Schema.String,
   kind: Schema.Literals(["package", "service"]),
   id: Schema.String,
-}) {}
+});
 
-export class HostConfigSuggestionView extends Schema.Class<HostConfigSuggestionView>(
-  "HostConfigSuggestionView",
-)({
+export const HostConfigSuggestionView = Schema.Struct({
   label: Schema.String,
   path: Schema.String,
-}) {}
+});
 
-export class HostEnvironmentSuggestionsView extends Schema.Class<HostEnvironmentSuggestionsView>(
-  "HostEnvironmentSuggestionsView",
-)({
+export const HostEnvironmentSuggestionsView = Schema.Struct({
   tools: Schema.Array(HostToolSuggestionView),
   configs: Schema.Array(HostConfigSuggestionView),
-}) {}
+});
 
 /**
  * Product settings, one document (the review-automation cascade's root:
