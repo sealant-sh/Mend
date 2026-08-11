@@ -272,6 +272,14 @@ Mend consumes the platform only through the public SDK. Needed, tracked in `PLAT
 
 Nothing here requires listener observation, process-tree attribution, or Docker/runtime internals.
 
+**Spike results (2026-08-12, SDK 0.9.0 and 0.13.1 against the deployed platform):** the shared
+workspace holds. Two concurrent PTYs in one mount-sourced workspace, independent output streams,
+shared filesystem, shared network (a listener opened in one PTY answers a client in the other),
+independent close with the sibling unaffected, `sessions.get()` reattach, and resize all verified.
+Two platform defects recorded in `PLATFORM-FEEDBACK.md`: `session.signal()` rejects with a daemon
+error (raw `^C` through PTY input works as the interim path), and 0.13.1 drops the exit code on a
+clean exit.
+
 ## Delivery slices
 
 Every platform capability flows sealantd → public SDK → Mend server → CLI → web/phone; each slice

@@ -7,6 +7,29 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-08-12 · 0.13.1 · `session.signal()` fails at the daemon; exit code lost on clean exit
+
+Mend's session-Services design (docs/SESSION-SERVICES.md) needs to deliver signals to supervised
+processes that no client terminal owns — `mend service stop` is a SIGTERM/SIGINT to a process the
+user may never have attached to.
+
+Observed against the deployed platform (SDK 0.9.0 and 0.13.1 behave identically except where noted),
+with two concurrent `bash -i` PTYs in one mount-sourced workspace:
+
+- `session.signal(2)` on a running interactive session rejects with
+  `SessionBadGatewayError: Daemon request failed: proc_<id>_<n>`. The process is alive and healthy —
+  sending a raw `\x03` byte through `session.send()` interrupts the foreground child correctly, so
+  the PTY input path works while the out-of-band signal path does not. Mend can fall back to control
+  bytes for terminal-owned processes, but that only covers signals with a control-character encoding
+  and only reaches the foreground process group.
+- On 0.13.1, a session that ends via a clean `exit` reports `status: "exited"` with
+  `exitCode: undefined`; 0.9.0 reported `exitCode: 0` for the same sequence. Services surface exit
+  codes to the user ("exited · code 0"), so the observed code should survive the wire.
+
+Everything else the concurrent-PTY spike checked passed on both versions: two PTYs open concurrently
+in one workspace, independent output streams, shared filesystem and network between PTYs,
+independent close, `sessions.get()` reattach, and resize.
+
 ## 2026-08-11 · 0.13.1 · ✅ Public Effect surfaces share the consumer runtime
 
 **Shipped in 0.13.1.** The 0.13.0 packages declared an exact Effect runtime dependency, so Mend
