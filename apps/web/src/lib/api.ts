@@ -485,10 +485,26 @@ export interface SettingsDto {
   readonly autoTour: boolean;
   readonly autoSuggest: boolean;
   readonly workspaceImage: {
-    readonly os: "arch" | "fedora" | "nix";
+    readonly os: "arch" | "nix";
     readonly packages: ReadonlyArray<string>;
     readonly services: { readonly docker: boolean };
   };
+}
+
+export interface WorkspacePackageResolutionDto {
+  readonly requested: string;
+  readonly normalized: string;
+  readonly status: "resolved" | "ambiguous" | "unsupported" | "not-found" | "invalid";
+  readonly canonicalId: string | null;
+  readonly supported: boolean;
+  readonly packageName: string | null;
+  readonly alternatives: ReadonlyArray<string>;
+}
+
+export interface WorkspaceEnvironmentSaveResultDto {
+  readonly saved: boolean;
+  readonly settings: SettingsDto;
+  readonly resolutions: ReadonlyArray<WorkspacePackageResolutionDto>;
 }
 
 export interface HostEnvironmentSuggestionsDto {
@@ -507,6 +523,13 @@ export const putSettings = (settings: SettingsDto) =>
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(settings),
+  });
+
+export const saveWorkspaceEnvironment = (workspaceImage: SettingsDto["workspaceImage"]) =>
+  request<WorkspaceEnvironmentSaveResultDto>("/api/settings/workspace-environment", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(workspaceImage),
   });
 
 export const scanHostEnvironment = () =>

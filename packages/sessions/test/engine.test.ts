@@ -69,12 +69,13 @@ const sealantDeadLayer = Layer.succeed(SealantClient, {
   recordTimeline: () => Stream.fromEffect(Effect.die("not in test")),
   runChanges: () => Effect.die("not in test"),
   connectionCheck: () => Effect.die("not in test"),
+  resolveWorkspacePackage: () => Effect.die("not in test"),
 });
 
 const settingsLayer = (workspaceImage = defaultSettings.workspaceImage) =>
   Layer.succeed(SettingsRepo, {
     get: () => Effect.succeed(new MendSettings({ ...defaultSettings, workspaceImage })),
-    set: () => Effect.die("not in test"),
+    modify: () => Effect.die("not in test"),
   });
 
 const sealantLaunchLayer = (
@@ -151,6 +152,7 @@ const sealantLaunchLayer = (
     recordTimeline: () => Stream.fromEffect(Effect.never),
     runChanges: () => Effect.die("not in test"),
     connectionCheck: () => Effect.die("not in test"),
+    resolveWorkspacePackage: () => Effect.die("not in test"),
   });
 };
 

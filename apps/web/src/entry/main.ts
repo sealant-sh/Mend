@@ -58,7 +58,7 @@ import {
   SessionNotifierLive,
   startRunToolLayer,
 } from "@mend/jobs";
-import { SealantClient } from "@mend/sealant";
+import { SealantClientLiveFromEnv } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import { Store, StoreConfig } from "@mend/store";
 import { Config, Effect, Layer, Schema } from "effect";
@@ -300,7 +300,7 @@ const MainLive = Layer.unwrap(
       Layer.provide(GhLive),
       Layer.provide(HostEnvironmentLive),
       Layer.provide(Auth.layer),
-      Layer.provide(SealantClient.layerFromEnv),
+      Layer.provide(SealantClientLiveFromEnv),
       Layer.provide(DatabaseLive),
     );
   }),

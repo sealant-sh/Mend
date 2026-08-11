@@ -16,6 +16,7 @@ import {
   Run,
   RunId,
   SessionId,
+  WorkspaceImage,
 } from "@mend/domain";
 import {
   AutomationChoice,
@@ -243,6 +244,13 @@ export class StoreFailure extends Schema.TaggedErrorClass<StoreFailure>()(
   { httpApiStatus: 422 },
 ) {}
 
+/** A settings update that could not be validated or persisted — the observed reason. */
+export class SettingsFailure extends Schema.TaggedErrorClass<SettingsFailure>()(
+  "SettingsFailure",
+  { message: Schema.String },
+  { httpApiStatus: 422 },
+) {}
+
 /** Adoption: clone `source` (URL or local path) into the store under `name`. */
 export class AdoptProject extends Schema.Class<AdoptProject>("AdoptProject")({
   name: Schema.String,
@@ -289,26 +297,40 @@ export class ProjectAutomationRequest extends Schema.Class<ProjectAutomationRequ
   autoSuggest: AutomationChoice,
 }) {}
 
-export class HostToolSuggestionView extends Schema.Class<HostToolSuggestionView>(
-  "HostToolSuggestionView",
-)({
+export const HostToolSuggestionView = Schema.Struct({
   executable: Schema.String,
   kind: Schema.Literals(["package", "service"]),
   id: Schema.String,
-}) {}
+});
 
-export class HostConfigSuggestionView extends Schema.Class<HostConfigSuggestionView>(
-  "HostConfigSuggestionView",
-)({
+export const HostConfigSuggestionView = Schema.Struct({
   label: Schema.String,
   path: Schema.String,
-}) {}
+});
 
-export class HostEnvironmentSuggestionsView extends Schema.Class<HostEnvironmentSuggestionsView>(
-  "HostEnvironmentSuggestionsView",
-)({
+export const HostEnvironmentSuggestionsView = Schema.Struct({
   tools: Schema.Array(HostToolSuggestionView),
   configs: Schema.Array(HostConfigSuggestionView),
+});
+
+export class WorkspacePackageResolutionView extends Schema.Class<WorkspacePackageResolutionView>(
+  "WorkspacePackageResolutionView",
+)({
+  requested: Schema.String,
+  normalized: Schema.String,
+  status: Schema.Literals(["resolved", "ambiguous", "unsupported", "not-found", "invalid"]),
+  canonicalId: Schema.NullOr(Schema.String),
+  supported: Schema.Boolean,
+  packageName: Schema.NullOr(Schema.String),
+  alternatives: Schema.Array(Schema.String),
+}) {}
+
+export class WorkspaceEnvironmentSaveResult extends Schema.Class<WorkspaceEnvironmentSaveResult>(
+  "WorkspaceEnvironmentSaveResult",
+)({
+  saved: Schema.Boolean,
+  settings: MendSettings,
+  resolutions: Schema.Array(WorkspacePackageResolutionView),
 }) {}
 
 /**
@@ -323,7 +345,20 @@ const settingsGroup = HttpApiGroup.make("settings")
       success: HostEnvironmentSuggestionsView,
     }),
   )
-  .add(HttpApiEndpoint.put("set", "/settings", { payload: MendSettings, success: MendSettings }))
+  .add(
+    HttpApiEndpoint.put("set", "/settings", {
+      payload: MendSettings,
+      success: MendSettings,
+      error: SettingsFailure,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put("setWorkspaceEnvironment", "/settings/workspace-environment", {
+      payload: WorkspaceImage,
+      success: WorkspaceEnvironmentSaveResult,
+      error: SettingsFailure,
+    }),
+  )
   .middleware(AuthMiddleware);
 
 const projectsGroup = HttpApiGroup.make("projects")
