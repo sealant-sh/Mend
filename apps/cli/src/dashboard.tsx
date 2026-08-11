@@ -213,7 +213,7 @@ const deriveItems = (view: View, data: Workbench | undefined): ReadonlyArray<Ite
           label: harness,
           hint:
             harness === "shell"
-              ? "a bash in the worktree — saved state restored, no conversation"
+              ? "a bash in the worktree — resume either agent from inside"
               : "the conversation crosses as a distilled prompt",
         }),
       ),

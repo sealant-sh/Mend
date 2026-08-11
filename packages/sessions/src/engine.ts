@@ -1254,19 +1254,46 @@ export class SessionEngine extends Context.Service<
           });
         }
         const target = harness ?? session.harness;
-        // A shell resume reopens the worktree with no agent: same workspace
-        // image as the session's own harness (images are per-harness; bash is
-        // in all of them), saved state restored when it exists, no
-        // conversation import — bash has nowhere to put one. The session
-        // keeps its harness identity; only this launch runs a shell.
+        // A shell resume reopens the worktree with no agent: saved state
+        // restored when it exists — and none required, because the session
+        // that died before harvesting is exactly the one worth a shell. The
+        // session keeps its harness identity; only this launch runs a shell.
+        // Beyond the original harness's own state, the conversation is also
+        // laid down CONVERTED for the other supported harness, so either
+        // agent opens it natively from inside the shell (the workspace image
+        // carries every supported harness CLI).
         if (target === "shell") {
           const project = yield* projects.byId(session.projectId);
           const stateDir = sessionStatePathOf(project.storePath, session.id);
           const manifest = yield* readHarnessStateManifest(stateDir, session.id).pipe(
             Effect.catchTag("HarnessStateNotFoundError", () => Effect.succeed(null)),
           );
+          let shellImport: ConvertedNativeSession | null = null;
+          if (manifest !== null) {
+            const other =
+              manifest.harness === "codex"
+                ? "claude"
+                : manifest.harness === "claude"
+                  ? "codex"
+                  : null;
+            if (other !== null) {
+              // Best-effort: an unreadable or inconvertible transcript never
+              // blocks the shell — the original state still restores.
+              const transcriptPath = path.join(stateDir, "transcript.native");
+              const native = yield* Effect.tryPromise({
+                try: () => fs.readFile(transcriptPath, "utf8"),
+                catch: () => new Error("transcript unavailable"),
+              }).pipe(Effect.orElseSucceed(() => ""));
+              if (native !== "") {
+                shellImport = convertNativeSession(manifest.harness, other, native, {
+                  cwd: "/workspace/repo",
+                  now: new Date().toISOString(),
+                });
+              }
+            }
+          }
           yield* sessions.reopen(sessionId);
-          return yield* launchInternal(sessionId, ["bash"], null, manifest);
+          return yield* launchInternal(sessionId, ["bash"], shellImport, manifest);
         }
         const defaultArgv = HARNESS_ARGV[target];
         if (defaultArgv === undefined) {
