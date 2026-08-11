@@ -1,3 +1,4 @@
+import type { WorkspaceImageOs } from "@mend/domain";
 import type {
   CreateOptions,
   InferenceContinueOptions,
@@ -20,14 +21,25 @@ import {
   inferenceRespondOp,
   listWorkspacesOp,
   resolveInternalConfig,
+  SealantApiClient,
   sealantApiClientLayer,
 } from "@sealant/sdk/effect";
-import { Clock, Effect, Layer, Option, Redacted, Stream } from "effect";
+import { Clock, Config, Effect, Layer, Option, Redacted, Stream } from "effect";
 import * as Context from "effect/Context";
 
 import { SealantEnv } from "./config.ts";
 import { SealantConnection } from "./connection.ts";
 import { SealantPlatformError } from "./errors.ts";
+
+export interface WorkspacePackageResolution {
+  readonly requested: string;
+  readonly normalized: string;
+  readonly status: "resolved" | "ambiguous" | "unsupported" | "not-found" | "invalid";
+  readonly canonicalId: string | null;
+  readonly supported: boolean;
+  readonly packageName: string | null;
+  readonly alternatives: ReadonlyArray<string>;
+}
 
 /**
  * The Sealant platform behind an Effect service contract, on SDK 0.5.0.
@@ -158,253 +170,280 @@ export class SealantClient extends Context.Service<
     >;
     /** Cheap authenticated round-trip for the settings page. Never fails — the failure is the content. */
     readonly connectionCheck: () => Effect.Effect<SealantConnection>;
+    /** Resolve one package against the selected workspace OS through Sealant's public API. */
+    readonly resolveWorkspacePackage: (
+      packageName: string,
+      os: WorkspaceImageOs,
+    ) => Effect.Effect<WorkspacePackageResolution, SealantPlatformError>;
   }
->()("@mend/sealant/SealantClient") {
-  static readonly layer = Layer.effect(
-    SealantClient,
-    Effect.gen(function* () {
-      const env = yield* SealantEnv;
-      const publicConfig = {
-        baseUrl: env.baseUrl,
-        ...Option.match(env.apiKey, {
-          onNone: () => ({}),
-          onSome: (key) => ({ apiKey: Redacted.value(key) }),
-        }),
-      };
+>()("@mend/sealant/SealantClient") {}
 
-      // The facade, for the stateful object model.
-      const sealant = yield* Effect.acquireRelease(
-        Effect.sync(() => new Sealant(publicConfig)),
-        (client) => Effect.promise(() => client.close()),
-      );
+export const SealantClientLive: Layer.Layer<SealantClient, never, SealantEnv> = Layer.effect(
+  SealantClient,
+  Effect.gen(function* () {
+    const env = yield* SealantEnv;
+    const publicConfig = {
+      baseUrl: env.baseUrl,
+      ...Option.match(env.apiKey, {
+        onNone: () => ({}),
+        onSome: (key) => ({ apiKey: Redacted.value(key) }),
+      }),
+    };
 
-      // The Effect core, for flat operations — built once, provided per call.
-      const internalConfig = resolveInternalConfig(publicConfig);
-      const apiContext = yield* Layer.build(sealantApiClientLayer(internalConfig));
-      const ownerUserId = internalConfig.hostLocal.ownerUserId;
+    // The facade, for the stateful object model.
+    const sealant = yield* Effect.acquireRelease(
+      Effect.sync(() => new Sealant(publicConfig)),
+      (client) => Effect.promise(() => client.close()),
+    );
 
-      const createWorkspace = Effect.fn("SealantClient.createWorkspace")((options: CreateOptions) =>
-        wrap(() => sealant.workspaces.create(options)),
-      );
+    // The Effect core, for flat operations — built once, provided per call.
+    const internalConfig = resolveInternalConfig(publicConfig);
+    const apiContext = yield* Layer.build(sealantApiClientLayer(internalConfig));
+    const ownerUserId = internalConfig.hostLocal.ownerUserId;
 
-      const getWorkspace = Effect.fn("SealantClient.getWorkspace")((id: string) =>
-        wrap(() => sealant.workspaces.get(id)),
-      );
+    const createWorkspace = Effect.fn("SealantClient.createWorkspace")((options: CreateOptions) =>
+      wrap(() => sealant.workspaces.create(options)),
+    );
 
-      const getRun = Effect.fn("SealantClient.getRun")((runId: string) =>
-        wrap(() => sealant.runs.get(runId)),
-      );
+    const getWorkspace = Effect.fn("SealantClient.getWorkspace")((id: string) =>
+      wrap(() => sealant.workspaces.get(id)),
+    );
 
-      const runHarness = Effect.fn("SealantClient.runHarness")(
-        (workspace: Workspace, prompt: string, options?: RunOptions) =>
-          wrap(() => workspace.harness.run(prompt, options)),
-      );
+    const getRun = Effect.fn("SealantClient.getRun")((runId: string) =>
+      wrap(() => sealant.runs.get(runId)),
+    );
 
-      const startHarness = Effect.fn("SealantClient.startHarness")(
-        (workspace: Workspace, prompt: string, options?: RunOptions) =>
-          wrap(() => workspace.harness.start(prompt, options)),
-      );
+    const runHarness = Effect.fn("SealantClient.runHarness")(
+      (workspace: Workspace, prompt: string, options?: RunOptions) =>
+        wrap(() => workspace.harness.run(prompt, options)),
+    );
 
-      const waitRun = Effect.fn("SealantClient.waitRun")((run: Run) => wrap(() => run.wait()));
+    const startHarness = Effect.fn("SealantClient.startHarness")(
+      (workspace: Workspace, prompt: string, options?: RunOptions) =>
+        wrap(() => workspace.harness.start(prompt, options)),
+    );
 
-      const openSession = Effect.fn("SealantClient.openSession")(
-        (workspace: Workspace, argv: ReadonlyArray<string>) =>
-          wrap(() => workspace.sessions.open(argv)),
-      );
+    const waitRun = Effect.fn("SealantClient.waitRun")((run: Run) => wrap(() => run.wait()));
 
-      const stopWorkspace = Effect.fn("SealantClient.stopWorkspace")((workspace: Workspace) =>
-        wrap(() => workspace.stop()),
-      );
+    const openSession = Effect.fn("SealantClient.openSession")(
+      (workspace: Workspace, argv: ReadonlyArray<string>) =>
+        wrap(() => workspace.sessions.open(argv)),
+    );
 
-      const getSession = Effect.fn("SealantClient.getSession")(
-        (workspace: Workspace, sessionId: string) => wrap(() => workspace.sessions.get(sessionId)),
-      );
+    const stopWorkspace = Effect.fn("SealantClient.stopWorkspace")((workspace: Workspace) =>
+      wrap(() => workspace.stop()),
+    );
 
-      // No idempotency on this path: `attemptId` is a workspace-attempt FK,
-      // not a client key, and the wire op carries no idempotency header —
-      // callers dedupe upstream (Mend routes each comment exactly once).
-      const startHarnessInWorkspace = Effect.fn("SealantClient.startHarnessInWorkspace")(function* (
-        workspaceId: string,
-        harness: Harness,
-        prompt: string,
-      ) {
-        const wire = yield* createRunOp({
-          workspaceId,
-          harnessId: harness.id,
-          ownerUserId,
-          mode: "one-shot",
-          prompt,
-          command: harness.buildRunCommand(prompt),
-        }).pipe(Effect.provideContext(apiContext), Effect.mapError(toPlatformError));
-        // The facade's run handle carries the record surface and wait().
-        return yield* wrap(() => sealant.runs.get(wire.runId));
-      });
+    const getSession = Effect.fn("SealantClient.getSession")(
+      (workspace: Workspace, sessionId: string) => wrap(() => workspace.sessions.get(sessionId)),
+    );
 
-      const exec = Effect.fn("SealantClient.exec")(
-        (workspace: Workspace, argv: readonly string[], options?: WorkspaceExecOptions) =>
-          wrap(() => workspace.exec(argv, options)),
-      );
+    // No idempotency on this path: `attemptId` is a workspace-attempt FK,
+    // not a client key, and the wire op carries no idempotency header —
+    // callers dedupe upstream (Mend routes each comment exactly once).
+    const startHarnessInWorkspace = Effect.fn("SealantClient.startHarnessInWorkspace")(function* (
+      workspaceId: string,
+      harness: Harness,
+      prompt: string,
+    ) {
+      const wire = yield* createRunOp({
+        workspaceId,
+        harnessId: harness.id,
+        ownerUserId,
+        mode: "one-shot",
+        prompt,
+        command: harness.buildRunCommand(prompt),
+      }).pipe(Effect.provideContext(apiContext), Effect.mapError(toPlatformError));
+      // The facade's run handle carries the record surface and wait().
+      return yield* wrap(() => sealant.runs.get(wire.runId));
+    });
 
-      const diffCommits = Effect.fn("SealantClient.diffCommits")(function* (
-        workspaceId: string,
-        base: string,
-        head: string,
-      ) {
-        const workspace = yield* wrap(() => sealant.workspaces.get(workspaceId));
-        const range = `${base}..${head}`;
-        const unified = yield* wrap(() => workspace.exec(["git", "diff", range]));
-        // `--numstat` gives exact per-file counts (tab-separated: adds, dels, path).
-        const numstat = yield* wrap(() => workspace.exec(["git", "diff", "--numstat", range]));
-        const files = numstat.stdout
-          .split("\n")
-          .map((line) => line.trim())
-          .filter((line) => line !== "")
-          .map((line) => {
-            const [adds, dels, ...rest] = line.split("\t");
-            return {
-              path: rest.join("\t"),
-              additions: Number(adds) || 0,
-              deletions: Number(dels) || 0,
-            };
-          })
-          .filter((file) => file.path !== "");
-        return { diff: unified.stdout, files };
-      });
+    const exec = Effect.fn("SealantClient.exec")(
+      (workspace: Workspace, argv: readonly string[], options?: WorkspaceExecOptions) =>
+        wrap(() => workspace.exec(argv, options)),
+    );
 
-      const inferenceRespond = Effect.fn("SealantClient.inferenceRespond")(
-        (options: InferenceRespondOptions | InferenceContinueOptions) =>
-          "sessionId" in options
-            ? inferenceRespondOp({
-                ownerUserId,
-                sessionId: options.sessionId,
-                toolResults: options.toolResults,
-              }).pipe(
-                Effect.provideContext(apiContext),
-                Effect.mapError(toPlatformError),
-                Effect.map(toInferenceResponse),
-              )
-            : inferenceRespondOp({
-                ownerUserId,
-                prompt: options.prompt,
-                system: options.system,
-                model: options.model,
-                maxTurns: options.maxTurns,
-                tools: options.tools?.map((tool) => ({
-                  name: tool.name,
-                  description: tool.description,
-                  inputSchema: tool.inputSchema,
-                })),
-                responseFormat: options.responseFormat,
-                credentials: {
-                  profileId: options.credentials.profile,
-                  claude: accountReference(options.credentials.claude),
-                  codex: accountReference(options.credentials.codex),
-                },
-              }).pipe(
-                Effect.provideContext(apiContext),
-                Effect.mapError(toPlatformError),
-                Effect.map(toInferenceResponse),
-              ),
-      );
+    const diffCommits = Effect.fn("SealantClient.diffCommits")(function* (
+      workspaceId: string,
+      base: string,
+      head: string,
+    ) {
+      const workspace = yield* wrap(() => sealant.workspaces.get(workspaceId));
+      const range = `${base}..${head}`;
+      const unified = yield* wrap(() => workspace.exec(["git", "diff", range]));
+      // `--numstat` gives exact per-file counts (tab-separated: adds, dels, path).
+      const numstat = yield* wrap(() => workspace.exec(["git", "diff", "--numstat", range]));
+      const files = numstat.stdout
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line !== "")
+        .map((line) => {
+          const [adds, dels, ...rest] = line.split("\t");
+          return {
+            path: rest.join("\t"),
+            additions: Number(adds) || 0,
+            deletions: Number(dels) || 0,
+          };
+        })
+        .filter((file) => file.path !== "");
+      return { diff: unified.stdout, files };
+    });
 
-      const recordStream = (run: Run, options?: { readonly from?: bigint }) =>
-        Stream.fromAsyncIterable(
-          run.record.stream(options?.from === undefined ? {} : { from: options.from }),
-          toPlatformError,
-        );
-
-      const recordTimeline = (run: Run, options?: { readonly from?: bigint }) =>
-        Stream.fromAsyncIterable(
-          run.record.timeline(options?.from === undefined ? {} : { from: options.from }),
-          toPlatformError,
-        );
-
-      const recordCommands = Effect.fn("SealantClient.recordCommands")((run: Run) =>
-        wrap(() => run.record.commands()),
-      );
-
-      const recordScrollback = Effect.fn("SealantClient.recordScrollback")(
-        (run: Run, processId: string, stream: "pty" | "stdout" | "stderr") =>
-          wrap(async () => {
-            const chunks: Array<Uint8Array> = [];
-            let total = 0;
-            // The wire accepts "pty" (verified: 150KB+ served for a live PTY run);
-            // only the SDK's IoStream type omits it. The cast bridges that gap
-            // until the type widens upstream.
-            for await (const chunk of run.record.scrollback(
-              processId,
-              stream as "stdout" | "stderr",
-            )) {
-              chunks.push(chunk);
-              total += chunk.length;
-            }
-            const joined = new Uint8Array(total);
-            let offset = 0;
-            for (const chunk of chunks) {
-              joined.set(chunk, offset);
-              offset += chunk.length;
-            }
-            return joined;
-          }),
-      );
-
-      const runChanges = Effect.fn("SealantClient.runChanges")((run: Run) =>
-        wrap(async () => ({ files: run.changes.files, diff: await run.changes.diff() })),
-      );
-
-      const connectionCheck = Effect.fn("SealantClient.connectionCheck")(function* () {
-        const now = yield* Clock.currentTimeMillis;
-        return yield* listWorkspacesOp({ ownerUserId, limit: "1" }).pipe(
-          Effect.provideContext(apiContext),
-          Effect.map(
-            () =>
-              new SealantConnection({
-                status: "connected",
-                baseUrl: env.baseUrl,
-                detail: null,
-                checkedAt: new Date(now),
-              }),
-          ),
-          Effect.catch((error) =>
-            Effect.succeed(
-              new SealantConnection({
-                status: connectionStatusOf(error),
-                baseUrl: env.baseUrl,
-                detail: toPlatformError(error).message,
-                checkedAt: new Date(now),
-              }),
+    const inferenceRespond = Effect.fn("SealantClient.inferenceRespond")(
+      (options: InferenceRespondOptions | InferenceContinueOptions) =>
+        "sessionId" in options
+          ? inferenceRespondOp({
+              ownerUserId,
+              sessionId: options.sessionId,
+              toolResults: options.toolResults,
+            }).pipe(
+              Effect.provideContext(apiContext),
+              Effect.mapError(toPlatformError),
+              Effect.map(toInferenceResponse),
+            )
+          : inferenceRespondOp({
+              ownerUserId,
+              prompt: options.prompt,
+              system: options.system,
+              model: options.model,
+              maxTurns: options.maxTurns,
+              tools: options.tools?.map((tool) => ({
+                name: tool.name,
+                description: tool.description,
+                inputSchema: tool.inputSchema,
+              })),
+              responseFormat: options.responseFormat,
+              credentials: {
+                profileId: options.credentials.profile,
+                claude: accountReference(options.credentials.claude),
+                codex: accountReference(options.credentials.codex),
+              },
+            }).pipe(
+              Effect.provideContext(apiContext),
+              Effect.mapError(toPlatformError),
+              Effect.map(toInferenceResponse),
             ),
+    );
+
+    const recordStream = (run: Run, options?: { readonly from?: bigint }) =>
+      Stream.fromAsyncIterable(
+        run.record.stream(options?.from === undefined ? {} : { from: options.from }),
+        toPlatformError,
+      );
+
+    const recordTimeline = (run: Run, options?: { readonly from?: bigint }) =>
+      Stream.fromAsyncIterable(
+        run.record.timeline(options?.from === undefined ? {} : { from: options.from }),
+        toPlatformError,
+      );
+
+    const recordCommands = Effect.fn("SealantClient.recordCommands")((run: Run) =>
+      wrap(() => run.record.commands()),
+    );
+
+    const recordScrollback = Effect.fn("SealantClient.recordScrollback")(
+      (run: Run, processId: string, stream: "pty" | "stdout" | "stderr") =>
+        wrap(async () => {
+          const chunks: Array<Uint8Array> = [];
+          let total = 0;
+          // The wire accepts "pty" (verified: 150KB+ served for a live PTY run);
+          // only the SDK's IoStream type omits it. The cast bridges that gap
+          // until the type widens upstream.
+          for await (const chunk of run.record.scrollback(
+            processId,
+            stream as "stdout" | "stderr",
+          )) {
+            chunks.push(chunk);
+            total += chunk.length;
+          }
+          const joined = new Uint8Array(total);
+          let offset = 0;
+          for (const chunk of chunks) {
+            joined.set(chunk, offset);
+            offset += chunk.length;
+          }
+          return joined;
+        }),
+    );
+
+    const runChanges = Effect.fn("SealantClient.runChanges")((run: Run) =>
+      wrap(async () => ({ files: run.changes.files, diff: await run.changes.diff() })),
+    );
+
+    const connectionCheck = Effect.fn("SealantClient.connectionCheck")(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      return yield* listWorkspacesOp({ ownerUserId, limit: "1" }).pipe(
+        Effect.provideContext(apiContext),
+        Effect.map(
+          () =>
+            new SealantConnection({
+              status: "connected",
+              baseUrl: env.baseUrl,
+              detail: null,
+              checkedAt: new Date(now),
+            }),
+        ),
+        Effect.catch((error) =>
+          Effect.succeed(
+            new SealantConnection({
+              status: connectionStatusOf(error),
+              baseUrl: env.baseUrl,
+              detail: toPlatformError(error).message,
+              checkedAt: new Date(now),
+            }),
           ),
-        );
-      });
+        ),
+      );
+    });
 
-      return {
-        createWorkspace,
-        getWorkspace,
-        getRun,
-        runHarness,
-        startHarness,
-        startHarnessInWorkspace,
-        waitRun,
-        openSession,
-        stopWorkspace,
-        getSession,
-        exec,
-        diffCommits,
-        inferenceRespond,
-        recordStream,
-        recordTimeline,
-        recordCommands,
-        recordScrollback,
-        runChanges,
-        connectionCheck,
-      };
-    }),
-  );
+    const resolveWorkspacePackage = Effect.fn("SealantClient.resolveWorkspacePackage")(
+      (packageName: string, os: WorkspaceImageOs) =>
+        Effect.gen(function* () {
+          const client = yield* SealantApiClient;
+          const resolution = yield* client.packages.resolvePackage({
+            query: { query: packageName, targetOs: os },
+          });
+          const osSupport = resolution.osSupport[os];
+          return {
+            requested: resolution.requested,
+            normalized: resolution.normalized,
+            status: resolution.status,
+            canonicalId: resolution.canonicalId ?? null,
+            supported: osSupport.supported,
+            packageName: osSupport.packageName ?? null,
+            alternatives: resolution.alternatives.map((alternative) => alternative.projectName),
+          } satisfies WorkspacePackageResolution;
+        }).pipe(Effect.provideContext(apiContext), Effect.mapError(toPlatformError)),
+    );
 
-  /** `layer` with its environment attached — the composition-root convenience. */
-  static readonly layerFromEnv = SealantClient.layer.pipe(Layer.provide(SealantEnv.layer));
-}
+    return {
+      createWorkspace,
+      getWorkspace,
+      getRun,
+      runHarness,
+      startHarness,
+      startHarnessInWorkspace,
+      waitRun,
+      openSession,
+      stopWorkspace,
+      getSession,
+      exec,
+      diffCommits,
+      inferenceRespond,
+      recordStream,
+      recordTimeline,
+      recordCommands,
+      recordScrollback,
+      runChanges,
+      connectionCheck,
+      resolveWorkspacePackage,
+    };
+  }),
+);
+
+/** The live client with its process environment attached for the application composition root. */
+export const SealantClientLiveFromEnv: Layer.Layer<SealantClient, Config.ConfigError> =
+  SealantClientLive.pipe(Layer.provide(SealantEnv.layer));
 
 /** The facade's `true` means "the account named default"; the wire wants a name or nothing. */
 const accountReference = (value: boolean | string | undefined) =>

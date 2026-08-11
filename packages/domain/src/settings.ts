@@ -43,6 +43,12 @@ export const defaultWorkspaceImage: WorkspaceImage = {
   services: { docker: true },
 };
 
+export const workspaceImagesEqual = (left: WorkspaceImage, right: WorkspaceImage): boolean =>
+  left.os === right.os &&
+  left.services.docker === right.services.docker &&
+  left.packages.length === right.packages.length &&
+  left.packages.every((value, index) => value === right.packages[index]);
+
 const workspaceImageWithDefault = WorkspaceImage.pipe(
   Schema.withDecodingDefaultKey(Effect.succeed(defaultWorkspaceImage)),
 );

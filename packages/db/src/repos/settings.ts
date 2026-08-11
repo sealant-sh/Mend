@@ -1,5 +1,5 @@
 import { defaultSettings, MendSettings } from "@mend/domain";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -13,7 +13,9 @@ export class SettingsRepo extends Context.Service<
   SettingsRepo,
   {
     readonly get: () => Effect.Effect<MendSettings>;
-    readonly set: (settings: MendSettings) => Effect.Effect<MendSettings>;
+    readonly modify: (
+      update: (current: MendSettings) => MendSettings,
+    ) => Effect.Effect<MendSettings>;
   }
 >()("@mend/db/SettingsRepo") {}
 
@@ -33,19 +35,40 @@ export const SettingsRepoLive: Layer.Layer<SettingsRepo, never, MendDB> = Layer.
       return yield* decodeSettings(row.value).pipe(Effect.orDie);
     });
 
-    const set = Effect.fn("SettingsRepo.set")(function* (settings: MendSettings) {
-      const encoded = yield* Schema.encodeEffect(MendSettings)(settings).pipe(Effect.orDie);
-      yield* db
-        .insert(settingsTable)
-        .values({ key: "mend", value: encoded })
-        .onConflictDoUpdate({
-          target: settingsTable.key,
-          set: { value: encoded, updatedAt: new Date() },
-        })
+    const modify = Effect.fn("SettingsRepo.modify")(function* (
+      update: (current: MendSettings) => MendSettings,
+    ) {
+      return yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            // The row may not exist yet, so a row lock alone cannot serialize
+            // first-write races. This transaction-scoped lock covers that case.
+            yield* tx.execute(sql`select pg_advisory_xact_lock(hashtext('mend:settings'))`);
+            const [row] = yield* tx
+              .select({ value: settingsTable.value })
+              .from(settingsTable)
+              .where(eq(settingsTable.key, "mend"))
+              .limit(1)
+              .for("update");
+            const current =
+              row === undefined
+                ? defaultSettings
+                : yield* decodeSettings(row.value).pipe(Effect.orDie);
+            const next = update(current);
+            const encoded = yield* Schema.encodeEffect(MendSettings)(next).pipe(Effect.orDie);
+            yield* tx
+              .insert(settingsTable)
+              .values({ key: "mend", value: encoded })
+              .onConflictDoUpdate({
+                target: settingsTable.key,
+                set: { value: encoded, updatedAt: new Date() },
+              });
+            return next;
+          }),
+        )
         .pipe(Effect.orDie);
-      return settings;
     });
 
-    return { get, set };
+    return { get, modify };
   }),
 );

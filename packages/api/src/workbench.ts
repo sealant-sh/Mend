@@ -13,6 +13,7 @@ import {
   SessionsRepo,
   SettingsRepo,
 } from "@mend/db";
+import { MendSettings, workspaceImagesEqual } from "@mend/domain";
 import { FollowUp } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
 import { SessionEngine } from "@mend/sessions";
@@ -32,11 +33,13 @@ import {
   SessionActive,
   SessionAnnotation,
   SessionDetail,
+  SettingsFailure,
   StoreFailure,
   SessionTranscript,
   TranscriptEvent,
 } from "./contract.ts";
 import { HostEnvironment } from "./host-environment.ts";
+import { saveResolvedWorkspaceEnvironment } from "./workspace-environment.ts";
 
 /**
  * The workbench handlers (plan §6): projects, sessions, and the session
@@ -73,8 +76,37 @@ export const SettingsGroupLive = HttpApiBuilder.group(MendApi, "settings", (hand
     .handle("set", ({ payload }) =>
       Effect.gen(function* () {
         const settings = yield* SettingsRepo;
-        return yield* settings.set(payload);
+        const current = yield* settings.get();
+        if (workspaceImagesEqual(current.workspaceImage, payload.workspaceImage)) {
+          return yield* settings.modify(
+            (latest) => new MendSettings({ ...payload, workspaceImage: latest.workspaceImage }),
+          );
+        }
+
+        const result = yield* saveResolvedWorkspaceEnvironment(
+          payload.workspaceImage,
+          (_latest, workspaceImage) => new MendSettings({ ...payload, workspaceImage }),
+        );
+        if (!result.saved) {
+          const rejected = result.resolutions
+            .filter((resolution) => resolution.status !== "resolved" || !resolution.supported)
+            .map((resolution) =>
+              resolution.status === "resolved"
+                ? `${resolution.requested} (unsupported)`
+                : `${resolution.requested} (${resolution.status})`,
+            );
+          return yield* new SettingsFailure({
+            message: `Workspace packages did not resolve for ${payload.workspaceImage.os}: ${rejected.join(", ")}.`,
+          });
+        }
+        return result.settings;
       }),
+    )
+    .handle("setWorkspaceEnvironment", ({ payload }) =>
+      saveResolvedWorkspaceEnvironment(
+        payload,
+        (latest, workspaceImage) => new MendSettings({ ...latest, workspaceImage }),
+      ),
     ),
 );
 

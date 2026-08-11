@@ -16,6 +16,7 @@ import {
   Run,
   RunId,
   SessionId,
+  WorkspaceImage,
 } from "@mend/domain";
 import {
   AutomationChoice,
@@ -243,6 +244,13 @@ export class StoreFailure extends Schema.TaggedErrorClass<StoreFailure>()(
   { httpApiStatus: 422 },
 ) {}
 
+/** A settings update that could not be validated or persisted — the observed reason. */
+export class SettingsFailure extends Schema.TaggedErrorClass<SettingsFailure>()(
+  "SettingsFailure",
+  { message: Schema.String },
+  { httpApiStatus: 422 },
+) {}
+
 /** Adoption: clone `source` (URL or local path) into the store under `name`. */
 export class AdoptProject extends Schema.Class<AdoptProject>("AdoptProject")({
   name: Schema.String,
@@ -305,6 +313,26 @@ export const HostEnvironmentSuggestionsView = Schema.Struct({
   configs: Schema.Array(HostConfigSuggestionView),
 });
 
+export class WorkspacePackageResolutionView extends Schema.Class<WorkspacePackageResolutionView>(
+  "WorkspacePackageResolutionView",
+)({
+  requested: Schema.String,
+  normalized: Schema.String,
+  status: Schema.Literals(["resolved", "ambiguous", "unsupported", "not-found", "invalid"]),
+  canonicalId: Schema.NullOr(Schema.String),
+  supported: Schema.Boolean,
+  packageName: Schema.NullOr(Schema.String),
+  alternatives: Schema.Array(Schema.String),
+}) {}
+
+export class WorkspaceEnvironmentSaveResult extends Schema.Class<WorkspaceEnvironmentSaveResult>(
+  "WorkspaceEnvironmentSaveResult",
+)({
+  saved: Schema.Boolean,
+  settings: MendSettings,
+  resolutions: Schema.Array(WorkspacePackageResolutionView),
+}) {}
+
 /**
  * Product settings, one document (the review-automation cascade's root:
  * project `inherit` resolves against these defaults). PUT replaces the whole
@@ -317,7 +345,20 @@ const settingsGroup = HttpApiGroup.make("settings")
       success: HostEnvironmentSuggestionsView,
     }),
   )
-  .add(HttpApiEndpoint.put("set", "/settings", { payload: MendSettings, success: MendSettings }))
+  .add(
+    HttpApiEndpoint.put("set", "/settings", {
+      payload: MendSettings,
+      success: MendSettings,
+      error: SettingsFailure,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put("setWorkspaceEnvironment", "/settings/workspace-environment", {
+      payload: WorkspaceImage,
+      success: WorkspaceEnvironmentSaveResult,
+      error: SettingsFailure,
+    }),
+  )
   .middleware(AuthMiddleware);
 
 const projectsGroup = HttpApiGroup.make("projects")

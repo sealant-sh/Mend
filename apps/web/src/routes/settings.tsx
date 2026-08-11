@@ -1,10 +1,11 @@
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
-import { useState } from "react";
+import { useReducer, useState } from "react";
 
 import { AppShell } from "#/components/shell";
 import {
   putSettings,
+  saveWorkspaceEnvironment,
   scanHostEnvironment,
   sealantConnection,
   type HostEnvironmentSuggestionsDto,
@@ -13,6 +14,14 @@ import {
 } from "#/lib/api";
 import { queryClient, settingsQuery } from "#/lib/queries";
 import { setThemePreference, useThemePreference, type ThemePreference } from "#/lib/theme";
+import {
+  createWorkspaceEnvironmentForm,
+  parsePackageDraft,
+  resolutionIssue,
+  workspaceEnvironmentFormReducer,
+  workspaceImageFromForm,
+  workspaceImagesEqual,
+} from "#/lib/workspace-environment";
 
 export const Route = createFileRoute("/settings")({
   ssr: false,
@@ -55,39 +64,47 @@ const OS_OPTIONS: ReadonlyArray<{
   { value: "nix", label: "Nix", detail: "Tools resolved from nixpkgs." },
 ];
 
-const parsePackageDraft = (draft: string) => {
-  const packages = [
-    ...new Set(
-      draft
-        .split(/[\n,]/)
-        .map((value) => value.trim().toLowerCase())
-        .filter((value) => value !== ""),
-    ),
-  ];
-  const invalid = packages.find((value) => !/^[a-z0-9][a-z0-9._:+-]*$/.test(value));
-  return invalid === undefined ? { packages, invalid: null } : { packages, invalid };
-};
-
 function WorkspaceEnvironmentPanel() {
   const settings = useSuspenseQuery(settingsQuery).data;
-  const [packageDraft, setPackageDraft] = useState(settings.workspaceImage.packages.join("\n"));
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [form, dispatch] = useReducer(
+    workspaceEnvironmentFormReducer,
+    settings.workspaceImage,
+    createWorkspaceEnvironmentForm,
+  );
   const [scanning, setScanning] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<HostEnvironmentSuggestionsDto | null>(null);
 
-  const persist = async (workspaceImage: SettingsDto["workspaceImage"]) => {
-    setPending(true);
-    setError(null);
+  const pending = form.phase === "saving";
+  const parsedDraft = parsePackageDraft(form.packageDraft);
+  const candidate = workspaceImageFromForm(form);
+  const dirty = !workspaceImagesEqual(form.savedImage, candidate);
+  const rejectedResolutions = (form.resolutions ?? []).flatMap((resolution) => {
+    const issue = resolutionIssue(resolution, form.os);
+    return issue === null ? [] : [{ resolution, issue }];
+  });
+
+  const persist = async () => {
+    dispatch({ type: "save-started" });
     try {
-      await putSettings({ ...settings, workspaceImage });
-      await queryClient.invalidateQueries({ queryKey: ["settings"] });
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Could not save the workspace environment.",
+      const result = await saveWorkspaceEnvironment(candidate);
+      if (!result.saved) {
+        dispatch({ type: "save-rejected", resolutions: result.resolutions });
+        return;
+      }
+      const saved = result.settings.workspaceImage;
+      dispatch({ type: "save-succeeded", workspaceImage: saved, resolutions: result.resolutions });
+      queryClient.setQueryData<SettingsDto>(settingsQuery.queryKey, (current) =>
+        current === undefined ? result.settings : { ...current, workspaceImage: saved },
       );
-    } finally {
-      setPending(false);
+    } catch (cause) {
+      dispatch({
+        type: "save-failed",
+        message:
+          cause instanceof Error
+            ? cause.message
+            : "Could not validate and save the workspace environment.",
+      });
     }
   };
 
@@ -96,22 +113,11 @@ function WorkspaceEnvironmentPanel() {
     const suggestedPackages = suggestions.tools
       .filter((tool) => tool.kind === "package")
       .map((tool) => tool.id);
-    const packages = [...new Set([...settings.workspaceImage.packages, ...suggestedPackages])];
     const dockerObserved = suggestions.tools.some(
       (tool) => tool.kind === "service" && tool.id === "docker",
     );
-    setPackageDraft(packages.join("\n"));
-    void persist({
-      ...settings.workspaceImage,
-      packages,
-      services: {
-        ...settings.workspaceImage.services,
-        docker: settings.workspaceImage.services.docker || dockerObserved,
-      },
-    });
+    dispatch({ type: "suggestions-applied", packageIds: suggestedPackages, dockerObserved });
   };
-
-  const parsedDraft = parsePackageDraft(packageDraft);
 
   return (
     <section className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
@@ -128,9 +134,9 @@ function WorkspaceEnvironmentPanel() {
               key={option.value}
               type="button"
               disabled={pending}
-              onClick={() => void persist({ ...settings.workspaceImage, os: option.value })}
+              onClick={() => dispatch({ type: "os-changed", os: option.value })}
               className={`rounded-xl border p-3 text-left shadow-xs transition-colors disabled:opacity-60 ${
-                settings.workspaceImage.os === option.value
+                form.os === option.value
                   ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash"
                   : "border-border bg-card hover:border-input"
               }`}
@@ -158,22 +164,14 @@ function WorkspaceEnvironmentPanel() {
           <button
             type="button"
             disabled={pending}
-            onClick={() =>
-              void persist({
-                ...settings.workspaceImage,
-                services: {
-                  ...settings.workspaceImage.services,
-                  docker: !settings.workspaceImage.services.docker,
-                },
-              })
-            }
+            onClick={() => dispatch({ type: "docker-toggled" })}
             className={`shrink-0 rounded-xl border px-3.5 py-1.5 font-sans text-xs font-medium shadow-xs transition-colors disabled:opacity-60 ${
-              settings.workspaceImage.services.docker
+              form.docker
                 ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
                 : "border-border bg-card text-muted-foreground hover:text-foreground"
             }`}
           >
-            {settings.workspaceImage.services.docker ? "Enabled" : "Disabled"}
+            {form.docker ? "Enabled" : "Disabled"}
           </button>
         </div>
       </div>
@@ -186,36 +184,41 @@ function WorkspaceEnvironmentPanel() {
           Packages
         </label>
         <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
-          One known package or distro package per line. The defaults include pnpm, Python + uv, mise
-          for Node and Python versions, GitHub CLI, lazygit, bat, and common shell tools.
+          One package per line. Sealant resolves every entry for the selected operating system
+          before Mend saves it.
         </p>
         <textarea
           id="workspace-packages"
-          value={packageDraft}
-          onChange={(event) => setPackageDraft(event.target.value)}
+          value={form.packageDraft}
+          disabled={pending}
+          onChange={(event) =>
+            dispatch({ type: "packages-changed", packageDraft: event.target.value })
+          }
           rows={8}
           spellCheck={false}
-          className="mt-3 w-full resize-y rounded-xl border border-input bg-card px-3.5 py-3 font-mono text-[12.5px] leading-relaxed text-foreground outline-none transition-colors focus:border-[var(--sw-accent)] focus:ring-2 focus:ring-[color-mix(in_oklab,var(--sw-accent)_18%,transparent)]"
+          className="mt-3 w-full resize-y rounded-xl border border-input bg-card px-3.5 py-3 font-mono text-[12.5px] leading-relaxed text-foreground outline-none transition-colors focus:border-[var(--sw-accent)] focus:ring-2 focus:ring-[color-mix(in_oklab,var(--sw-accent)_18%,transparent)] disabled:opacity-60"
         />
-        <div className="mt-3 flex items-center justify-between gap-4">
-          <p className="text-xs text-muted-foreground">
-            {parsedDraft.packages.length} package{parsedDraft.packages.length === 1 ? "" : "s"}
-          </p>
-          <button
-            type="button"
-            disabled={pending || parsedDraft.invalid !== null}
-            onClick={() =>
-              void persist({ ...settings.workspaceImage, packages: parsedDraft.packages })
-            }
-            className="inline-flex min-h-9 items-center justify-center rounded-xl bg-primary px-4 font-sans text-[13px] font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-transform hover:-translate-y-0.5 disabled:pointer-events-none disabled:opacity-60"
-          >
-            {pending ? "Saving…" : "Save packages"}
-          </button>
-        </div>
+        <p className="mt-3 text-xs text-muted-foreground">
+          {parsedDraft.packages.length} package{parsedDraft.packages.length === 1 ? "" : "s"} ·
+          checked for {form.os === "arch" ? "Arch" : "Nix"} on save
+        </p>
         {parsedDraft.invalid === null ? null : (
           <p className="mt-2 text-xs text-danger">
             Unsupported package syntax: {parsedDraft.invalid}
           </p>
+        )}
+        {rejectedResolutions.length === 0 ? null : (
+          <div className="mt-4 divide-y divide-[var(--sw-faint-rule)] border-y border-[var(--sw-faint-rule)]">
+            {rejectedResolutions.map(({ resolution, issue }) => (
+              <div key={resolution.requested} className="flex gap-3 py-3">
+                <span className="mt-1.5 size-2 shrink-0 rounded-full bg-danger-dot" aria-hidden />
+                <div className="min-w-0">
+                  <p className="font-mono text-[12.5px] text-ink-2">{resolution.requested}</p>
+                  <p className="mt-0.5 text-xs leading-relaxed text-danger">{issue}</p>
+                </div>
+              </div>
+            ))}
+          </div>
         )}
       </div>
 
@@ -235,11 +238,13 @@ function WorkspaceEnvironmentPanel() {
             disabled={scanning}
             onClick={() => {
               setScanning(true);
-              setError(null);
+              setScanError(null);
               void scanHostEnvironment()
                 .then(setSuggestions)
                 .catch((cause: unknown) =>
-                  setError(cause instanceof Error ? cause.message : "Could not scan this machine."),
+                  setScanError(
+                    cause instanceof Error ? cause.message : "Could not scan this machine.",
+                  ),
                 )
                 .finally(() => setScanning(false));
             }}
@@ -274,7 +279,7 @@ function WorkspaceEnvironmentPanel() {
                 onClick={applySuggestions}
                 className="rounded-xl border border-border bg-card px-3.5 py-2 font-sans text-[13px] font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-60"
               >
-                Add observed tools
+                Add observed tools to draft
               </button>
             )}
             {suggestions.configs.length === 0 ? null : (
@@ -298,8 +303,33 @@ function WorkspaceEnvironmentPanel() {
         )}
       </div>
 
-      {error === null ? null : (
-        <p className="mt-4 border-l-2 border-danger pl-3 text-[13px] text-danger">{error}</p>
+      <div className="mt-6 flex items-center justify-between gap-4 border-t border-[var(--sw-faint-rule)] pt-5">
+        <div className="flex min-w-0 items-center gap-2.5 text-[13px]">
+          {form.phase === "saved" ? (
+            <>
+              <span className="size-2 shrink-0 rounded-full bg-success-dot" aria-hidden />
+              <span className="text-success">Saved · packages resolved by Sealant</span>
+            </>
+          ) : (
+            <span className={dirty ? "text-foreground" : "text-muted-foreground"}>
+              {dirty ? "Unsaved environment changes" : "No environment changes"}
+            </span>
+          )}
+        </div>
+        <button
+          type="button"
+          disabled={pending || !dirty || parsedDraft.invalid !== null}
+          onClick={() => void persist()}
+          className="inline-flex min-h-9 shrink-0 items-center justify-center rounded-xl bg-primary px-4 font-sans text-[13px] font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-transform hover:-translate-y-0.5 disabled:pointer-events-none disabled:opacity-60"
+        >
+          {pending ? "Checking packages…" : "Save environment"}
+        </button>
+      </div>
+
+      {form.error === null && scanError === null ? null : (
+        <p className="mt-4 border-l-2 border-danger pl-3 text-[13px] text-danger">
+          {form.error ?? scanError}
+        </p>
       )}
     </section>
   );
