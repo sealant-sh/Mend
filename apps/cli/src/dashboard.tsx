@@ -198,7 +198,10 @@ const deriveItems = (view: View, data: Workbench | undefined): ReadonlyArray<Ite
   }
   const resuming = view.session;
   if (resuming !== null) {
-    const others = Object.keys(HARNESS_COMMANDS).filter((h) => h !== resuming.harness);
+    // No shell here: a conversation cannot cross into a bare bash.
+    const others = Object.keys(HARNESS_COMMANDS).filter(
+      (h) => h !== resuming.harness && h !== "shell",
+    );
     return [
       {
         kind: "harness",
@@ -221,7 +224,10 @@ const deriveItems = (view: View, data: Workbench | undefined): ReadonlyArray<Ite
       kind: "harness",
       harness,
       label: harness,
-      hint: `mend ${harness} — new worktree, recorded session`,
+      hint:
+        harness === "shell"
+          ? "a plain bash session — new worktree, recorded"
+          : `mend ${harness} — new worktree, recorded session`,
     }),
   );
 };

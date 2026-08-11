@@ -11,6 +11,8 @@ export const HARNESS_COMMANDS: Record<string, ReadonlyArray<string>> = {
   codex: ["codex"],
   claude: ["claude"],
   opencode: ["opencode"],
+  // Not a coding agent: a plain bash session in its own recorded worktree.
+  shell: ["bash"],
 };
 
 /** How each harness takes an instruction as its opening prompt. */
