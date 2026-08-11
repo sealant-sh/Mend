@@ -1,6 +1,6 @@
 import { Auth } from "@mend/auth";
-import { SessionsRepo } from "@mend/db";
-import { SessionId } from "@mend/domain";
+import { SessionProcessesRepo, SessionsRepo } from "@mend/db";
+import { SessionId, SessionProcessId, type SealantWorkspaceId } from "@mend/domain";
 import { SealantClient } from "@mend/sealant";
 import { Effect, Option } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
@@ -23,12 +23,16 @@ import { Socket } from "effect/unstable/socket";
  *   client → server   text   = `{"t":"resize","cols":n,"rows":n}`
  *
  * Auth: session cookie (browser) or `?token=` (CLI; WebSocket cannot set
- * headers). Addressing stays query-param: `?session=<id>&from=<seq>`.
+ * headers). Addressing stays query-param: `?process=<id>` reaches any
+ * workspace process by its plural record (docs/SESSION-SERVICES.md);
+ * `?session=<id>` remains the session's agent PTY via the legacy singular
+ * pointer. `&from=<seq>` replays either.
  */
 export const TtyRoutes = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const auth = yield* Auth;
     const sessions = yield* SessionsRepo;
+    const processes = yield* SessionProcessesRepo;
     const sealant = yield* SealantClient;
 
     yield* router.add("GET", "/api/tty", (request) =>
@@ -48,18 +52,33 @@ export const TtyRoutes = HttpRouter.use((router) =>
         const authed = yield* auth.getSession(headers);
         if (Option.isNone(authed)) return HttpServerResponse.empty({ status: 401 });
 
+        // Two address forms resolve to one (workspace, PTY) pair.
+        const processParam = url.searchParams.get("process");
         const sessionParam = url.searchParams.get("session");
-        if (sessionParam === null) {
-          return HttpServerResponse.text("missing ?session", { status: 400 });
+        let target: {
+          readonly sealantWorkspaceId: SealantWorkspaceId;
+          readonly sealantSessionId: string;
+        };
+        if (processParam !== null) {
+          const process = yield* processes.byId(SessionProcessId.make(processParam));
+          if (process === null) {
+            return HttpServerResponse.text("unknown process", { status: 404 });
+          }
+          target = process;
+        } else if (sessionParam !== null) {
+          const session = yield* sessions.byId(SessionId.make(sessionParam)).pipe(Effect.option);
+          if (Option.isNone(session)) {
+            return HttpServerResponse.text("unknown session", { status: 404 });
+          }
+          const { sealantWorkspaceId, sealantSessionId } = session.value;
+          if (sealantWorkspaceId === null || sealantSessionId === null) {
+            return HttpServerResponse.text("session has no platform PTY", { status: 409 });
+          }
+          target = { sealantWorkspaceId, sealantSessionId };
+        } else {
+          return HttpServerResponse.text("missing ?process or ?session", { status: 400 });
         }
-        const session = yield* sessions.byId(SessionId.make(sessionParam)).pipe(Effect.option);
-        if (Option.isNone(session)) {
-          return HttpServerResponse.text("unknown session", { status: 404 });
-        }
-        const { sealantWorkspaceId, sealantSessionId } = session.value;
-        if (sealantWorkspaceId === null || sealantSessionId === null) {
-          return HttpServerResponse.text("session has no platform PTY", { status: 409 });
-        }
+        const { sealantWorkspaceId, sealantSessionId } = target;
         const from = BigInt(url.searchParams.get("from") ?? "0");
 
         const resolved = yield* Effect.gen(function* () {

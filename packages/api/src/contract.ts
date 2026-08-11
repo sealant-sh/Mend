@@ -30,6 +30,7 @@ import {
   Reference,
   ReviewComment,
   Session,
+  SessionProcess,
 } from "@mend/domain/workbench";
 import { SealantConnection } from "@mend/sealant";
 import { Schema } from "effect";
@@ -554,6 +555,16 @@ const sessionsGroup = HttpApiGroup.make("sessions")
     HttpApiEndpoint.get("detail", "/sessions/:id", {
       params: { id: SessionId },
       success: SessionDetail,
+      error: NotFound,
+    }),
+  )
+  .add(
+    // The plural process record (docs/SESSION-SERVICES.md): every PTY in the
+    // session's workspace — agent, shells, Services — each addressable at the
+    // TTY route via `?process=<id>`.
+    HttpApiEndpoint.get("listProcesses", "/sessions/:id/processes", {
+      params: { id: SessionId },
+      success: Schema.Array(SessionProcess),
       error: NotFound,
     }),
   )

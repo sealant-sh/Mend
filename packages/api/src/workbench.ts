@@ -10,6 +10,7 @@ import {
   ReferencesRepo,
   ReviewCommentsRepo,
   SessionChangesRepo,
+  SessionProcessesRepo,
   SessionsRepo,
   SettingsRepo,
 } from "@mend/db";
@@ -410,6 +411,16 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const sessionCheckpoints = yield* checkpoints.listForSession(params.id);
         const change = yield* changes.bySession(params.id);
         return new SessionDetail({ session, checkpoints: sessionCheckpoints, change });
+      }),
+    )
+    .handle("listProcesses", ({ params }) =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        const processes = yield* SessionProcessesRepo;
+        yield* sessions
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        return yield* processes.listForSession(params.id);
       }),
     )
     .handle("remove", ({ params }) =>

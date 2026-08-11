@@ -21,5 +21,6 @@ export * from "./repos/change-tours.ts";
 export * from "./repos/review-comments.ts";
 export * from "./repos/runs.ts";
 export * from "./repos/session-changes.ts";
+export * from "./repos/session-processes.ts";
 export * from "./repos/session-runs.ts";
 export * from "./repos/settings.ts";
