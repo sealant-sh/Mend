@@ -573,6 +573,89 @@ const shellCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
   process.exit(0);
 };
 
+// ─── completions: live sessions under TAB ───────────────────────────────────
+
+/**
+ * The data half of shell completion: one live session per line as
+ * `id<TAB>description`. Scripts adapt the shape (zsh wants `id:desc`, bash
+ * wants bare ids). Never fails — a dead server just completes nothing.
+ */
+const completeCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  if (args[0] !== "session") return;
+  try {
+    const [sessions, projects] = await Promise.all([
+      request<ReadonlyArray<SessionDto>>(config, "GET", "/sessions"),
+      request<ReadonlyArray<ProjectDto>>(config, "GET", "/projects"),
+    ]);
+    const nameById = new Map(projects.map((p) => [p.id, p.name]));
+    for (const session of sessions) {
+      const project = nameById.get(session.projectId) ?? "";
+      process.stdout.write(`${session.id}\t${session.harness} · ${project} · ${session.branch}\n`);
+    }
+  } catch {
+    // Completion must never surface an error into the user's TAB press.
+  }
+};
+
+const ZSH_COMPLETIONS = `#compdef mend
+_mend() {
+  local -a commands
+  commands=(
+    'adopt:adopt a repository into the store'
+    'codex:new session + codex' 'claude:new session + claude' 'opencode:new session + opencode'
+    'run:new session + arbitrary command'
+    'attach:reattach to a running session' 'shell:open a shell in a live session workspace'
+    'continue:resume with the pending follow-up' 'resume:rejoin a settled session'
+    'rejoin:attach if live, otherwise resume'
+    'projects:adopted projects' 'sessions:sessions with review facts' 'status:active sessions'
+    'ui:the dashboard' 'help:help'
+  )
+  if (( CURRENT == 2 )); then
+    _describe 'command' commands
+    return
+  fi
+  case $words[2] in
+    shell|attach|continue|resume|rejoin)
+      local -a sessions
+      sessions=(\${(f)"$(command mend __complete session 2>/dev/null | tr '\\t' ':')"})
+      (( \${#sessions} )) && _describe 'session' sessions
+      ;;
+  esac
+}
+_mend "$@"
+`;
+
+const BASH_COMPLETIONS = `_mend() {
+  local cur=\${COMP_WORDS[COMP_CWORD]}
+  if [ "$COMP_CWORD" -eq 1 ]; then
+    COMPREPLY=( $(compgen -W "adopt codex claude opencode run attach shell continue resume rejoin projects sessions status ui help" -- "$cur") )
+    return
+  fi
+  case \${COMP_WORDS[1]} in
+    shell|attach|continue|resume|rejoin)
+      COMPREPLY=( $(compgen -W "$(command mend __complete session 2>/dev/null | cut -f1)" -- "$cur") )
+      ;;
+  esac
+}
+complete -F _mend mend
+`;
+
+/** Print the hook for the named shell; the user wires it into their rc file. */
+const completionsCommand = (args: ReadonlyArray<string>) => {
+  switch (args[0]) {
+    case "zsh":
+      process.stdout.write(ZSH_COMPLETIONS);
+      return;
+    case "bash":
+      process.stdout.write(BASH_COMPLETIONS);
+      return;
+    default:
+      return fail(
+        'usage: mend completions zsh|bash — e.g. mend completions zsh > "$fpath[1]/_mend"',
+      );
+  }
+};
+
 // ─── supervised run: platform workspace + PTY + record ──────────────────────
 
 const supervisedRun = async (
@@ -1108,6 +1191,7 @@ const HELP = `mend — the agent workbench
   mend sessions [--all] [--project p] [--json]
                                         sessions with review facts; JSON is stable for integrations
   mend status                           active sessions (alias of mend sessions)
+  mend completions zsh|bash             print the TAB-completion hook (live session ids under TAB)
 
   server: MEND_URL (default http://localhost:3105) · auth: MEND_TOKEN
   detach key: Ctrl+] (set MEND_DETACH_KEY=none when an outer multiplexer owns detaching)
@@ -1129,6 +1213,10 @@ const main = async () => {
       return attach(config, rest);
     case "shell":
       return shellCommand(config, rest);
+    case "completions":
+      return completionsCommand(rest);
+    case "__complete":
+      return completeCommand(config, rest);
     case "continue":
       return continueSession(config, rest);
     case "resume":
