@@ -289,6 +289,28 @@ export class ProjectAutomationRequest extends Schema.Class<ProjectAutomationRequ
   autoSuggest: AutomationChoice,
 }) {}
 
+export class HostToolSuggestionView extends Schema.Class<HostToolSuggestionView>(
+  "HostToolSuggestionView",
+)({
+  executable: Schema.String,
+  kind: Schema.Literals(["package", "service"]),
+  id: Schema.String,
+}) {}
+
+export class HostConfigSuggestionView extends Schema.Class<HostConfigSuggestionView>(
+  "HostConfigSuggestionView",
+)({
+  label: Schema.String,
+  path: Schema.String,
+}) {}
+
+export class HostEnvironmentSuggestionsView extends Schema.Class<HostEnvironmentSuggestionsView>(
+  "HostEnvironmentSuggestionsView",
+)({
+  tools: Schema.Array(HostToolSuggestionView),
+  configs: Schema.Array(HostConfigSuggestionView),
+}) {}
+
 /**
  * Product settings, one document (the review-automation cascade's root:
  * project `inherit` resolves against these defaults). PUT replaces the whole
@@ -296,6 +318,11 @@ export class ProjectAutomationRequest extends Schema.Class<ProjectAutomationRequ
  */
 const settingsGroup = HttpApiGroup.make("settings")
   .add(HttpApiEndpoint.get("get", "/settings", { success: MendSettings }))
+  .add(
+    HttpApiEndpoint.get("scanHostEnvironment", "/settings/environment-suggestions", {
+      success: HostEnvironmentSuggestionsView,
+    }),
+  )
   .add(HttpApiEndpoint.put("set", "/settings", { payload: MendSettings, success: MendSettings }))
   .middleware(AuthMiddleware);
 
