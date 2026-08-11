@@ -198,10 +198,7 @@ const deriveItems = (view: View, data: Workbench | undefined): ReadonlyArray<Ite
   }
   const resuming = view.session;
   if (resuming !== null) {
-    // No shell here: a conversation cannot cross into a bare bash.
-    const others = Object.keys(HARNESS_COMMANDS).filter(
-      (h) => h !== resuming.harness && h !== "shell",
-    );
+    const others = Object.keys(HARNESS_COMMANDS).filter((h) => h !== resuming.harness);
     return [
       {
         kind: "harness",
@@ -214,7 +211,10 @@ const deriveItems = (view: View, data: Workbench | undefined): ReadonlyArray<Ite
           kind: "harness",
           harness,
           label: harness,
-          hint: "the conversation crosses as a distilled prompt",
+          hint:
+            harness === "shell"
+              ? "a bash in the worktree — saved state restored, no conversation"
+              : "the conversation crosses as a distilled prompt",
         }),
       ),
     ];

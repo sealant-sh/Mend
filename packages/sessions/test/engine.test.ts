@@ -725,6 +725,38 @@ describe("SessionEngine", () => {
     );
   });
 
+  it("resumes a settled session with shell — no saved state required", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          yield* engine.stop(session.id);
+          const agentExited = () =>
+            [...world.processes.values()].every((process) => process.exitedAt !== null);
+          for (let i = 0; i < 200 && !agentExited(); i++) {
+            yield* Effect.sleep(Duration.millis(10));
+          }
+
+          const resumed = yield* engine.resumeSession(session.id, "shell");
+          expect(resumed.status).toBe("running");
+          // The session keeps its harness identity — only this launch is a shell.
+          expect(resumed.harness).toBe("codex");
+          const live = [...world.processes.values()].filter((process) => process.exitedAt === null);
+          expect(live.map((process) => process.argv)).toEqual([["bash"]]);
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
   it("provisions: worktree, session row, checkpoint 0, change row", async () => {
     await withEngine((world, tmp) =>
       Effect.gen(function* () {

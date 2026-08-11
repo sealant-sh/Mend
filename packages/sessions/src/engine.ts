@@ -798,7 +798,7 @@ export class SessionEngine extends Context.Service<
         sessionId: SessionId,
         argv: ReadonlyArray<string>,
         nativeImport: ConvertedNativeSession | null,
-        manifestOverride?: HarnessStateManifest,
+        manifestOverride?: HarnessStateManifest | null,
       ) {
         const session = yield* sessions.byId(sessionId);
         const project = yield* projects.byId(session.projectId);
@@ -806,13 +806,16 @@ export class SessionEngine extends Context.Service<
         const worktree = worktreePathOf(project.storePath, session.worktree);
         const shape = platformShape(session.harness);
         const stateDir = sessionStatePathOf(project.storePath, session.id);
+        // An explicit null skips both the read and the restore (a shell
+        // resume tolerates a session that never harvested state).
         const manifest =
-          manifestOverride ??
-          (yield* readHarnessStateManifest(stateDir, session.id).pipe(
-            Effect.catchTag("HarnessStateNotFoundError", (error) =>
-              session.sealantRunId === null ? Effect.succeed(null) : Effect.fail(error),
-            ),
-          ));
+          manifestOverride !== undefined
+            ? manifestOverride
+            : yield* readHarnessStateManifest(stateDir, session.id).pipe(
+                Effect.catchTag("HarnessStateNotFoundError", (error) =>
+                  session.sealantRunId === null ? Effect.succeed(null) : Effect.fail(error),
+                ),
+              );
         // What rides beside the worktree (plan §17, 2026-08-01): selected
         // references read-only at /workspace/ref/<name>, and the project's
         // declared host folders at /workspace/home/<name> — read-only unless
@@ -1251,12 +1254,26 @@ export class SessionEngine extends Context.Service<
           });
         }
         const target = harness ?? session.harness;
+        // A shell resume reopens the worktree with no agent: same workspace
+        // image as the session's own harness (images are per-harness; bash is
+        // in all of them), saved state restored when it exists, no
+        // conversation import — bash has nowhere to put one. The session
+        // keeps its harness identity; only this launch runs a shell.
+        if (target === "shell") {
+          const project = yield* projects.byId(session.projectId);
+          const stateDir = sessionStatePathOf(project.storePath, session.id);
+          const manifest = yield* readHarnessStateManifest(stateDir, session.id).pipe(
+            Effect.catchTag("HarnessStateNotFoundError", () => Effect.succeed(null)),
+          );
+          yield* sessions.reopen(sessionId);
+          return yield* launchInternal(sessionId, ["bash"], null, manifest);
+        }
         const defaultArgv = HARNESS_ARGV[target];
         if (defaultArgv === undefined) {
           return yield* new SealantPlatformError({
             code: "unknown_harness",
             status: null,
-            message: `Unknown harness "${target}" — resumable harnesses: ${Object.keys(HARNESS_ARGV).join(", ")}.`,
+            message: `Unknown harness "${target}" — resumable harnesses: ${Object.keys(HARNESS_ARGV).join(", ")}, shell.`,
             cause: null,
           });
         }
