@@ -34,6 +34,7 @@ import {
   SessionActive,
   SessionAnnotation,
   SessionDetail,
+  SessionNotLive,
   SettingsFailure,
   StoreFailure,
   SessionTranscript,
@@ -421,6 +422,22 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           .byId(params.id)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         return yield* processes.listForSession(params.id);
+      }),
+    )
+    .handle("openShell", ({ params }) =>
+      Effect.gen(function* () {
+        const engine = yield* SessionEngine;
+        return yield* engine.openShell(params.id).pipe(
+          Effect.catchTag("SessionNotFoundError", () =>
+            Effect.fail(new NotFound({ id: params.id })),
+          ),
+          Effect.catchTag("SessionNotLiveError", () =>
+            Effect.fail(new SessionNotLive({ id: params.id })),
+          ),
+          Effect.catchTag("SealantPlatformError", (error) =>
+            Effect.fail(new StoreFailure({ message: error.message })),
+          ),
+        );
       }),
     )
     .handle("remove", ({ params }) =>

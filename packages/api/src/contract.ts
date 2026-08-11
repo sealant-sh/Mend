@@ -290,6 +290,13 @@ export class SessionActive extends Schema.TaggedErrorClass<SessionActive>()(
   { httpApiStatus: 409 },
 ) {}
 
+/** A shell needs a live workspace — a settled session has none; resume it first. */
+export class SessionNotLive extends Schema.TaggedErrorClass<SessionNotLive>()(
+  "SessionNotLive",
+  { id: Schema.String },
+  { httpApiStatus: 409 },
+) {}
+
 /** The project's stance on the review-automation switches — both, replaced together. */
 export class ProjectAutomationRequest extends Schema.Class<ProjectAutomationRequest>(
   "ProjectAutomationRequest",
@@ -566,6 +573,15 @@ const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       success: Schema.Array(SessionProcess),
       error: NotFound,
+    }),
+  )
+  .add(
+    // The second pane (docs/SESSION-SERVICES.md): a shell PTY beside the
+    // agent in the session's live workspace. Attach at /api/tty?process=<id>.
+    HttpApiEndpoint.post("openShell", "/sessions/:id/shell", {
+      params: { id: SessionId },
+      success: SessionProcess,
+      error: Schema.Union([NotFound, SessionNotLive, StoreFailure]),
     }),
   )
   .add(

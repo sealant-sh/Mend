@@ -335,10 +335,14 @@ const attachTty = async (
   sessionId: string,
   harness: string,
   from: bigint,
+  processId?: string,
 ): Promise<"detached" | "ended" | "unavailable"> => {
   const url = new URL(`${config.url}/api/tty`);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.searchParams.set("session", sessionId);
+  // Process addressing reaches any PTY in the workspace (a shell); the
+  // session form remains the agent's PTY.
+  if (processId !== undefined) url.searchParams.set("process", processId);
+  else url.searchParams.set("session", sessionId);
   url.searchParams.set("from", from.toString());
   if (config.token !== null) url.searchParams.set("token", config.token);
 
@@ -468,6 +472,105 @@ const attach = async (config: CliConfig, args: ReadonlyArray<string>) => {
   say("");
   await attachOrExit(config, match.id, match.harness);
   exitAfterSessionEnd(config, match.id);
+};
+
+// ─── shell: the second pane — a real shell in the session's workspace ───────
+
+interface SessionProcessDto {
+  readonly id: string;
+  readonly sessionId: string;
+  readonly kind: string;
+  readonly label: string | null;
+  readonly status: string;
+}
+
+/** Compact picker: numbered live sessions, one keystroke of typing. */
+const pickSessionInteractively = async (
+  rows: ReadonlyArray<{ readonly session: SessionDto; readonly projectName: string }>,
+): Promise<SessionDto> => {
+  say(dim("more than one live session — pick one:"));
+  rows.forEach((row, index) => {
+    say(
+      `  ${index + 1}. ${row.session.harness.padEnd(8)} ${dim(row.session.id.slice(0, 8))}  ${row.projectName}  ${dim(row.session.branch)}`,
+    );
+  });
+  const readline = await import("node:readline/promises");
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const answer = await rl.question("  session #: ");
+  rl.close();
+  const chosen = rows[Number(answer.trim()) - 1];
+  if (chosen === undefined) return fail(`"${answer.trim()}" is not one of the choices`);
+  return chosen.session;
+};
+
+/**
+ * The resolution order (docs/SESSION-SERVICES.md): an explicit id wins, then
+ * the cwd's project narrows, one candidate is taken, several go to the
+ * picker, and a non-interactive caller never gets a silent guess.
+ */
+const resolveLiveSession = async (
+  config: CliConfig,
+  prefix: string | undefined,
+): Promise<SessionDto> => {
+  const sessions = await api<ReadonlyArray<SessionDto>>(config, "GET", "/sessions");
+  if (prefix !== undefined) {
+    const matches = sessions.filter((s) => s.id.startsWith(prefix));
+    if (matches.length === 0) return fail(`no live session matches "${prefix}"`);
+    const exact = matches[0];
+    if (matches.length > 1 || exact === undefined) {
+      return fail(`session prefix "${prefix}" is ambiguous — use more of the id`);
+    }
+    return exact;
+  }
+  const projects = await api<ReadonlyArray<ProjectDto>>(config, "GET", "/projects");
+  const project = matchProjectByCwd(projects, process.cwd());
+  const candidates =
+    project === undefined ? sessions : sessions.filter((s) => s.projectId === project.id);
+  const only = candidates[0];
+  if (only === undefined) {
+    return fail("no live session — start one with mend codex|claude|opencode");
+  }
+  if (candidates.length === 1) return only;
+  if (process.stdin.isTTY !== true) {
+    return fail("several live sessions — name one: mend shell <session-id-prefix>");
+  }
+  const nameById = new Map(projects.map((p) => [p.id, p.name]));
+  return pickSessionInteractively(
+    candidates.map((session) => ({
+      session,
+      projectName: nameById.get(session.projectId) ?? session.projectId.slice(0, 8),
+    })),
+  );
+};
+
+/**
+ * A real interactive shell in the session's CURRENT workspace — same
+ * /workspace/repo the agent is editing, same dependencies, same network. Not
+ * a shell in the host checkout. The shell holds a workspace lease, so the
+ * container survives the agent settling while the shell lives.
+ */
+const shellCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const prefix = args.find((a) => !a.startsWith("--"));
+  const session = await resolveLiveSession(config, prefix);
+  say(
+    `${green("✓")} shell in ${session.harness} session ${dim(session.id.slice(0, 8))} · ${dim(session.branch)}${detachHint()}`,
+  );
+  const shellProcess = await withSpinner(
+    "opening a shell in the session workspace…",
+    api<SessionProcessDto>(config, "POST", `/sessions/${session.id}/shell`),
+  );
+  say("");
+  const outcome = await attachTty(config, session.id, "shell", 0n, shellProcess.id);
+  if (outcome === "unavailable") {
+    return fail(`tty attach unavailable: could not connect to ${config.url}`);
+  }
+  say("");
+  if (outcome === "detached") {
+    say(`${amber("detached")} — the shell keeps running and holds the workspace open`);
+    process.exit(0);
+  }
+  say(`${green("✓")} shell ended`);
+  process.exit(0);
 };
 
 // ─── supervised run: platform workspace + PTY + record ──────────────────────
@@ -997,6 +1100,7 @@ const HELP = `mend — the agent workbench
   mend codex|claude|opencode            new session worktree + launch the harness in it
   mend run -- <command...>              same, with an arbitrary command
   mend attach <session-id-prefix>       reattach this terminal to a running session
+  mend shell [session-id-prefix]        open a shell in a live session's workspace
   mend continue [session-id]            resume a session with its pending review follow-up
   mend resume [session-id] [--with h]   rejoin a settled session (state restored; --with switches harness)
   mend rejoin [session-id] [--harness h] attach if live, otherwise resume; newest live wins
@@ -1023,6 +1127,8 @@ const main = async () => {
       return launch(config, command, rest);
     case "attach":
       return attach(config, rest);
+    case "shell":
+      return shellCommand(config, rest);
     case "continue":
       return continueSession(config, rest);
     case "resume":

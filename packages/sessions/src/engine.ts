@@ -15,13 +15,19 @@ import {
   SettingsRepo,
 } from "@mend/db";
 import { SealantRunId, SealantWorkspaceId, SessionId, type ProjectId } from "@mend/domain";
-import type { Checkpoint, CheckpointTrigger, Session, SessionRun } from "@mend/domain/workbench";
+import type {
+  Checkpoint,
+  CheckpointTrigger,
+  Session,
+  SessionProcess,
+  SessionRun,
+} from "@mend/domain/workbench";
 import { SessionExtraMount, SessionReferenceMount } from "@mend/domain/workbench";
 import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import { GitError, Store, sessionStatePathOf, worktreePathOf } from "@mend/store";
 import type { Harness, Run as SdkRun, Workspace, WorkspaceCredentialsOptions } from "@sealant/sdk";
 import { claudeCode, codex, opencode } from "@sealant/sdk";
-import { Duration, Effect, Layer, Schedule, Stream } from "effect";
+import { Duration, Effect, Layer, Schedule, Schema, Stream } from "effect";
 import * as Context from "effect/Context";
 
 import {
@@ -135,6 +141,14 @@ export interface ProvisionInput {
   readonly base: string | null;
 }
 
+/** A shell needs a live workspace; a settled session has none to enter. */
+export class SessionNotLiveError extends Schema.TaggedErrorClass<SessionNotLiveError>()(
+  "SessionNotLiveError",
+  {
+    sessionId: Schema.String,
+  },
+) {}
+
 /**
  * The workbench session engine (plan §7.2, M1) — the supervisor extracted from
  * the queue-era run starter (docs/M0-INVENTORY.md), rewired onto sessions and
@@ -183,6 +197,18 @@ export class SessionEngine extends Context.Service<
     ) => Effect.Effect<Checkpoint, SessionNotFoundError | ProjectNotFoundError | GitError>;
     /** The user's stop: settle the row; the platform stop follows when the SDK ships it. */
     readonly stop: (sessionId: SessionId) => Effect.Effect<void, SessionNotFoundError>;
+    /**
+     * The second pane (docs/SESSION-SERVICES.md): a shell PTY in the
+     * session's live workspace, beside the agent — same repo, same
+     * dependencies, same network. Its process record is a workspace lease;
+     * attach through the TTY route with `?process=<id>`.
+     */
+    readonly openShell: (
+      sessionId: SessionId,
+    ) => Effect.Effect<
+      SessionProcess,
+      SessionNotFoundError | SessionNotLiveError | SealantPlatformError
+    >;
     /**
      * Rejoin a session as a continuous piece of work — harness- and
      * machine-agnostic. Same worktree, same change, same conversation: the
@@ -640,20 +666,21 @@ export class SessionEngine extends Context.Service<
       });
 
       /**
-       * Containers die when the work settles — after harvest, best-effort,
-       * and lease-aware (docs/SESSION-SERVICES.md): every caller is the tail
-       * of an agent settle, so the agent's own process record ends here, but
-       * the workspace survives while any other process (a shell, a Service)
-       * is still live in it. `force` is for replacement: a relaunch is about
-       * to overwrite the workspace pointer, so nothing in the old container
-       * can be kept.
+       * Stop the workspace unless a live process still leases it
+       * (docs/SESSION-SERVICES.md): the container survives the agent while a
+       * shell or Service is live in it, and every path that ends a lease
+       * comes back through here. `force` is for replacement: a relaunch is
+       * about to overwrite the workspace pointer, so nothing in the old
+       * container can be kept.
        */
-      const stopWorkspaceQuietly = (sessionId: SessionId, options?: { readonly force?: boolean }) =>
+      const stopWorkspaceIfUnleased = (
+        sessionId: SessionId,
+        options?: { readonly force?: boolean },
+      ) =>
         Effect.gen(function* () {
           const session = yield* sessions.byId(sessionId);
           if (session.sealantWorkspaceId === null) return;
           const workspaceId = session.sealantWorkspaceId;
-          yield* processes.reapLiveForWorkspace(workspaceId, "agent");
           if (options?.force !== true) {
             const leases = yield* processes.listLiveForWorkspace(workspaceId);
             if (leases.length > 0) {
@@ -675,6 +702,24 @@ export class SessionEngine extends Context.Service<
           ),
         );
 
+      /**
+       * The settle-path variant: every caller is the tail of an agent settle,
+       * so the agent's own process record ends here before the lease check.
+       */
+      const stopWorkspaceQuietly = (sessionId: SessionId, options?: { readonly force?: boolean }) =>
+        Effect.gen(function* () {
+          const session = yield* sessions.byId(sessionId);
+          if (session.sealantWorkspaceId === null) return;
+          yield* processes.reapLiveForWorkspace(session.sealantWorkspaceId, "agent");
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("session engine: agent process reap failed").pipe(
+              Effect.annotateLogs({ sessionId, error: String(error) }),
+            ),
+          ),
+          Effect.andThen(stopWorkspaceIfUnleased(sessionId, options)),
+        );
+
       const tryHarvest = (sessionId: SessionId) =>
         harvestHarnessState(sessionId).pipe(
           Effect.catch((error) =>
@@ -687,6 +732,67 @@ export class SessionEngine extends Context.Service<
       /** The tail of every settle path: harvest, then reap. Both halves quiet. */
       const sweepWorkspace = (sessionId: SessionId) =>
         tryHarvest(sessionId).pipe(Effect.andThen(stopWorkspaceQuietly(sessionId)));
+
+      /**
+       * A shell's lifecycle is its own: poll the PTY until it ends, record
+       * the observed exit, then release its workspace lease. Mirrors watchPty
+       * — a status error is blindness, not an exit — but a blind stretch
+       * checks the workspace itself, because a reaped container will never
+       * answer for its PTYs again.
+       */
+      const watchShellProcess = (shellProcess: SessionProcess) =>
+        Effect.gen(function* () {
+          const workspace = yield* sealant.getWorkspace(shellProcess.sealantWorkspaceId);
+          const pty = yield* sealant.getSession(workspace, shellProcess.sealantSessionId);
+          let blindPolls = 0;
+          for (;;) {
+            yield* Effect.sleep("2 seconds");
+            const status = yield* Effect.tryPromise({
+              try: () => pty.status(),
+              catch: (cause) =>
+                new SealantPlatformError({
+                  code: "session_status_failed",
+                  status: null,
+                  message: "session status failed",
+                  cause,
+                }),
+            }).pipe(Effect.catchTag("SealantPlatformError", () => Effect.succeed(null)));
+            if (status === null) {
+              blindPolls += 1;
+              if (blindPolls % 30 === 0) {
+                const workspaceStatus = yield* Effect.tryPromise({
+                  try: () => workspace.status(),
+                  catch: () => new Error("workspace status failed"),
+                }).pipe(Effect.catch(() => Effect.succeed(null)));
+                if (
+                  workspaceStatus !== null &&
+                  workspaceStatus !== "queued" &&
+                  workspaceStatus !== "running" &&
+                  workspaceStatus !== "ready"
+                ) {
+                  yield* processes.markExited(shellProcess.id, "exited", null);
+                  return;
+                }
+                yield* Effect.logWarning("session engine: shell status unreachable").pipe(
+                  Effect.annotateLogs({ processId: shellProcess.id, blindPolls }),
+                );
+              }
+              continue;
+            }
+            blindPolls = 0;
+            if (status.status === "running" || status.status === "starting") continue;
+            yield* processes.markExited(shellProcess.id, "exited", status.exitCode ?? null);
+            yield* stopWorkspaceIfUnleased(shellProcess.sessionId);
+            return;
+          }
+        }).pipe(
+          // An unknown workspace or PTY cannot be reached again — record the end.
+          Effect.catch(() =>
+            processes
+              .markExited(shellProcess.id, "exited", null)
+              .pipe(Effect.andThen(stopWorkspaceIfUnleased(shellProcess.sessionId))),
+          ),
+        );
 
       const launchInternal = Effect.fn("SessionEngine.launchInternal")(function* (
         sessionId: SessionId,
@@ -1249,6 +1355,25 @@ export class SessionEngine extends Context.Service<
         yield* Effect.forkIn(sweepWorkspace(sessionId), scope);
       });
 
+      const openShell = Effect.fn("SessionEngine.openShell")(function* (sessionId: SessionId) {
+        const session = yield* sessions.byId(sessionId);
+        if (session.sealantWorkspaceId === null || session.settledAt !== null) {
+          return yield* new SessionNotLiveError({ sessionId });
+        }
+        const workspace = yield* sealant.getWorkspace(session.sealantWorkspaceId);
+        const pty = yield* sealant.openSession(workspace, ["bash"]);
+        const shellProcess = yield* processes.create({
+          sessionId,
+          sealantWorkspaceId: session.sealantWorkspaceId,
+          sealantSessionId: pty.id,
+          kind: "shell",
+          label: "shell",
+          argv: ["bash"],
+        });
+        yield* Effect.forkIn(watchShellProcess(shellProcess), scope);
+        return shellProcess;
+      });
+
       /** Re-attach to sessions that were live when the last process died. */
       const resume = Effect.fn("SessionEngine.resume")(function* () {
         const activeRuns = yield* sessionRuns.listActive();
@@ -1277,6 +1402,15 @@ export class SessionEngine extends Context.Service<
             "failed",
             "process restarted before the harness started",
           );
+        }
+
+        // Shells that were live when the last process died: their PTYs kept
+        // running (a detached client is not intent to stop), so watch them
+        // again — the watcher itself records the end if the workspace is gone.
+        const liveProcesses = yield* processes.listLive();
+        for (const liveProcess of liveProcesses) {
+          if (liveProcess.kind !== "shell") continue;
+          yield* Effect.forkIn(watchShellProcess(liveProcess), scope);
         }
       });
 
@@ -1319,7 +1453,16 @@ export class SessionEngine extends Context.Service<
       const launch = (sessionId: SessionId, argv: ReadonlyArray<string>) =>
         launchInternal(sessionId, argv, null);
 
-      return { provision, attachRun, launch, checkpointNow, stop, resumeSession, transcript };
+      return {
+        provision,
+        attachRun,
+        launch,
+        checkpointNow,
+        stop,
+        openShell,
+        resumeSession,
+        transcript,
+      };
     }),
   );
 }
