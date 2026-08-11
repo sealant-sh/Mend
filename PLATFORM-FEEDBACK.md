@@ -7,6 +7,15 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-08-11 · 0.13.1 · ✅ Public Effect surfaces share the consumer runtime
+
+**Shipped in 0.13.1.** The 0.13.0 packages declared an exact Effect runtime dependency, so Mend
+installed both its catalog-pinned Effect version and the SDK's older copy. Values crossing
+`@sealant/sdk/effect` and `@sealant/api-contracts` then failed TypeScript compatibility even though
+the APIs were otherwise compatible. Both public packages now declare Effect as a compatible peer, so
+Mend and the SDK use one runtime and the Effect-native public API composes without casts or an
+internal import.
+
 ## 2026-08-11 · 0.13.0 · ✅ Workspace-scoped Docker service shipped
 
 **Implemented at the source; Mend adopts it when 0.13.0 is published.** Mend's workspace profile
