@@ -36,6 +36,7 @@ import {
   SessionTranscript,
   TranscriptEvent,
 } from "./contract.ts";
+import { HostEnvironment } from "./host-environment.ts";
 
 /**
  * The workbench handlers (plan §6): projects, sessions, and the session
@@ -61,6 +62,12 @@ export const SettingsGroupLive = HttpApiBuilder.group(MendApi, "settings", (hand
       Effect.gen(function* () {
         const settings = yield* SettingsRepo;
         return yield* settings.get();
+      }),
+    )
+    .handle("scanHostEnvironment", () =>
+      Effect.gen(function* () {
+        const hostEnvironment = yield* HostEnvironment;
+        return yield* hostEnvironment.scan();
       }),
     )
     .handle("set", ({ payload }) =>

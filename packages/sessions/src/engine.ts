@@ -11,13 +11,14 @@ import {
   SessionNotFoundError,
   SessionRunsRepo,
   SessionsRepo,
+  SettingsRepo,
 } from "@mend/db";
 import { SealantRunId, SealantWorkspaceId, SessionId, type ProjectId } from "@mend/domain";
 import type { Checkpoint, CheckpointTrigger, Session, SessionRun } from "@mend/domain/workbench";
 import { SessionExtraMount, SessionReferenceMount } from "@mend/domain/workbench";
 import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import { GitError, Store, sessionStatePathOf, worktreePathOf } from "@mend/store";
-import type { Harness, Run as SdkRun, WorkspaceCredentialsOptions } from "@sealant/sdk";
+import type { Harness, Run as SdkRun, Workspace, WorkspaceCredentialsOptions } from "@sealant/sdk";
 import { claudeCode, codex, opencode } from "@sealant/sdk";
 import { Duration, Effect, Layer, Schedule, Stream } from "effect";
 import * as Context from "effect/Context";
@@ -53,16 +54,34 @@ const promptArgv = (harness: string, prompt: string): ReadonlyArray<string> | nu
 };
 
 /** Credentials ride connected accounts (references only); harness picks image behavior. */
+const withGitHubCredentialFallback = (
+  harnessCredentials: WorkspaceCredentialsOptions,
+): ReadonlyArray<WorkspaceCredentialsOptions | undefined> => [
+  { ...harnessCredentials, github: true },
+  harnessCredentials,
+  { github: true },
+  undefined,
+];
+
 const platformShape = (
   harness: string,
-): { harness: Harness; credentials: WorkspaceCredentialsOptions | undefined } => {
+): {
+  harness: Harness;
+  credentialAttempts: ReadonlyArray<WorkspaceCredentialsOptions | undefined>;
+} => {
   switch (harness) {
     case "codex":
-      return { harness: codex(), credentials: { codex: true } };
+      return {
+        harness: codex(),
+        credentialAttempts: withGitHubCredentialFallback({ codex: true }),
+      };
     case "claude":
-      return { harness: claudeCode(), credentials: { claude: true } };
+      return {
+        harness: claudeCode(),
+        credentialAttempts: withGitHubCredentialFallback({ claude: true }),
+      };
     default:
-      return { harness: opencode(), credentials: undefined };
+      return { harness: opencode(), credentialAttempts: [{ github: true }, undefined] };
   }
 };
 
@@ -203,6 +222,7 @@ export class SessionEngine extends Context.Service<
       const checkpoints = yield* CheckpointsRepo;
       const references = yield* ReferencesRepo;
       const projectMounts = yield* ProjectMountsRepo;
+      const settingsRepo = yield* SettingsRepo;
       const store = yield* Store;
       const scope = yield* Effect.scope;
 
@@ -653,6 +673,7 @@ export class SessionEngine extends Context.Service<
       ) {
         const session = yield* sessions.byId(sessionId);
         const project = yield* projects.byId(session.projectId);
+        const settings = yield* settingsRepo.get();
         const worktree = worktreePathOf(project.storePath, session.worktree);
         const shape = platformShape(session.harness);
         const stateDir = sessionStatePathOf(project.storePath, session.id);
@@ -702,34 +723,42 @@ export class SessionEngine extends Context.Service<
         if (session.sealantWorkspaceId !== null) {
           yield* stopWorkspaceQuietly(sessionId);
         }
-        const createWorkspace = (withCredentials: boolean) =>
+        const createWorkspace = (credentials: WorkspaceCredentialsOptions | undefined) =>
           sealant.createWorkspace({
             source: { kind: "mount", path: worktree },
             ...(workspaceMounts.length === 0 ? {} : { mounts: workspaceMounts }),
             harness: shape.harness,
             name: `mend-${session.id.slice(0, 8)}`,
+            os: settings.workspaceImage.os,
+            packages: settings.workspaceImage.packages,
+            services: settings.workspaceImage.services,
             // Belt for every path that forgets to stop: the platform reaper.
             ttl: "12h",
             // Requires the platform at 0.7.1+ (sealant#114): 0.7.0 dropped every
             // mount create that carried credentials at the worker's blueprint parse.
-            ...(withCredentials && shape.credentials !== undefined
-              ? { credentials: shape.credentials }
-              : {}),
+            ...(credentials === undefined ? {} : { credentials }),
           });
-        // BYO harness means a missing connected account degrades to the
-        // harness's own interactive auth — it never blocks the launch.
-        const workspace = yield* createWorkspace(true)
-          .pipe(
+        const createWithCredentialFallback = (
+          attempts: ReadonlyArray<WorkspaceCredentialsOptions | undefined>,
+        ): Effect.Effect<Workspace, SealantPlatformError> => {
+          const [credentials, ...remaining] = attempts;
+          return createWorkspace(credentials).pipe(
             Effect.catchIf(
-              (error) => error.message.toLowerCase().includes("connected account"),
               (error) =>
-                Effect.logWarning("session engine: launching without injected credentials").pipe(
+                error.message.toLowerCase().includes("connected account") && remaining.length > 0,
+              (error) =>
+                Effect.logWarning("session engine: retrying with fewer connected accounts").pipe(
                   Effect.annotateLogs({ sessionId, error: error.message }),
-                  Effect.andThen(createWorkspace(false)),
+                  Effect.andThen(createWithCredentialFallback(remaining)),
                 ),
             ),
-          )
-          .pipe(settleOnFailure);
+          );
+        };
+        // A missing harness account must not discard a valid GitHub account (and vice versa).
+        // Try the complete identity first, then each useful subset before interactive auth.
+        const workspace = yield* createWithCredentialFallback(shape.credentialAttempts).pipe(
+          settleOnFailure,
+        );
 
         // A relaunch restores the harness's own saved state into the fresh
         // workspace before the harness starts, and — where the harness

@@ -7,6 +7,29 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-08-11 · 0.13.1 · ✅ Public Effect surfaces share the consumer runtime
+
+**Shipped in 0.13.1.** The 0.13.0 packages declared an exact Effect runtime dependency, so Mend
+installed both its catalog-pinned Effect version and the SDK's older copy. Values crossing
+`@sealant/sdk/effect` and `@sealant/api-contracts` then failed TypeScript compatibility even though
+the APIs were otherwise compatible. Both public packages now declare Effect as a compatible peer, so
+Mend and the SDK use one runtime and the Effect-native public API composes without casts or an
+internal import.
+
+## 2026-08-11 · 0.13.0 · ✅ Workspace-scoped Docker service shipped
+
+**Implemented at the source; Mend adopts it when 0.13.0 is published.** Mend's workspace profile
+needs some tools installed in the image and others provisioned by the runtime. In particular,
+installing a Docker package is not enough: the client needs a daemon, and mounting the host Docker
+socket would give a workspace host-equivalent control.
+
+Sealant now exposes `workspaces.create({ services: { docker: true } })`. The image receives a static
+Docker client, while the Docker runtime adapter launches a disposable rootless daemon on a private
+per-workspace network and injects `DOCKER_HOST`. It never mounts the host socket. A Docker-backed
+end-to-end test proves the workspace can run a nested container. Mend passes this option only
+through the public SDK, alongside `os`, portable package names, and the user's GitHub connected
+account.
+
 ## 2026-08-09 · 0.9.0 · Scrollback serves the PTY stream; the SDK's IoStream type hides it
 
 **Corrected the same day it was filed** — the first version of this entry claimed PTY output was

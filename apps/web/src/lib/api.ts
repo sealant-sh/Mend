@@ -484,6 +484,20 @@ export interface SettingsDto {
   readonly concurrency: number;
   readonly autoTour: boolean;
   readonly autoSuggest: boolean;
+  readonly workspaceImage: {
+    readonly os: "arch" | "fedora" | "nix";
+    readonly packages: ReadonlyArray<string>;
+    readonly services: { readonly docker: boolean };
+  };
+}
+
+export interface HostEnvironmentSuggestionsDto {
+  readonly tools: ReadonlyArray<{
+    readonly executable: string;
+    readonly kind: "package" | "service";
+    readonly id: string;
+  }>;
+  readonly configs: ReadonlyArray<{ readonly label: string; readonly path: string }>;
 }
 
 export const getSettings = () => request<SettingsDto>("/api/settings");
@@ -494,6 +508,9 @@ export const putSettings = (settings: SettingsDto) =>
     headers: { "content-type": "application/json" },
     body: JSON.stringify(settings),
   });
+
+export const scanHostEnvironment = () =>
+  request<HostEnvironmentSuggestionsDto>("/api/settings/environment-suggestions");
 
 /** The project's automation overrides, replaced together. */
 export const setProjectAutomation = (

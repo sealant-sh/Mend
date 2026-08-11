@@ -1278,6 +1278,16 @@ understand the work.
 
 ### Decided
 
+- **2026-08-11 — One saved workspace profile, with runtime services distinct from packages.** Mend
+  settings own the environment for workspace launches: OS family, portable package names, and
+  explicit services. The initial profile is Arch with pnpm, Python + uv, mise for managed Node and
+  Python versions, GitHub CLI, lazygit, bat, curl, jq, ripgrep, fd, and fzf; Docker is a service,
+  not a package. Sealant builds the client into the image and supplies a disposable rootless daemon
+  per workspace without mounting the host socket. Every harness requests the user's default GitHub
+  connected account so `gh` receives `GH_TOKEN`. Mend may scan only an allowlist of executable names
+  and fixed configuration paths on its host and suggest additions; it never enumerates or reads the
+  user's home-directory contents. Observations are suggestions, not an automatic copy.
+
 - **2026-08-10 — Resumed sessions retain every Sealant run.** A Mend session is the stable logical
   conversation, worktree, and change; each launch or settled-session resume creates an ordered
   Sealant run with its own sequence space and supervision cursor. Mend stores only that membership

@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { NodeHttpServer, NodeRuntime } from "@effect/platform-node";
-import { EventsRoutes, GhLive, MendApiLive, TtyRoutes } from "@mend/api";
+import { EventsRoutes, GhLive, HostEnvironmentLive, MendApiLive, TtyRoutes } from "@mend/api";
 import { Auth } from "@mend/auth";
 import {
   BriefCommentsRepoLive,
@@ -298,6 +298,7 @@ const MainLive = Layer.unwrap(
       Layer.provide(StoreLive),
       // The host's GitHub CLI, behind the api's Gh service (adoption discovery).
       Layer.provide(GhLive),
+      Layer.provide(HostEnvironmentLive),
       Layer.provide(Auth.layer),
       Layer.provide(SealantClient.layerFromEnv),
       Layer.provide(DatabaseLive),

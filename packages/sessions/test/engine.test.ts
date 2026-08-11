@@ -16,6 +16,7 @@ import {
   SessionNotFoundError,
   SessionRunsRepo,
   SessionsRepo,
+  SettingsRepo,
   type NewCheckpoint,
   type NewSession,
   type NewSessionRun,
@@ -28,6 +29,8 @@ import {
   SealantWorkspaceId,
   SessionId,
   Sha,
+  MendSettings,
+  defaultSettings,
 } from "@mend/domain";
 import {
   Change,
@@ -38,9 +41,10 @@ import {
   type SessionExtraMount,
   type SessionReferenceMount,
 } from "@mend/domain/workbench";
-import { SealantClient } from "@mend/sealant";
+import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import { HarnessStateNotFoundError, SessionEngine } from "@mend/sessions";
 import { Store, StoreConfig } from "@mend/store";
+import type { CreateOptions, InteractiveSession, Workspace } from "@sealant/sdk";
 import { Effect, Layer, Stream } from "effect";
 
 /** Every platform method dies — these tests exercise the platform-free paths. */
@@ -66,6 +70,89 @@ const sealantDeadLayer = Layer.succeed(SealantClient, {
   runChanges: () => Effect.die("not in test"),
   connectionCheck: () => Effect.die("not in test"),
 });
+
+const settingsLayer = (workspaceImage = defaultSettings.workspaceImage) =>
+  Layer.succeed(SettingsRepo, {
+    get: () => Effect.succeed(new MendSettings({ ...defaultSettings, workspaceImage })),
+    set: () => Effect.die("not in test"),
+  });
+
+const sealantLaunchLayer = (
+  created: CreateOptions[],
+  rejectCredentials: (credentials: CreateOptions["credentials"]) => boolean = () => false,
+) => {
+  const pty: InteractiveSession = {
+    id: "pty-1",
+    workspaceId: "workspace-1",
+    runId: "run-1",
+    send: async () => undefined,
+    output: async function* () {},
+    resize: async () => undefined,
+    signal: async () => undefined,
+    status: async () => ({ status: "running", outputHighWater: 0n }),
+    close: async () => undefined,
+    attach: async () => new Promise(() => undefined),
+  };
+  const workspace: Workspace = {
+    id: "workspace-1",
+    name: "test workspace",
+    status: async () => "ready",
+    ready: async function () {
+      return this;
+    },
+    harness: {
+      run: async () => new Promise(() => undefined),
+      start: async () => new Promise(() => undefined),
+      session: async () => pty,
+    },
+    exec: async () => new Promise(() => undefined),
+    sessions: {
+      open: async () => pty,
+      get: async () => pty,
+      list: async () => [pty],
+    },
+    events: async function* () {},
+    stop: async () => undefined,
+    restart: async function () {
+      return this;
+    },
+    expire: async () => undefined,
+  };
+  return Layer.succeed(SealantClient, {
+    createWorkspace: (options) =>
+      Effect.suspend(() => {
+        created.push(options);
+        return rejectCredentials(options.credentials)
+          ? Effect.fail(
+              new SealantPlatformError({
+                code: "connected-account-not-found",
+                status: 400,
+                message: "connected account was not found",
+                cause: null,
+              }),
+            )
+          : Effect.succeed(workspace);
+      }),
+    getWorkspace: () => Effect.succeed(workspace),
+    getRun: () => Effect.never,
+    recordCommands: () => Effect.die("not in test"),
+    recordScrollback: () => Effect.die("not in test"),
+    runHarness: () => Effect.die("not in test"),
+    startHarness: () => Effect.die("not in test"),
+    startHarnessInWorkspace: () => Effect.die("not in test"),
+    waitRun: () => Effect.die("not in test"),
+    openSession: () => Effect.succeed(pty),
+    stopWorkspace: () => Effect.void,
+    getSession: () => Effect.succeed(pty),
+    exec: () => Effect.die("not in test"),
+    diffCommits: () => Effect.die("not in test"),
+    inferenceRespond: () => Effect.die("not in test"),
+    recordStream: () => Stream.fromEffect(Effect.never),
+    recordTimeline: () => Stream.fromEffect(Effect.never),
+    runChanges: () => Effect.die("not in test"),
+    connectionCheck: () => Effect.die("not in test"),
+  });
+};
 
 const now = () => new Date();
 
@@ -337,13 +424,18 @@ const setup = (tmp: string, world: World) => {
 
 const withEngine = <A, E>(
   work: (world: World, tmp: string) => Effect.Effect<A, E, SessionEngine | Store>,
+  options: {
+    readonly sealantLayer?: Layer.Layer<SealantClient>;
+    readonly workspaceImage?: typeof defaultSettings.workspaceImage;
+  } = {},
 ): Promise<A> => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mend-engine-test-"));
   const world = makeWorld();
   const storeLayer = Store.layer.pipe(Layer.provide(StoreConfig.layerFor(path.join(tmp, "store"))));
   const engineLayer = SessionEngine.layer.pipe(
     Layer.provide(storeLayer),
-    Layer.provide(sealantDeadLayer),
+    Layer.provide(options.sealantLayer ?? sealantDeadLayer),
+    Layer.provide(settingsLayer(options.workspaceImage)),
     Layer.provide(projectsLayer(world)),
     Layer.provide(sessionsLayer(world)),
     Layer.provide(sessionRunsLayer(world)),
@@ -362,6 +454,67 @@ const withEngine = <A, E>(
 };
 
 describe("SessionEngine", () => {
+  it("launches with the configured image and the user's GitHub token", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            base: null,
+          });
+
+          yield* engine.launch(session.id, ["codex"]);
+
+          expect(created).toHaveLength(1);
+          expect(created[0]?.os).toBe("nix");
+          expect(created[0]?.packages).toEqual(["bat", "lazygit"]);
+          expect(created[0]?.services).toEqual({ docker: true });
+          expect(created[0]?.credentials).toEqual({ codex: true, github: true });
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        workspaceImage: {
+          os: "nix",
+          packages: ["bat", "lazygit"],
+          services: { docker: true },
+        },
+      },
+    );
+  });
+
+  it("keeps the GitHub token when the harness account is unavailable", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            base: null,
+          });
+
+          yield* engine.launch(session.id, ["codex"]);
+
+          expect(created.map((options) => options.credentials)).toEqual([
+            { codex: true, github: true },
+            { codex: true },
+            { github: true },
+          ]);
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created, (credentials) => credentials?.codex === true),
+      },
+    );
+  });
+
   it("provisions: worktree, session row, checkpoint 0, change row", async () => {
     await withEngine((world, tmp) =>
       Effect.gen(function* () {
@@ -583,6 +736,7 @@ describe("SessionEngine", () => {
       Layer.provide(checkpointsLayer(world)),
       Layer.provide(referencesEmptyLayer),
       Layer.provide(projectMountsEmptyLayer),
+      Layer.provide(settingsLayer()),
     );
     // Constructing the engine runs resume().
     await Effect.runPromise(

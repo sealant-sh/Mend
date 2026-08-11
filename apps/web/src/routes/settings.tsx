@@ -5,7 +5,9 @@ import { useState } from "react";
 import { AppShell } from "#/components/shell";
 import {
   putSettings,
+  scanHostEnvironment,
   sealantConnection,
+  type HostEnvironmentSuggestionsDto,
   type SealantConnectionDto,
   type SettingsDto,
 } from "#/lib/api";
@@ -36,10 +38,270 @@ function SettingsPage() {
       </div>
       <div className="max-w-2xl space-y-6">
         <ThemePanel />
+        <WorkspaceEnvironmentPanel />
         <ReviewAutomationPanel />
         <SealantConnectionPanel connection={connection} />
       </div>
     </AppShell>
+  );
+}
+
+const OS_OPTIONS: ReadonlyArray<{
+  readonly value: SettingsDto["workspaceImage"]["os"];
+  readonly label: string;
+  readonly detail: string;
+}> = [
+  { value: "arch", label: "Arch", detail: "Rolling packages; Mend’s default." },
+  { value: "nix", label: "Nix", detail: "Tools resolved from nixpkgs." },
+];
+
+const parsePackageDraft = (draft: string) => {
+  const packages = [
+    ...new Set(
+      draft
+        .split(/[\n,]/)
+        .map((value) => value.trim().toLowerCase())
+        .filter((value) => value !== ""),
+    ),
+  ];
+  const invalid = packages.find((value) => !/^[a-z0-9][a-z0-9._:+-]*$/.test(value));
+  return invalid === undefined ? { packages, invalid: null } : { packages, invalid };
+};
+
+function WorkspaceEnvironmentPanel() {
+  const settings = useSuspenseQuery(settingsQuery).data;
+  const [packageDraft, setPackageDraft] = useState(settings.workspaceImage.packages.join("\n"));
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [suggestions, setSuggestions] = useState<HostEnvironmentSuggestionsDto | null>(null);
+
+  const persist = async (workspaceImage: SettingsDto["workspaceImage"]) => {
+    setPending(true);
+    setError(null);
+    try {
+      await putSettings({ ...settings, workspaceImage });
+      await queryClient.invalidateQueries({ queryKey: ["settings"] });
+    } catch (cause) {
+      setError(
+        cause instanceof Error ? cause.message : "Could not save the workspace environment.",
+      );
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const applySuggestions = () => {
+    if (suggestions === null) return;
+    const suggestedPackages = suggestions.tools
+      .filter((tool) => tool.kind === "package")
+      .map((tool) => tool.id);
+    const packages = [...new Set([...settings.workspaceImage.packages, ...suggestedPackages])];
+    const dockerObserved = suggestions.tools.some(
+      (tool) => tool.kind === "service" && tool.id === "docker",
+    );
+    setPackageDraft(packages.join("\n"));
+    void persist({
+      ...settings.workspaceImage,
+      packages,
+      services: {
+        ...settings.workspaceImage.services,
+        docker: settings.workspaceImage.services.docker || dockerObserved,
+      },
+    });
+  };
+
+  const parsedDraft = parsePackageDraft(packageDraft);
+
+  return (
+    <section className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
+      <h2 className="font-sans text-sm font-semibold">Workspace environment</h2>
+      <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+        Applied whenever a session starts or resumes. Workspaces already running are unchanged.
+      </p>
+
+      <div className="mt-5 border-t border-[var(--sw-faint-rule)] pt-5">
+        <p className="font-sans text-sm font-medium text-foreground">Operating system</p>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          {OS_OPTIONS.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              disabled={pending}
+              onClick={() => void persist({ ...settings.workspaceImage, os: option.value })}
+              className={`rounded-xl border p-3 text-left shadow-xs transition-colors disabled:opacity-60 ${
+                settings.workspaceImage.os === option.value
+                  ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash"
+                  : "border-border bg-card hover:border-input"
+              }`}
+            >
+              <span className="block font-sans text-sm font-medium text-foreground">
+                {option.label}
+              </span>
+              <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
+                {option.detail}
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-6 border-t border-[var(--sw-faint-rule)] pt-5">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="font-sans text-sm font-medium text-foreground">Docker service</p>
+            <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+              A disposable daemon belongs to the workspace. Mend never mounts the host Docker
+              socket.
+            </p>
+          </div>
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() =>
+              void persist({
+                ...settings.workspaceImage,
+                services: {
+                  ...settings.workspaceImage.services,
+                  docker: !settings.workspaceImage.services.docker,
+                },
+              })
+            }
+            className={`shrink-0 rounded-xl border px-3.5 py-1.5 font-sans text-xs font-medium shadow-xs transition-colors disabled:opacity-60 ${
+              settings.workspaceImage.services.docker
+                ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
+                : "border-border bg-card text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {settings.workspaceImage.services.docker ? "Enabled" : "Disabled"}
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-6 border-t border-[var(--sw-faint-rule)] pt-5">
+        <label
+          htmlFor="workspace-packages"
+          className="font-sans text-sm font-medium text-foreground"
+        >
+          Packages
+        </label>
+        <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+          One known package or distro package per line. The defaults include pnpm, Python + uv, mise
+          for Node and Python versions, GitHub CLI, lazygit, bat, and common shell tools.
+        </p>
+        <textarea
+          id="workspace-packages"
+          value={packageDraft}
+          onChange={(event) => setPackageDraft(event.target.value)}
+          rows={8}
+          spellCheck={false}
+          className="mt-3 w-full resize-y rounded-xl border border-input bg-card px-3.5 py-3 font-mono text-[12.5px] leading-relaxed text-foreground outline-none transition-colors focus:border-[var(--sw-accent)] focus:ring-2 focus:ring-[color-mix(in_oklab,var(--sw-accent)_18%,transparent)]"
+        />
+        <div className="mt-3 flex items-center justify-between gap-4">
+          <p className="text-xs text-muted-foreground">
+            {parsedDraft.packages.length} package{parsedDraft.packages.length === 1 ? "" : "s"}
+          </p>
+          <button
+            type="button"
+            disabled={pending || parsedDraft.invalid !== null}
+            onClick={() =>
+              void persist({ ...settings.workspaceImage, packages: parsedDraft.packages })
+            }
+            className="inline-flex min-h-9 items-center justify-center rounded-xl bg-primary px-4 font-sans text-[13px] font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-transform hover:-translate-y-0.5 disabled:pointer-events-none disabled:opacity-60"
+          >
+            {pending ? "Saving…" : "Save packages"}
+          </button>
+        </div>
+        {parsedDraft.invalid === null ? null : (
+          <p className="mt-2 text-xs text-danger">
+            Unsupported package syntax: {parsedDraft.invalid}
+          </p>
+        )}
+      </div>
+
+      <div className="mt-6 border-t border-[var(--sw-faint-rule)] pt-5">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="font-sans text-sm font-medium text-foreground">
+              Suggestions from this machine
+            </p>
+            <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+              Checks a fixed list of executable and config paths on the machine running Mend. It
+              does not list your home directory or read config contents.
+            </p>
+          </div>
+          <button
+            type="button"
+            disabled={scanning}
+            onClick={() => {
+              setScanning(true);
+              setError(null);
+              void scanHostEnvironment()
+                .then(setSuggestions)
+                .catch((cause: unknown) =>
+                  setError(cause instanceof Error ? cause.message : "Could not scan this machine."),
+                )
+                .finally(() => setScanning(false));
+            }}
+            className="inline-flex min-h-9 shrink-0 items-center justify-center rounded-xl border border-border bg-panel px-3.5 font-sans text-[13px] font-medium text-foreground shadow-[var(--shadow-xs)] transition-[transform,border-color] hover:-translate-y-0.5 hover:border-input disabled:pointer-events-none disabled:opacity-60"
+          >
+            {scanning ? "Scanning…" : "Scan machine"}
+          </button>
+        </div>
+
+        {suggestions === null ? null : (
+          <div className="mt-4 space-y-4">
+            <div className="divide-y divide-[var(--sw-faint-rule)] border-y border-[var(--sw-faint-rule)]">
+              {suggestions.tools.map((tool) => (
+                <div
+                  key={`${tool.kind}:${tool.id}`}
+                  className="flex items-baseline justify-between gap-4 py-2.5"
+                >
+                  <span className="font-mono text-[12.5px] text-ink-2">{tool.executable}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {tool.kind === "service" ? "workspace service" : tool.id}
+                  </span>
+                </div>
+              ))}
+              {suggestions.tools.length === 0 ? (
+                <p className="py-3 text-[13px] text-muted-foreground">No known tools observed.</p>
+              ) : null}
+            </div>
+            {suggestions.tools.length === 0 ? null : (
+              <button
+                type="button"
+                disabled={pending}
+                onClick={applySuggestions}
+                className="rounded-xl border border-border bg-card px-3.5 py-2 font-sans text-[13px] font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-60"
+              >
+                Add observed tools
+              </button>
+            )}
+            {suggestions.configs.length === 0 ? null : (
+              <div>
+                <p className="font-sans text-xs font-medium text-muted-foreground">
+                  Config candidates · presence observed
+                </p>
+                <div className="mt-2 space-y-2">
+                  {suggestions.configs.map((config) => (
+                    <div key={config.path} className="flex items-baseline gap-3">
+                      <span className="w-24 shrink-0 text-xs text-muted-foreground">
+                        {config.label}
+                      </span>
+                      <span className="font-mono text-[12.5px] text-ink-2">{config.path}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {error === null ? null : (
+        <p className="mt-4 border-l-2 border-danger pl-3 text-[13px] text-danger">{error}</p>
+      )}
+    </section>
   );
 }
 
