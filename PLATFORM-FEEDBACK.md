@@ -112,6 +112,13 @@ contract). The PR also fixes the 2026-07-25 allowlist env-name drift (the SDK do
 
 ## 2026-08-01 · 0.8.1 · `openForward` exists in the daemon but has no API/SDK surface
 
+**Implemented at the source** — [sealant#151](https://github.com/sealant-sh/sealant/pull/151)
+(pending review/release): `workspace.forward(port)` returns a duplex byte stream over one held
+WebSocket (`GET /v1/workspaces/:id/forward?port=N`, scope `workspace:exec`), host fixed at loopback,
+`{"t":"eof"}` carrying TCP half-close, nothing-listening = HTTP 502 pre-upgrade. The listen/unlisten
+observation follow-ons below remain platform futures Mend does not need for the explicit-declaration
+Services design.
+
 - **Needed:** dev-server preview (plan §8.1.H / §17, 2026-08-01): a browser on the host or on a
   paired device reaches a server listening inside a workspace container. Mend terminates a host
   listener on private interfaces and needs a byte pipe to `container:port`.
