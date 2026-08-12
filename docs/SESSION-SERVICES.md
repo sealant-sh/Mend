@@ -42,7 +42,10 @@ right now across all my sessions?_ — one list, from any device.
 **Explicit only — no detection.** Mend never scans the workspace for listeners or guesses which
 process owns a port. Automatic detection across process trees, forks, and containers is fragile and
 fails silently; an explicit declaration is one flag and never lies. The agent is taught the same
-explicit path (see below), so "run the app so I can look at it" still just works.
+explicit path (see below), so "run the app so I can look at it" still just works. Static suggestion
+is not detection: reading the project's own manifests to _propose_ declarations (see
+`mend service init`) is an offline, deterministic read whose output the user confirms — nothing is
+observed at runtime and nothing runs.
 
 **No authentication.** A Service is exposed only where the machine already serves private traffic:
 loopback and explicitly selected private interfaces (plan §7.5), with Tailscale or similar for
@@ -75,6 +78,30 @@ There are two ways to declare a Service:
 | `mend service add 5432 --name db`          | forwards an already-listening workspace port; no supervision, no logs | docker compose database, sidecar process |
 
 That is the whole declaration surface. No promotion prompts, no observation heuristics.
+
+### Declared Services — `mend.toml`
+
+A repository can declare its Services once, in a `mend.toml` at the repo root — versioned with the
+code, so it travels to every collaborator and every session worktree:
+
+```toml
+[service.web]
+command = "pnpm dev"
+port = 3000
+
+[service.db]
+# No command: an already-listening port to adopt (compose sidecar, external daemon).
+port = 5432
+```
+
+A declaration is a recipe, never a running process. `mend service run web` starts one by name; the
+web and phone **Run Service** forms offer the declared set one-tap; a port-only entry is an `add`
+recipe. Nothing autostarts — declaring is not starting. The session's own worktree copy is the one
+read, so an agent can add a recipe as part of its change and it reviews like any other edit.
+
+`mend service init` scaffolds the file: it reads the project's own manifests — package.json scripts,
+compose files — and proposes entries for the user to confirm and commit. A generator for the recipe
+file, nothing more.
 
 ## How it works
 
@@ -234,7 +261,9 @@ one tap.
 
 ```text
 mend service run [session] --port <port> [--name <n>] -- <command>
+mend service run [session] <name>        start a declared Service (mend.toml recipe)
 mend service add [session] <port> [--name <n>]
+mend service init                        scaffold mend.toml from the project's manifests
 mend service list [session]
 mend service logs <service>       (supervised: attach to its PTY/record)
 mend service restart <service>
@@ -296,10 +325,12 @@ runs that full stack and ships something usable on its own.
 4. **Forward.** Sealantd forwarding capability and the SDK `workspace.forward(port)` primitive (can
    start in the Sealant repo in parallel with 2–3); host port allocation and binding policy;
    `mend service add`; reachable/unreachable states; Service list in CLI and a basic web list.
-5. **Supervise.** `mend service run` with port probe and URL report; logs, restart, stop; the
-   in-workspace `mend` helper and harness instruction.
-6. **Everywhere.** Phone Service cards and actions; Run Service form on web; persisted project
-   commands; restart offer on fresh workspaces.
+5. **Supervise.** `mend service run` with port probe and URL report; logs, restart, stop; declared
+   Services (`mend.toml` recipes resolved by `service run <name>`); the in-workspace `mend` helper
+   and harness instruction.
+6. **Everywhere.** Phone Service cards and actions; Run Service form on web (declared recipes
+   one-tap); `mend service init` manifest scan; persisted project commands; restart offer on fresh
+   workspaces.
 
 ## Acceptance scenarios
 
@@ -319,3 +350,7 @@ runs that full stack and ships something usable on its own.
 - Default expiry for a workspace whose agent settled but whose Service still runs.
 - Host port allocation range and stability (same Service, same port across restarts?).
 - The friendly-address lookup (`session:port`), if ever — presentation only.
+- Whether a declared Service may opt into starting with the session (`autostart = true` in
+  `mend.toml`). The safe default stands: declaring is not starting.
+- The full `mend.toml` recipe shape beyond `command` + `port` (cwd, env) — grow it when a real
+  project needs the field.
