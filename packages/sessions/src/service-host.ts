@@ -123,10 +123,20 @@ export const ServiceHostLive: Layer.Layer<
     const processes = yield* SessionProcessesRepo;
     const active = new Map<SessionProcessId, ActiveService>();
 
+    /**
+     * "The workspace's port" is one namespace to the user, two to Docker: a
+     * native process listens on the container loopback, while an inner
+     * `docker compose` publishes on the workspace-scoped dind sidecar
+     * (alias `docker`). Dial loopback first — deterministic when both
+     * answer — then fall back to the sidecar. A fixed two-element chain,
+     * not discovery.
+     */
     const dial = (workspaceId: SealantWorkspaceId, workspacePort: number) =>
       Effect.gen(function* () {
         const workspace = yield* sealant.getWorkspace(workspaceId);
-        return yield* sealant.forward(workspace, workspacePort);
+        return yield* sealant
+          .forward(workspace, workspacePort, "127.0.0.1")
+          .pipe(Effect.catch(() => sealant.forward(workspace, workspacePort, "docker")));
       });
 
     /** Flip the row's observed state, but only on transitions — not per connection. */

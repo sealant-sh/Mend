@@ -93,13 +93,16 @@ export class SealantClient extends Context.Service<
       argv: ReadonlyArray<string>,
     ) => Effect.Effect<InteractiveSession, SealantPlatformError>;
     /**
-     * A raw TCP byte pipe to `127.0.0.1:port` inside the workspace (0.14.0) —
-     * one held WebSocket per pipe. Fails when nothing listens on the port,
-     * which doubles as the reachability probe for Services.
+     * A raw TCP byte pipe into the workspace (0.14.0; host option 0.15.0) —
+     * one held WebSocket per pipe. The target is a closed workspace-private
+     * set: loopback (default) or `docker`, the workspace-scoped Docker
+     * sidecar where inner compose publishes its ports. Fails when nothing
+     * listens, which doubles as the reachability probe for Services.
      */
     readonly forward: (
       workspace: Workspace,
       port: number,
+      host?: "127.0.0.1" | "docker",
     ) => Effect.Effect<WorkspaceForward, SealantPlatformError>;
     /** Reattach to a PTY session by id — works from any workspace handle. */
     /** Stop the workspace: remove its container, settle it "stopped". */
@@ -240,8 +243,9 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantEnv> = 
         wrap(() => workspace.sessions.open(argv)),
     );
 
-    const forward = Effect.fn("SealantClient.forward")((workspace: Workspace, port: number) =>
-      wrap(() => workspace.forward(port)),
+    const forward = Effect.fn("SealantClient.forward")(
+      (workspace: Workspace, port: number, host?: "127.0.0.1" | "docker") =>
+        wrap(() => workspace.forward(port, host === undefined ? {} : { host })),
     );
 
     const stopWorkspace = Effect.fn("SealantClient.stopWorkspace")((workspace: Workspace) =>
