@@ -111,9 +111,11 @@ export const MendKeysLive: Layer.Layer<MendKeys, never, MendKeysConfig> = Layer.
 
 /**
  * The ssh command for a remote git operation under `mode`, as a
- * `GIT_SSH_COMMAND` value (sh-parsed by git). Both modes force BatchMode: a
+ * `GIT_SSH_COMMAND` value (sh-parsed by git). Every mode forces BatchMode: a
  * daemon has no terminal, so "hang on a prompt" becomes "fail with the reason
  * on stderr" — which the API layer turns readable via `describeGitRemoteFailure`.
+ * (The touch a hardware key demands in bridge mode happens on the CLIENT
+ * machine — no prompt is ever needed here.)
  */
 export const sshCommandFor = (mode: GitAuthMode, privateKeyPath: string | null): string => {
   if (mode === "mend-key" && privateKeyPath !== null) {
@@ -121,16 +123,30 @@ export const sshCommandFor = (mode: GitAuthMode, privateKeyPath: string | null):
     // accept-new trusts a first-contact host, but still refuses a CHANGED key.
     return `ssh -i '${privateKeyPath}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes`;
   }
+  if (mode === "bridge") {
+    // Plain ssh: no -i, no IdentitiesOnly — the bridged agent's identities
+    // are the point. accept-new mirrors mend-key: the signer's owner never
+    // gets a chance to answer a host-key prompt on this machine.
+    return "ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes";
+  }
   // Ambient: the login user's ssh setup unchanged — compose with an existing
   // GIT_SSH_COMMAND rather than clobbering it (options-before-host is valid).
   const base = process.env["GIT_SSH_COMMAND"] ?? "ssh";
   return `${base} -o BatchMode=yes`;
 };
 
-/** Env for every host-side remote git op: never prompt, ssh per `sshCommand`. */
-export const remoteGitEnv = (sshCommand: string): Record<string, string> => ({
+/**
+ * Env for every host-side remote git op: never prompt, ssh per `sshCommand`,
+ * and for bridge mode the shared agent socket — the ONE place a signer is
+ * chosen (`agentSocket` null means "whatever the ambient env already has").
+ */
+export const remoteGitEnv = (
+  sshCommand: string,
+  agentSocket: string | null = null,
+): Record<string, string> => ({
   GIT_TERMINAL_PROMPT: "0",
   GIT_SSH_COMMAND: sshCommand,
+  ...(agentSocket === null ? {} : { SSH_AUTH_SOCK: agentSocket }),
 });
 
 /**
@@ -147,6 +163,7 @@ export const sshTransportArgs = (
   ...(mode === "mend-key" && privateKeyPath !== null
     ? ["-i", privateKeyPath, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=accept-new"]
     : []),
+  ...(mode === "bridge" ? ["-o", "StrictHostKeyChecking=accept-new"] : []),
   "-o",
   "BatchMode=yes",
   "-o",
@@ -165,14 +182,17 @@ const FAILURE_PATTERNS: ReadonlyArray<FailurePattern> = [
     describe: (mode) =>
       mode === "mend-key"
         ? "The remote refused the Mend key (permission denied). Add the project's Mend public key as a deploy key on the git host, then retry."
-        : "The remote refused this machine's credentials (permission denied). Mend uses your login user's git/ssh setup for this project — check that a plain `git ls-remote` works in a shell here.",
+        : mode === "bridge"
+          ? "The remote refused the connected signer's keys (permission denied). Check that the shared key is authorized on the git host — and that the agent you shared actually holds it (`ssh-add -l` on the sharing machine)."
+          : "The remote refused this machine's credentials (permission denied). Mend uses your login user's git/ssh setup for this project — check that a plain `git ls-remote` works in a shell here.",
   },
   {
     test: /Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED/i,
     describe: (mode) =>
-      mode === "mend-key"
-        ? "The remote's SSH host key changed since it was first trusted. Verify the server, remove the old entry from known_hosts, then retry."
-        : "The remote's SSH host key is not trusted (host key verification failed). Connect once from a shell to accept it, then retry.",
+      // mend-key and bridge run with accept-new, so only a CHANGED key fails.
+      mode === "ambient"
+        ? "The remote's SSH host key is not trusted (host key verification failed). Connect once from a shell to accept it, then retry."
+        : "The remote's SSH host key changed since it was first trusted. Verify the server, remove the old entry from known_hosts, then retry.",
   },
   {
     test: /Could not resolve hostname ([^\s:]+)/i,

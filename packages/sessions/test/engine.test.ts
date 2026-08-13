@@ -56,7 +56,7 @@ import {
   SessionNotLiveError,
   SessionSocketHost,
 } from "@mend/sessions";
-import { MendKeys, Store, StoreConfig } from "@mend/store";
+import { AgentBridge, MendKeys, Store, StoreConfig } from "@mend/store";
 import type { CreateOptions, InteractiveSession, Workspace } from "@sealant/sdk";
 import { Duration, Effect, Layer, Stream } from "effect";
 
@@ -210,6 +210,14 @@ const mendKeysStubLayer = Layer.succeed(MendKeys, {
       privateKeyPath: "/tmp/mend-test-key",
     }),
   read: () => Effect.succeed(null),
+});
+
+/** No signer is ever connected in these worlds. */
+const agentBridgeStubLayer = Layer.succeed(AgentBridge, {
+  attach: () => Effect.die("not in test"),
+  status: () => Effect.succeed({ connected: false, clientName: null, since: null }),
+  socketPath: () => "/tmp/mend-test-bridge.sock",
+  begin: () => Effect.succeed(() => {}),
 });
 
 const gitOpsStubLayer = Layer.succeed(SessionGitOpsRepo, {
@@ -618,6 +626,7 @@ const withEngine = <A, E>(
     Layer.provide(serviceHostStubLayer),
     Layer.provide(sessionSocketStubLayer),
     Layer.provide(mendKeysStubLayer),
+    Layer.provide(agentBridgeStubLayer),
     Layer.provide(gitOpsStubLayer),
     Layer.provide(changesLayer(world)),
     Layer.provide(checkpointsLayer(world)),
@@ -1160,6 +1169,7 @@ describe("SessionEngine", () => {
       Layer.provide(serviceHostStubLayer),
       Layer.provide(sessionSocketStubLayer),
       Layer.provide(mendKeysStubLayer),
+      Layer.provide(agentBridgeStubLayer),
       Layer.provide(gitOpsStubLayer),
       Layer.provide(changesLayer(world)),
       Layer.provide(checkpointsLayer(world)),

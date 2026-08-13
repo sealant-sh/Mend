@@ -290,7 +290,11 @@ const handleGitConnect = async (
   socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
   const [executable, ...argv] = plan.argv;
   const child = spawn(executable ?? "ssh", argv, {
-    env: { ...process.env, ...(protocol === "" ? {} : { GIT_PROTOCOL: protocol }) },
+    env: {
+      ...process.env,
+      ...(protocol === "" ? {} : { GIT_PROTOCOL: protocol }),
+      ...plan.env,
+    },
   });
   const sniffer = plan.kind === "push" ? makePushSniffer() : null;
   let closed = false;

@@ -29,6 +29,8 @@ export interface GitTransportPlan {
   readonly opId: string;
   readonly kind: GitTransportKind;
   readonly argv: ReadonlyArray<string>;
+  /** Extra env for the spawned ssh (bridge mode's SSH_AUTH_SOCK rides here). */
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 /**

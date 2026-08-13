@@ -21,7 +21,9 @@ import { JobRunner } from "@mend/jobs";
 import { SealantClient } from "@mend/sealant";
 import { RECIPE_NAME, SessionEngine, mergeRecipes, readServiceRecipes } from "@mend/sessions";
 import {
+  AgentBridge,
   MendKeys,
+  NO_SIGNER_MESSAGE,
   Store,
   describeGitRemoteFailure,
   remoteGitEnv,
@@ -37,6 +39,7 @@ import {
   ChangedFileView,
   ChangeStats,
   CurrentUser,
+  GitBridgeStatusView,
   GitKeyView,
   MendApi,
   NotFound,
@@ -84,12 +87,22 @@ const readableGitFailure = (error: GitError, mode: GitAuthMode): StoreFailure =>
 
 /**
  * The resolved env for a remote git op under `mode` — the host-side half of
- * the credential seam. Generates the machine key on first mend-key use.
+ * the credential seam. Generates the machine key on first mend-key use;
+ * bridge mode requires a connected signer and fails fast with the readable
+ * line when there is none (a hung clone would be worse than an honest no).
  */
 const remoteEnvFor = (mode: GitAuthMode) =>
   Effect.gen(function* () {
     const keys = yield* MendKeys;
     if (mode === "ambient") return remoteGitEnv(sshCommandFor("ambient", null));
+    if (mode === "bridge") {
+      const bridge = yield* AgentBridge;
+      const bridgeStatus = yield* bridge.status();
+      if (!bridgeStatus.connected) {
+        return yield* new StoreFailure({ message: NO_SIGNER_MESSAGE });
+      }
+      return remoteGitEnv(sshCommandFor("bridge", null), bridge.socketPath());
+    }
     const key = yield* keys
       .ensure()
       .pipe(
@@ -100,6 +113,23 @@ const remoteEnvFor = (mode: GitAuthMode) =>
       );
     return remoteGitEnv(sshCommandFor("mend-key", key.privateKeyPath));
   });
+
+/**
+ * Attribute a bridge-signed op while it runs, so the share CLI can print
+ * what asked for the signature. Non-bridge modes pass through untouched.
+ */
+const withSignerContext = <A, E, R>(
+  mode: GitAuthMode,
+  description: string,
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, R | AgentBridge> =>
+  mode === "bridge"
+    ? Effect.gen(function* () {
+        const bridge = yield* AgentBridge;
+        const end = yield* bridge.begin(description);
+        return yield* effect.pipe(Effect.ensuring(Effect.sync(() => end())));
+      })
+    : effect;
 
 /** One settings document; PUT replaces it (clients edit what GET returned). */
 export const SettingsGroupLive = HttpApiBuilder.group(MendApi, "settings", (handlers) =>
@@ -178,9 +208,13 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         }
         const mode = payload.gitAuthMode ?? "ambient";
         const remoteEnv = yield* remoteEnvFor(mode);
-        const adopted = yield* store
-          .adopt(payload.name, payload.source, remoteEnv)
-          .pipe(Effect.mapError((error) => readableGitFailure(error.cause, mode)));
+        const adopted = yield* withSignerContext(
+          mode,
+          `adopt ${payload.name} → ${payload.source}`,
+          store
+            .adopt(payload.name, payload.source, remoteEnv)
+            .pipe(Effect.mapError((error) => readableGitFailure(error.cause, mode))),
+        );
         return yield* projects.create({
           name: payload.name,
           originUrl: payload.source,
@@ -245,7 +279,9 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         const projects = yield* ProjectsRepo;
         // Resolving the env generates the key on first mend-key use, so the
         // settings card can show a public key the moment the mode lands.
-        yield* remoteEnvFor(payload.gitAuthMode);
+        // Bridge is NOT resolved here: switching to it must work before the
+        // signer connects — the card reports presence as an observation.
+        if (payload.gitAuthMode === "mend-key") yield* remoteEnvFor("mend-key");
         return yield* projects
           .setGitAuthMode(params.id, payload.gitAuthMode)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
@@ -285,6 +321,13 @@ export const GitKeysGroupLive = HttpApiBuilder.group(MendApi, "gitKeys", (handle
           publicKey: key.publicKey,
           fingerprint: key.fingerprint,
         });
+      }),
+    )
+    .handle("bridgeStatus", () =>
+      Effect.gen(function* () {
+        const bridge = yield* AgentBridge;
+        const bridgeStatus = yield* bridge.status();
+        return new GitBridgeStatusView(bridgeStatus);
       }),
     ),
 );

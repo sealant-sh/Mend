@@ -9,6 +9,7 @@ import {
   changeStats,
   changeTour,
   getSettings,
+  gitBridgeStatus,
   gitKey,
   listActiveSessions,
   listProjects,
@@ -56,6 +57,13 @@ export const referencesQuery = queryOptions({
 export const gitKeyQuery = queryOptions({
   queryKey: ["git-key"],
   queryFn: gitKey,
+});
+
+/** Signer presence changes when a laptop connects/drops — poll while shown. */
+export const gitBridgeQuery = queryOptions({
+  queryKey: ["git-bridge"],
+  queryFn: gitBridgeStatus,
+  refetchInterval: 5_000,
 });
 
 export const projectReferencesQuery = (id: string) =>

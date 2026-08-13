@@ -2,6 +2,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
+import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -57,6 +58,7 @@ interface ProjectDto {
   readonly originUrl: string | null;
   readonly storePath: string;
   readonly defaultBranch: string;
+  readonly gitAuthMode: "ambient" | "mend-key" | "bridge";
 }
 
 /** The machine's Mend deploy key — public half only; the server never sends more. */
@@ -254,8 +256,8 @@ const adopt = async (config: CliConfig, args: ReadonlyArray<string>) => {
     authFlagIndex !== -1 && args[authFlagIndex + 1] !== undefined
       ? String(args[authFlagIndex + 1])
       : null;
-  if (auth !== null && auth !== "ambient" && auth !== "mend-key") {
-    return fail(`--auth takes "ambient" or "mend-key", not "${auth}"`);
+  if (auth !== null && auth !== "ambient" && auth !== "mend-key" && auth !== "bridge") {
+    return fail(`--auth takes "ambient", "mend-key", or "bridge", not "${auth}"`);
   }
 
   const project = await api<ProjectDto>(config, "POST", "/projects", {
@@ -265,6 +267,12 @@ const adopt = async (config: CliConfig, args: ReadonlyArray<string>) => {
   });
   say(`${green("✓")} adopted · ${project.name} · ${dim(project.storePath)}`);
   say(`${dim("  default branch")} ${project.defaultBranch}`);
+  // Say which signer did the work — the clone already proved it answers.
+  if (project.gitAuthMode === "mend-key") {
+    say(`${dim("  git auth")} mend key ${dim("(the machine's deploy key signed this clone)")}`);
+  } else if (project.gitAuthMode === "bridge") {
+    say(`${dim("  git auth")} bridge ${dim("(signed through the connected `mend keys share`)")}`);
+  }
   say(
     `${dim("  sessions start with:")} mend codex ${dim("(from anywhere —")} --project ${project.name}${dim(")")}`,
   );
@@ -1012,16 +1020,143 @@ const keysInit = async (config: CliConfig) => {
   printGitKey(key);
 };
 
+/**
+ * The ssh-agent bridge, client half (docs/GIT-ACCESS.md decision 2): relay
+ * the LOCAL ssh-agent to the Mend server over one standing WebSocket, so
+ * bridge-mode git ops sign with a key that never leaves this machine — a
+ * hardware key blinks here, not on the server. Agent-protocol messages are
+ * relayed verbatim (length-prefixed frames, base64 over JSON); the only
+ * inspection is each message's type byte, to say what is being asked.
+ */
+const keysShare = async (config: CliConfig) => {
+  const agentSock = process.env["SSH_AUTH_SOCK"];
+  if (agentSock === undefined || agentSock === "") {
+    return fail("SSH_AUTH_SOCK is not set — start (or plug in) your ssh-agent first");
+  }
+  const url = new URL(`${config.url}/api/keys/bridge/ws`);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("host", os.hostname());
+  if (config.token !== null) url.searchParams.set("token", config.token);
+
+  /**
+   * One complete agent exchange against the local agent: fresh connection,
+   * write the framed request verbatim, read one framed response. A hardware
+   * key blocks here until the touch — hence the generous timeout.
+   */
+  const askLocalAgent = (payload: Buffer): Promise<Buffer> =>
+    new Promise((resolve, reject) => {
+      const connection = net.connect(agentSock, () => {
+        connection.write(payload);
+      });
+      const timer = setTimeout(() => {
+        connection.destroy();
+        reject(new Error("the agent did not answer within 60s — touch missed?"));
+      }, 60_000);
+      let pending: Buffer = Buffer.alloc(0);
+      connection.on("data", (chunk: Buffer) => {
+        pending = Buffer.concat([pending, chunk]);
+        if (pending.length >= 4 && pending.length >= 4 + pending.readUInt32BE(0)) {
+          clearTimeout(timer);
+          connection.end();
+          resolve(pending.subarray(0, 4 + pending.readUInt32BE(0)));
+        }
+      });
+      connection.on("error", (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+    });
+
+  // Strictly one request at a time, in arrival order — the agent protocol is
+  // request/response and a hardware key cannot answer two touches at once.
+  let chain: Promise<unknown> = Promise.resolve();
+  const SSH_AGENTC_SIGN_REQUEST = 13;
+  const SSH_AGENTC_REQUEST_IDENTITIES = 11;
+
+  let attempt = 0;
+  for (;;) {
+    const ws = new WebSocket(url);
+    const closed = new Promise<void>((resolve) => {
+      ws.addEventListener("close", () => resolve(), { once: true });
+    });
+    const opened = await new Promise<boolean>((resolve) => {
+      ws.addEventListener("open", () => resolve(true), { once: true });
+      ws.addEventListener("error", () => resolve(false), { once: true });
+    });
+    if (opened) {
+      attempt = 0;
+      say(`${green("●")} sharing this machine's ssh-agent with ${config.url}`);
+      say(dim(`  agent: ${agentSock} · signature requests print here · Ctrl-C stops sharing`));
+      ws.addEventListener("message", (event) => {
+        const text =
+          typeof event.data === "string"
+            ? event.data
+            : Buffer.from(event.data as ArrayBuffer).toString("utf8");
+        let frame: { t?: string; id?: number; context?: string; payload?: string };
+        try {
+          frame = JSON.parse(text) as typeof frame;
+        } catch {
+          return;
+        }
+        if (
+          frame.t !== "req" ||
+          typeof frame.id !== "number" ||
+          typeof frame.payload !== "string"
+        ) {
+          return;
+        }
+        const id = frame.id;
+        const payload = Buffer.from(frame.payload, "base64");
+        const type = payload[4];
+        const context = typeof frame.context === "string" ? frame.context : "mend";
+        chain = chain.then(async () => {
+          const started = Date.now();
+          if (type === SSH_AGENTC_SIGN_REQUEST) {
+            say(`${amber("✎")} signature requested by mend ${dim(`(${context})`)}`);
+            say(dim("  waiting — touch your key if it blinks (up to 60s)…"));
+          } else if (type === SSH_AGENTC_REQUEST_IDENTITIES) {
+            say(dim(`  identities requested (${context})`));
+          }
+          try {
+            const response = await askLocalAgent(payload);
+            if (ws.readyState !== WebSocket.OPEN) return null;
+            ws.send(JSON.stringify({ t: "res", id, payload: response.toString("base64") }));
+            if (type === SSH_AGENTC_SIGN_REQUEST) {
+              say(
+                `${green("✓")} signed ${dim(`(${((Date.now() - started) / 1000).toFixed(1)}s)`)}`,
+              );
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ t: "err", id, message }));
+            }
+            if (type === SSH_AGENTC_SIGN_REQUEST) say(`${amber("✗")} not signed — ${message}`);
+          }
+          return null;
+        });
+      });
+    }
+    await closed;
+    attempt += 1;
+    const delay = Math.min(30_000, 1000 * 2 ** Math.min(attempt - 1, 5));
+    say(dim(`not connected — retrying in ${Math.round(delay / 1000)}s (Ctrl-C stops)`));
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+};
+
 const keysCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const [verb] = args;
   switch (verb) {
     case "init":
       return keysInit(config);
+    case "share":
+      return keysShare(config);
     case "show":
     case undefined:
       return keysShow(config);
     default:
-      return fail(`unknown keys command "${verb}" — try: mend keys init | mend keys show`);
+      return fail(`unknown keys command "${verb}" — try: mend keys init | show | share`);
   }
 };
 
@@ -1058,7 +1193,7 @@ _mend() {
     'run:new session + arbitrary command'
     'attach:reattach to a running session' 'shell:open a shell in a live session workspace'
     'service:reachable ports — add, list, stop'
-    'keys:the machine Mend deploy key — init, show'
+    'keys:the machine Mend deploy key — init, show, share'
     'continue:resume with the pending follow-up' 'resume:rejoin a settled session'
     'rejoin:attach if live, otherwise resume'
     'projects:adopted projects' 'sessions:sessions with review facts' 'status:active sessions'
@@ -1633,11 +1768,13 @@ const dashboard = async (config: CliConfig) => {
 const HELP = `mend — the agent workbench
 
   mend                                  the dashboard: every project and session, live
-  mend adopt [source] [--name <name>] [--auth ambient|mend-key]
+  mend adopt [source] [--name <name>] [--auth ambient|mend-key|bridge]
                                         adopt a repository into the store (default: cwd; any git
                                         URL — GitHub, GitLab, self-hosted, ssh://, a local path)
   mend keys init                        generate the machine's Mend deploy key (ed25519)
   mend keys show                        print the public key — add it as a deploy key on your git host
+  mend keys share                       relay THIS machine's ssh-agent to the server (bridge mode:
+                                        hardware keys sign here; Ctrl-C stops sharing)
   mend codex|claude|opencode            new session worktree + launch the harness in it
   mend run -- <command...>              same, with an arbitrary command
   mend attach <session-id-prefix>       reattach this terminal to a running session
