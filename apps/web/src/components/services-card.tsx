@@ -15,9 +15,9 @@ import { queryClient, sessionProcessesQuery, sessionRecipesQuery } from "#/lib/q
 
 /**
  * The session's Services (docs/SESSION-SERVICES.md §presentation): what runs
- * and where it is reachable, plus the worktree's declared recipes as one-tap
- * launchers. Status words are observations — reachable means the forwarded
- * port accepted a connection, never a judgment about the application.
+ * and where it is reachable, plus the declared recipes as one-tap launchers.
+ * Status words are observations — reachable means the forwarded port accepted
+ * a connection, never a judgment about the application.
  */
 
 const LIVE = new Set(["starting", "running", "reachable", "unreachable"]);
@@ -34,6 +34,8 @@ function ServiceStatusDot({ status }: { readonly status: string }) {
   return <StatusDot tone={tone} word={status} pulse={status === "starting"} />;
 }
 
+type ServiceVerb = "restart" | "stop" | "rerun";
+
 function ServiceRow({
   service,
   actionable,
@@ -44,20 +46,34 @@ function ServiceRow({
   readonly service: SessionProcessDto;
   readonly actionable: boolean;
   readonly pending: string | null;
-  readonly onAction: (verb: "restart" | "stop", service: SessionProcessDto) => void;
+  readonly onAction: (verb: ServiceVerb, service: SessionProcessDto) => void;
   readonly first: boolean;
 }) {
+  const [copied, setCopied] = useState(false);
   const url = serviceUrl(service);
   const live = LIVE.has(service.status);
+  // What a client would connect to — the copyable fact. Dead forwards are
+  // not offered: an ended Service has no host port worth pasting anywhere.
+  const endpoint = live && url !== null ? url.replace(/^http:\/\//, "") : null;
   const meta = [
     service.workspacePort === null ? null : `:${service.workspacePort}`,
-    url === null ? null : url.replace(/^http:\/\//, "→ "),
-    service.exitCode === null ? null : `code ${service.exitCode}`,
+    endpoint === null ? null : `→ ${endpoint}`,
+    !live && service.exitCode !== null ? `code ${service.exitCode}` : null,
   ]
     .filter((part) => part !== null)
     .join(" ");
+
+  const copy = () => {
+    if (endpoint === null) return;
+    void navigator.clipboard.writeText(endpoint).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+      return null;
+    });
+  };
+
   return (
-    <div className={`px-4 py-3 ${first ? "" : "border-t border-rule-faint"}`}>
+    <div className={`group px-4 py-3 ${first ? "" : "border-t border-rule-faint"}`}>
       <div className="flex items-center justify-between gap-3">
         <p className="min-w-0 truncate font-sans text-[13px] font-medium text-ink">
           {service.label ?? service.id.slice(0, 8)}
@@ -65,41 +81,73 @@ function ServiceRow({
         <ServiceStatusDot status={service.status} />
       </div>
       <div className="mt-1 flex items-center justify-between gap-3">
-        <p className="min-w-0 truncate font-mono text-[11px] text-faint">{meta}</p>
-        {live && (
-          <span className="flex shrink-0 items-center gap-2">
-            {url !== null && service.status === "reachable" && (
-              <a
-                href={url}
-                target="_blank"
-                rel="noreferrer"
-                className="font-sans text-xs font-medium text-info hover:underline"
-              >
-                Open
-              </a>
-            )}
-            {actionable && service.argv.length > 0 && (
-              <button
-                type="button"
-                onClick={() => onAction("restart", service)}
-                disabled={pending !== null}
-                className="font-sans text-xs text-muted-foreground hover:text-ink"
-              >
-                {pending === `restart:${service.id}` ? "Restarting…" : "Restart"}
-              </button>
-            )}
-            {actionable && (
-              <button
-                type="button"
-                onClick={() => onAction("stop", service)}
-                disabled={pending !== null}
-                className="font-sans text-xs text-muted-foreground hover:text-ink"
-              >
-                {pending === `stop:${service.id}` ? "Stopping…" : "Stop"}
-              </button>
-            )}
-          </span>
+        {endpoint === null ? (
+          <p className="min-w-0 truncate font-mono text-[11px] text-faint">{meta}</p>
+        ) : (
+          <button
+            type="button"
+            onClick={copy}
+            title={`Copy ${endpoint}`}
+            className="min-w-0 cursor-pointer truncate text-left font-mono text-[11px] text-faint transition-colors hover:text-ink"
+          >
+            {meta}
+          </button>
         )}
+        <span className="flex shrink-0 items-center gap-2">
+          {endpoint !== null && (
+            <button
+              type="button"
+              onClick={copy}
+              className={`font-sans text-xs transition-opacity ${
+                copied
+                  ? "text-success opacity-100"
+                  : "text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-ink"
+              }`}
+            >
+              {copied ? "Copied" : "Copy"}
+            </button>
+          )}
+          {live && url !== null && service.status === "reachable" && (
+            <a
+              href={url}
+              target="_blank"
+              rel="noreferrer"
+              className="font-sans text-xs font-medium text-info hover:underline"
+            >
+              Open
+            </a>
+          )}
+          {live && actionable && service.argv.length > 0 && (
+            <button
+              type="button"
+              onClick={() => onAction("restart", service)}
+              disabled={pending !== null}
+              className="font-sans text-xs text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-ink"
+            >
+              {pending === `restart:${service.id}` ? "Restarting…" : "Restart"}
+            </button>
+          )}
+          {live && actionable && (
+            <button
+              type="button"
+              onClick={() => onAction("stop", service)}
+              disabled={pending !== null}
+              className="font-sans text-xs text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-ink"
+            >
+              {pending === `stop:${service.id}` ? "Stopping…" : "Stop"}
+            </button>
+          )}
+          {!live && actionable && service.workspacePort !== null && (
+            <button
+              type="button"
+              onClick={() => onAction("rerun", service)}
+              disabled={pending !== null}
+              className="font-sans text-xs font-medium text-info hover:underline disabled:opacity-50"
+            >
+              {pending === `rerun:${service.id}` ? "Starting…" : "Run"}
+            </button>
+          )}
+        </span>
       </div>
     </div>
   );
@@ -118,16 +166,40 @@ export function ServicesCard({
 
   const services = (processes.data ?? []).filter((process) => process.kind === "service");
   const liveServices = services.filter((service) => LIVE.has(service.status));
-  const endedServices = services.filter((service) => !LIVE.has(service.status)).slice(-3);
-  const liveNames = new Set(liveServices.map((service) => service.label));
-  const startable = (recipes.data ?? []).filter((recipe) => !liveNames.has(recipe.name));
+  const liveLabels = new Set(liveServices.map((service) => service.label ?? service.id));
+  const endedByName = new Map<string, SessionProcessDto>();
+  for (const service of services.filter((item) => !LIVE.has(item.status))) {
+    // Latest attempt per name (list is oldest-first), and a live successor
+    // retires its history from the card — the record still holds it all.
+    if (liveLabels.has(service.label ?? service.id)) continue;
+    endedByName.set(service.label ?? service.id, service);
+  }
+  const endedServices = [...endedByName.values()].slice(-3);
+  // One row per name: an ended Service already carries its command, so its
+  // Run re-runs it — the same-named recipe would only echo the row.
+  const shownNames = new Set(
+    [...liveServices, ...endedServices].map((service) => service.label ?? ""),
+  );
+  const startable = (recipes.data ?? []).filter((recipe) => !shownNames.has(recipe.name));
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ["session", sessionId, "processes"] });
 
-  const act = (verb: "restart" | "stop", service: SessionProcessDto) => {
+  const act = (verb: ServiceVerb, service: SessionProcessDto) => {
     setPending(`${verb}:${service.id}`);
-    const action = verb === "restart" ? restartService(service.id) : stopService(service.id);
+    const action =
+      verb === "restart"
+        ? restartService(service.id)
+        : verb === "stop"
+          ? stopService(service.id)
+          : // rerun: an ended row keeps its command and port — start it fresh.
+            service.argv.length > 0
+            ? runService(sessionId, {
+                argv: service.argv,
+                port: service.workspacePort ?? 0,
+                name: service.label,
+              })
+            : addService(sessionId, { port: service.workspacePort ?? 0, name: service.label });
     void action.then(invalidate).finally(() => setPending(null));
   };
 
