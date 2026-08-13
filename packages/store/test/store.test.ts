@@ -53,7 +53,7 @@ describe("Store", () => {
         makeOrigin(origin);
 
         // Adopt: bare clone in the store, default branch discovered.
-        const adopted = yield* store.adopt("fixture", origin);
+        const adopted = yield* store.adopt("fixture", origin, { GIT_TERMINAL_PROMPT: "0" });
         expect(adopted.defaultBranch).toBe("main");
         expect(fs.existsSync(adopted.storePath)).toBe(true);
 

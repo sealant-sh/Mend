@@ -62,7 +62,7 @@ import {
 } from "@mend/jobs";
 import { SealantClientLiveFromEnv } from "@mend/sealant";
 import { ServiceHostLive, SessionEngine, SessionSocketHostLive } from "@mend/sessions";
-import { Store, StoreConfig } from "@mend/store";
+import { MendKeys, MendKeysConfigLive, MendKeysLive, Store, StoreConfig } from "@mend/store";
 import { Config, Effect, Layer, Schema } from "effect";
 import {
   HttpMiddleware,
@@ -113,6 +113,7 @@ const DatabaseLive = DrizzleRepositoriesLive.pipe(
 // One instance each: the API handlers and the worker share them (memoized —
 // same layer reference, provided once at MainLive).
 const StoreLive = Store.layer.pipe(Layer.provide(StoreConfig.layer));
+const KeysLive: Layer.Layer<MendKeys> = MendKeysLive.pipe(Layer.provide(MendKeysConfigLive));
 const ServiceHostLayer = ServiceHostLive;
 const SessionEngineLive = SessionEngine.layer.pipe(
   Layer.provide(ServiceHostLayer),
@@ -304,6 +305,8 @@ const MainLive = Layer.unwrap(
       // The session engine and store serve both the API handlers and the worker.
       Layer.provide(SessionEngineLive),
       Layer.provide(StoreLive),
+      // The machine's Mend git key (docs/GIT-ACCESS.md — the mend-key auth mode).
+      Layer.provide(KeysLive),
       // The host's GitHub CLI, behind the api's Gh service (adoption discovery).
       Layer.provide(GhLive),
       Layer.provide(HostEnvironmentLive),

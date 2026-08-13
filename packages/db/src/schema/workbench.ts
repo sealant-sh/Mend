@@ -39,6 +39,7 @@ import type {
   CheckpointTrigger,
   ContextItem,
   FollowUpStatus,
+  GitAuthMode,
   CommentAuthor,
   CommentKind,
   CommentState,
@@ -208,6 +209,7 @@ export const projects = pgTable("projects", {
   adoptedSha: text().$type<Sha>(),
   autoTour: text().$type<AutomationChoice>().notNull().default("inherit"),
   autoSuggest: text().$type<AutomationChoice>().notNull().default("inherit"),
+  gitAuthMode: text().$type<GitAuthMode>().notNull().default("ambient"),
   createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });

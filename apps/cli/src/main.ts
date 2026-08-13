@@ -59,6 +59,13 @@ interface ProjectDto {
   readonly defaultBranch: string;
 }
 
+/** The machine's Mend deploy key — public half only; the server never sends more. */
+interface GitKeyDto {
+  readonly exists: boolean;
+  readonly publicKey: string | null;
+  readonly fingerprint: string | null;
+}
+
 interface SessionDto {
   readonly id: string;
   readonly projectId: string;
@@ -230,8 +237,12 @@ const adopt = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const nameFlag = args.indexOf("--name");
   const name =
     nameFlag !== -1 && args[nameFlag + 1] !== undefined ? String(args[nameFlag + 1]) : null;
+  const authFlagIndex = args.indexOf("--auth");
   const positional = args.filter(
-    (a, i) => !a.startsWith("--") && (nameFlag === -1 || i !== nameFlag + 1),
+    (a, i) =>
+      !a.startsWith("--") &&
+      (nameFlag === -1 || i !== nameFlag + 1) &&
+      (authFlagIndex === -1 || i !== authFlagIndex + 1),
   );
   // Bare `mend adopt` adopts the repo the cwd is inside, not the subdirectory.
   const rawSource = positional[0] ?? gitTopLevel(process.cwd()) ?? ".";
@@ -239,9 +250,18 @@ const adopt = async (config: CliConfig, args: ReadonlyArray<string>) => {
   // Derived defaults are normalized ("Mend" → "mend"); explicit --name is sent as typed.
   const projectName = name ?? normalizeProjectName(path.basename(source, ".git"));
 
+  const auth =
+    authFlagIndex !== -1 && args[authFlagIndex + 1] !== undefined
+      ? String(args[authFlagIndex + 1])
+      : null;
+  if (auth !== null && auth !== "ambient" && auth !== "mend-key") {
+    return fail(`--auth takes "ambient" or "mend-key", not "${auth}"`);
+  }
+
   const project = await api<ProjectDto>(config, "POST", "/projects", {
     name: projectName,
     source,
+    ...(auth === null ? {} : { gitAuthMode: auth }),
   });
   say(`${green("✓")} adopted · ${project.name} · ${dim(project.storePath)}`);
   say(`${dim("  default branch")} ${project.defaultBranch}`);
@@ -963,6 +983,48 @@ const serviceCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
   }
 };
 
+// ─── keys: the machine's Mend deploy key (docs/GIT-ACCESS.md) ───────────────
+
+/** Print the public key with the one instruction that makes it useful. */
+const printGitKey = (key: GitKeyDto) => {
+  if (key.publicKey === null) return;
+  say(key.publicKey);
+  if (key.fingerprint !== null) say(dim(`  ${key.fingerprint}`));
+  say(dim("  add this as a deploy key on your git host (GitHub/GitLab/Gitea: repo"));
+  say(dim("  settings → deploy keys; grant write access if sessions should push),"));
+  say(dim("  then adopt with: mend adopt <ssh-url> --auth mend-key"));
+};
+
+const keysShow = async (config: CliConfig) => {
+  const key = await api<GitKeyDto>(config, "GET", "/keys/git");
+  if (!key.exists) {
+    say(
+      `no Mend key yet ${dim("— mend keys init generates one (ed25519, stays on the server host)")}`,
+    );
+    return;
+  }
+  printGitKey(key);
+};
+
+const keysInit = async (config: CliConfig) => {
+  const key = await api<GitKeyDto>(config, "POST", "/keys/git");
+  say(`${green("✓")} Mend key ready ${dim("(private half stays on the server host)")}`);
+  printGitKey(key);
+};
+
+const keysCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const [verb] = args;
+  switch (verb) {
+    case "init":
+      return keysInit(config);
+    case "show":
+    case undefined:
+      return keysShow(config);
+    default:
+      return fail(`unknown keys command "${verb}" — try: mend keys init | mend keys show`);
+  }
+};
+
 // ─── completions: live sessions under TAB ───────────────────────────────────
 
 /**
@@ -996,6 +1058,7 @@ _mend() {
     'run:new session + arbitrary command'
     'attach:reattach to a running session' 'shell:open a shell in a live session workspace'
     'service:reachable ports — add, list, stop'
+    'keys:the machine Mend deploy key — init, show'
     'continue:resume with the pending follow-up' 'resume:rejoin a settled session'
     'rejoin:attach if live, otherwise resume'
     'projects:adopted projects' 'sessions:sessions with review facts' 'status:active sessions'
@@ -1019,7 +1082,7 @@ _mend "$@"
 const BASH_COMPLETIONS = `_mend() {
   local cur=\${COMP_WORDS[COMP_CWORD]}
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "adopt codex claude opencode run attach shell service continue resume rejoin projects sessions status ui help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "adopt codex claude opencode run attach shell service keys continue resume rejoin projects sessions status ui help" -- "$cur") )
     return
   fi
   case \${COMP_WORDS[1]} in
@@ -1570,7 +1633,11 @@ const dashboard = async (config: CliConfig) => {
 const HELP = `mend — the agent workbench
 
   mend                                  the dashboard: every project and session, live
-  mend adopt [source] [--name <name>]   adopt a repository into the store (default: cwd)
+  mend adopt [source] [--name <name>] [--auth ambient|mend-key]
+                                        adopt a repository into the store (default: cwd; any git
+                                        URL — GitHub, GitLab, self-hosted, ssh://, a local path)
+  mend keys init                        generate the machine's Mend deploy key (ed25519)
+  mend keys show                        print the public key — add it as a deploy key on your git host
   mend codex|claude|opencode            new session worktree + launch the harness in it
   mend run -- <command...>              same, with an arbitrary command
   mend attach <session-id-prefix>       reattach this terminal to a running session
@@ -1617,6 +1684,8 @@ const main = async () => {
       return shellCommand(config, rest);
     case "service":
       return serviceCommand(config, rest);
+    case "keys":
+      return keysCommand(config, rest);
     case "completions":
       return completionsCommand(rest);
     case "__complete":

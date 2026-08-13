@@ -26,6 +26,7 @@ import {
   ChangeTour,
   Checkpoint,
   FollowUp,
+  GitAuthMode,
   Project,
   ProjectMount,
   Reference,
@@ -254,10 +255,15 @@ export class SettingsFailure extends Schema.TaggedErrorClass<SettingsFailure>()(
   { httpApiStatus: 422 },
 ) {}
 
-/** Adoption: clone `source` (URL or local path) into the store under `name`. */
+/**
+ * Adoption: clone `source` (URL or local path) into the store under `name`.
+ * `source` is any git URL — GitHub, GitLab, self-hosted, ssh://, a local path.
+ * Omitted `gitAuthMode` means `ambient` (the login user's git setup).
+ */
 export class AdoptProject extends Schema.Class<AdoptProject>("AdoptProject")({
   name: Schema.String,
   source: Schema.String,
+  gitAuthMode: Schema.optional(GitAuthMode),
 }) {}
 
 /**
@@ -305,6 +311,24 @@ export class ProjectAutomationRequest extends Schema.Class<ProjectAutomationRequ
 )({
   autoTour: AutomationChoice,
   autoSuggest: AutomationChoice,
+}) {}
+
+/** How host-side git reaches this project's remote (docs/GIT-ACCESS.md). */
+export class ProjectGitAuthRequest extends Schema.Class<ProjectGitAuthRequest>(
+  "ProjectGitAuthRequest",
+)({
+  gitAuthMode: GitAuthMode,
+}) {}
+
+/**
+ * The machine's Mend deploy key — public half only; the private key never
+ * leaves the host and never crosses this API. `exists: false` is status, not
+ * an error: no key has been generated yet.
+ */
+export class GitKeyView extends Schema.Class<GitKeyView>("GitKeyView")({
+  exists: Schema.Boolean,
+  publicKey: Schema.NullOr(Schema.String),
+  fingerprint: Schema.NullOr(Schema.String),
 }) {}
 
 export const HostToolSuggestionView = Schema.Struct({
@@ -405,6 +429,26 @@ const projectsGroup = HttpApiGroup.make("projects")
       error: NotFound,
     }),
   )
+  .add(
+    // Switching to mend-key generates the machine key if missing, so the
+    // response is immediately followed by a public key the UI can show.
+    HttpApiEndpoint.put("gitAuth", "/projects/:id/git-auth", {
+      params: { id: ProjectId },
+      payload: ProjectGitAuthRequest,
+      success: Project,
+      error: Schema.Union([NotFound, StoreFailure]),
+    }),
+  )
+  .middleware(AuthMiddleware);
+
+/**
+ * The machine's Mend git key (docs/GIT-ACCESS.md). GET reads; POST generates
+ * on first use ("mend keys init"). One key per machine today — the per-user
+ * seam arrives with multi-tenant identity.
+ */
+const gitKeysGroup = HttpApiGroup.make("gitKeys")
+  .add(HttpApiEndpoint.get("show", "/keys/git", { success: GitKeyView }))
+  .add(HttpApiEndpoint.post("init", "/keys/git", { success: GitKeyView, error: StoreFailure }))
   .middleware(AuthMiddleware);
 
 /** Add a reference: clone `source` shallow into the store, pinned to `ref` when given. */
@@ -985,6 +1029,7 @@ export const MendApi = HttpApi.make("mend")
   .add(briefsGroup)
   .add(runsGroup)
   .add(projectsGroup)
+  .add(gitKeysGroup)
   .add(projectMountsGroup)
   .add(projectRecipesGroup)
   .add(referencesGroup)

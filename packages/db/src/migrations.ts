@@ -608,6 +608,19 @@ const serviceProtocol = Effect.gen(function* () {
   yield* sql`ALTER TABLE project_service_recipes ADD COLUMN protocol text NOT NULL DEFAULT 'tcp'`;
 });
 
+/**
+ * Per-project git auth mode (docs/GIT-ACCESS.md): `ambient` follows the login
+ * user's git/ssh setup; `mend-key` uses the machine's Mend-generated deploy
+ * key. Text, not an enum — the mode set will grow (per-user keys, agent
+ * bridge) without a migration each time.
+ */
+const projectGitAuth = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE projects
+      ADD COLUMN git_auth_mode text NOT NULL DEFAULT 'ambient'`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -630,4 +643,5 @@ export const migrations = {
   "0018_process_run_pointers": processRunPointers,
   "0019_project_service_recipes": projectServiceRecipes,
   "0020_service_protocol": serviceProtocol,
+  "0021_project_git_auth": projectGitAuth,
 };

@@ -1,6 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import { ProjectId, type Sha } from "@mend/domain";
-import { Project, type AutomationChoice } from "@mend/domain/workbench";
+import { Project, type AutomationChoice, type GitAuthMode } from "@mend/domain/workbench";
 import { asc, eq } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -22,6 +22,7 @@ export interface NewProject {
   readonly storePath: string;
   readonly defaultBranch: string;
   readonly adoptedSha: Sha | null;
+  readonly gitAuthMode: GitAuthMode;
 }
 
 /** The index of adopted repositories (plan §5.2); the store itself is git on disk. */
@@ -36,6 +37,11 @@ export class ProjectsRepo extends Context.Service<
     readonly setAutomation: (
       id: ProjectId,
       choices: { readonly autoTour: AutomationChoice; readonly autoSuggest: AutomationChoice },
+    ) => Effect.Effect<Project, ProjectNotFoundError>;
+    /** How host-side git authenticates to this project's remote (docs/GIT-ACCESS.md). */
+    readonly setGitAuthMode: (
+      id: ProjectId,
+      mode: GitAuthMode,
     ) => Effect.Effect<Project, ProjectNotFoundError>;
     /** Hard delete — sessions and everything under them cascade. */
     readonly remove: (id: ProjectId) => Effect.Effect<void>;
@@ -109,11 +115,27 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return updated;
       });
 
+      const setGitAuthMode = Effect.fn("ProjectsRepo.setGitAuthMode")(function* (
+        id: ProjectId,
+        mode: GitAuthMode,
+      ) {
+        const [row] = yield* db
+          .update(projects)
+          .set({ gitAuthMode: mode, updatedAt: new Date() })
+          .where(eq(projects.id, id))
+          .returning()
+          .pipe(Effect.orDie);
+        if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
+        const updated = toProject(row);
+        yield* notifyEvent(sql, { type: "project", projectId: id });
+        return updated;
+      });
+
       const remove = Effect.fn("ProjectsRepo.remove")(function* (id: ProjectId) {
         yield* db.delete(projects).where(eq(projects.id, id)).pipe(Effect.orDie);
         yield* notifyEvent(sql, { type: "project", projectId: id });
       });
 
-      return { create, byId, byName, list, setAutomation, remove };
+      return { create, byId, byName, list, setAutomation, setGitAuthMode, remove };
     }),
   );

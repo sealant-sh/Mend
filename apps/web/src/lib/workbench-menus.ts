@@ -40,7 +40,7 @@ export const startSession = (navigate: Navigate, projectId: string, harness: str
   });
 
 /** Clipboard write with a fallback for non-secure origins (LAN over http). */
-const copyText = (text: string) => {
+export const copyText = (text: string) => {
   if (typeof navigator.clipboard?.writeText === "function") {
     void navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
     return;

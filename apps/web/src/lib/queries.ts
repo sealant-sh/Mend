@@ -9,6 +9,7 @@ import {
   changeStats,
   changeTour,
   getSettings,
+  gitKey,
   listActiveSessions,
   listProjects,
   listReferences,
@@ -50,6 +51,11 @@ export const projectDetailQuery = (id: string) =>
 export const referencesQuery = queryOptions({
   queryKey: ["references"],
   queryFn: listReferences,
+});
+
+export const gitKeyQuery = queryOptions({
+  queryKey: ["git-key"],
+  queryFn: gitKey,
 });
 
 export const projectReferencesQuery = (id: string) =>

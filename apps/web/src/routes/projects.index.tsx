@@ -3,8 +3,9 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { useContextMenu } from "#/components/context-menu";
+import { GitKeyCard } from "#/components/git-key-card";
 import { AppShell } from "#/components/shell";
-import { adoptProject } from "#/lib/api";
+import { adoptProject, initGitKey, type GitAuthModeDto, type GitKeyDto } from "#/lib/api";
 import { projectsQuery, queryClient } from "#/lib/queries";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 import { projectMenu } from "#/lib/workbench-menus";
@@ -71,6 +72,8 @@ function ProjectsPage() {
 function AdoptForm() {
   const [name, setName] = useState("");
   const [source, setSource] = useState("");
+  const [auth, setAuth] = useState<GitAuthModeDto>("ambient");
+  const [gitKey, setGitKey] = useState<GitKeyDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
@@ -79,7 +82,7 @@ function AdoptForm() {
     setPending(true);
     setError(null);
     try {
-      await adoptProject(name === "" ? inferName(source) : name, source);
+      await adoptProject(name === "" ? inferName(source) : name, source, auth);
       await queryClient.invalidateQueries({ queryKey: ["projects"] });
       setName("");
       setSource("");
@@ -90,6 +93,17 @@ function AdoptForm() {
     }
   };
 
+  // Choosing the Mend key generates it up front: the deploy key must be on
+  // the git host before a private clone can succeed, so show it now.
+  const chooseAuth = (mode: GitAuthModeDto) => {
+    setAuth(mode);
+    setError(null);
+    if (mode !== "mend-key" || gitKey !== null) return;
+    initGitKey()
+      .then(setGitKey)
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)));
+  };
+
   return (
     <div className="mt-7 rounded-2xl bg-card p-5 shadow-sm">
       <p className="text-xs font-medium text-label">Adopt a repository</p>
@@ -97,7 +111,7 @@ function AdoptForm() {
         <input
           value={source}
           onChange={(event) => setSource(event.target.value)}
-          placeholder="URL or absolute path on this machine"
+          placeholder="git URL (GitHub, GitLab, self-hosted, ssh://) or absolute path"
           className="min-w-64 flex-1 rounded-lg border border-input bg-background px-3 py-2 font-mono text-xs text-foreground placeholder:text-faint"
         />
         <input
@@ -115,7 +129,33 @@ function AdoptForm() {
           {pending ? "Adopting…" : "Adopt"}
         </button>
       </div>
-      {error !== null && <p className="mt-3 font-mono text-xs text-danger">{error}</p>}
+      <div className="mt-3 flex items-center gap-2">
+        <span className="text-xs text-label">git access:</span>
+        {(["ambient", "mend-key"] as const).map((mode) => (
+          <button
+            key={mode}
+            type="button"
+            onClick={() => chooseAuth(mode)}
+            className={`rounded-lg border px-2 py-1 font-mono text-[11px] transition-colors ${
+              auth === mode
+                ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
+                : "border-border bg-card text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {mode === "ambient" ? "ambient" : "mend key"}
+          </button>
+        ))}
+      </div>
+      {auth === "mend-key" && gitKey !== null && (
+        <div className="mt-3 max-w-[560px]">
+          <GitKeyCard gitKey={gitKey} />
+        </div>
+      )}
+      {error !== null && (
+        <p className="mt-3 border-l-2 border-[var(--sw-red)] pl-2 font-mono text-xs text-danger">
+          {error}
+        </p>
+      )}
       <p className="mt-3 text-xs text-muted-foreground">
         Cloned into the store; your existing checkout is never the execution target.
       </p>

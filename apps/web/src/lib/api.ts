@@ -291,6 +291,9 @@ export type SessionStatusDto =
 /** A project's stance on one review-automation switch; inherit follows Settings. */
 export type AutomationChoiceDto = "inherit" | "on" | "off";
 
+/** How host-side git reaches the project's remote (docs/GIT-ACCESS.md). */
+export type GitAuthModeDto = "ambient" | "mend-key";
+
 export interface ProjectDto {
   readonly id: string;
   readonly name: string;
@@ -300,6 +303,7 @@ export interface ProjectDto {
   readonly adoptedSha: string | null;
   readonly autoTour: AutomationChoiceDto;
   readonly autoSuggest: AutomationChoiceDto;
+  readonly gitAuthMode: GitAuthModeDto;
   readonly createdAt: string;
 }
 
@@ -561,12 +565,16 @@ export const listProjects = () => request<ReadonlyArray<ProjectDto>>("/api/proje
 export const projectDetail = (id: string) => request<ProjectDetailDto>(`/api/projects/${id}`);
 
 /** Adoption can fail for reasons worth reading (422 carries git's own words). */
-export const adoptProject = async (name: string, source: string): Promise<ProjectDto> => {
+export const adoptProject = async (
+  name: string,
+  source: string,
+  gitAuthMode?: GitAuthModeDto,
+): Promise<ProjectDto> => {
   const response = await fetch("/api/projects", {
     method: "POST",
     credentials: "include",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ name, source }),
+    body: JSON.stringify({ name, source, ...(gitAuthMode === undefined ? {} : { gitAuthMode }) }),
   });
   if (response.status === 401) throw redirect({ to: "/login" });
   if (!response.ok) {
@@ -574,6 +582,47 @@ export const adoptProject = async (name: string, source: string): Promise<Projec
     throw new Error(body.message ?? `adoption failed (${response.status})`);
   }
   const body: ProjectDto = await response.json();
+  return body;
+};
+
+/** Switching to mend-key can fail readably (keygen refused on the host). */
+export const setProjectGitAuth = async (
+  projectId: string,
+  gitAuthMode: GitAuthModeDto,
+): Promise<ProjectDto> => {
+  const response = await fetch(`/api/projects/${projectId}/git-auth`, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ gitAuthMode }),
+  });
+  if (response.status === 401) throw redirect({ to: "/login" });
+  if (!response.ok) {
+    const body: { readonly message?: string } = await response.json().catch(() => ({}));
+    throw new Error(body.message ?? `git auth change failed (${response.status})`);
+  }
+  const body: ProjectDto = await response.json();
+  return body;
+};
+
+/** The machine's Mend deploy key — public half only; the server never sends more. */
+export interface GitKeyDto {
+  readonly exists: boolean;
+  readonly publicKey: string | null;
+  readonly fingerprint: string | null;
+}
+
+export const gitKey = () => request<GitKeyDto>("/api/keys/git");
+
+/** Generate the machine key if missing; failure carries ssh-keygen's words. */
+export const initGitKey = async (): Promise<GitKeyDto> => {
+  const response = await fetch("/api/keys/git", { method: "POST", credentials: "include" });
+  if (response.status === 401) throw redirect({ to: "/login" });
+  if (!response.ok) {
+    const body: { readonly message?: string } = await response.json().catch(() => ({}));
+    throw new Error(body.message ?? `key generation failed (${response.status})`);
+  }
+  const body: GitKeyDto = await response.json();
   return body;
 };
 

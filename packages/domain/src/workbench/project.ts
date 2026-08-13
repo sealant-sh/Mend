@@ -14,6 +14,17 @@ export const resolveAutomation = (choice: AutomationChoice, settingsDefault: boo
   choice === "inherit" ? settingsDefault : choice === "on";
 
 /**
+ * How host-side git reaches this project's remote (docs/GIT-ACCESS.md):
+ * `ambient` uses the login user's git/ssh setup unchanged; `mend-key` uses the
+ * machine's Mend-generated deploy key (`~/.mend/keys/`), whose private half
+ * never leaves the host. Both run ssh with BatchMode=yes — a daemon cannot
+ * answer a prompt, so auth failures surface as readable errors instead of
+ * hangs.
+ */
+export const GitAuthMode = Schema.Literals(["ambient", "mend-key"]);
+export type GitAuthMode = typeof GitAuthMode.Type;
+
+/**
  * A repository adopted into Mend's central store on this machine (plan §5.2).
  * Adoption clones the repository into the store; the store copy is canonical
  * for Mend. The user's pre-existing checkout, if any, is a peer that syncs
@@ -34,6 +45,8 @@ export class Project extends Schema.Class<Project>("Project")({
   autoTour: AutomationChoice,
   /** Override of the Settings default: run the suggestion pass when a session settles. */
   autoSuggest: AutomationChoice,
+  /** How host-side git authenticates to this project's remote. */
+  gitAuthMode: GitAuthMode,
   createdAt: Schema.Date,
   updatedAt: Schema.Date,
 }) {}

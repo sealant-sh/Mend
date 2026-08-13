@@ -1,8 +1,9 @@
-import { useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { useContextMenu } from "#/components/context-menu";
+import { GitKeyCard } from "#/components/git-key-card";
 import { AppShell } from "#/components/shell";
 import { SessionStatusDot } from "#/components/status";
 import {
@@ -17,10 +18,13 @@ import {
   removeSession,
   selectProjectReferences,
   setProjectAutomation,
+  setProjectGitAuth,
   type AutomationChoiceDto,
+  type GitAuthModeDto,
   type ProjectDto,
 } from "#/lib/api";
 import {
+  gitKeyQuery,
   projectDetailQuery,
   projectMountsQuery,
   projectRecipesQuery,
@@ -191,6 +195,7 @@ function ProjectPage() {
             <ReferencesSection projectId={projectId} />
             <MountsSection projectId={projectId} />
             <ServicesSection projectId={projectId} />
+            <GitAccessSection project={project} />
             <ReviewAutomationSection project={project} />
             <RemoveProjectSection projectId={projectId} />
           </aside>
@@ -217,6 +222,75 @@ const AUTOMATION_CHOICES: ReadonlyArray<{
   { value: "on", label: "on" },
   { value: "off", label: "off" },
 ];
+
+const GIT_AUTH_CHOICES: ReadonlyArray<{
+  readonly value: GitAuthModeDto;
+  readonly label: string;
+}> = [
+  { value: "ambient", label: "ambient" },
+  { value: "mend-key", label: "mend key" },
+];
+
+/**
+ * How host-side git reaches this project's remote (docs/GIT-ACCESS.md):
+ * ambient rides the login user's ssh setup; mend-key is a per-machine deploy
+ * key whose public half this card hands out. Switching to mend-key generates
+ * the key, so the card can show it immediately.
+ */
+function GitAccessSection({ project }: { readonly project: ProjectDto }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const gitKey = useQuery({ ...gitKeyQuery, enabled: project.gitAuthMode === "mend-key" });
+
+  const choose = (value: GitAuthModeDto) => {
+    if (project.gitAuthMode === value || busy) return;
+    setBusy(true);
+    setError(null);
+    void setProjectGitAuth(project.id, value)
+      .then(() => {
+        void queryClient.invalidateQueries({ queryKey: ["project", project.id] });
+        void queryClient.invalidateQueries({ queryKey: ["git-key"] });
+        return null;
+      })
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <section>
+      <p className="border-b border-rule pb-2 text-xs font-medium text-label">Git access</p>
+      <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
+        How Mend reaches this project&apos;s remote. Ambient uses your login user&apos;s git and ssh
+        setup; the Mend key is this machine&apos;s own deploy key.
+      </p>
+      <div className="mt-3 flex gap-1">
+        {GIT_AUTH_CHOICES.map((choice) => (
+          <button
+            key={choice.value}
+            type="button"
+            disabled={busy}
+            onClick={() => choose(choice.value)}
+            className={`rounded-lg border px-2 py-1 font-mono text-[11px] transition-colors disabled:opacity-50 ${
+              project.gitAuthMode === choice.value
+                ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
+                : "border-border bg-card text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {choice.label}
+          </button>
+        ))}
+      </div>
+      {error !== null && (
+        <p className="mt-3 border-l-2 border-[var(--sw-red)] pl-2 text-xs text-danger">{error}</p>
+      )}
+      {project.gitAuthMode === "mend-key" && gitKey.data !== undefined && (
+        <div className="mt-3">
+          <GitKeyCard gitKey={gitKey.data} />
+        </div>
+      )}
+    </section>
+  );
+}
 
 /**
  * This project's stance on the review-automation switches: what Mend runs
