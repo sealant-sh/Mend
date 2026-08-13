@@ -14,11 +14,13 @@ import {
   ReferencesRepo,
   SessionChangesRepo,
   SessionNotFoundError,
+  SessionProcessesRepo,
   SessionRunsRepo,
   SessionsRepo,
   SettingsRepo,
   type NewCheckpoint,
   type NewSession,
+  type NewSessionProcess,
   type NewSessionRun,
 } from "@mend/db";
 import {
@@ -28,6 +30,7 @@ import {
   SealantRunId,
   SealantWorkspaceId,
   SessionId,
+  SessionProcessId,
   Sha,
   MendSettings,
   defaultSettings,
@@ -37,6 +40,7 @@ import {
   Checkpoint,
   Project,
   Session,
+  SessionProcess,
   SessionRun,
   type SessionExtraMount,
   type SessionReferenceMount,
@@ -45,7 +49,7 @@ import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import { HarnessStateNotFoundError, SessionEngine } from "@mend/sessions";
 import { Store, StoreConfig } from "@mend/store";
 import type { CreateOptions, InteractiveSession, Workspace } from "@sealant/sdk";
-import { Effect, Layer, Stream } from "effect";
+import { Duration, Effect, Layer, Stream } from "effect";
 
 /** Every platform method dies — these tests exercise the platform-free paths. */
 const sealantDeadLayer = Layer.succeed(SealantClient, {
@@ -81,6 +85,7 @@ const settingsLayer = (workspaceImage = defaultSettings.workspaceImage) =>
 const sealantLaunchLayer = (
   created: CreateOptions[],
   rejectCredentials: (credentials: CreateOptions["credentials"]) => boolean = () => false,
+  stopped?: string[],
 ) => {
   const pty: InteractiveSession = {
     id: "pty-1",
@@ -143,9 +148,22 @@ const sealantLaunchLayer = (
     startHarnessInWorkspace: () => Effect.die("not in test"),
     waitRun: () => Effect.die("not in test"),
     openSession: () => Effect.succeed(pty),
-    stopWorkspace: () => Effect.void,
+    stopWorkspace: (target) =>
+      Effect.sync(() => {
+        stopped?.push(target.id);
+      }),
     getSession: () => Effect.succeed(pty),
-    exec: () => Effect.die("not in test"),
+    // Typed failure, not a defect: the settle-path harvest must degrade
+    // quietly and still reach the workspace reap.
+    exec: () =>
+      Effect.fail(
+        new SealantPlatformError({
+          code: "exec-not-in-test",
+          status: null,
+          message: "exec not available in this test world",
+          cause: null,
+        }),
+      ),
     diffCommits: () => Effect.die("not in test"),
     inferenceRespond: () => Effect.die("not in test"),
     recordStream: () => Stream.fromEffect(Effect.never),
@@ -162,6 +180,7 @@ interface World {
   readonly projects: Map<string, Project>;
   readonly sessions: Map<string, Session>;
   readonly sessionRuns: Map<string, SessionRun>;
+  readonly processes: Map<string, SessionProcess>;
   readonly changes: Map<string, Change>;
   readonly checkpoints: Array<Checkpoint>;
 }
@@ -170,9 +189,70 @@ const makeWorld = (): World => ({
   projects: new Map(),
   sessions: new Map(),
   sessionRuns: new Map(),
+  processes: new Map(),
   changes: new Map(),
   checkpoints: [],
 });
+
+const sessionProcessesLayer = (world: World) => {
+  const endLive = (
+    process: SessionProcess,
+    outcome: "exited" | "stopped",
+    exitCode: number | null,
+  ) => {
+    if (process.exitedAt !== null) return;
+    world.processes.set(
+      process.id,
+      new SessionProcess({
+        ...process,
+        status: outcome,
+        exitCode,
+        exitedAt: now(),
+        updatedAt: now(),
+      }),
+    );
+  };
+  return Layer.succeed(SessionProcessesRepo, {
+    create: (input: NewSessionProcess) =>
+      Effect.sync(() => {
+        const process = new SessionProcess({
+          ...input,
+          id: SessionProcessId.make(crypto.randomUUID()),
+          status: "running",
+          exitCode: null,
+          createdAt: now(),
+          exitedAt: null,
+          updatedAt: now(),
+        });
+        world.processes.set(process.id, process);
+        return process;
+      }),
+    byId: (id) => Effect.succeed(world.processes.get(id) ?? null),
+    listForSession: (sessionId) =>
+      Effect.succeed(
+        [...world.processes.values()].filter((process) => process.sessionId === sessionId),
+      ),
+    listLiveForWorkspace: (workspaceId) =>
+      Effect.succeed(
+        [...world.processes.values()].filter(
+          (process) => process.sealantWorkspaceId === workspaceId && process.exitedAt === null,
+        ),
+      ),
+    markExited: (id, outcome, exitCode) =>
+      Effect.sync(() => {
+        const process = world.processes.get(id);
+        if (process !== undefined) endLive(process, outcome, exitCode);
+      }),
+    reapLiveForWorkspace: (workspaceId, kind) =>
+      Effect.sync(() => {
+        for (const process of world.processes.values()) {
+          if (process.sealantWorkspaceId !== workspaceId) continue;
+          if (kind !== undefined && process.kind !== kind) continue;
+          endLive(process, "exited", null);
+        }
+      }),
+  });
+};
 
 /** No declared mounts in these worlds. */
 const projectMountsEmptyLayer = Layer.succeed(ProjectMountsRepo, {
@@ -441,6 +521,7 @@ const withEngine = <A, E>(
     Layer.provide(projectsLayer(world)),
     Layer.provide(sessionsLayer(world)),
     Layer.provide(sessionRunsLayer(world)),
+    Layer.provide(sessionProcessesLayer(world)),
     Layer.provide(changesLayer(world)),
     Layer.provide(checkpointsLayer(world)),
     Layer.provide(referencesEmptyLayer),
@@ -514,6 +595,87 @@ describe("SessionEngine", () => {
       {
         sealantLayer: sealantLaunchLayer(created, (credentials) => credentials?.codex === true),
       },
+    );
+  });
+
+  it("defers the workspace stop while a shell lease is live", async () => {
+    const created: CreateOptions[] = [];
+    const stopped: string[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+
+          // A live shell in the same workspace holds a lease (docs/SESSION-SERVICES.md).
+          const shell = new SessionProcess({
+            id: SessionProcessId.make("shell-1"),
+            sessionId: session.id,
+            sealantWorkspaceId: SealantWorkspaceId.make("workspace-1"),
+            sealantSessionId: "pty-2",
+            kind: "shell",
+            label: "shell",
+            argv: ["bash", "-i"],
+            status: "running",
+            exitCode: null,
+            createdAt: now(),
+            exitedAt: null,
+            updatedAt: now(),
+          });
+          world.processes.set(shell.id, shell);
+
+          yield* engine.stop(session.id);
+          // The sweep is a forked fiber; wait for it to end the agent's record.
+          const agentExited = () =>
+            [...world.processes.values()].some(
+              (process) => process.kind === "agent" && process.exitedAt !== null,
+            );
+          for (let i = 0; i < 200 && !agentExited(); i++) {
+            yield* Effect.sleep(Duration.millis(10));
+          }
+
+          expect(agentExited()).toBe(true);
+          expect(stopped).toEqual([]);
+          const live = [...world.processes.values()].filter((process) => process.exitedAt === null);
+          expect(live.map((process) => process.kind)).toEqual(["shell"]);
+        }),
+      { sealantLayer: sealantLaunchLayer(created, undefined, stopped) },
+    );
+  });
+
+  it("stops the workspace when no lease outlives the agent", async () => {
+    const created: CreateOptions[] = [];
+    const stopped: string[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+
+          yield* engine.stop(session.id);
+          for (let i = 0; i < 200 && stopped.length === 0; i++) {
+            yield* Effect.sleep(Duration.millis(10));
+          }
+
+          expect(stopped).toEqual(["workspace-1"]);
+          const live = [...world.processes.values()].filter((process) => process.exitedAt === null);
+          expect(live).toEqual([]);
+        }),
+      { sealantLayer: sealantLaunchLayer(created, undefined, stopped) },
     );
   });
 
@@ -734,6 +896,7 @@ describe("SessionEngine", () => {
       Layer.provide(projectsLayer(world)),
       Layer.provide(sessionsLayer(world)),
       Layer.provide(sessionRunsLayer(world)),
+      Layer.provide(sessionProcessesLayer(world)),
       Layer.provide(changesLayer(world)),
       Layer.provide(checkpointsLayer(world)),
       Layer.provide(referencesEmptyLayer),

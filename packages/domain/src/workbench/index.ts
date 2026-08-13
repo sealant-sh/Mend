@@ -6,6 +6,7 @@
  * machine  1 ── 0..n  projects    a repository adopted into the central store
  * project  1 ── 0..n  sessions    one logical agent conversation, one worktree each
  * session  1 ── 0..n  runs        Sealant execution records, one sequence space each
+ * session  1 ── 0..n  processes   PTYs in the current workspace: agent, shells, Services
  * session  1 ── 1     change      worktree vs base — the reviewable object
  * session  1 ── 0..n  checkpoints hidden git ref + exact record pointer; two = a slice
  * session  1 ── 0..1  snapshot    immutable context manifest
@@ -25,5 +26,6 @@ export * from "./project.ts";
 export * from "./reference.ts";
 export * from "./review-comment.ts";
 export * from "./session.ts";
+export * from "./session-process.ts";
 export * from "./session-run.ts";
 export * from "./tour.ts";

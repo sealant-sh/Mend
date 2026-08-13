@@ -514,6 +514,43 @@ const sessionRunHistory = Effect.gen(function* () {
     CREATE INDEX checkpoints_session_created_idx ON checkpoints (session_id, created_at)`;
 });
 
+/**
+ * Plural workspace processes (docs/SESSION-SERVICES.md): the agent is one PTY in the session's
+ * workspace, not the only one. Live rows double as workspace leases. Live agent PTYs are backfilled
+ * from the singular pointer so leases hold across the upgrade; settled history is not reconstructed.
+ */
+const sessionProcesses = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE session_processes (
+      id text PRIMARY KEY,
+      session_id text NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      sealant_workspace_id text NOT NULL,
+      sealant_session_id text NOT NULL,
+      kind text NOT NULL,
+      label text,
+      argv jsonb NOT NULL DEFAULT '[]'::jsonb,
+      status text NOT NULL DEFAULT 'starting',
+      exit_code integer,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      exited_at timestamptz,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`
+    CREATE INDEX session_processes_session_idx ON session_processes (session_id, created_at)`;
+  yield* sql`
+    CREATE INDEX session_processes_live_idx ON session_processes (sealant_workspace_id)
+    WHERE exited_at IS NULL`;
+  yield* sql`
+    INSERT INTO session_processes
+      (id, session_id, sealant_workspace_id, sealant_session_id, kind, label, status, created_at)
+    SELECT gen_random_uuid()::text, id, sealant_workspace_id, sealant_session_id, 'agent',
+           harness, 'running', COALESCE(started_at, created_at)
+    FROM agent_sessions
+    WHERE sealant_session_id IS NOT NULL AND sealant_workspace_id IS NOT NULL
+      AND settled_at IS NULL`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -531,4 +568,5 @@ export const migrations = {
   "0013_review_automation": reviewAutomation,
   "0014_change_passes": changePasses,
   "0015_session_run_history": sessionRunHistory,
+  "0016_session_processes": sessionProcesses,
 };

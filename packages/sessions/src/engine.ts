@@ -9,6 +9,7 @@ import {
   ReferencesRepo,
   SessionChangesRepo,
   SessionNotFoundError,
+  SessionProcessesRepo,
   SessionRunsRepo,
   SessionsRepo,
   SettingsRepo,
@@ -217,6 +218,7 @@ export class SessionEngine extends Context.Service<
       const sealant = yield* SealantClient;
       const sessions = yield* SessionsRepo;
       const sessionRuns = yield* SessionRunsRepo;
+      const processes = yield* SessionProcessesRepo;
       const projects = yield* ProjectsRepo;
       const changes = yield* SessionChangesRepo;
       const checkpoints = yield* CheckpointsRepo;
@@ -637,13 +639,34 @@ export class SessionEngine extends Context.Service<
         }
       });
 
-      /** Containers die when the work settles — after harvest, best-effort. */
-      const stopWorkspaceQuietly = (sessionId: SessionId) =>
+      /**
+       * Containers die when the work settles — after harvest, best-effort,
+       * and lease-aware (docs/SESSION-SERVICES.md): every caller is the tail
+       * of an agent settle, so the agent's own process record ends here, but
+       * the workspace survives while any other process (a shell, a Service)
+       * is still live in it. `force` is for replacement: a relaunch is about
+       * to overwrite the workspace pointer, so nothing in the old container
+       * can be kept.
+       */
+      const stopWorkspaceQuietly = (sessionId: SessionId, options?: { readonly force?: boolean }) =>
         Effect.gen(function* () {
           const session = yield* sessions.byId(sessionId);
           if (session.sealantWorkspaceId === null) return;
-          const workspace = yield* sealant.getWorkspace(session.sealantWorkspaceId);
+          const workspaceId = session.sealantWorkspaceId;
+          yield* processes.reapLiveForWorkspace(workspaceId, "agent");
+          if (options?.force !== true) {
+            const leases = yield* processes.listLiveForWorkspace(workspaceId);
+            if (leases.length > 0) {
+              yield* Effect.logInfo("session engine: workspace stop deferred by live leases").pipe(
+                Effect.annotateLogs({ sessionId, workspaceId, leases: leases.length }),
+              );
+              return;
+            }
+          }
+          const workspace = yield* sealant.getWorkspace(workspaceId);
           yield* sealant.stopWorkspace(workspace);
+          // The container is gone; no row for it can still be live.
+          yield* processes.reapLiveForWorkspace(workspaceId);
         }).pipe(
           Effect.catch((error) =>
             Effect.logWarning("session engine: workspace stop failed").pipe(
@@ -719,9 +742,10 @@ export class SessionEngine extends Context.Service<
           );
         // A relaunch is about to overwrite the row's workspace pointer; stop
         // the previous workspace first or it becomes unaddressable and leaks
-        // until the platform TTL.
+        // until the platform TTL. Forced: leases cannot hold a workspace that
+        // is being replaced.
         if (session.sealantWorkspaceId !== null) {
-          yield* stopWorkspaceQuietly(sessionId);
+          yield* stopWorkspaceQuietly(sessionId, { force: true });
         }
         const createWorkspace = (credentials: WorkspaceCredentialsOptions | undefined) =>
           sealant.createWorkspace({
@@ -969,6 +993,17 @@ export class SessionEngine extends Context.Service<
           SealantWorkspaceId.make(workspace.id),
         );
         yield* sessions.setSealantSessionId(sessionId, pty.id);
+        // The plural record: the agent is one process in this workspace, not
+        // its owner. The singular pointer above stays as the legacy attach
+        // handle while clients migrate to process addressing.
+        const agentProcess = yield* processes.create({
+          sessionId,
+          sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
+          sealantSessionId: pty.id,
+          kind: "agent",
+          label: session.harness,
+          argv: shapedArgv,
+        });
         yield* sessions.setStatus(sessionId, "running");
         yield* forkSupervision(sessionId, sealantRunId);
 
@@ -1007,6 +1042,9 @@ export class SessionEngine extends Context.Service<
             if (current.settledAt !== null) return;
             const outcome =
               status.exitCode === undefined || status.exitCode === 0 ? "completed" : "failed";
+            // The watcher knows the observed exit precisely; the sweep's reap
+            // would only record "exited" with the code lost.
+            yield* processes.markExited(agentProcess.id, "exited", status.exitCode ?? null);
             yield* sessionRuns.settle(
               sealantRunId,
               outcome,
@@ -1257,7 +1295,12 @@ export class SessionEngine extends Context.Service<
           const sweepIfAlive = Effect.gen(function* () {
             const workspace = yield* sealant.getWorkspace(workspaceId);
             const status = yield* Effect.promise(() => workspace.status());
-            if (status !== "queued" && status !== "running" && status !== "ready") return;
+            if (status !== "queued" && status !== "running" && status !== "ready") {
+              // The container is gone (stopped externally or reaped by TTL) —
+              // no process row for it can still be live. Reconcile the leases.
+              yield* processes.reapLiveForWorkspace(workspaceId);
+              return;
+            }
             yield* Effect.logInfo("session engine: reaping leftover workspace").pipe(
               Effect.annotateLogs({ sessionId: session.id, workspaceId }),
             );

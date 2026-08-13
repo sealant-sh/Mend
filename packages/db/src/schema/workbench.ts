@@ -31,6 +31,7 @@ import {
   type SealantRunId,
   type SealantWorkspaceId,
   type SessionId,
+  type SessionProcessId,
   type Sha,
 } from "@mend/domain";
 import type {
@@ -46,6 +47,8 @@ import type {
   RecordLink,
   TourStop,
   SessionExtraMount,
+  SessionProcessKind,
+  SessionProcessStatus,
   SessionReferenceMount,
   SessionStatus,
 } from "@mend/domain/workbench";
@@ -358,6 +361,37 @@ export const sessionRuns = pgTable(
     uniqueIndex("session_runs_one_active_idx")
       .on(table.sessionId)
       .where(sql`${table.settledAt} IS NULL`),
+  ],
+);
+
+export const sessionProcesses = pgTable(
+  "session_processes",
+  {
+    id: text().$type<SessionProcessId>().primaryKey(),
+    sessionId: text()
+      .$type<SessionId>()
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: "cascade" }),
+    sealantWorkspaceId: text().$type<SealantWorkspaceId>().notNull(),
+    sealantSessionId: text().notNull(),
+    kind: text().$type<SessionProcessKind>().notNull(),
+    label: text(),
+    argv: jsonb()
+      .$type<ReadonlyArray<string>>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    status: text().$type<SessionProcessStatus>().notNull().default("starting"),
+    exitCode: integer(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    exitedAt: timestamp({ mode: "date", withTimezone: true }),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("session_processes_session_idx").on(table.sessionId, table.createdAt),
+    // Live rows are workspace leases — the reap path queries by workspace.
+    index("session_processes_live_idx")
+      .on(table.sealantWorkspaceId)
+      .where(sql`${table.exitedAt} IS NULL`),
   ],
 );
 
