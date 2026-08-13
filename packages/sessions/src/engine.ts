@@ -15,13 +15,19 @@ import {
   SettingsRepo,
 } from "@mend/db";
 import { SealantRunId, SealantWorkspaceId, SessionId, type ProjectId } from "@mend/domain";
-import type { Checkpoint, CheckpointTrigger, Session, SessionRun } from "@mend/domain/workbench";
+import type {
+  Checkpoint,
+  CheckpointTrigger,
+  Session,
+  SessionProcess,
+  SessionRun,
+} from "@mend/domain/workbench";
 import { SessionExtraMount, SessionReferenceMount } from "@mend/domain/workbench";
 import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import { GitError, Store, sessionStatePathOf, worktreePathOf } from "@mend/store";
 import type { Harness, Run as SdkRun, Workspace, WorkspaceCredentialsOptions } from "@sealant/sdk";
 import { claudeCode, codex, opencode } from "@sealant/sdk";
-import { Duration, Effect, Layer, Schedule, Stream } from "effect";
+import { Duration, Effect, Layer, Schedule, Schema, Stream } from "effect";
 import * as Context from "effect/Context";
 
 import {
@@ -135,6 +141,14 @@ export interface ProvisionInput {
   readonly base: string | null;
 }
 
+/** A shell needs a live workspace; a settled session has none to enter. */
+export class SessionNotLiveError extends Schema.TaggedErrorClass<SessionNotLiveError>()(
+  "SessionNotLiveError",
+  {
+    sessionId: Schema.String,
+  },
+) {}
+
 /**
  * The workbench session engine (plan §7.2, M1) — the supervisor extracted from
  * the queue-era run starter (docs/M0-INVENTORY.md), rewired onto sessions and
@@ -183,6 +197,18 @@ export class SessionEngine extends Context.Service<
     ) => Effect.Effect<Checkpoint, SessionNotFoundError | ProjectNotFoundError | GitError>;
     /** The user's stop: settle the row; the platform stop follows when the SDK ships it. */
     readonly stop: (sessionId: SessionId) => Effect.Effect<void, SessionNotFoundError>;
+    /**
+     * The second pane (docs/SESSION-SERVICES.md): a shell PTY in the
+     * session's live workspace, beside the agent — same repo, same
+     * dependencies, same network. Its process record is a workspace lease;
+     * attach through the TTY route with `?process=<id>`.
+     */
+    readonly openShell: (
+      sessionId: SessionId,
+    ) => Effect.Effect<
+      SessionProcess,
+      SessionNotFoundError | SessionNotLiveError | SealantPlatformError
+    >;
     /**
      * Rejoin a session as a continuous piece of work — harness- and
      * machine-agnostic. Same worktree, same change, same conversation: the
@@ -640,20 +666,21 @@ export class SessionEngine extends Context.Service<
       });
 
       /**
-       * Containers die when the work settles — after harvest, best-effort,
-       * and lease-aware (docs/SESSION-SERVICES.md): every caller is the tail
-       * of an agent settle, so the agent's own process record ends here, but
-       * the workspace survives while any other process (a shell, a Service)
-       * is still live in it. `force` is for replacement: a relaunch is about
-       * to overwrite the workspace pointer, so nothing in the old container
-       * can be kept.
+       * Stop the workspace unless a live process still leases it
+       * (docs/SESSION-SERVICES.md): the container survives the agent while a
+       * shell or Service is live in it, and every path that ends a lease
+       * comes back through here. `force` is for replacement: a relaunch is
+       * about to overwrite the workspace pointer, so nothing in the old
+       * container can be kept.
        */
-      const stopWorkspaceQuietly = (sessionId: SessionId, options?: { readonly force?: boolean }) =>
+      const stopWorkspaceIfUnleased = (
+        sessionId: SessionId,
+        options?: { readonly force?: boolean },
+      ) =>
         Effect.gen(function* () {
           const session = yield* sessions.byId(sessionId);
           if (session.sealantWorkspaceId === null) return;
           const workspaceId = session.sealantWorkspaceId;
-          yield* processes.reapLiveForWorkspace(workspaceId, "agent");
           if (options?.force !== true) {
             const leases = yield* processes.listLiveForWorkspace(workspaceId);
             if (leases.length > 0) {
@@ -675,6 +702,24 @@ export class SessionEngine extends Context.Service<
           ),
         );
 
+      /**
+       * The settle-path variant: every caller is the tail of an agent settle,
+       * so the agent's own process record ends here before the lease check.
+       */
+      const stopWorkspaceQuietly = (sessionId: SessionId, options?: { readonly force?: boolean }) =>
+        Effect.gen(function* () {
+          const session = yield* sessions.byId(sessionId);
+          if (session.sealantWorkspaceId === null) return;
+          yield* processes.reapLiveForWorkspace(session.sealantWorkspaceId, "agent");
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("session engine: agent process reap failed").pipe(
+              Effect.annotateLogs({ sessionId, error: String(error) }),
+            ),
+          ),
+          Effect.andThen(stopWorkspaceIfUnleased(sessionId, options)),
+        );
+
       const tryHarvest = (sessionId: SessionId) =>
         harvestHarnessState(sessionId).pipe(
           Effect.catch((error) =>
@@ -688,11 +733,72 @@ export class SessionEngine extends Context.Service<
       const sweepWorkspace = (sessionId: SessionId) =>
         tryHarvest(sessionId).pipe(Effect.andThen(stopWorkspaceQuietly(sessionId)));
 
+      /**
+       * A shell's lifecycle is its own: poll the PTY until it ends, record
+       * the observed exit, then release its workspace lease. Mirrors watchPty
+       * — a status error is blindness, not an exit — but a blind stretch
+       * checks the workspace itself, because a reaped container will never
+       * answer for its PTYs again.
+       */
+      const watchShellProcess = (shellProcess: SessionProcess) =>
+        Effect.gen(function* () {
+          const workspace = yield* sealant.getWorkspace(shellProcess.sealantWorkspaceId);
+          const pty = yield* sealant.getSession(workspace, shellProcess.sealantSessionId);
+          let blindPolls = 0;
+          for (;;) {
+            yield* Effect.sleep("2 seconds");
+            const status = yield* Effect.tryPromise({
+              try: () => pty.status(),
+              catch: (cause) =>
+                new SealantPlatformError({
+                  code: "session_status_failed",
+                  status: null,
+                  message: "session status failed",
+                  cause,
+                }),
+            }).pipe(Effect.catchTag("SealantPlatformError", () => Effect.succeed(null)));
+            if (status === null) {
+              blindPolls += 1;
+              if (blindPolls % 30 === 0) {
+                const workspaceStatus = yield* Effect.tryPromise({
+                  try: () => workspace.status(),
+                  catch: () => new Error("workspace status failed"),
+                }).pipe(Effect.catch(() => Effect.succeed(null)));
+                if (
+                  workspaceStatus !== null &&
+                  workspaceStatus !== "queued" &&
+                  workspaceStatus !== "running" &&
+                  workspaceStatus !== "ready"
+                ) {
+                  yield* processes.markExited(shellProcess.id, "exited", null);
+                  return;
+                }
+                yield* Effect.logWarning("session engine: shell status unreachable").pipe(
+                  Effect.annotateLogs({ processId: shellProcess.id, blindPolls }),
+                );
+              }
+              continue;
+            }
+            blindPolls = 0;
+            if (status.status === "running" || status.status === "starting") continue;
+            yield* processes.markExited(shellProcess.id, "exited", status.exitCode ?? null);
+            yield* stopWorkspaceIfUnleased(shellProcess.sessionId);
+            return;
+          }
+        }).pipe(
+          // An unknown workspace or PTY cannot be reached again — record the end.
+          Effect.catch(() =>
+            processes
+              .markExited(shellProcess.id, "exited", null)
+              .pipe(Effect.andThen(stopWorkspaceIfUnleased(shellProcess.sessionId))),
+          ),
+        );
+
       const launchInternal = Effect.fn("SessionEngine.launchInternal")(function* (
         sessionId: SessionId,
         argv: ReadonlyArray<string>,
         nativeImport: ConvertedNativeSession | null,
-        manifestOverride?: HarnessStateManifest,
+        manifestOverride?: HarnessStateManifest | null,
       ) {
         const session = yield* sessions.byId(sessionId);
         const project = yield* projects.byId(session.projectId);
@@ -700,13 +806,16 @@ export class SessionEngine extends Context.Service<
         const worktree = worktreePathOf(project.storePath, session.worktree);
         const shape = platformShape(session.harness);
         const stateDir = sessionStatePathOf(project.storePath, session.id);
+        // An explicit null skips both the read and the restore (a shell
+        // resume tolerates a session that never harvested state).
         const manifest =
-          manifestOverride ??
-          (yield* readHarnessStateManifest(stateDir, session.id).pipe(
-            Effect.catchTag("HarnessStateNotFoundError", (error) =>
-              session.sealantRunId === null ? Effect.succeed(null) : Effect.fail(error),
-            ),
-          ));
+          manifestOverride !== undefined
+            ? manifestOverride
+            : yield* readHarnessStateManifest(stateDir, session.id).pipe(
+                Effect.catchTag("HarnessStateNotFoundError", (error) =>
+                  session.sealantRunId === null ? Effect.succeed(null) : Effect.fail(error),
+                ),
+              );
         // What rides beside the worktree (plan §17, 2026-08-01): selected
         // references read-only at /workspace/ref/<name>, and the project's
         // declared host folders at /workspace/home/<name> — read-only unless
@@ -784,14 +893,14 @@ export class SessionEngine extends Context.Service<
           settleOnFailure,
         );
 
-        // A relaunch restores the harness's own saved state into the fresh
-        // workspace before the harness starts, and — where the harness
-        // supports it — turns the launch into a NATIVE resume. Automatic:
-        // state was harvested at the previous settle, nothing was asked of
-        // the user. Cross-harness state never restores; that path goes
-        // through the transcript adapters instead.
+        // A relaunch restores the ORIGINAL harness's saved state into the
+        // fresh workspace before anything starts — for a same-harness launch
+        // that also turns it into a NATIVE resume (load-bearing: a failure
+        // settles the launch); for a cross-harness or shell launch it is
+        // best-effort context riding beside the import. Automatic: state was
+        // harvested at the previous settle, nothing was asked of the user.
         let shapedArgv = argv;
-        if (manifest !== null && manifest.harness === session.harness) {
+        if (manifest !== null) {
           const tarName = `.mend-harness-state-${session.id.slice(0, 8)}.tgz`;
           const archivePath = path.join(stateDir, "harness-state.tar.gz");
           const stagedPath = path.join(worktree, tarName);
@@ -802,7 +911,7 @@ export class SessionEngine extends Context.Service<
                 sessionId,
                 operation: "stage-archive",
                 path: archivePath,
-                message: `Could not stage saved ${session.harness} state for session ${sessionId}.`,
+                message: `Could not stage saved ${manifest.harness} state for session ${sessionId}.`,
                 cause,
               }),
           }).pipe(
@@ -820,11 +929,11 @@ export class SessionEngine extends Context.Service<
                 : Effect.fail(
                     new HarnessStateCommandError({
                       sessionId,
-                      harness: session.harness,
+                      harness: manifest.harness,
                       operation: "restore-archive",
                       exitCode: result.exitCode,
                       stderr: result.stderr,
-                      message: `Could not restore saved ${session.harness} state for session ${sessionId}.`,
+                      message: `Could not restore saved ${manifest.harness} state for session ${sessionId}.`,
                     }),
                   ),
             ),
@@ -833,24 +942,44 @@ export class SessionEngine extends Context.Service<
               Effect.promise(() => fs.rm(stagedPath, { force: true })).pipe(Effect.ignore),
             ),
           );
-          yield* restore.pipe(
-            Effect.tapError((error) =>
-              sessions
-                .settle(sessionId, "failed", `resume failed: ${error.message}`)
-                .pipe(Effect.andThen(sealant.stopWorkspace(workspace)), Effect.ignore),
-            ),
-          );
-          shapedArgv = nativeResumeArgv(session.harness, manifest.providerSessionId, shapedArgv);
+          if (manifest.harness === session.harness) {
+            yield* restore.pipe(
+              Effect.tapError((error) =>
+                sessions
+                  .settle(sessionId, "failed", `resume failed: ${error.message}`)
+                  .pipe(Effect.andThen(sealant.stopWorkspace(workspace)), Effect.ignore),
+              ),
+            );
+            shapedArgv = nativeResumeArgv(session.harness, manifest.providerSessionId, shapedArgv);
+          } else {
+            yield* restore.pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("session engine: original-state restore failed").pipe(
+                  Effect.annotateLogs({
+                    sessionId,
+                    harness: manifest.harness,
+                    error: String(error),
+                  }),
+                ),
+              ),
+            );
+          }
         }
 
-        if (nativeImport !== null) {
-          // Cross-harness open: place the CONVERTED native session into the
-          // fresh workspace's $HOME so the target harness resumes it as its
-          // own — full history, its own session id, no distillation.
-          const importDir = path.join(worktree, ".mend-native-import");
-          const importState = Effect.tryPromise({
+        // Stage a converted session's files into the worktree and copy them
+        // into the workspace $HOME. Distinct dir per placement so parallel
+        // imports never collide.
+        const placeConvertedFiles = (
+          files: ConvertedNativeSession["files"],
+          dirName: string,
+        ): Effect.Effect<
+          void,
+          HarnessStateIOError | HarnessStateCommandError | SealantPlatformError
+        > => {
+          const importDir = path.join(worktree, dirName);
+          return Effect.tryPromise({
             try: async () => {
-              for (const file of nativeImport.files) {
+              for (const file of files) {
                 const target = path.join(importDir, file.path);
                 await fs.mkdir(path.dirname(target), { recursive: true });
                 await fs.writeFile(target, file.content);
@@ -861,7 +990,7 @@ export class SessionEngine extends Context.Service<
                 sessionId,
                 operation: "stage-import",
                 path: importDir,
-                message: `Could not stage the converted ${session.harness} session state.`,
+                message: `Could not stage the converted session state for session ${sessionId}.`,
                 cause,
               }),
           }).pipe(
@@ -869,7 +998,7 @@ export class SessionEngine extends Context.Service<
               sealant.exec(workspace, [
                 "sh",
                 "-c",
-                'cp -a /workspace/repo/.mend-native-import/. "$HOME"/ && rm -rf /workspace/repo/.mend-native-import',
+                `cp -a "/workspace/repo/${dirName}/." "$HOME"/ && rm -rf "/workspace/repo/${dirName}"`,
               ]),
             ),
             Effect.flatMap((result) =>
@@ -882,7 +1011,7 @@ export class SessionEngine extends Context.Service<
                       operation: "import-session",
                       exitCode: result.exitCode,
                       stderr: result.stderr,
-                      message: `Could not import converted ${session.harness} state for session ${sessionId}.`,
+                      message: `Could not import converted state for session ${sessionId}.`,
                     }),
                   ),
             ),
@@ -892,13 +1021,53 @@ export class SessionEngine extends Context.Service<
               ),
             ),
           );
-          yield* importState.pipe(
+        };
+
+        if (nativeImport !== null) {
+          // Cross-harness open: place the CONVERTED native session into the
+          // fresh workspace's $HOME so the target harness resumes it as its
+          // own — full history, its own session id, no distillation.
+          yield* placeConvertedFiles(nativeImport.files, ".mend-native-import").pipe(
             Effect.tapError((error) =>
               sessions
                 .settle(sessionId, "failed", `resume failed: ${error.message}`)
                 .pipe(Effect.andThen(sealant.stopWorkspace(workspace)), Effect.ignore),
             ),
           );
+        }
+
+        // The conversation lands EVERYWHERE: the workspace image carries every
+        // supported harness, so harnesses not already covered — by the
+        // original restore or the target import — get the saved conversation
+        // converted into their own native format. A mend shell (or the agent
+        // itself, switched mid-session) then opens it in place. Best-effort:
+        // a missing transcript or failed conversion never fails a launch.
+        if (manifest !== null) {
+          const covered = new Set<string>([manifest.harness]);
+          if (nativeImport !== null) covered.add(session.harness);
+          const uncovered = ["claude", "codex"].filter((h) => !covered.has(h));
+          if (uncovered.length > 0) {
+            const transcriptPath = path.join(stateDir, "transcript.native");
+            const native = yield* Effect.tryPromise({
+              try: () => fs.readFile(transcriptPath, "utf8"),
+              catch: () => new Error("transcript unavailable"),
+            }).pipe(Effect.orElseSucceed(() => ""));
+            for (const other of uncovered) {
+              if (native === "") break;
+              const converted = convertNativeSession(manifest.harness, other, native, {
+                cwd: "/workspace/repo",
+                now: new Date().toISOString(),
+              });
+              if (converted === null) continue;
+              yield* placeConvertedFiles(converted.files, `.mend-native-import-${other}`).pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("session engine: sibling-harness import failed").pipe(
+                    Effect.annotateLogs({ sessionId, harness: other, error: String(error) }),
+                  ),
+                ),
+              );
+            }
+          }
         }
 
         if (selectedReferences.length > 0) {
@@ -1145,12 +1314,27 @@ export class SessionEngine extends Context.Service<
           });
         }
         const target = harness ?? session.harness;
+        // A shell resume reopens the worktree with no agent: saved state
+        // restored when it exists — and none required, because the session
+        // that died before harvesting is exactly the one worth a shell. The
+        // session keeps its harness identity; only this launch runs a shell.
+        // launchInternal lays the conversation down for every supported
+        // harness, so either agent opens it natively from inside the shell.
+        if (target === "shell") {
+          const project = yield* projects.byId(session.projectId);
+          const stateDir = sessionStatePathOf(project.storePath, session.id);
+          const manifest = yield* readHarnessStateManifest(stateDir, session.id).pipe(
+            Effect.catchTag("HarnessStateNotFoundError", () => Effect.succeed(null)),
+          );
+          yield* sessions.reopen(sessionId);
+          return yield* launchInternal(sessionId, ["bash"], null, manifest);
+        }
         const defaultArgv = HARNESS_ARGV[target];
         if (defaultArgv === undefined) {
           return yield* new SealantPlatformError({
             code: "unknown_harness",
             status: null,
-            message: `Unknown harness "${target}" — resumable harnesses: ${Object.keys(HARNESS_ARGV).join(", ")}.`,
+            message: `Unknown harness "${target}" — resumable harnesses: ${Object.keys(HARNESS_ARGV).join(", ")}, shell.`,
             cause: null,
           });
         }
@@ -1249,6 +1433,25 @@ export class SessionEngine extends Context.Service<
         yield* Effect.forkIn(sweepWorkspace(sessionId), scope);
       });
 
+      const openShell = Effect.fn("SessionEngine.openShell")(function* (sessionId: SessionId) {
+        const session = yield* sessions.byId(sessionId);
+        if (session.sealantWorkspaceId === null || session.settledAt !== null) {
+          return yield* new SessionNotLiveError({ sessionId });
+        }
+        const workspace = yield* sealant.getWorkspace(session.sealantWorkspaceId);
+        const pty = yield* sealant.openSession(workspace, ["bash"]);
+        const shellProcess = yield* processes.create({
+          sessionId,
+          sealantWorkspaceId: session.sealantWorkspaceId,
+          sealantSessionId: pty.id,
+          kind: "shell",
+          label: "shell",
+          argv: ["bash"],
+        });
+        yield* Effect.forkIn(watchShellProcess(shellProcess), scope);
+        return shellProcess;
+      });
+
       /** Re-attach to sessions that were live when the last process died. */
       const resume = Effect.fn("SessionEngine.resume")(function* () {
         const activeRuns = yield* sessionRuns.listActive();
@@ -1277,6 +1480,15 @@ export class SessionEngine extends Context.Service<
             "failed",
             "process restarted before the harness started",
           );
+        }
+
+        // Shells that were live when the last process died: their PTYs kept
+        // running (a detached client is not intent to stop), so watch them
+        // again — the watcher itself records the end if the workspace is gone.
+        const liveProcesses = yield* processes.listLive();
+        for (const liveProcess of liveProcesses) {
+          if (liveProcess.kind !== "shell") continue;
+          yield* Effect.forkIn(watchShellProcess(liveProcess), scope);
         }
       });
 
@@ -1319,7 +1531,16 @@ export class SessionEngine extends Context.Service<
       const launch = (sessionId: SessionId, argv: ReadonlyArray<string>) =>
         launchInternal(sessionId, argv, null);
 
-      return { provision, attachRun, launch, checkpointNow, stop, resumeSession, transcript };
+      return {
+        provision,
+        attachRun,
+        launch,
+        checkpointNow,
+        stop,
+        openShell,
+        resumeSession,
+        transcript,
+      };
     }),
   );
 }

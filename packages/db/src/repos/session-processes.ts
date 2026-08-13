@@ -31,6 +31,8 @@ export class SessionProcessesRepo extends Context.Service<
     readonly listLiveForWorkspace: (
       workspaceId: SealantWorkspaceId,
     ) => Effect.Effect<ReadonlyArray<SessionProcess>>;
+    /** Every live row across all workspaces — boot re-attaches watchers from this. */
+    readonly listLive: () => Effect.Effect<ReadonlyArray<SessionProcess>>;
     readonly markExited: (
       id: SessionProcessId,
       outcome: "exited" | "stopped",
@@ -107,6 +109,16 @@ export const SessionProcessesRepoLive: Layer.Layer<SessionProcessesRepo, never, 
         },
       );
 
+      const listLive = Effect.fn("SessionProcessesRepo.listLive")(function* () {
+        const rows = yield* db
+          .select()
+          .from(sessionProcesses)
+          .where(isNull(sessionProcesses.exitedAt))
+          .orderBy(asc(sessionProcesses.createdAt))
+          .pipe(Effect.orDie);
+        return rows.map(toSessionProcess);
+      });
+
       const markExited = Effect.fn("SessionProcessesRepo.markExited")(function* (
         id: SessionProcessId,
         outcome: "exited" | "stopped",
@@ -142,6 +154,7 @@ export const SessionProcessesRepoLive: Layer.Layer<SessionProcessesRepo, never, 
         byId,
         listForSession,
         listLiveForWorkspace,
+        listLive,
         markExited,
         reapLiveForWorkspace,
       };

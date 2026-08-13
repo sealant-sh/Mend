@@ -7,6 +7,18 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-08-12 · 0.13.1 · One workspace image with every baked harness
+
+**Implemented at the source** — [sealant#148](https://github.com/sealant-sh/sealant/pull/148)
+(pending review/release). Mend's shell resume restores a session's saved harness state AND lays the
+conversation down converted for the other supported agent, so the user can open codex or claude
+natively from inside the shell. Per-harness images made that pointless: a codex image had no
+`claude` binary. The platform now bakes codex + claude-code into every image (opencode rides as an
+extra when a blueprint asks for it) and injects `SEALANT_HARNESS_BANNER` /
+`SEALANT_HARNESS_LAUNCH_COMMAND` at launch instead of baking them, so harness identity is a launch
+fact and one image serves all of it. Mend needs no SDK change; the behavior arrives with the next
+platform release.
+
 ## 2026-08-12 · 0.13.1 · `session.signal()` fails at the daemon; exit code lost on clean exit
 
 Mend's session-Services design (docs/SESSION-SERVICES.md) needs to deliver signals to supervised
@@ -99,6 +111,13 @@ contract). The PR also fixes the 2026-07-25 allowlist env-name drift (the SDK do
   shape: plan §8.1.G.
 
 ## 2026-08-01 · 0.8.1 · `openForward` exists in the daemon but has no API/SDK surface
+
+**Implemented at the source** — [sealant#151](https://github.com/sealant-sh/sealant/pull/151)
+(pending review/release): `workspace.forward(port)` returns a duplex byte stream over one held
+WebSocket (`GET /v1/workspaces/:id/forward?port=N`, scope `workspace:exec`), host fixed at loopback,
+`{"t":"eof"}` carrying TCP half-close, nothing-listening = HTTP 502 pre-upgrade. The listen/unlisten
+observation follow-ons below remain platform futures Mend does not need for the explicit-declaration
+Services design.
 
 - **Needed:** dev-server preview (plan §8.1.H / §17, 2026-08-01): a browser on the host or on a
   paired device reaches a server listening inside a workspace container. Mend terminates a host

@@ -211,7 +211,10 @@ const deriveItems = (view: View, data: Workbench | undefined): ReadonlyArray<Ite
           kind: "harness",
           harness,
           label: harness,
-          hint: "the conversation crosses as a distilled prompt",
+          hint:
+            harness === "shell"
+              ? "a bash in the worktree — resume either agent from inside"
+              : "the conversation crosses as a distilled prompt",
         }),
       ),
     ];
@@ -221,7 +224,10 @@ const deriveItems = (view: View, data: Workbench | undefined): ReadonlyArray<Ite
       kind: "harness",
       harness,
       label: harness,
-      hint: `mend ${harness} — new worktree, recorded session`,
+      hint:
+        harness === "shell"
+          ? "a plain bash session — new worktree, recorded"
+          : `mend ${harness} — new worktree, recorded session`,
     }),
   );
 };

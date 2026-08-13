@@ -46,7 +46,7 @@ import {
   type SessionReferenceMount,
 } from "@mend/domain/workbench";
 import { SealantClient, SealantPlatformError } from "@mend/sealant";
-import { HarnessStateNotFoundError, SessionEngine } from "@mend/sessions";
+import { HarnessStateNotFoundError, SessionEngine, SessionNotLiveError } from "@mend/sessions";
 import { Store, StoreConfig } from "@mend/store";
 import type { CreateOptions, InteractiveSession, Workspace } from "@sealant/sdk";
 import { Duration, Effect, Layer, Stream } from "effect";
@@ -238,6 +238,8 @@ const sessionProcessesLayer = (world: World) => {
           (process) => process.sealantWorkspaceId === workspaceId && process.exitedAt === null,
         ),
       ),
+    listLive: () =>
+      Effect.succeed([...world.processes.values()].filter((process) => process.exitedAt === null)),
     markExited: (id, outcome, exitCode) =>
       Effect.sync(() => {
         const process = world.processes.get(id);
@@ -676,6 +678,82 @@ describe("SessionEngine", () => {
           expect(live).toEqual([]);
         }),
       { sealantLayer: sealantLaunchLayer(created, undefined, stopped) },
+    );
+  });
+
+  it("openShell records a live shell process in the session workspace", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+
+          const shell = yield* engine.openShell(session.id);
+          expect(shell.kind).toBe("shell");
+          expect(shell.status).toBe("running");
+          expect(shell.sealantWorkspaceId).toBe("workspace-1");
+          const live = [...world.processes.values()].filter((p) => p.exitedAt === null);
+          expect(live.map((p) => p.kind).toSorted()).toEqual(["agent", "shell"]);
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
+  it("openShell refuses a settled session", async () => {
+    await withEngine((world, tmp) =>
+      Effect.gen(function* () {
+        const project = yield* setup(tmp, world);
+        const engine = yield* SessionEngine;
+        const session = yield* engine.provision({
+          projectId: project.id,
+          harness: "codex",
+          label: null,
+          base: null,
+        });
+
+        const outcome = yield* engine.openShell(session.id).pipe(Effect.flip);
+        expect(outcome).toBeInstanceOf(SessionNotLiveError);
+      }),
+    );
+  });
+
+  it("resumes a settled session with shell — no saved state required", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          yield* engine.stop(session.id);
+          const agentExited = () =>
+            [...world.processes.values()].every((process) => process.exitedAt !== null);
+          for (let i = 0; i < 200 && !agentExited(); i++) {
+            yield* Effect.sleep(Duration.millis(10));
+          }
+
+          const resumed = yield* engine.resumeSession(session.id, "shell");
+          expect(resumed.status).toBe("running");
+          // The session keeps its harness identity — only this launch is a shell.
+          expect(resumed.harness).toBe("codex");
+          const live = [...world.processes.values()].filter((process) => process.exitedAt === null);
+          expect(live.map((process) => process.argv)).toEqual([["bash"]]);
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
     );
   });
 
