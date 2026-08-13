@@ -49,6 +49,8 @@ export class SessionProcess extends Schema.Class<SessionProcess>("SessionProcess
   exitCode: Schema.NullOr(Schema.Int),
   /** Services: the port the process listens on INSIDE the workspace. */
   workspacePort: Schema.NullOr(Schema.Int),
+  /** Services: declared transport. UDP relays datagrams; there is no probe. */
+  protocol: Schema.Literals(["tcp", "udp"]),
   /** Services: the host port Mend binds on its private interfaces. */
   hostPort: Schema.NullOr(Schema.Int),
   createdAt: Schema.Date,

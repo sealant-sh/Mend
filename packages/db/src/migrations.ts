@@ -598,6 +598,16 @@ const projectServiceRecipes = Effect.gen(function* () {
     )`;
 });
 
+/**
+ * UDP Services (docs/SESSION-SERVICES.md): a Service is TCP unless declared
+ * otherwise — the column records the declaration, never an observation.
+ */
+const serviceProtocol = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE session_processes ADD COLUMN protocol text NOT NULL DEFAULT 'tcp'`;
+  yield* sql`ALTER TABLE project_service_recipes ADD COLUMN protocol text NOT NULL DEFAULT 'tcp'`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -619,4 +629,5 @@ export const migrations = {
   "0017_service_ports": servicePorts,
   "0018_process_run_pointers": processRunPointers,
   "0019_project_service_recipes": projectServiceRecipes,
+  "0020_service_protocol": serviceProtocol,
 };

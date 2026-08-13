@@ -75,6 +75,7 @@ interface ServiceDto {
   readonly label: string | null;
   readonly status: string;
   readonly workspacePort: number | null;
+  readonly protocol: "tcp" | "udp";
   readonly hostPort: number | null;
 }
 
@@ -297,7 +298,7 @@ const SessionRow = ({
   for (const service of services.slice(0, 2)) {
     facts.push(
       <span fg={service.status === "reachable" ? GREEN : AMBER}>
-        {`${service.label ?? service.id.slice(0, 6)} :${service.workspacePort ?? "?"}→${service.hostPort ?? "?"} ${service.status}`}
+        {`${service.label ?? service.id.slice(0, 6)} :${service.workspacePort ?? "?"}${service.protocol === "udp" ? "u" : ""}→${service.hostPort ?? "?"} ${service.status}`}
       </span>,
     );
   }

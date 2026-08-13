@@ -11,6 +11,8 @@ export interface ServiceProposal {
   readonly name: string;
   readonly command: string;
   readonly port: number;
+  /** Declared transport; compose "N:N/udp" mappings propose udp. */
+  readonly protocol: "tcp" | "udp";
   /** True when the port came from a tool default, not the manifest. */
   readonly guessed: boolean;
   /** Where the proposal came from — lands in the file as a comment. */
@@ -75,6 +77,7 @@ export const proposeFromPackageJson = (
       name: scriptName === "dev" ? "web" : scriptName,
       command: `${pm} run ${scriptName}`,
       port: port.port,
+      protocol: "tcp",
       guessed: port.guessed,
       source: `package.json "${scriptName}": ${script}`,
     });
@@ -124,13 +127,15 @@ export const proposeFromCompose = (composeText: string): ReadonlyArray<ServicePr
         /^\s+-\s+["']?(\d{2,5})["']?\s*$/.exec(line);
       if (mapping?.[1] !== undefined) {
         const port = Number(mapping[1]);
+        const protocol = /\/udp["']?\s*$/.test(line) ? ("udp" as const) : ("tcp" as const);
         if (port >= 1 && port <= 65535 && !proposals.some((p) => p.name === current)) {
           proposals.push({
             name: current,
             command: `docker compose up ${current}`,
             port,
+            protocol,
             guessed: false,
-            source: `compose service "${current}" publishes :${mapping[1]}`,
+            source: `compose service "${current}" publishes :${mapping[1]}${protocol === "udp" ? "/udp" : ""}`,
           });
         }
         inPorts = false; // first mapping wins
@@ -212,6 +217,7 @@ export const proposeFromWorkspacePackage = (
         name: dirName,
         command: runner(scriptName),
         port: port.port,
+        protocol: "tcp",
         guessed: port.guessed,
         source: `${dirName}/package.json "${scriptName}": ${script}`,
       },
@@ -228,6 +234,7 @@ export const renderMendToml = (proposals: ReadonlyArray<ServiceProposal>): strin
       `[service.${proposal.name}]`,
       `command = ${JSON.stringify(proposal.command)}`,
       proposal.guessed ? `port = ${proposal.port} # guessed — verify` : `port = ${proposal.port}`,
+      ...(proposal.protocol === "udp" ? [`protocol = "udp"`] : []),
     ];
     return lines.join("\n");
   });

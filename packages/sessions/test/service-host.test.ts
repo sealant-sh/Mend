@@ -135,6 +135,7 @@ describe("ServiceHost", () => {
           processId: PROCESS_ID,
           workspaceId: WORKSPACE_ID,
           workspacePort: 3000,
+          protocol: "tcp",
         });
 
         const echoed = yield* Effect.promise(async () => {
@@ -175,12 +176,14 @@ describe("ServiceHost", () => {
           processId: PROCESS_ID,
           workspaceId: WORKSPACE_ID,
           workspacePort: 3000,
+          protocol: "tcp",
         });
         yield* host.stop(PROCESS_ID);
         const second = yield* host.start({
           processId: PROCESS_ID,
           workspaceId: WORKSPACE_ID,
           workspacePort: 3000,
+          protocol: "tcp",
           preferredHostPort: first,
         });
         expect(second).toBe(first);
