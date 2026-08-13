@@ -2,6 +2,7 @@ import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
+import { ProjectCrumbs } from "#/components/breadcrumb";
 import { CommentStateActions, EvidenceLines, SuggestionBlock } from "#/components/comment-state";
 import { WorkbenchDiff } from "#/components/diff";
 import { FollowUpBanner } from "#/components/follow-up";
@@ -24,6 +25,7 @@ import {
   changeTourQuery,
   pendingFollowUpQuery,
   queryClient,
+  sessionDetailQuery,
 } from "#/lib/queries";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 
@@ -54,6 +56,7 @@ function ChangePage() {
   const { change, diff, files } = useSuspenseQuery(changeDiffQuery(changeId)).data;
   const comments = useSuspenseQuery(changeCommentsQuery(changeId)).data;
   const followUp = useSuspenseQuery(pendingFollowUpQuery(change.sessionId)).data;
+  const sessionDetail = useQuery(sessionDetailQuery(change.sessionId)).data;
   const [sendOpen, setSendOpen] = useState(false);
   const [focusFile, setFocusFile] = useState<{
     readonly path: string;
@@ -141,7 +144,15 @@ function ChangePage() {
   return (
     <AppShell>
       <div className="mx-auto max-w-[1200px]">
-        <p className="ev-eyebrow">review</p>
+        {sessionDetail === undefined ? (
+          <p className="ev-eyebrow">review</p>
+        ) : (
+          <ProjectCrumbs
+            projectId={sessionDetail.session.projectId}
+            sessionId={change.sessionId}
+            leaf="review"
+          />
+        )}
         <div className="mt-2 flex flex-wrap items-center justify-between gap-4">
           <h1 className="font-display text-3xl font-medium tracking-tight text-foreground">
             {change.branch.replace(/^mend\/session\//, "session ")}

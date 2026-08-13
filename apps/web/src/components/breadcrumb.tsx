@@ -1,0 +1,52 @@
+import { useQuery } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
+
+import { projectsQuery } from "#/lib/queries";
+
+/**
+ * The eyebrow as a way back up: projects / <name> / … / leaf. Same mono
+ * machine-label voice as the plain eyebrow — the path is a fact, the links
+ * are quiet until hovered.
+ */
+export function ProjectCrumbs({
+  projectId,
+  sessionId,
+  leaf,
+}: {
+  readonly projectId: string;
+  /** Set when the leaf sits under a session (the review page) — links it. */
+  readonly sessionId?: string;
+  readonly leaf: string;
+}) {
+  const projects = useQuery(projectsQuery);
+  const name = (projects.data ?? []).find((project) => project.id === projectId)?.name;
+  return (
+    <p className="ev-eyebrow">
+      <Link to="/projects" className="transition-colors hover:text-foreground">
+        projects
+      </Link>
+      <span className="mx-1.5 text-faint">/</span>
+      <Link
+        to="/projects/$projectId"
+        params={{ projectId }}
+        className="transition-colors hover:text-foreground"
+      >
+        {name ?? "project"}
+      </Link>
+      <span className="mx-1.5 text-faint">/</span>
+      {sessionId !== undefined && (
+        <>
+          <Link
+            to="/sessions/$sessionId"
+            params={{ sessionId }}
+            className="transition-colors hover:text-foreground"
+          >
+            session
+          </Link>
+          <span className="mx-1.5 text-faint">/</span>
+        </>
+      )}
+      {leaf}
+    </p>
+  );
+}

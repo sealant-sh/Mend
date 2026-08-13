@@ -9,6 +9,7 @@ import {
   ProjectNotFoundError,
   ProjectMountNotFoundError,
   ProjectMountsRepo,
+  ProjectServiceRecipesRepo,
   ProjectsRepo,
   ReferenceNotFoundError,
   ReferencesRepo,
@@ -317,6 +318,13 @@ const projectMountsEmptyLayer = Layer.succeed(ProjectMountsRepo, {
   remove: () => Effect.void,
 });
 
+/** No project-level recipes in these worlds — the file is the only source. */
+const projectRecipesEmptyLayer = Layer.succeed(ProjectServiceRecipesRepo, {
+  listForProject: () => Effect.succeed([]),
+  create: () => Effect.die("not in test"),
+  remove: () => Effect.void,
+});
+
 /** No references in these worlds — launches mount nothing extra. */
 const referencesEmptyLayer = Layer.succeed(ReferencesRepo, {
   create: () => Effect.die("not in test"),
@@ -583,6 +591,7 @@ const withEngine = <A, E>(
     Layer.provide(checkpointsLayer(world)),
     Layer.provide(referencesEmptyLayer),
     Layer.provide(projectMountsEmptyLayer),
+    Layer.provide(projectRecipesEmptyLayer),
   );
   return Effect.runPromise(
     work(world, tmp).pipe(
@@ -1121,6 +1130,8 @@ describe("SessionEngine", () => {
       Layer.provide(checkpointsLayer(world)),
       Layer.provide(referencesEmptyLayer),
       Layer.provide(projectMountsEmptyLayer),
+      Layer.provide(projectRecipesEmptyLayer),
+      Layer.provide(projectRecipesEmptyLayer),
       Layer.provide(settingsLayer()),
     );
     // Constructing the engine runs resume().

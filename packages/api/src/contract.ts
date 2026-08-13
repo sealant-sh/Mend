@@ -502,6 +502,44 @@ const projectMountsGroup = HttpApiGroup.make("projectMounts")
   )
   .middleware(AuthMiddleware);
 
+/** Declare a Service on the project itself; command-less = adopt-only. */
+export class AddProjectServiceRecipe extends Schema.Class<AddProjectServiceRecipe>(
+  "AddProjectServiceRecipe",
+)({
+  name: Schema.String,
+  command: Schema.NullOr(Schema.String),
+  port: Schema.Int,
+}) {}
+
+/**
+ * Project-level Service recipes (docs/SESSION-SERVICES.md): the web-editable
+ * twin of mend.toml, stored on this machine. Sessions see the union of both;
+ * on a name collision the file wins — it travels with the repo.
+ */
+const projectRecipesGroup = HttpApiGroup.make("projectRecipes")
+  .add(
+    HttpApiEndpoint.get("list", "/projects/:id/service-recipes", {
+      params: { id: ProjectId },
+      success: Schema.Array(ServiceRecipe),
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("add", "/projects/:id/service-recipes", {
+      params: { id: ProjectId },
+      payload: AddProjectServiceRecipe,
+      success: ServiceRecipe,
+      error: Schema.Union([NotFound, StoreFailure]),
+    }),
+  )
+  .add(
+    HttpApiEndpoint.delete("remove", "/projects/:id/service-recipes/:name", {
+      params: { id: ProjectId, name: Schema.String },
+      error: NotFound,
+    }),
+  )
+  .middleware(AuthMiddleware);
+
 /** Provisioning a session: the worktree exists after this; launching is separate. */
 export class NewWorkbenchSession extends Schema.Class<NewWorkbenchSession>("NewWorkbenchSession")({
   harness: Schema.String,
@@ -945,6 +983,7 @@ export const MendApi = HttpApi.make("mend")
   .add(runsGroup)
   .add(projectsGroup)
   .add(projectMountsGroup)
+  .add(projectRecipesGroup)
   .add(referencesGroup)
   .add(sessionsGroup)
   .add(sessionChangesGroup)

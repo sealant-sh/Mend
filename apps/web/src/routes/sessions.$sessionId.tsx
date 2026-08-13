@@ -2,7 +2,9 @@ import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
+import { ProjectCrumbs } from "#/components/breadcrumb";
 import { FollowUpBanner } from "#/components/follow-up";
+import { ServicesCard } from "#/components/services-card";
 import { AppShell } from "#/components/shell";
 import { SessionStatusDot } from "#/components/status";
 import { SessionTerminal } from "#/components/terminal";
@@ -142,7 +144,7 @@ function SessionPage() {
   return (
     <AppShell>
       <div className="mx-auto max-w-[1100px]">
-        <p className="ev-eyebrow">session</p>
+        <ProjectCrumbs projectId={session.projectId} leaf="session" />
         <div className="mt-2 flex flex-wrap items-center justify-between gap-4">
           {labelDraft === null ? (
             <h1 className="font-display text-3xl font-medium tracking-tight text-foreground">
@@ -350,6 +352,7 @@ function SessionPage() {
                 ))
               )}
             </div>
+            <ServicesCard sessionId={sessionId} sessionLive={ACTIVE.has(session.status)} />
           </section>
         </div>
       </div>

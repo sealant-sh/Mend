@@ -580,6 +580,24 @@ const processRunPointers = Effect.gen(function* () {
     ALTER TABLE session_processes ADD COLUMN sealant_run_id text`;
 });
 
+/**
+ * Project-level Service recipes: the web-editable twin of mend.toml (docs/SESSION-SERVICES.md).
+ * The file is project truth that travels with the repo; these rows are THIS machine's additions.
+ * Name collisions are refused at the union, never resolved — the file wins.
+ */
+const projectServiceRecipes = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE project_service_recipes (
+      project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name text NOT NULL,
+      command text,
+      port integer NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (project_id, name)
+    )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -600,4 +618,5 @@ export const migrations = {
   "0016_session_processes": sessionProcesses,
   "0017_service_ports": servicePorts,
   "0018_process_run_pointers": processRunPointers,
+  "0019_project_service_recipes": projectServiceRecipes,
 };

@@ -398,6 +398,21 @@ export const sessionProcesses = pgTable(
   ],
 );
 
+export const projectServiceRecipes = pgTable(
+  "project_service_recipes",
+  {
+    projectId: text()
+      .$type<ProjectId>()
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text().notNull(),
+    command: text(),
+    port: integer().notNull(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.projectId, table.name] })],
+);
+
 export const sessionChanges = pgTable("session_changes", {
   id: text().$type<ChangeId>().primaryKey(),
   projectId: text()

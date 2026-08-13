@@ -54,6 +54,12 @@ export const MendEvent = Schema.Union([
     line: Schema.String,
   }),
   Schema.Struct({
+    // A workspace process changed: created, status flip, port bound, ended.
+    type: Schema.Literals(["session-process"]),
+    sessionId: Schema.String,
+    projectId: Schema.String,
+  }),
+  Schema.Struct({
     type: Schema.Literals(["session-change"]),
     changeId: Schema.String,
     sessionId: Schema.String,

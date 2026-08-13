@@ -26,7 +26,7 @@ import { parse as parseToml } from "smol-toml";
 export const MEND_TOML = "mend.toml";
 
 /** Directory-, shell-, and URL-safe recipe names; also the CLI lookup key. */
-const RECIPE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+export const RECIPE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 export class RecipeFileError extends Schema.TaggedErrorClass<RecipeFileError>()("RecipeFileError", {
   path: Schema.String,
@@ -35,6 +35,19 @@ export class RecipeFileError extends Schema.TaggedErrorClass<RecipeFileError>()(
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * File + project recipes as ONE declaration set. Collisions are refused at
+ * write time (the web checks before creating); if one exists anyway, the
+ * file wins — it travels with the repo and reviews like code.
+ */
+export const mergeRecipes = (
+  file: ReadonlyArray<ServiceRecipe>,
+  project: ReadonlyArray<ServiceRecipe>,
+): ReadonlyArray<ServiceRecipe> => {
+  const fileNames = new Set(file.map((recipe) => recipe.name));
+  return [...file, ...project.filter((recipe) => !fileNames.has(recipe.name))];
+};
 
 /** Read and validate the worktree's declared Services. Missing file = none. */
 export const readServiceRecipes = (
@@ -106,6 +119,7 @@ export const readServiceRecipes = (
           name,
           command: command === undefined ? null : command.trim(),
           port,
+          source: "file",
         }),
       );
     }

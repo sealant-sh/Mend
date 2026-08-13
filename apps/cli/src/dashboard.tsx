@@ -69,6 +69,15 @@ interface ProjectDetailDto {
   readonly annotations: ReadonlyArray<SessionAnnotationDto>;
 }
 
+interface ServiceDto {
+  readonly id: string;
+  readonly sessionId: string;
+  readonly label: string | null;
+  readonly status: string;
+  readonly workspacePort: number | null;
+  readonly hostPort: number | null;
+}
+
 const STATUS_GLYPH: Record<string, string> = {
   starting: "○",
   running: "●",
@@ -105,16 +114,31 @@ const timeAgo = (iso: string): string => {
 interface Workbench {
   readonly projects: ReadonlyArray<ProjectDto>;
   readonly details: ReadonlyMap<string, ProjectDetailDto>;
+  /** Live Services grouped by session — what is running right now. */
+  readonly servicesBySession: ReadonlyMap<string, ReadonlyArray<ServiceDto>>;
 }
 
 const WORKBENCH_KEY = ["workbench"];
 
 const fetchWorkbench = async (ctx: DashboardContext): Promise<Workbench> => {
   const projects = await ctx.api<ReadonlyArray<ProjectDto>>("GET", "/projects");
-  const fetched = await Promise.all(
-    projects.map((project) => ctx.api<ProjectDetailDto>("GET", `/projects/${project.id}`)),
-  );
-  return { projects, details: new Map(fetched.map((detail) => [detail.project.id, detail])) };
+  const [fetched, services] = await Promise.all([
+    Promise.all(
+      projects.map((project) => ctx.api<ProjectDetailDto>("GET", `/projects/${project.id}`)),
+    ),
+    ctx.api<ReadonlyArray<ServiceDto>>("GET", "/services"),
+  ]);
+  const servicesBySession = new Map<string, ServiceDto[]>();
+  for (const service of services) {
+    const bucket = servicesBySession.get(service.sessionId) ?? [];
+    bucket.push(service);
+    servicesBySession.set(service.sessionId, bucket);
+  }
+  return {
+    projects,
+    details: new Map(fetched.map((detail) => [detail.project.id, detail])),
+    servicesBySession,
+  };
 };
 
 // ─── the three views and their list items ───────────────────────────────────
@@ -133,6 +157,7 @@ interface SessionItem {
   readonly kind: "session";
   readonly session: SessionDto;
   readonly annotation: SessionAnnotationDto | undefined;
+  readonly services: ReadonlyArray<ServiceDto>;
 }
 
 interface ProjectItem {
@@ -193,6 +218,7 @@ const deriveItems = (view: View, data: Workbench | undefined): ReadonlyArray<Ite
           kind: "session",
           session,
           annotation: detail.annotations.find((a) => a.sessionId === session.id),
+          services: data.servicesBySession.get(session.id) ?? [],
         }),
       );
   }
@@ -261,12 +287,23 @@ const SessionRow = ({
   readonly item: SessionItem;
   readonly selected: boolean;
 }) => {
-  const { session, annotation } = item;
+  const { session, annotation, services } = item;
   const color = STATUS_COLOR[session.status] ?? MUTED;
   const glyph = STATUS_GLYPH[session.status] ?? "·";
   const facts: Array<ReactNode> = [];
   const age = timeAgo(session.createdAt);
   if (age !== "") facts.push(<span fg={FAINT}>{age}</span>);
+  // What runs right now: name :port → host port, observed state colored.
+  for (const service of services.slice(0, 2)) {
+    facts.push(
+      <span fg={service.status === "reachable" ? GREEN : AMBER}>
+        {`${service.label ?? service.id.slice(0, 6)} :${service.workspacePort ?? "?"}→${service.hostPort ?? "?"} ${service.status}`}
+      </span>,
+    );
+  }
+  if (services.length > 2) {
+    facts.push(<span fg={FAINT}>{`+${services.length - 2} services`}</span>);
+  }
   if (session.label !== null) facts.push(<span fg={MUTED}>{session.label}</span>);
   if (annotation !== undefined && annotation.openComments > 0) {
     facts.push(
