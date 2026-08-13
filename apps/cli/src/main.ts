@@ -592,6 +592,7 @@ interface ServiceRecipeDto {
   readonly name: string;
   readonly command: string | null;
   readonly port: number;
+  readonly protocol: "tcp" | "udp";
 }
 
 interface ServiceDto {
@@ -602,18 +603,22 @@ interface ServiceDto {
   readonly status: string;
   readonly workspacePort: number | null;
   readonly hostPort: number | null;
+  readonly protocol: "tcp" | "udp";
   readonly sealantSessionId: string | null;
 }
 
 const serviceUrl = (config: CliConfig, service: ServiceDto): string => {
   const host = new URL(config.url).hostname || "localhost";
-  return `http://${host}:${service.hostPort ?? "?"}`;
+  // A UDP Service has no page to open — the endpoint is the whole fact.
+  return service.protocol === "udp"
+    ? `${host}:${service.hostPort ?? "?"} (udp)`
+    : `http://${host}:${service.hostPort ?? "?"}`;
 };
 
 const printService = (config: CliConfig, service: ServiceDto) => {
   const status = service.status === "reachable" ? green(service.status) : amber(service.status);
   say(
-    `${(service.label ?? service.id.slice(0, 8)).padEnd(12)}  ${dim(`:${service.workspacePort ?? "?"} →`)} ${serviceUrl(config, service)}  ${status}  ${dim(service.id.slice(0, 8))}`,
+    `${(service.label ?? service.id.slice(0, 8)).padEnd(12)}  ${dim(`:${service.workspacePort ?? "?"}${service.protocol === "udp" ? "/udp" : ""} →`)} ${serviceUrl(config, service)}  ${status}  ${dim(service.id.slice(0, 8))}`,
   );
 };
 
@@ -626,16 +631,17 @@ const serviceAdd = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const nameFlag = args.indexOf("--name");
   const name =
     nameFlag !== -1 && args[nameFlag + 1] !== undefined ? String(args[nameFlag + 1]) : null;
+  const protocol = args.includes("--udp") ? ("udp" as const) : ("tcp" as const);
   const positional = args.filter(
     (a, i) => !a.startsWith("--") && (nameFlag === -1 || i !== nameFlag + 1),
   );
   const portRaw = positional.find((a) => /^\d+$/.test(a));
   if (portRaw === undefined) {
-    return fail("usage: mend service add [session] <port> [--name <n>]");
+    return fail("usage: mend service add [session] <port> [--name <n>] [--udp]");
   }
   const port = Number(portRaw);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    return fail(`"${portRaw}" is not a TCP port`);
+    return fail(`"${portRaw}" is not a port`);
   }
   const prefix = positional.find((a) => a !== portRaw);
   const session = await resolveLiveSession(config, prefix);
@@ -643,10 +649,13 @@ const serviceAdd = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const service = await api<ServiceDto>(config, "POST", `/sessions/${session.id}/services`, {
     port,
     name,
+    protocol,
   });
   say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
   say(`  ${cobalt(serviceUrl(config, service))}`);
-  if (service.status !== "reachable") {
+  if (protocol === "udp") {
+    say(dim(`  udp — a reply is the only reachability signal; silence just relays`));
+  } else if (service.status !== "reachable") {
     say(dim(`  nothing answered on :${port} yet — the URL goes live when something listens`));
   }
 };
@@ -698,8 +707,8 @@ const findLiveService = async (config: CliConfig, needle: string): Promise<Servi
 const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const dashdash = args.indexOf("--");
   const usage =
-    "usage: mend service run [session] --port <port> [--name <n>] -- <command...>\n" +
-    "       mend service run [session] <name>          (a mend.toml recipe)";
+    "usage: mend service run [session] --port <port> [--name <n>] [--udp] -- <command...>\n" +
+    "       mend service run [session] <name>          (a declared recipe)";
   // No explicit command = a DECLARED Service: resolve the name against the
   // session worktree's mend.toml and start (or adopt) its recipe.
   if (dashdash === -1) {
@@ -727,17 +736,21 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
       const service = await api<ServiceDto>(config, "POST", `/sessions/${session.id}/services`, {
         port: recipe.port,
         name: recipe.name,
+        protocol: recipe.protocol,
       });
       say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
       say(`  ${cobalt(serviceUrl(config, service))}`);
       return;
     }
     const service = await withSpinner(
-      `starting ${recipe.name} — waiting for :${recipe.port} to answer…`,
+      recipe.protocol === "udp"
+        ? `starting ${recipe.name} (udp :${recipe.port})…`
+        : `starting ${recipe.name} — waiting for :${recipe.port} to answer…`,
       api<ServiceDto>(config, "POST", `/sessions/${session.id}/services/run`, {
         argv: ["sh", "-c", recipe.command],
         port: recipe.port,
         name: recipe.name,
+        protocol: recipe.protocol,
       }),
     );
     say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
@@ -754,17 +767,21 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const nameFlag = head.indexOf("--name");
   const name =
     nameFlag !== -1 && head[nameFlag + 1] !== undefined ? String(head[nameFlag + 1]) : null;
+  const protocol = head.includes("--udp") ? ("udp" as const) : ("tcp" as const);
   const prefix = head.find(
     (a, i) => !a.startsWith("--") && i !== portFlag + 1 && i !== nameFlag + 1,
   );
   const session = await resolveLiveSession(config, prefix);
 
   const service = await withSpinner(
-    `starting ${name ?? argv[0]} — waiting for :${port} to answer…`,
+    protocol === "udp"
+      ? `starting ${name ?? argv[0]} (udp :${port})…`
+      : `starting ${name ?? argv[0]} — waiting for :${port} to answer…`,
     api<ServiceDto>(config, "POST", `/sessions/${session.id}/services/run`, {
       argv,
       port,
       name,
+      protocol,
     }),
   );
   say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
@@ -1558,12 +1575,12 @@ const HELP = `mend — the agent workbench
   mend run -- <command...>              same, with an arbitrary command
   mend attach <session-id-prefix>       reattach this terminal to a running session
   mend shell [session-id-prefix]        open a shell in a live session's workspace
-  mend service run [session] --port <p> [--name <n>] -- <command...>
+  mend service run [session] --port <p> [--name <n>] [--udp] -- <command...>
                                         start + supervise a server in the session workspace
   mend service run [session] <name>     start a declared Service (mend.toml recipe)
   mend service <name>                   shorthand for the above
   mend service init [--yes]             scaffold mend.toml from package.json + compose ports
-  mend service add [session] <port> [--name <n>]
+  mend service add [session] <port> [--name <n>] [--udp]
                                         adopt a listening workspace port — reachable on this machine
   mend service list                     every live service and its observed state
   mend service logs <name-or-id>        follow a supervised service's output (replay, then live)

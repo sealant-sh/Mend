@@ -6,6 +6,7 @@ import {
   addService,
   restartService,
   runService,
+  serviceEndpoint,
   serviceUrl,
   stopService,
   type ServiceRecipeDto,
@@ -54,9 +55,11 @@ function ServiceRow({
   const live = LIVE.has(service.status);
   // What a client would connect to — the copyable fact. Dead forwards are
   // not offered: an ended Service has no host port worth pasting anywhere.
-  const endpoint = live && url !== null ? url.replace(/^http:\/\//, "") : null;
+  const endpoint = live ? serviceEndpoint(service) : null;
   const meta = [
-    service.workspacePort === null ? null : `:${service.workspacePort}`,
+    service.workspacePort === null
+      ? null
+      : `:${service.workspacePort}${service.protocol === "udp" ? "/udp" : ""}`,
     endpoint === null ? null : `→ ${endpoint}`,
     !live && service.exitCode !== null ? `code ${service.exitCode}` : null,
   ]
@@ -198,8 +201,13 @@ export function ServicesCard({
                 argv: service.argv,
                 port: service.workspacePort ?? 0,
                 name: service.label,
+                protocol: service.protocol,
               })
-            : addService(sessionId, { port: service.workspacePort ?? 0, name: service.label });
+            : addService(sessionId, {
+                port: service.workspacePort ?? 0,
+                name: service.label,
+                protocol: service.protocol,
+              });
     void action.then(invalidate).finally(() => setPending(null));
   };
 
@@ -207,11 +215,12 @@ export function ServicesCard({
     setPending(`run:${recipe.name}`);
     const action =
       recipe.command === null
-        ? addService(sessionId, { port: recipe.port, name: recipe.name })
+        ? addService(sessionId, { port: recipe.port, name: recipe.name, protocol: recipe.protocol })
         : runService(sessionId, {
             argv: ["sh", "-c", recipe.command],
             port: recipe.port,
             name: recipe.name,
+            protocol: recipe.protocol,
           });
     void action.then(invalidate).finally(() => setPending(null));
   };
@@ -260,7 +269,8 @@ export function ServicesCard({
                     </button>
                   </div>
                   <p className="mt-1 truncate font-mono text-[11px] text-faint">
-                    {recipe.command ?? "adopt"} · :{recipe.port} ·{" "}
+                    {recipe.command ?? "adopt"} · :{recipe.port}
+                    {recipe.protocol === "udp" ? "/udp" : ""} ·{" "}
                     {recipe.source === "file" ? "mend.toml" : "project"}
                   </p>
                 </div>
@@ -304,6 +314,7 @@ function RunServiceForm({
     const command = String(data.get("command") ?? "").trim();
     const name = String(data.get("name") ?? "").trim();
     const port = Number(String(data.get("port") ?? "").trim());
+    const protocol = data.get("udp") === "on" ? ("udp" as const) : ("tcp" as const);
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
       setError("A port between 1 and 65535 is the one required field.");
       return;
@@ -313,8 +324,8 @@ function RunServiceForm({
     const label = name === "" ? null : name;
     const action =
       command === ""
-        ? addService(sessionId, { port, name: label })
-        : runService(sessionId, { argv: ["sh", "-c", command], port, name: label });
+        ? addService(sessionId, { port, name: label, protocol })
+        : runService(sessionId, { argv: ["sh", "-c", command], port, name: label, protocol });
     void action
       .then(() => {
         onDone();
@@ -366,6 +377,10 @@ function RunServiceForm({
           placeholder="name (optional)"
           className="min-w-0 flex-1 rounded-lg border border-input bg-background px-2.5 py-1.5 font-mono text-xs text-ink placeholder:text-faint"
         />
+        <label className="flex shrink-0 items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
+          <input type="checkbox" name="udp" className="size-3.5 accent-[var(--sw-accent)]" />
+          udp
+        </label>
       </div>
       <div className="flex items-center justify-end gap-2.5">
         <button
