@@ -178,7 +178,8 @@ describe("SessionSocketHost", () => {
                 },
               });
               request.on("connect", (res, socket) => {
-                // Node surfaces refusals through this same event.
+                // Node surfaces refusals through this same event; the reason
+                // travels percent-encoded (headers are latin-1).
                 if (res.statusCode !== 200) {
                   const reason = res.headers["x-mend-refusal"];
                   socket.destroy();
@@ -186,7 +187,7 @@ describe("SessionSocketHost", () => {
                     stdout: Buffer.alloc(0),
                     stderr: Buffer.alloc(0),
                     exit: null,
-                    refusal: typeof reason === "string" ? reason : "",
+                    refusal: typeof reason === "string" ? decodeURIComponent(reason) : "",
                   });
                   return;
                 }

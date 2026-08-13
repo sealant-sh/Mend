@@ -34,8 +34,10 @@ import type {
 import { SessionExtraMount, SessionReferenceMount } from "@mend/domain/workbench";
 import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import {
+  AgentBridge,
   GitError,
   MendKeys,
+  NO_SIGNER_MESSAGE,
   Store,
   sessionStatePathOf,
   sshTransportArgs,
@@ -389,6 +391,9 @@ export class SessionEngine extends Context.Service<
       const store = yield* Store;
       const gitOps = yield* SessionGitOpsRepo;
       const mendKeys = yield* MendKeys;
+      const agentBridge = yield* AgentBridge;
+      /** Open bridge-op attributions, ended when the transport closes. */
+      const bridgeContexts = new Map<string, () => void>();
       const scope = yield* Effect.scope;
 
       /** The session's worktree path, derived — never stored twice. */
@@ -1979,6 +1984,17 @@ ${tail}`),
                       ),
                     )).privateKeyPath
                 : null;
+            // Bridge mode signs on another machine: require the signer NOW —
+            // an honest fast refusal in the workspace terminal beats an ssh
+            // that hangs against an agent socket nobody serves.
+            let env: Record<string, string> | undefined;
+            if (mode === "bridge") {
+              const bridgeStatus = yield* agentBridge.status();
+              if (!bridgeStatus.connected) {
+                return yield* Effect.fail(new Error(NO_SIGNER_MESSAGE));
+              }
+              env = { SSH_AUTH_SOCK: agentBridge.socketPath() };
+            }
             const op = yield* gitOps.record({
               sessionId,
               projectId: project.id,
@@ -1988,6 +2004,13 @@ ${tail}`),
               command,
               authMode: mode,
             });
+            // Attribution for the share CLI: ended in gitTransportDone.
+            if (mode === "bridge") {
+              const end = yield* agentBridge.begin(
+                `project ${project.name} → ${host} (${parsed.kind})`,
+              );
+              bridgeContexts.set(op.id, end);
+            }
             yield* Effect.logInfo("session git transport").pipe(
               Effect.annotateLogs({
                 sessionId,
@@ -2003,6 +2026,7 @@ ${tail}`),
               opId: op.id,
               kind: parsed.kind,
               argv: ["ssh", ...sshTransportArgs(mode, keyPath, port), "--", host, command],
+              ...(env === undefined ? {} : { env }),
             };
           }).pipe(
             Effect.mapError((error) => new Error(String(error.message))),
@@ -2010,6 +2034,10 @@ ${tail}`),
           ),
         gitTransportDone: (opId, exitCode, refUpdates) =>
           Effect.gen(function* () {
+            yield* Effect.sync(() => {
+              bridgeContexts.get(opId)?.();
+              bridgeContexts.delete(opId);
+            });
             yield* gitOps.finish(SessionGitOpId.make(opId), exitCode, refUpdates);
             yield* Effect.logInfo("session git transport closed").pipe(
               Effect.annotateLogs({

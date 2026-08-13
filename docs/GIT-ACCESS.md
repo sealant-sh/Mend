@@ -30,14 +30,21 @@ delivery prompt lives with the session that builds it.
      This is the recommended mode for a served Mend (homelab): the key is born on the machine that
      fetches, and hardware-key users get a scoped, revocable identity instead of an impossible copy.
 
-2. **YubiKey / hardware keys: the agent bridge (later, optional).** A hardware key cannot be copied
-   and demands a touch per signature, so it can never back daemon fetches. The universal interface
-   in front of it is the ssh-agent socket; agent forwarding is a solved shape. `mend keys share` on
-   the laptop reverse-forwards the local `SSH_AUTH_SOCK` to the Mend server over the private network
-   (one outbound WebSocket, agent-protocol frames inside; nothing secret ever transits — challenges
-   and signatures only). While connected, user-initiated git ops can sign through it; the key blinks
-   on the laptop. Disconnected → those ops fail "no signer present" and the deploy key still covers
-   everything routine. The CLI must print what each signature request is for.
+2. **YubiKey / hardware keys: the agent bridge (shipped).** A hardware key cannot be copied and
+   demands a touch per signature, so it can never back daemon fetches. The universal interface in
+   front of it is the ssh-agent socket; agent forwarding is a solved shape. `mend keys share` on the
+   laptop reverse-forwards the local `SSH_AUTH_SOCK` to the Mend server over the private network
+   (one outbound WebSocket, agent-protocol frames relayed verbatim inside; nothing secret ever
+   transits — challenges and signatures only, serialized one at a time). While connected, the server
+   exposes a real agent socket under `~/.mend/keys/_bridge/` and projects in the third auth mode,
+   `bridge`, sign through it — host-side ops and the workspace shim alike; the key blinks on the
+   laptop, and the share CLI prints what each signature is for ("signature requested by mend
+   (project shimtest → localhost)") with an honest waiting line and a 60s touch window. Disconnected
+   → those ops fail fast with "no signer connected — run `mend keys share` on the machine that holds
+   your key", and the deploy key still covers everything routine. The web card reports presence as
+   an observation ("signer connected · laptop"), never a judgment. Browser-based signing stays
+   impossible by design (WebAuthn cannot produce SSH signatures), and nothing about an agent
+   response is ever persisted.
 
 3. **Remotes never enter the workspace; plain `git push` still works — the shim.** The container
    gets no key, no agent socket, no token. Instead the workspace image sets `GIT_SSH_COMMAND` to a

@@ -24,6 +24,7 @@ import {
   type ProjectDto,
 } from "#/lib/api";
 import {
+  gitBridgeQuery,
   gitKeyQuery,
   projectDetailQuery,
   projectMountsQuery,
@@ -229,18 +230,22 @@ const GIT_AUTH_CHOICES: ReadonlyArray<{
 }> = [
   { value: "ambient", label: "ambient" },
   { value: "mend-key", label: "mend key" },
+  { value: "bridge", label: "bridge" },
 ];
 
 /**
  * How host-side git reaches this project's remote (docs/GIT-ACCESS.md):
  * ambient rides the login user's ssh setup; mend-key is a per-machine deploy
- * key whose public half this card hands out. Switching to mend-key generates
- * the key, so the card can show it immediately.
+ * key whose public half this card hands out (switching generates it, so the
+ * card can show it immediately); bridge signs through an ssh-agent shared
+ * from another machine — presence is shown as an observation, and ops fail
+ * readably while nobody is connected.
  */
 function GitAccessSection({ project }: { readonly project: ProjectDto }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const gitKey = useQuery({ ...gitKeyQuery, enabled: project.gitAuthMode === "mend-key" });
+  const bridge = useQuery({ ...gitBridgeQuery, enabled: project.gitAuthMode === "bridge" });
 
   const choose = (value: GitAuthModeDto) => {
     if (project.gitAuthMode === value || busy) return;
@@ -261,7 +266,8 @@ function GitAccessSection({ project }: { readonly project: ProjectDto }) {
       <p className="border-b border-rule pb-2 text-xs font-medium text-label">Git access</p>
       <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
         How Mend reaches this project&apos;s remote. Ambient uses your login user&apos;s git and ssh
-        setup; the Mend key is this machine&apos;s own deploy key.
+        setup; the Mend key is this machine&apos;s own deploy key; bridge signs through an ssh-agent
+        shared from another machine with <span className="font-mono">mend keys share</span>.
       </p>
       <div className="mt-3 flex gap-1">
         {GIT_AUTH_CHOICES.map((choice) => (
@@ -286,6 +292,31 @@ function GitAccessSection({ project }: { readonly project: ProjectDto }) {
       {project.gitAuthMode === "mend-key" && gitKey.data !== undefined && (
         <div className="mt-3">
           <GitKeyCard gitKey={gitKey.data} />
+        </div>
+      )}
+      {project.gitAuthMode === "bridge" && bridge.data !== undefined && (
+        <div className="mt-3">
+          <p className="flex items-center gap-2 font-mono text-xs">
+            <span
+              className={`inline-block size-2 rounded-full ${
+                bridge.data.connected
+                  ? "bg-[var(--sw-green-dot)]"
+                  : "border-[1.5px] border-[#b3b0a8]"
+              }`}
+            />
+            <span className={bridge.data.connected ? "text-ink-2" : "text-faint"}>
+              {bridge.data.connected
+                ? `signer connected · ${bridge.data.clientName ?? "unknown machine"}`
+                : "no signer connected"}
+            </span>
+          </p>
+          {!bridge.data.connected && (
+            <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
+              Run <span className="font-mono">mend keys share</span> on the machine that holds your
+              key; git ops for this project wait for no one — they fail readably until a signer
+              connects.
+            </p>
+          )}
         </div>
       )}
     </section>

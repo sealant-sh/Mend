@@ -331,6 +331,18 @@ export class GitKeyView extends Schema.Class<GitKeyView>("GitKeyView")({
   fingerprint: Schema.NullOr(Schema.String),
 }) {}
 
+/**
+ * The ssh-agent bridge, as observed right now: whether a `mend keys share`
+ * is connected and what that machine calls itself. Presence is a fact, not
+ * a verdict — git ops for bridge-mode projects need it, and fail readably
+ * without it.
+ */
+export class GitBridgeStatusView extends Schema.Class<GitBridgeStatusView>("GitBridgeStatusView")({
+  connected: Schema.Boolean,
+  clientName: Schema.NullOr(Schema.String),
+  since: Schema.NullOr(Schema.Date),
+}) {}
+
 export const HostToolSuggestionView = Schema.Struct({
   executable: Schema.String,
   kind: Schema.Literals(["package", "service"]),
@@ -449,6 +461,7 @@ const projectsGroup = HttpApiGroup.make("projects")
 const gitKeysGroup = HttpApiGroup.make("gitKeys")
   .add(HttpApiEndpoint.get("show", "/keys/git", { success: GitKeyView }))
   .add(HttpApiEndpoint.post("init", "/keys/git", { success: GitKeyView, error: StoreFailure }))
+  .add(HttpApiEndpoint.get("bridgeStatus", "/keys/bridge", { success: GitBridgeStatusView }))
   .middleware(AuthMiddleware);
 
 /** Add a reference: clone `source` shallow into the store, pinned to `ref` when given. */

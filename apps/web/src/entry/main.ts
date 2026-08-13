@@ -4,7 +4,14 @@ import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { NodeHttpServer, NodeRuntime } from "@effect/platform-node";
-import { EventsRoutes, GhLive, HostEnvironmentLive, MendApiLive, TtyRoutes } from "@mend/api";
+import {
+  EventsRoutes,
+  GhLive,
+  HostEnvironmentLive,
+  KeysBridgeRoutes,
+  MendApiLive,
+  TtyRoutes,
+} from "@mend/api";
 import { Auth } from "@mend/auth";
 import {
   BriefCommentsRepoLive,
@@ -63,7 +70,15 @@ import {
 } from "@mend/jobs";
 import { SealantClientLiveFromEnv } from "@mend/sealant";
 import { ServiceHostLive, SessionEngine, SessionSocketHostLive } from "@mend/sessions";
-import { MendKeys, MendKeysConfigLive, MendKeysLive, Store, StoreConfig } from "@mend/store";
+import {
+  AgentBridge,
+  AgentBridgeLive,
+  MendKeys,
+  MendKeysConfigLive,
+  MendKeysLive,
+  Store,
+  StoreConfig,
+} from "@mend/store";
 import { Config, Effect, Layer, Schema } from "effect";
 import {
   HttpMiddleware,
@@ -116,6 +131,10 @@ const DatabaseLive = DrizzleRepositoriesLive.pipe(
 // same layer reference, provided once at MainLive).
 const StoreLive = Store.layer.pipe(Layer.provide(StoreConfig.layer));
 const KeysLive: Layer.Layer<MendKeys> = MendKeysLive.pipe(Layer.provide(MendKeysConfigLive));
+// One bridge instance: the WS route attaches signers, the API and engine ask it.
+const BridgeLive: Layer.Layer<AgentBridge> = AgentBridgeLive.pipe(
+  Layer.provide(MendKeysConfigLive),
+);
 const ServiceHostLayer = ServiceHostLive;
 const SessionEngineLive = SessionEngine.layer.pipe(
   Layer.provide(ServiceHostLayer),
@@ -179,7 +198,14 @@ const ServerLive = Layer.unwrap(
     // Self-host posture: the instance lives behind the operator's perimeter,
     // and clients are many-origin by design (phone app, Expo web dev, LAN).
     return HttpRouter.serve(
-      Layer.mergeAll(MendApiLive, AuthRoutes, EventsRoutes, TtyRoutes, WebAppRoutes),
+      Layer.mergeAll(
+        MendApiLive,
+        AuthRoutes,
+        EventsRoutes,
+        TtyRoutes,
+        KeysBridgeRoutes,
+        WebAppRoutes,
+      ),
       { middleware: HttpMiddleware.cors({ allowedOrigins: () => true, credentials: true }) },
     ).pipe(Layer.provide(NodeHttpServer.layer(createServer, { port })));
   }),
@@ -309,6 +335,8 @@ const MainLive = Layer.unwrap(
       Layer.provide(StoreLive),
       // The machine's Mend git key (docs/GIT-ACCESS.md — the mend-key auth mode).
       Layer.provide(KeysLive),
+      // The ssh-agent bridge (decision 2) — signer presence + bridged git ops.
+      Layer.provide(BridgeLive),
       // The host's GitHub CLI, behind the api's Gh service (adoption discovery).
       Layer.provide(GhLive),
       Layer.provide(HostEnvironmentLive),

@@ -292,7 +292,7 @@ export type SessionStatusDto =
 export type AutomationChoiceDto = "inherit" | "on" | "off";
 
 /** How host-side git reaches the project's remote (docs/GIT-ACCESS.md). */
-export type GitAuthModeDto = "ambient" | "mend-key";
+export type GitAuthModeDto = "ambient" | "mend-key" | "bridge";
 
 export interface ProjectDto {
   readonly id: string;
@@ -613,6 +613,15 @@ export interface GitKeyDto {
 }
 
 export const gitKey = () => request<GitKeyDto>("/api/keys/git");
+
+/** The ssh-agent bridge as observed right now — presence, not a verdict. */
+export interface GitBridgeStatusDto {
+  readonly connected: boolean;
+  readonly clientName: string | null;
+  readonly since: string | null;
+}
+
+export const gitBridgeStatus = () => request<GitBridgeStatusDto>("/api/keys/bridge");
 
 /** Generate the machine key if missing; failure carries ssh-keygen's words. */
 export const initGitKey = async (): Promise<GitKeyDto> => {

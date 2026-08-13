@@ -17,11 +17,13 @@ export const resolveAutomation = (choice: AutomationChoice, settingsDefault: boo
  * How host-side git reaches this project's remote (docs/GIT-ACCESS.md):
  * `ambient` uses the login user's git/ssh setup unchanged; `mend-key` uses the
  * machine's Mend-generated deploy key (`~/.mend/keys/`), whose private half
- * never leaves the host. Both run ssh with BatchMode=yes — a daemon cannot
- * answer a prompt, so auth failures surface as readable errors instead of
- * hangs.
+ * never leaves the host; `bridge` signs through an ssh-agent shared from
+ * another machine via `mend keys share` — the key (often hardware) physically
+ * stays there, and ops fail readably when no signer is connected. All modes
+ * run ssh with BatchMode=yes — a daemon cannot answer a prompt, so auth
+ * failures surface as readable errors instead of hangs.
  */
-export const GitAuthMode = Schema.Literals(["ambient", "mend-key"]);
+export const GitAuthMode = Schema.Literals(["ambient", "mend-key", "bridge"]);
 export type GitAuthMode = typeof GitAuthMode.Type;
 
 /** What a workspace git transport op is doing, named by its remote command. */
