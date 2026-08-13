@@ -119,8 +119,15 @@ const pump = (socket: net.Socket, forward: WorkspaceForward): void => {
 interface UdpFlow {
   forwards: WorkspaceForward[];
   pinned: WorkspaceForward | null;
+  /** Datagrams that arrived before any dial finished — flushed on attach so a
+   * single-shot client (DNS-style) does not lose its first packet. Bounded:
+   * UDP's own contract is drop, not queue. */
+  pending: Uint8Array[];
   lastSeen: number;
 }
+
+/** How many pre-dial datagrams to hold per flow before dropping. */
+const UDP_PENDING_MAX = 16;
 
 interface ActiveService {
   readonly servers: ReadonlyArray<net.Server>;
@@ -351,7 +358,7 @@ export const ServiceHostLive: Layer.Layer<
       }
 
       const openFlow = (socket: dgram.Socket, peer: dgram.RemoteInfo): UdpFlow => {
-        const flow: UdpFlow = { forwards: [], pinned: null, lastSeen: Date.now() };
+        const flow: UdpFlow = { forwards: [], pinned: null, pending: [], lastSeen: Date.now() };
         // Both possible targets, concurrently: a native process listens on
         // the workspace loopback, inner compose publishes on the sidecar.
         // The first one that sends anything back is THE target; the other
@@ -367,6 +374,9 @@ export const ServiceHostLive: Layer.Layer<
             return;
           }
           flow.forwards.push(forward);
+          for (const datagram of flow.pending.splice(0)) {
+            forward.send(datagram);
+          }
           void (async () => {
             try {
               for await (const chunk of forward.output) {
@@ -442,6 +452,13 @@ export const ServiceHostLive: Layer.Layer<
             flow.lastSeen = Date.now();
             if (flow.pinned !== null) {
               flow.pinned.send(data);
+              return;
+            }
+            if (flow.forwards.length === 0) {
+              // Dials still in flight — hold a bounded handful for the flush.
+              if (flow.pending.length < UDP_PENDING_MAX) {
+                flow.pending.push(data);
+              }
               return;
             }
             for (const forward of flow.forwards) {
