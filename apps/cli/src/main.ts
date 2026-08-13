@@ -573,6 +573,104 @@ const shellCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
   process.exit(0);
 };
 
+// ─── services: reachable ports, everywhere the session is ───────────────────
+
+interface ServiceDto {
+  readonly id: string;
+  readonly sessionId: string;
+  readonly kind: string;
+  readonly label: string | null;
+  readonly status: string;
+  readonly workspacePort: number | null;
+  readonly hostPort: number | null;
+}
+
+const serviceUrl = (config: CliConfig, service: ServiceDto): string => {
+  const host = new URL(config.url).hostname || "localhost";
+  return `http://${host}:${service.hostPort ?? "?"}`;
+};
+
+const printService = (config: CliConfig, service: ServiceDto) => {
+  const status = service.status === "reachable" ? green(service.status) : amber(service.status);
+  say(
+    `${(service.label ?? service.id.slice(0, 8)).padEnd(12)}  ${dim(`:${service.workspacePort ?? "?"} →`)} ${serviceUrl(config, service)}  ${status}  ${dim(service.id.slice(0, 8))}`,
+  );
+};
+
+/**
+ * Adopt an already-listening workspace port as a Service: Mend binds a host
+ * port on its private interfaces and pumps every connection into the
+ * session's workspace. No supervision — reachability is the observation.
+ */
+const serviceAdd = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const nameFlag = args.indexOf("--name");
+  const name =
+    nameFlag !== -1 && args[nameFlag + 1] !== undefined ? String(args[nameFlag + 1]) : null;
+  const positional = args.filter(
+    (a, i) => !a.startsWith("--") && (nameFlag === -1 || i !== nameFlag + 1),
+  );
+  const portRaw = positional.find((a) => /^\d+$/.test(a));
+  if (portRaw === undefined) {
+    return fail("usage: mend service add [session] <port> [--name <n>]");
+  }
+  const port = Number(portRaw);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return fail(`"${portRaw}" is not a TCP port`);
+  }
+  const prefix = positional.find((a) => a !== portRaw);
+  const session = await resolveLiveSession(config, prefix);
+
+  const service = await api<ServiceDto>(config, "POST", `/sessions/${session.id}/services`, {
+    port,
+    name,
+  });
+  say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
+  say(`  ${cobalt(serviceUrl(config, service))}`);
+  if (service.status !== "reachable") {
+    say(dim(`  nothing answered on :${port} yet — the URL goes live when something listens`));
+  }
+};
+
+const serviceList = async (config: CliConfig) => {
+  const services = await api<ReadonlyArray<ServiceDto>>(config, "GET", "/services");
+  if (services.length === 0) {
+    say(dim("no live services — mend service add <port> adopts a listening one"));
+    return;
+  }
+  for (const service of services) printService(config, service);
+};
+
+const serviceStop = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const needle = args.find((a) => !a.startsWith("--"));
+  if (needle === undefined) return fail("usage: mend service stop <name-or-id-prefix>");
+  const services = await api<ReadonlyArray<ServiceDto>>(config, "GET", "/services");
+  const matches = services.filter(
+    (service) => service.label === needle || service.id.startsWith(needle),
+  );
+  if (matches.length === 0) return fail(`no live service matches "${needle}"`);
+  const match = matches[0];
+  if (matches.length > 1 || match === undefined) {
+    return fail(`"${needle}" is ambiguous — use more of the id`);
+  }
+  const stoppedService = await api<ServiceDto>(config, "POST", `/services/${match.id}/stop`);
+  say(`${green("✓")} stopped · ${stoppedService.label ?? stoppedService.id.slice(0, 8)}`);
+};
+
+const serviceCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const [verb, ...rest] = args;
+  switch (verb) {
+    case "add":
+      return serviceAdd(config, rest);
+    case "list":
+    case undefined:
+      return serviceList(config);
+    case "stop":
+      return serviceStop(config, rest);
+    default:
+      return fail(`unknown service command "${verb}" — try: add, list, stop`);
+  }
+};
+
 // ─── completions: live sessions under TAB ───────────────────────────────────
 
 /**
@@ -605,6 +703,7 @@ _mend() {
     'codex:new session + codex' 'claude:new session + claude' 'opencode:new session + opencode'
     'run:new session + arbitrary command'
     'attach:reattach to a running session' 'shell:open a shell in a live session workspace'
+    'service:reachable ports — add, list, stop'
     'continue:resume with the pending follow-up' 'resume:rejoin a settled session'
     'rejoin:attach if live, otherwise resume'
     'projects:adopted projects' 'sessions:sessions with review facts' 'status:active sessions'
@@ -628,7 +727,7 @@ _mend "$@"
 const BASH_COMPLETIONS = `_mend() {
   local cur=\${COMP_WORDS[COMP_CWORD]}
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "adopt codex claude opencode run attach shell continue resume rejoin projects sessions status ui help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "adopt codex claude opencode run attach shell service continue resume rejoin projects sessions status ui help" -- "$cur") )
     return
   fi
   case \${COMP_WORDS[1]} in
@@ -1184,6 +1283,10 @@ const HELP = `mend — the agent workbench
   mend run -- <command...>              same, with an arbitrary command
   mend attach <session-id-prefix>       reattach this terminal to a running session
   mend shell [session-id-prefix]        open a shell in a live session's workspace
+  mend service add [session] <port> [--name <n>]
+                                        adopt a listening workspace port — reachable on this machine
+  mend service list                     every live service and its observed state
+  mend service stop <name-or-id>        stop a service (closes its host port)
   mend continue [session-id]            resume a session with its pending review follow-up
   mend resume [session-id] [--with h]   rejoin a settled session (state restored; --with switches harness)
   mend rejoin [session-id] [--harness h] attach if live, otherwise resume; newest live wins
@@ -1213,6 +1316,8 @@ const main = async () => {
       return attach(config, rest);
     case "shell":
       return shellCommand(config, rest);
+    case "service":
+      return serviceCommand(config, rest);
     case "completions":
       return completionsCommand(rest);
     case "__complete":

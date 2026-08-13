@@ -46,7 +46,12 @@ import {
   type SessionReferenceMount,
 } from "@mend/domain/workbench";
 import { SealantClient, SealantPlatformError } from "@mend/sealant";
-import { HarnessStateNotFoundError, SessionEngine, SessionNotLiveError } from "@mend/sessions";
+import {
+  HarnessStateNotFoundError,
+  ServiceHost,
+  SessionEngine,
+  SessionNotLiveError,
+} from "@mend/sessions";
 import { Store, StoreConfig } from "@mend/store";
 import type { CreateOptions, InteractiveSession, Workspace } from "@sealant/sdk";
 import { Duration, Effect, Layer, Stream } from "effect";
@@ -64,6 +69,7 @@ const sealantDeadLayer = Layer.succeed(SealantClient, {
   startHarnessInWorkspace: () => Effect.die("not in test"),
   waitRun: () => Effect.die("not in test"),
   openSession: () => Effect.die("not in test"),
+  forward: () => Effect.die("not in test"),
   stopWorkspace: () => Effect.die("not in test"),
   getSession: () => Effect.die("not in test"),
   exec: () => Effect.die("not in test"),
@@ -118,6 +124,9 @@ const sealantLaunchLayer = (
       list: async () => [pty],
     },
     events: async function* () {},
+    forward: async () => {
+      throw new Error("not in test");
+    },
     stop: async () => undefined,
     restart: async function () {
       return this;
@@ -148,6 +157,7 @@ const sealantLaunchLayer = (
     startHarnessInWorkspace: () => Effect.die("not in test"),
     waitRun: () => Effect.die("not in test"),
     openSession: () => Effect.succeed(pty),
+    forward: () => Effect.die("not in test"),
     stopWorkspace: (target) =>
       Effect.sync(() => {
         stopped?.push(target.id);
@@ -173,6 +183,13 @@ const sealantLaunchLayer = (
     resolveWorkspacePackage: () => Effect.die("not in test"),
   });
 };
+
+/** Services bind no real sockets in these worlds. */
+const serviceHostStubLayer = Layer.succeed(ServiceHost, {
+  start: () => Effect.succeed(43127),
+  stop: () => Effect.void,
+  probe: () => Effect.succeed(true),
+});
 
 const now = () => new Date();
 
@@ -218,8 +235,10 @@ const sessionProcessesLayer = (world: World) => {
         const process = new SessionProcess({
           ...input,
           id: SessionProcessId.make(crypto.randomUUID()),
-          status: "running",
+          status: input.status ?? "running",
           exitCode: null,
+          workspacePort: input.workspacePort ?? null,
+          hostPort: input.hostPort ?? null,
           createdAt: now(),
           exitedAt: null,
           updatedAt: now(),
@@ -240,6 +259,20 @@ const sessionProcessesLayer = (world: World) => {
       ),
     listLive: () =>
       Effect.succeed([...world.processes.values()].filter((process) => process.exitedAt === null)),
+    setStatus: (id, status) =>
+      Effect.sync(() => {
+        const process = world.processes.get(id);
+        if (process !== undefined && process.exitedAt === null) {
+          world.processes.set(id, new SessionProcess({ ...process, status, updatedAt: now() }));
+        }
+      }),
+    setHostPort: (id, hostPort) =>
+      Effect.sync(() => {
+        const process = world.processes.get(id);
+        if (process !== undefined && process.exitedAt === null) {
+          world.processes.set(id, new SessionProcess({ ...process, hostPort, updatedAt: now() }));
+        }
+      }),
     markExited: (id, outcome, exitCode) =>
       Effect.sync(() => {
         const process = world.processes.get(id);
@@ -524,6 +557,7 @@ const withEngine = <A, E>(
     Layer.provide(sessionsLayer(world)),
     Layer.provide(sessionRunsLayer(world)),
     Layer.provide(sessionProcessesLayer(world)),
+    Layer.provide(serviceHostStubLayer),
     Layer.provide(changesLayer(world)),
     Layer.provide(checkpointsLayer(world)),
     Layer.provide(referencesEmptyLayer),
@@ -627,6 +661,8 @@ describe("SessionEngine", () => {
             argv: ["bash", "-i"],
             status: "running",
             exitCode: null,
+            workspacePort: null,
+            hostPort: null,
             createdAt: now(),
             exitedAt: null,
             updatedAt: now(),
@@ -722,6 +758,50 @@ describe("SessionEngine", () => {
         const outcome = yield* engine.openShell(session.id).pipe(Effect.flip);
         expect(outcome).toBeInstanceOf(SessionNotLiveError);
       }),
+    );
+  });
+
+  it("addService adopts a port; its lease outlives the agent until stopService", async () => {
+    const created: CreateOptions[] = [];
+    const stopped: string[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+
+          const service = yield* engine.addService(session.id, 5432, "db");
+          expect(service.kind).toBe("service");
+          expect(service.sealantSessionId).toBeNull();
+          expect(service.workspacePort).toBe(5432);
+          expect(service.hostPort).toBe(43127);
+          expect(service.status).toBe("reachable");
+
+          // The agent settles; the Service lease keeps the workspace up.
+          yield* engine.stop(session.id);
+          const agentExited = () =>
+            [...world.processes.values()].some(
+              (process) => process.kind === "agent" && process.exitedAt !== null,
+            );
+          for (let i = 0; i < 200 && !agentExited(); i++) {
+            yield* Effect.sleep(Duration.millis(10));
+          }
+          expect(agentExited()).toBe(true);
+          expect(stopped).toEqual([]);
+
+          // Ending the Service ends the last lease; the workspace goes.
+          const ended = yield* engine.stopService(service.id);
+          expect(ended.status).toBe("stopped");
+          expect(stopped).toEqual(["workspace-1"]);
+        }),
+      { sealantLayer: sealantLaunchLayer(created, undefined, stopped) },
     );
   });
 
@@ -975,6 +1055,7 @@ describe("SessionEngine", () => {
       Layer.provide(sessionsLayer(world)),
       Layer.provide(sessionRunsLayer(world)),
       Layer.provide(sessionProcessesLayer(world)),
+      Layer.provide(serviceHostStubLayer),
       Layer.provide(changesLayer(world)),
       Layer.provide(checkpointsLayer(world)),
       Layer.provide(referencesEmptyLayer),

@@ -16,6 +16,7 @@ import {
   Run,
   RunId,
   SessionId,
+  SessionProcessId,
   WorkspaceImage,
 } from "@mend/domain";
 import {
@@ -582,6 +583,33 @@ const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       success: SessionProcess,
       error: Schema.Union([NotFound, SessionNotLive, StoreFailure]),
+    }),
+  )
+  .add(
+    // Adopt an already-listening workspace port as a Service
+    // (docs/SESSION-SERVICES.md): Mend binds a host port on the private
+    // interfaces and pumps each connection over a workspace forward.
+    HttpApiEndpoint.post("addService", "/sessions/:id/services", {
+      params: { id: SessionId },
+      payload: Schema.Struct({
+        port: Schema.Int,
+        name: Schema.NullOr(Schema.String),
+      }),
+      success: SessionProcess,
+      error: Schema.Union([NotFound, SessionNotLive, StoreFailure]),
+    }),
+  )
+  .add(
+    // What is running right now, across every session — one list, any device.
+    HttpApiEndpoint.get("listServices", "/services", {
+      success: Schema.Array(SessionProcess),
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("stopService", "/services/:id/stop", {
+      params: { id: SessionProcessId },
+      success: SessionProcess,
+      error: NotFound,
     }),
   )
   .add(

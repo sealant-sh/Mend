@@ -14,7 +14,13 @@ import {
   SessionsRepo,
   SettingsRepo,
 } from "@mend/db";
-import { SealantRunId, SealantWorkspaceId, SessionId, type ProjectId } from "@mend/domain";
+import {
+  SealantRunId,
+  SealantWorkspaceId,
+  SessionId,
+  type ProjectId,
+  type SessionProcessId,
+} from "@mend/domain";
 import type {
   Checkpoint,
   CheckpointTrigger,
@@ -47,6 +53,7 @@ import {
   ingestNativeSession,
   type ConvertedNativeSession,
 } from "./native-convert.ts";
+import { ServiceBindError, ServiceHost } from "./service-host.ts";
 
 /** How a harness takes an opening prompt (the cross-harness handoff). */
 const promptArgv = (harness: string, prompt: string): ReadonlyArray<string> | null => {
@@ -149,6 +156,14 @@ export class SessionNotLiveError extends Schema.TaggedErrorClass<SessionNotLiveE
   },
 ) {}
 
+/** The process id is unknown, ended, or not a Service. */
+export class ServiceNotFoundError extends Schema.TaggedErrorClass<ServiceNotFoundError>()(
+  "ServiceNotFoundError",
+  {
+    processId: Schema.String,
+  },
+) {}
+
 /**
  * The workbench session engine (plan §7.2, M1) — the supervisor extracted from
  * the queue-era run starter (docs/M0-INVENTORY.md), rewired onto sessions and
@@ -210,6 +225,24 @@ export class SessionEngine extends Context.Service<
       SessionNotFoundError | SessionNotLiveError | SealantPlatformError
     >;
     /**
+     * Adopt an already-listening workspace port as a Service
+     * (docs/SESSION-SERVICES.md): bind a host listener on the private
+     * interfaces and pump each accepted connection over a workspace forward.
+     * No supervision, no logs — reachability is the whole observation.
+     */
+    readonly addService: (
+      sessionId: SessionId,
+      workspacePort: number,
+      name: string | null,
+    ) => Effect.Effect<
+      SessionProcess,
+      SessionNotFoundError | SessionNotLiveError | ServiceBindError
+    >;
+    /** Stop a Service: close its listener, end its lease, maybe reap the workspace. */
+    readonly stopService: (
+      processId: SessionProcessId,
+    ) => Effect.Effect<SessionProcess, ServiceNotFoundError>;
+    /**
      * Rejoin a session as a continuous piece of work — harness- and
      * machine-agnostic. Same worktree, same change, same conversation: the
      * fresh workspace restores the saved harness state (a claude resume is
@@ -245,6 +278,7 @@ export class SessionEngine extends Context.Service<
       const sessions = yield* SessionsRepo;
       const sessionRuns = yield* SessionRunsRepo;
       const processes = yield* SessionProcessesRepo;
+      const serviceHost = yield* ServiceHost;
       const projects = yield* ProjectsRepo;
       const changes = yield* SessionChangesRepo;
       const checkpoints = yield* CheckpointsRepo;
@@ -742,8 +776,14 @@ export class SessionEngine extends Context.Service<
        */
       const watchShellProcess = (shellProcess: SessionProcess) =>
         Effect.gen(function* () {
+          // Shells always carry a PTY id; a row without one cannot be watched.
+          const ptyId = shellProcess.sealantSessionId;
+          if (ptyId === null) {
+            yield* processes.markExited(shellProcess.id, "exited", null);
+            return;
+          }
           const workspace = yield* sealant.getWorkspace(shellProcess.sealantWorkspaceId);
-          const pty = yield* sealant.getSession(workspace, shellProcess.sealantSessionId);
+          const pty = yield* sealant.getSession(workspace, ptyId);
           let blindPolls = 0;
           for (;;) {
             yield* Effect.sleep("2 seconds");
@@ -1452,6 +1492,59 @@ export class SessionEngine extends Context.Service<
         return shellProcess;
       });
 
+      const addService = Effect.fn("SessionEngine.addService")(function* (
+        sessionId: SessionId,
+        workspacePort: number,
+        name: string | null,
+      ) {
+        const session = yield* sessions.byId(sessionId);
+        if (session.sealantWorkspaceId === null || session.settledAt !== null) {
+          return yield* new SessionNotLiveError({ sessionId });
+        }
+        const workspaceId = session.sealantWorkspaceId;
+        // An add is adoption, not a claim: a port nobody answers on yet is
+        // still a valid Service — it just reads unreachable until it does.
+        const reachable = yield* serviceHost.probe(workspaceId, workspacePort);
+        const serviceProcess = yield* processes.create({
+          sessionId,
+          sealantWorkspaceId: workspaceId,
+          sealantSessionId: null,
+          kind: "service",
+          label: name ?? `port-${workspacePort}`,
+          argv: [],
+          status: reachable ? "reachable" : "unreachable",
+          workspacePort,
+        });
+        const hostPort = yield* serviceHost
+          .start({ processId: serviceProcess.id, workspaceId, workspacePort })
+          .pipe(
+            // The row must not survive a listener that never existed.
+            Effect.tapError(() => processes.markExited(serviceProcess.id, "exited", null)),
+          );
+        yield* processes.setHostPort(serviceProcess.id, hostPort);
+        const created = yield* processes.byId(serviceProcess.id);
+        return created ?? serviceProcess;
+      });
+
+      const stopService = Effect.fn("SessionEngine.stopService")(function* (
+        processId: SessionProcessId,
+      ) {
+        const serviceProcess = yield* processes.byId(processId);
+        if (
+          serviceProcess === null ||
+          serviceProcess.kind !== "service" ||
+          serviceProcess.exitedAt !== null
+        ) {
+          return yield* new ServiceNotFoundError({ processId });
+        }
+        yield* serviceHost.stop(processId);
+        yield* processes.markExited(processId, "stopped", null);
+        // The lease just ended; the workspace goes when nothing else holds it.
+        yield* stopWorkspaceIfUnleased(serviceProcess.sessionId);
+        const stopped = yield* processes.byId(processId);
+        return stopped ?? serviceProcess;
+      });
+
       /** Re-attach to sessions that were live when the last process died. */
       const resume = Effect.fn("SessionEngine.resume")(function* () {
         const activeRuns = yield* sessionRuns.listActive();
@@ -1487,8 +1580,31 @@ export class SessionEngine extends Context.Service<
         // again — the watcher itself records the end if the workspace is gone.
         const liveProcesses = yield* processes.listLive();
         for (const liveProcess of liveProcesses) {
-          if (liveProcess.kind !== "shell") continue;
-          yield* Effect.forkIn(watchShellProcess(liveProcess), scope);
+          if (liveProcess.kind === "shell") {
+            yield* Effect.forkIn(watchShellProcess(liveProcess), scope);
+          }
+          // Services: re-bind the listener on the recorded host port so URLs
+          // survive a Mend restart. A dead workspace ends the row instead —
+          // the supervisor would notice anyway, this just reports it sooner.
+          if (liveProcess.kind === "service" && liveProcess.workspacePort !== null) {
+            yield* serviceHost
+              .start({
+                processId: liveProcess.id,
+                workspaceId: liveProcess.sealantWorkspaceId,
+                workspacePort: liveProcess.workspacePort,
+                ...(liveProcess.hostPort === null
+                  ? {}
+                  : { preferredHostPort: liveProcess.hostPort }),
+              })
+              .pipe(
+                Effect.flatMap((hostPort) =>
+                  hostPort === liveProcess.hostPort
+                    ? Effect.void
+                    : processes.setHostPort(liveProcess.id, hostPort),
+                ),
+                Effect.catch(() => processes.markExited(liveProcess.id, "exited", null)),
+              );
+          }
         }
       });
 
@@ -1538,6 +1654,8 @@ export class SessionEngine extends Context.Service<
         checkpointNow,
         stop,
         openShell,
+        addService,
+        stopService,
         resumeSession,
         transcript,
       };

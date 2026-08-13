@@ -440,6 +440,41 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         );
       }),
     )
+    .handle("addService", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const engine = yield* SessionEngine;
+        return yield* engine.addService(params.id, payload.port, payload.name).pipe(
+          Effect.catchTag("SessionNotFoundError", () =>
+            Effect.fail(new NotFound({ id: params.id })),
+          ),
+          Effect.catchTag("SessionNotLiveError", () =>
+            Effect.fail(new SessionNotLive({ id: params.id })),
+          ),
+          Effect.catchTag("ServiceBindError", (error) =>
+            Effect.fail(new StoreFailure({ message: error.message })),
+          ),
+        );
+      }),
+    )
+    .handle("listServices", () =>
+      Effect.gen(function* () {
+        const processes = yield* SessionProcessesRepo;
+        const live = yield* processes.listLive();
+        return live.filter((process) => process.kind === "service");
+      }),
+    )
+    .handle("stopService", ({ params }) =>
+      Effect.gen(function* () {
+        const engine = yield* SessionEngine;
+        return yield* engine
+          .stopService(params.id)
+          .pipe(
+            Effect.catchTag("ServiceNotFoundError", () =>
+              Effect.fail(new NotFound({ id: params.id })),
+            ),
+          );
+      }),
+    )
     .handle("remove", ({ params }) =>
       Effect.gen(function* () {
         const sessions = yield* SessionsRepo;

@@ -1,5 +1,9 @@
 import { SessionProcessId, type SealantWorkspaceId, type SessionId } from "@mend/domain";
-import { SessionProcess, type SessionProcessKind } from "@mend/domain/workbench";
+import {
+  SessionProcess,
+  type SessionProcessKind,
+  type SessionProcessStatus,
+} from "@mend/domain/workbench";
 import { and, asc, eq, isNull } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
@@ -10,10 +14,15 @@ import { sessionProcesses } from "../schema/workbench.ts";
 export interface NewSessionProcess {
   readonly sessionId: SessionId;
   readonly sealantWorkspaceId: SealantWorkspaceId;
-  readonly sealantSessionId: string;
+  /** Null for adopted Services — a port Mend forwards without owning a process. */
+  readonly sealantSessionId: string | null;
   readonly kind: SessionProcessKind;
   readonly label: string | null;
   readonly argv: ReadonlyArray<string>;
+  /** Initial observed state; defaults to "running" (the PTY paths). */
+  readonly status?: SessionProcessStatus;
+  readonly workspacePort?: number | null;
+  readonly hostPort?: number | null;
 }
 
 /**
@@ -33,6 +42,10 @@ export class SessionProcessesRepo extends Context.Service<
     ) => Effect.Effect<ReadonlyArray<SessionProcess>>;
     /** Every live row across all workspaces — boot re-attaches watchers from this. */
     readonly listLive: () => Effect.Effect<ReadonlyArray<SessionProcess>>;
+    /** Flip a LIVE row's observed state (reachable ⇄ unreachable, starting → running). */
+    readonly setStatus: (id: SessionProcessId, status: SessionProcessStatus) => Effect.Effect<void>;
+    /** Record the bound host port once the listener exists (Services only). */
+    readonly setHostPort: (id: SessionProcessId, hostPort: number) => Effect.Effect<void>;
     readonly markExited: (
       id: SessionProcessId,
       outcome: "exited" | "stopped",
@@ -61,13 +74,24 @@ export const SessionProcessesRepoLive: Layer.Layer<SessionProcessesRepo, never, 
           .values({
             ...input,
             id: SessionProcessId.make(crypto.randomUUID()),
-            status: "running",
+            status: input.status ?? "running",
           })
           .returning()
           .pipe(Effect.orDie);
         if (created === undefined)
           return yield* Effect.die("session process insert returned no row");
         return toSessionProcess(created);
+      });
+
+      const setStatus = Effect.fn("SessionProcessesRepo.setStatus")(function* (
+        id: SessionProcessId,
+        status: SessionProcessStatus,
+      ) {
+        yield* db
+          .update(sessionProcesses)
+          .set({ status, updatedAt: new Date() })
+          .where(and(eq(sessionProcesses.id, id), isNull(sessionProcesses.exitedAt)))
+          .pipe(Effect.orDie);
       });
 
       const byId = Effect.fn("SessionProcessesRepo.byId")(function* (id: SessionProcessId) {
@@ -119,6 +143,17 @@ export const SessionProcessesRepoLive: Layer.Layer<SessionProcessesRepo, never, 
         return rows.map(toSessionProcess);
       });
 
+      const setHostPort = Effect.fn("SessionProcessesRepo.setHostPort")(function* (
+        id: SessionProcessId,
+        hostPort: number,
+      ) {
+        yield* db
+          .update(sessionProcesses)
+          .set({ hostPort, updatedAt: new Date() })
+          .where(and(eq(sessionProcesses.id, id), isNull(sessionProcesses.exitedAt)))
+          .pipe(Effect.orDie);
+      });
+
       const markExited = Effect.fn("SessionProcessesRepo.markExited")(function* (
         id: SessionProcessId,
         outcome: "exited" | "stopped",
@@ -155,6 +190,8 @@ export const SessionProcessesRepoLive: Layer.Layer<SessionProcessesRepo, never, 
         listForSession,
         listLiveForWorkspace,
         listLive,
+        setStatus,
+        setHostPort,
         markExited,
         reapLiveForWorkspace,
       };

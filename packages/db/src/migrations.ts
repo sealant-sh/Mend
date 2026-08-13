@@ -551,6 +551,24 @@ const sessionProcesses = Effect.gen(function* () {
       AND settled_at IS NULL`;
 });
 
+/**
+ * Services ride the process table (docs/SESSION-SERVICES.md): an adopted Service has no PTY of
+ * ours (sealant_session_id goes nullable) and carries its workspace port plus the host port Mend
+ * binds. The one-listener-per-host-port invariant is enforced where it exists: on live rows.
+ */
+const servicePorts = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE session_processes ALTER COLUMN sealant_session_id DROP NOT NULL`;
+  yield* sql`
+    ALTER TABLE session_processes ADD COLUMN workspace_port integer`;
+  yield* sql`
+    ALTER TABLE session_processes ADD COLUMN host_port integer`;
+  yield* sql`
+    CREATE UNIQUE INDEX session_processes_host_port_live_idx ON session_processes (host_port)
+    WHERE exited_at IS NULL AND host_port IS NOT NULL`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -569,4 +587,5 @@ export const migrations = {
   "0014_change_passes": changePasses,
   "0015_session_run_history": sessionRunHistory,
   "0016_session_processes": sessionProcesses,
+  "0017_service_ports": servicePorts,
 };
