@@ -133,6 +133,27 @@ export const remoteGitEnv = (sshCommand: string): Record<string, string> => ({
   GIT_SSH_COMMAND: sshCommand,
 });
 
+/**
+ * ssh argv (options only — caller appends `-- host command`) for a workspace
+ * git transport op resolved on the host: the same auth semantics as
+ * `sshCommandFor`, as a vector because the host spawns ssh directly.
+ * `SendEnv=GIT_PROTOCOL` lets protocol v2 negotiate through the tunnel.
+ */
+export const sshTransportArgs = (
+  mode: GitAuthMode,
+  privateKeyPath: string | null,
+  port: number | null,
+): ReadonlyArray<string> => [
+  ...(mode === "mend-key" && privateKeyPath !== null
+    ? ["-i", privateKeyPath, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=accept-new"]
+    : []),
+  "-o",
+  "BatchMode=yes",
+  "-o",
+  "SendEnv=GIT_PROTOCOL",
+  ...(port === null ? [] : ["-p", String(port)]),
+];
+
 interface FailurePattern {
   readonly test: RegExp;
   readonly describe: (mode: GitAuthMode, match: RegExpMatchArray) => string;

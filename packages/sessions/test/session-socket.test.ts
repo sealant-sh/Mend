@@ -3,9 +3,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { SessionId } from "@mend/domain";
-import { SessionSocketHost, SessionSocketHostLive } from "@mend/sessions";
+import { SessionSocketHost, SessionSocketHostLive, makeFrameFeed, frame } from "@mend/sessions";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
+
+import type { SessionSocketApi } from "../src/session-socket.ts";
 
 /**
  * The in-workspace control surface over a REAL unix socket: bind, stage the
@@ -23,7 +25,9 @@ const call = (
   body?: unknown,
 ): Promise<{ status: number; json: unknown }> =>
   new Promise((resolve, reject) => {
-    const request = http.request({ socketPath, method, path: route }, (response) => {
+    // agent: false — every call dials fresh, like the in-workspace helper; a
+    // kept-alive connection would EPIPE against a server that was re-bound.
+    const request = http.request({ socketPath, method, path: route, agent: false }, (response) => {
       let text = "";
       response.on("data", (chunk) => (text += String(chunk)));
       response.on("end", () =>
@@ -42,7 +46,7 @@ describe("SessionSocketHost", () => {
         Effect.gen(function* () {
           const host = yield* SessionSocketHost;
           const seen: unknown[] = [];
-          const dir = yield* host.start(SESSION, {
+          const api: SessionSocketApi = {
             recipes: () => Effect.succeed([{ name: "web", command: "pnpm dev", port: 3000 }]),
             listServices: () => Effect.succeed([]),
             runService: (argv, port, name) =>
@@ -53,7 +57,10 @@ describe("SessionSocketHost", () => {
             addService: () => Effect.succeed({}),
             stopService: () => Effect.succeed({}),
             restartService: () => Effect.die("unused"),
-          });
+            gitTransport: () => Effect.die("unused"),
+            gitTransportDone: () => Effect.void,
+          };
+          const dir = yield* host.start(SESSION, api);
           const socketPath = path.join(dir, "mend.sock");
 
           const recipes = yield* Effect.promise(() => call(socketPath, "GET", "/recipes"));
@@ -81,6 +88,28 @@ describe("SessionSocketHost", () => {
           );
           expect(helper).toContain("/run/mend/mend.sock");
 
+          // The git transport shim is staged beside it.
+          const shim = yield* Effect.promise(() =>
+            import("node:fs/promises").then((fs) =>
+              fs.readFile(path.join(dir, "bin", "mend-git-ssh"), "utf8"),
+            ),
+          );
+          expect(shim).toContain("/git/transport");
+
+          // A restart re-binds IN PLACE: the workspace bind-mounts this
+          // directory by inode, so recreating it would leave every live
+          // container staring at a dangling, empty /run/mend.
+          const inodeBefore = (yield* Effect.promise(() =>
+            import("node:fs/promises").then((fs) => fs.stat(dir)),
+          )).ino;
+          yield* host.start(SESSION, api);
+          const inodeAfter = (yield* Effect.promise(() =>
+            import("node:fs/promises").then((fs) => fs.stat(dir)),
+          )).ino;
+          expect(inodeAfter).toBe(inodeBefore);
+          const rebound = yield* Effect.promise(() => call(socketPath, "GET", "/recipes"));
+          expect(rebound.status).toBe(200);
+
           yield* host.stop(SESSION);
           const refused = yield* Effect.promise(() =>
             call(socketPath, "GET", "/services").then(
@@ -89,6 +118,120 @@ describe("SessionSocketHost", () => {
             ),
           );
           expect(refused).toBe(true);
+        }),
+      ).pipe(Effect.provide(SessionSocketHostLive)),
+    );
+  });
+
+  it("tunnels a git transport op: framed stdio both ways, exit code, op closeout", async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const host = yield* SessionSocketHost;
+          const requests: unknown[] = [];
+          const closed: unknown[] = [];
+          const api: SessionSocketApi = {
+            recipes: () => Effect.succeed([]),
+            listServices: () => Effect.succeed([]),
+            runService: () => Effect.die("unused"),
+            addService: () => Effect.die("unused"),
+            stopService: () => Effect.die("unused"),
+            restartService: () => Effect.die("unused"),
+            gitTransport: (request) =>
+              Effect.sync(() => {
+                requests.push(request);
+                if (request.command.startsWith("rm ")) throw new Error("not a git command");
+                // Stand-in for ssh: echo stdin back, speak on stderr, exit 3.
+                return {
+                  opId: "op-1",
+                  kind: "fetch" as const,
+                  argv: ["sh", "-c", 'cat; echo "over ssh stderr" >&2; exit 3'],
+                };
+              }),
+            gitTransportDone: (opId, exitCode, refUpdates) =>
+              Effect.sync(() => {
+                closed.push({ opId, exitCode, refUpdates });
+              }),
+          };
+          const dir = yield* host.start(SESSION, api);
+          const socketPath = path.join(dir, "mend.sock");
+
+          const tunnel = (
+            command: string,
+            body: Buffer,
+          ): Promise<{
+            stdout: Buffer;
+            stderr: Buffer;
+            exit: number | null;
+            refusal: string | null;
+          }> =>
+            new Promise((resolve, reject) => {
+              const request = http.request({
+                socketPath,
+                method: "CONNECT",
+                path: "/git/transport",
+                headers: {
+                  "x-mend-git-host": "git.example.test",
+                  "x-mend-git-port": "",
+                  "x-mend-git-command": command,
+                  "x-mend-git-protocol": "version=2",
+                },
+              });
+              request.on("connect", (res, socket) => {
+                // Node surfaces refusals through this same event.
+                if (res.statusCode !== 200) {
+                  const reason = res.headers["x-mend-refusal"];
+                  socket.destroy();
+                  resolve({
+                    stdout: Buffer.alloc(0),
+                    stderr: Buffer.alloc(0),
+                    exit: null,
+                    refusal: typeof reason === "string" ? reason : "",
+                  });
+                  return;
+                }
+                const out: Buffer[] = [];
+                const err: Buffer[] = [];
+                let exit: number | null = null;
+                const feed = makeFrameFeed((type, payload) => {
+                  if (type === "o") out.push(Buffer.from(payload));
+                  if (type === "e") err.push(Buffer.from(payload));
+                  if (type === "x") exit = payload[0] ?? null;
+                });
+                socket.on("data", feed);
+                socket.on("close", () =>
+                  resolve({
+                    stdout: Buffer.concat(out),
+                    stderr: Buffer.concat(err),
+                    exit,
+                    refusal: null,
+                  }),
+                );
+                socket.write(frame("i", body));
+                socket.write(frame("q", Buffer.alloc(0)));
+              });
+              request.on("error", reject);
+              request.end();
+            });
+
+          const ok = yield* Effect.promise(() =>
+            tunnel("git-upload-pack 'repo.git'", Buffer.from("pack-bytes")),
+          );
+          expect(ok.refusal).toBeNull();
+          expect(ok.stdout.toString()).toBe("pack-bytes");
+          expect(ok.stderr.toString()).toContain("over ssh stderr");
+          expect(ok.exit).toBe(3);
+          expect(requests).toEqual([
+            { host: "git.example.test", port: null, command: "git-upload-pack 'repo.git'" },
+          ]);
+          // The op is closed out with the child's real exit code.
+          expect(closed).toEqual([{ opId: "op-1", exitCode: 3, refUpdates: null }]);
+
+          // A refused plan reaches the client as a readable message, no tunnel.
+          const refused = yield* Effect.promise(() => tunnel("rm -rf /", Buffer.alloc(0)));
+          expect(refused.refusal ?? "").toContain("not a git command");
+
+          yield* host.stop(SESSION);
         }),
       ).pipe(Effect.provide(SessionSocketHostLive)),
     );

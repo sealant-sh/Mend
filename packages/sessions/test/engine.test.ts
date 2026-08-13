@@ -14,6 +14,7 @@ import {
   ReferenceNotFoundError,
   ReferencesRepo,
   SessionChangesRepo,
+  SessionGitOpsRepo,
   SessionNotFoundError,
   SessionProcessesRepo,
   SessionRunsRepo,
@@ -30,6 +31,7 @@ import {
   ProjectId,
   SealantRunId,
   SealantWorkspaceId,
+  SessionGitOpId,
   SessionId,
   SessionProcessId,
   Sha,
@@ -54,7 +56,7 @@ import {
   SessionNotLiveError,
   SessionSocketHost,
 } from "@mend/sessions";
-import { Store, StoreConfig } from "@mend/store";
+import { MendKeys, Store, StoreConfig } from "@mend/store";
 import type { CreateOptions, InteractiveSession, Workspace } from "@sealant/sdk";
 import { Duration, Effect, Layer, Stream } from "effect";
 
@@ -197,6 +199,31 @@ const serviceHostStubLayer = Layer.succeed(ServiceHost, {
 const sessionSocketStubLayer = Layer.succeed(SessionSocketHost, {
   start: () => Effect.succeed("/tmp/mend-test-socket-dir"),
   stop: () => Effect.void,
+});
+
+/** No machine key and no transport log in these worlds. */
+const mendKeysStubLayer = Layer.succeed(MendKeys, {
+  ensure: () =>
+    Effect.succeed({
+      publicKey: "ssh-ed25519 TEST",
+      fingerprint: "256 SHA256:test",
+      privateKeyPath: "/tmp/mend-test-key",
+    }),
+  read: () => Effect.succeed(null),
+});
+
+const gitOpsStubLayer = Layer.succeed(SessionGitOpsRepo, {
+  record: (op) =>
+    Effect.succeed({
+      ...op,
+      id: SessionGitOpId.make(crypto.randomUUID()),
+      refUpdates: null,
+      exitCode: null,
+      startedAt: now(),
+      finishedAt: null,
+    }),
+  finish: () => Effect.void,
+  listForSession: () => Effect.succeed([]),
 });
 
 const now = () => new Date();
@@ -590,6 +617,8 @@ const withEngine = <A, E>(
     Layer.provide(sessionProcessesLayer(world)),
     Layer.provide(serviceHostStubLayer),
     Layer.provide(sessionSocketStubLayer),
+    Layer.provide(mendKeysStubLayer),
+    Layer.provide(gitOpsStubLayer),
     Layer.provide(changesLayer(world)),
     Layer.provide(checkpointsLayer(world)),
     Layer.provide(referencesEmptyLayer),
@@ -1130,6 +1159,8 @@ describe("SessionEngine", () => {
       Layer.provide(sessionProcessesLayer(world)),
       Layer.provide(serviceHostStubLayer),
       Layer.provide(sessionSocketStubLayer),
+      Layer.provide(mendKeysStubLayer),
+      Layer.provide(gitOpsStubLayer),
       Layer.provide(changesLayer(world)),
       Layer.provide(checkpointsLayer(world)),
       Layer.provide(referencesEmptyLayer),

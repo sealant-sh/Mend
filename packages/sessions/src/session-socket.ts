@@ -1,11 +1,22 @@
+import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as http from "node:http";
+import type * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
 import type { SessionId } from "@mend/domain";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
+
+import {
+  GIT_SSH_SHIM_SCRIPT,
+  frame,
+  makeFrameFeed,
+  makePushSniffer,
+  type GitTransportPlan,
+  type GitTransportRequest,
+} from "./git-transport.ts";
 
 /**
  * The in-workspace control surface (docs/SESSION-SERVICES.md): one unix
@@ -43,6 +54,19 @@ export interface SessionSocketApi {
   ) => Effect.Effect<unknown>;
   readonly stopService: (processId: string) => Effect.Effect<unknown>;
   readonly restartService: (processId: string) => Effect.Effect<unknown>;
+  /**
+   * Resolve a workspace git transport request (docs/GIT-ACCESS.md): the
+   * engine turns session → project → auth mode into the ssh argv the host
+   * spawns, and records the op. Refusal (not a git command, unknown session)
+   * reaches the shim as a readable message.
+   */
+  readonly gitTransport: (request: GitTransportRequest) => Effect.Effect<GitTransportPlan>;
+  /** Close the recorded op: exit code, plus push ref updates when sniffed. */
+  readonly gitTransportDone: (
+    opId: string,
+    exitCode: number | null,
+    refUpdates: ReadonlyArray<string> | null,
+  ) => Effect.Effect<void>;
 }
 
 export class SessionSocketHost extends Context.Service<
@@ -219,6 +243,99 @@ const readBody = (request: http.IncomingMessage): Promise<unknown> =>
 const asRecord = (value: unknown): Record<string, unknown> =>
   typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
 
+/**
+ * The CONNECT tunnel: one workspace git op end to end. Resolve the plan
+ * through the engine (refusals become a readable HTTP error the shim
+ * prints), spawn ssh on the host, then pump frames — client bytes to ssh
+ * stdin, ssh stdout/stderr back as frames, exit code last, and for pushes
+ * sniff the opening pkt-lines so the op log can name the refs.
+ */
+const handleGitConnect = async (
+  api: SessionSocketApi,
+  request: http.IncomingMessage,
+  socket: net.Socket,
+  head: Buffer,
+): Promise<void> => {
+  // A CONNECT response has no body by spec (node's client won't surface one),
+  // so the readable reason travels as a header the shim prints.
+  const refuse = (status: string, message: string): void => {
+    const reason = message.replace(/[\r\n]+/g, " · ").slice(0, 900);
+    socket.write(`HTTP/1.1 ${status}\r\nx-mend-refusal: ${reason}\r\nconnection: close\r\n\r\n`);
+    socket.end();
+  };
+  if ((request.url ?? "") !== "/git/transport") {
+    return refuse("404 Not Found", "unknown tunnel target");
+  }
+  const header = (name: string): string => {
+    const value = request.headers[name];
+    return typeof value === "string" ? value : "";
+  };
+  const host = header("x-mend-git-host");
+  const command = header("x-mend-git-command");
+  const protocol = header("x-mend-git-protocol");
+  const portRaw = header("x-mend-git-port");
+  const port = portRaw === "" ? null : Number(portRaw);
+  if (host === "" || command === "" || (port !== null && !Number.isInteger(port))) {
+    return refuse("400 Bad Request", "the git transport request is missing its target");
+  }
+  let plan: GitTransportPlan;
+  try {
+    plan = await Effect.runPromise(api.gitTransport({ host, port, command }));
+  } catch (error) {
+    return refuse(
+      "422 Unprocessable Entity",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+  const [executable, ...argv] = plan.argv;
+  const child = spawn(executable ?? "ssh", argv, {
+    env: { ...process.env, ...(protocol === "" ? {} : { GIT_PROTOCOL: protocol }) },
+  });
+  const sniffer = plan.kind === "push" ? makePushSniffer() : null;
+  let closed = false;
+  child.stdout.on("data", (chunk: Buffer) => socket.write(frame("o", chunk)));
+  child.stderr.on("data", (chunk: Buffer) => socket.write(frame("e", chunk)));
+  child.on("error", (error) => {
+    if (closed) return;
+    closed = true;
+    socket.write(
+      frame("e", Buffer.from(`mend: could not run ssh on the host: ${error.message}\n`)),
+    );
+    socket.write(frame("x", Buffer.from([255])));
+    socket.end();
+  });
+  child.on("close", (code) => {
+    if (!closed) {
+      closed = true;
+      socket.write(
+        frame("x", Buffer.from([code === null ? 255 : Math.min(Math.max(code, 0), 255)])),
+      );
+      socket.end();
+    }
+    void Effect.runPromise(
+      api.gitTransportDone(plan.opId, code, sniffer === null ? null : sniffer.updates()),
+    ).catch(() => {});
+  });
+  const feed = makeFrameFeed((type, payload) => {
+    if (type === "i") {
+      sniffer?.feed(payload);
+      child.stdin.write(payload);
+    } else if (type === "q") {
+      child.stdin.end();
+    }
+  });
+  if (head.length > 0) feed(head);
+  socket.on("data", feed);
+  const reap = (): void => {
+    child.kill();
+  };
+  socket.on("close", reap);
+  socket.on("error", reap);
+  // A dying client must not crash the host on a mid-pump write (EPIPE).
+  child.stdin.on("error", () => {});
+};
+
 export const SessionSocketHostLive: Layer.Layer<SessionSocketHost> = Layer.effect(
   SessionSocketHost,
   Effect.gen(function* () {
@@ -296,14 +413,31 @@ export const SessionSocketHostLive: Layer.Layer<SessionSocketHost> = Layer.effec
       sessionId: SessionId,
       api: SessionSocketApi,
     ) {
-      yield* Effect.sync(() => stopSync(sessionId)); // idempotent re-bind
+      // Idempotent re-bind, IN PLACE: a live workspace bind-mounts this
+      // directory, and a bind mount follows the inode — rm -rf + mkdir here
+      // would leave every running container staring at a dangling, empty
+      // /run/mend after a Mend restart (observed live: the helper and the git
+      // shim vanished from the workspace). Close the old server, unlink only
+      // the socket file, rewrite the scripts; the directory survives.
+      const entry = active.get(sessionId);
+      if (entry !== undefined) {
+        active.delete(sessionId);
+        entry.server.close();
+      }
       const dir = path.join(runRoot(), sessionId);
       const socketPath = path.join(dir, "mend.sock");
       yield* Effect.promise(async () => {
         fs.mkdirSync(path.join(dir, "bin"), { recursive: true });
+        fs.rmSync(socketPath, { force: true });
         fs.writeFileSync(path.join(dir, "bin", "mend"), HELPER_SCRIPT, { mode: 0o755 });
+        fs.writeFileSync(path.join(dir, "bin", "mend-git-ssh"), GIT_SSH_SHIM_SCRIPT, {
+          mode: 0o755,
+        });
         const server = http.createServer((request, response) => {
           void handle(api, request, response);
+        });
+        server.on("connect", (request, socket, head) => {
+          void handleGitConnect(api, request, socket as net.Socket, head);
         });
         await new Promise<void>((resolve, reject) => {
           server.once("error", reject);

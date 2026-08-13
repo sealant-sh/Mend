@@ -621,6 +621,33 @@ const projectGitAuth = Effect.gen(function* () {
       ADD COLUMN git_auth_mode text NOT NULL DEFAULT 'ambient'`;
 });
 
+/**
+ * The workspace git transport log (docs/GIT-ACCESS.md): one row per remote
+ * op the shim routed through the host — who fetched/pushed what, where, as
+ * which identity, and how it ended. The host holds the credential, so the
+ * host owns the record.
+ */
+const sessionGitOps = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE session_git_ops (
+      id text PRIMARY KEY,
+      session_id text NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      project_id text NOT NULL,
+      host text NOT NULL,
+      port integer,
+      kind text NOT NULL,
+      command text NOT NULL,
+      auth_mode text NOT NULL,
+      ref_updates jsonb,
+      exit_code integer,
+      started_at timestamptz NOT NULL DEFAULT now(),
+      finished_at timestamptz
+    )`;
+  yield* sql`
+    CREATE INDEX session_git_ops_session_idx ON session_git_ops (session_id, started_at)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -644,4 +671,5 @@ export const migrations = {
   "0019_project_service_recipes": projectServiceRecipes,
   "0020_service_protocol": serviceProtocol,
   "0021_project_git_auth": projectGitAuth,
+  "0022_session_git_ops": sessionGitOps,
 };
