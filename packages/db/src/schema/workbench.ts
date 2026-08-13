@@ -30,6 +30,7 @@ import {
   type RunStatus,
   type SealantRunId,
   type SealantWorkspaceId,
+  type SessionGitOpId,
   type SessionId,
   type SessionProcessId,
   type Sha,
@@ -40,6 +41,7 @@ import type {
   ContextItem,
   FollowUpStatus,
   GitAuthMode,
+  GitTransportKind,
   CommentAuthor,
   CommentKind,
   CommentState,
@@ -399,6 +401,35 @@ export const sessionProcesses = pgTable(
       .on(table.sealantWorkspaceId)
       .where(sql`${table.exitedAt} IS NULL`),
   ],
+);
+
+/**
+ * Every remote git operation a workspace routed through the transport shim
+ * (docs/GIT-ACCESS.md): the host opened the authenticated connection, so the
+ * host records it. `refUpdates` carries the push's ref commands when the
+ * pack stream offered them cheaply; a null exit code is an op still running
+ * (or one whose end was lost to a restart).
+ */
+export const sessionGitOps = pgTable(
+  "session_git_ops",
+  {
+    id: text().$type<SessionGitOpId>().primaryKey(),
+    sessionId: text()
+      .$type<SessionId>()
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: "cascade" }),
+    projectId: text().$type<ProjectId>().notNull(),
+    host: text().notNull(),
+    port: integer(),
+    kind: text().$type<GitTransportKind>().notNull(),
+    command: text().notNull(),
+    authMode: text().$type<GitAuthMode>().notNull(),
+    refUpdates: jsonb().$type<ReadonlyArray<string>>(),
+    exitCode: integer(),
+    startedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp({ mode: "date", withTimezone: true }),
+  },
+  (table) => [index("session_git_ops_session_idx").on(table.sessionId, table.startedAt)],
 );
 
 export const projectServiceRecipes = pgTable(

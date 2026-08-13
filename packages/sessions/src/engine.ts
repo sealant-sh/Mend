@@ -8,6 +8,7 @@ import {
   ProjectsRepo,
   ReferencesRepo,
   SessionChangesRepo,
+  SessionGitOpsRepo,
   SessionNotFoundError,
   ProjectServiceRecipesRepo,
   SessionProcessesRepo,
@@ -18,6 +19,7 @@ import {
 import {
   SealantRunId,
   SealantWorkspaceId,
+  SessionGitOpId,
   SessionId,
   SessionProcessId,
   type ProjectId,
@@ -31,12 +33,20 @@ import type {
 } from "@mend/domain/workbench";
 import { SessionExtraMount, SessionReferenceMount } from "@mend/domain/workbench";
 import { SealantClient, SealantPlatformError } from "@mend/sealant";
-import { GitError, Store, sessionStatePathOf, worktreePathOf } from "@mend/store";
+import {
+  GitError,
+  MendKeys,
+  Store,
+  sessionStatePathOf,
+  sshTransportArgs,
+  worktreePathOf,
+} from "@mend/store";
 import type { Harness, Run as SdkRun, Workspace, WorkspaceCredentialsOptions } from "@sealant/sdk";
 import { claudeCode, codex, opencode } from "@sealant/sdk";
 import { Duration, Effect, Layer, Schedule, Schema, Stream } from "effect";
 import * as Context from "effect/Context";
 
+import { parseGitRemoteCommand } from "./git-transport.ts";
 import {
   HARNESS_STATE,
   HarnessStateCommandError,
@@ -377,6 +387,8 @@ export class SessionEngine extends Context.Service<
       const projectRecipes = yield* ProjectServiceRecipesRepo;
       const settingsRepo = yield* SettingsRepo;
       const store = yield* Store;
+      const gitOps = yield* SessionGitOpsRepo;
+      const mendKeys = yield* MendKeys;
       const scope = yield* Effect.scope;
 
       /** The session's worktree path, derived — never stored twice. */
@@ -1252,11 +1264,17 @@ export class SessionEngine extends Context.Service<
           );
         }
         // The helper reaches everyone through PATH, not prompt engineering.
+        // Git's ssh becomes the transport shim the same way: system config, so
+        // every process in the workspace — agent, shell, service — pushes and
+        // fetches through the host with zero credentials in the container.
+        // ssh.variant=ssh keeps ports and protocol v2 working through it.
         yield* sealant
           .exec(workspace, [
             "sh",
             "-c",
-            `ln -sf ${SESSION_SOCKET_MOUNT_PATH}/bin/mend /usr/local/bin/mend`,
+            `ln -sf ${SESSION_SOCKET_MOUNT_PATH}/bin/mend /usr/local/bin/mend; ` +
+              `git config --system core.sshCommand ${SESSION_SOCKET_MOUNT_PATH}/bin/mend-git-ssh; ` +
+              `git config --system ssh.variant ssh`,
           ])
           .pipe(Effect.ignore);
         {
@@ -1929,6 +1947,79 @@ ${tail}`),
             Effect.mapError((error) => new Error(String(error.message))),
             Effect.orDie,
           ),
+        // The credential seam (docs/GIT-ACCESS.md): session → project → auth
+        // mode, resolved per request so a mode change applies to the next op
+        // without touching the workspace. The op is recorded before the
+        // connection opens — a transport that dies mid-pump still has a row.
+        gitTransport: ({ host, port, command }) =>
+          Effect.gen(function* () {
+            const session = yield* sessions.byId(sessionId);
+            const project = yield* projects.byId(session.projectId);
+            const parsed = parseGitRemoteCommand(command);
+            if (parsed === null) {
+              return yield* Effect.fail(
+                new Error(
+                  "this socket carries git transport only (git-upload-pack, git-receive-pack, git-upload-archive)",
+                ),
+              );
+            }
+            if (host.startsWith("-")) {
+              return yield* Effect.fail(
+                new Error(`refusing ssh target "${host}" — it reads as an option`),
+              );
+            }
+            const mode = project.gitAuthMode;
+            const keyPath =
+              mode === "mend-key"
+                ? (yield* mendKeys
+                    .ensure()
+                    .pipe(
+                      Effect.mapError(
+                        (error) => new Error(`could not create the Mend key: ${error.stderr}`),
+                      ),
+                    )).privateKeyPath
+                : null;
+            const op = yield* gitOps.record({
+              sessionId,
+              projectId: project.id,
+              host,
+              port,
+              kind: parsed.kind,
+              command,
+              authMode: mode,
+            });
+            yield* Effect.logInfo("session git transport").pipe(
+              Effect.annotateLogs({
+                sessionId,
+                project: project.name,
+                host,
+                kind: parsed.kind,
+                command,
+                authMode: mode,
+                opId: op.id,
+              }),
+            );
+            return {
+              opId: op.id,
+              kind: parsed.kind,
+              argv: ["ssh", ...sshTransportArgs(mode, keyPath, port), "--", host, command],
+            };
+          }).pipe(
+            Effect.mapError((error) => new Error(String(error.message))),
+            Effect.orDie,
+          ),
+        gitTransportDone: (opId, exitCode, refUpdates) =>
+          Effect.gen(function* () {
+            yield* gitOps.finish(SessionGitOpId.make(opId), exitCode, refUpdates);
+            yield* Effect.logInfo("session git transport closed").pipe(
+              Effect.annotateLogs({
+                sessionId,
+                opId,
+                exitCode,
+                refUpdates: refUpdates === null ? undefined : refUpdates.join(", "),
+              }),
+            );
+          }).pipe(Effect.ignore),
       });
 
       const stopService = Effect.fn("SessionEngine.stopService")(function* (

@@ -24,6 +24,9 @@ export const resolveAutomation = (choice: AutomationChoice, settingsDefault: boo
 export const GitAuthMode = Schema.Literals(["ambient", "mend-key"]);
 export type GitAuthMode = typeof GitAuthMode.Type;
 
+/** What a workspace git transport op is doing, named by its remote command. */
+export type GitTransportKind = "fetch" | "push" | "archive";
+
 /**
  * A repository adopted into Mend's central store on this machine (plan §5.2).
  * Adoption clones the repository into the store; the store copy is canonical
