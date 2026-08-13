@@ -6,6 +6,7 @@ import {
   CheckpointsRepo,
   FollowUpsRepo,
   ProjectMountsRepo,
+  ProjectServiceRecipesRepo,
   ProjectsRepo,
   ReferencesRepo,
   ReviewCommentsRepo,
@@ -18,7 +19,7 @@ import { MendSettings, workspaceImagesEqual } from "@mend/domain";
 import { FollowUp } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
 import { SealantClient } from "@mend/sealant";
-import { SessionEngine, readServiceRecipes } from "@mend/sessions";
+import { RECIPE_NAME, SessionEngine, mergeRecipes, readServiceRecipes } from "@mend/sessions";
 import { Store, worktreePathOf } from "@mend/store";
 import { Effect, Stream } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
@@ -284,6 +285,62 @@ export const ProjectMountsGroupLive = HttpApiBuilder.group(MendApi, "projectMoun
     ),
 );
 
+export const ProjectRecipesGroupLive = HttpApiBuilder.group(MendApi, "projectRecipes", (handlers) =>
+  handlers
+    .handle("list", ({ params }) =>
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        const recipes = yield* ProjectServiceRecipesRepo;
+        yield* projects
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        return yield* recipes.listForProject(params.id);
+      }),
+    )
+    .handle("add", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        const recipes = yield* ProjectServiceRecipesRepo;
+        yield* projects
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        if (!RECIPE_NAME.test(payload.name)) {
+          return yield* new StoreFailure({
+            message: `"${payload.name}" is not a usable Service name (lowercase letters, digits, ".", "_", "-").`,
+          });
+        }
+        if (payload.port < 1 || payload.port > 65535) {
+          return yield* new StoreFailure({ message: `Port out of range: ${payload.port}` });
+        }
+        const command = payload.command?.trim();
+        return yield* recipes
+          .create({
+            projectId: params.id,
+            name: payload.name,
+            command: command === undefined || command === "" ? null : command,
+            port: payload.port,
+          })
+          .pipe(
+            Effect.catchTag("RecipeNameTakenError", () =>
+              Effect.fail(
+                new StoreFailure({ message: `Already declared on this project: ${payload.name}` }),
+              ),
+            ),
+          );
+      }),
+    )
+    .handle("remove", ({ params }) =>
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        const recipes = yield* ProjectServiceRecipesRepo;
+        yield* projects
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        yield* recipes.remove(params.id, params.name);
+      }),
+    ),
+);
+
 export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (handlers) =>
   handlers
     .handle("list", () =>
@@ -487,11 +544,15 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           .byId(session.projectId)
           .pipe(Effect.mapError(() => new NotFound({ id: session.projectId })));
         // The session's own worktree copy wins — an agent's edit counts.
-        return yield* readServiceRecipes(worktreePathOf(project.storePath, session.worktree)).pipe(
+        const fromFile = yield* readServiceRecipes(
+          worktreePathOf(project.storePath, session.worktree),
+        ).pipe(
           Effect.catchTag("RecipeFileError", (error) =>
             Effect.fail(new StoreFailure({ message: error.message })),
           ),
         );
+        const recipes = yield* ProjectServiceRecipesRepo;
+        return mergeRecipes(fromFile, yield* recipes.listForProject(session.projectId));
       }),
     )
     .handle("listServices", ({ query }) =>

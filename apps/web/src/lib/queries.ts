@@ -15,6 +15,7 @@ import {
   pendingFollowUp,
   projectDetail,
   projectMounts,
+  projectRecipes,
   projectReferences,
   sessionDetail,
   sessionTranscript,
@@ -61,6 +62,12 @@ export const projectMountsQuery = (id: string) =>
   queryOptions({
     queryKey: ["project", id, "mounts"],
     queryFn: () => projectMounts(id),
+  });
+
+export const projectRecipesQuery = (id: string) =>
+  queryOptions({
+    queryKey: ["project", id, "service-recipes"],
+    queryFn: () => projectRecipes(id),
   });
 
 export const activeSessionsQuery = queryOptions({

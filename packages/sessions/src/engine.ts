@@ -9,6 +9,7 @@ import {
   ReferencesRepo,
   SessionChangesRepo,
   SessionNotFoundError,
+  ProjectServiceRecipesRepo,
   SessionProcessesRepo,
   SessionRunsRepo,
   SessionsRepo,
@@ -53,7 +54,7 @@ import {
   ingestNativeSession,
   type ConvertedNativeSession,
 } from "./native-convert.ts";
-import { readServiceRecipes } from "./recipes.ts";
+import { mergeRecipes, readServiceRecipes } from "./recipes.ts";
 import { ServiceBindError, ServiceHost } from "./service-host.ts";
 import {
   SESSION_SOCKET_MOUNT_PATH,
@@ -371,6 +372,7 @@ export class SessionEngine extends Context.Service<
       const checkpoints = yield* CheckpointsRepo;
       const references = yield* ReferencesRepo;
       const projectMounts = yield* ProjectMountsRepo;
+      const projectRecipes = yield* ProjectServiceRecipesRepo;
       const settingsRepo = yield* SettingsRepo;
       const store = yield* Store;
       const scope = yield* Effect.scope;
@@ -1281,13 +1283,14 @@ export class SessionEngine extends Context.Service<
                   )
                   .join("\n") +
                 `\n\n`;
-          const declaredRecipes = yield* readServiceRecipes(worktree).pipe(
-            Effect.orElseSucceed(() => []),
+          const declaredRecipes = mergeRecipes(
+            yield* readServiceRecipes(worktree).pipe(Effect.orElseSucceed(() => [])),
+            yield* projectRecipes.listForProject(project.id).pipe(Effect.orElseSucceed(() => [])),
           );
           const recipesLine =
             declaredRecipes.length === 0
               ? ""
-              : `Declared Services (mend.toml): ` +
+              : `Declared Services (mend.toml + project): ` +
                 declaredRecipes.map((recipe) => recipe.name).join(", ") +
                 ` — start one with \`mend service run <name>\`.\n\n`;
           const servicesSection =
@@ -1836,7 +1839,10 @@ export class SessionEngine extends Context.Service<
           Effect.gen(function* () {
             const session = yield* sessions.byId(sessionId);
             const project = yield* projects.byId(session.projectId);
-            return yield* readServiceRecipes(worktreePathOf(project.storePath, session.worktree));
+            const fromFile = yield* readServiceRecipes(
+              worktreePathOf(project.storePath, session.worktree),
+            );
+            return mergeRecipes(fromFile, yield* projectRecipes.listForProject(session.projectId));
           }).pipe(
             Effect.mapError((error) => new Error(String(error.message))),
             Effect.orDie,

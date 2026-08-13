@@ -13,6 +13,7 @@ export * from "./repos/follow-ups.ts";
 export * from "./repos/inference-calls.ts";
 export * from "./repos/issues.ts";
 export * from "./repos/project-mounts.ts";
+export * from "./repos/project-service-recipes.ts";
 export * from "./repos/projects.ts";
 export * from "./repos/push-devices.ts";
 export * from "./repos/references.ts";

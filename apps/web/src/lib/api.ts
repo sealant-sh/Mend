@@ -718,7 +718,42 @@ export interface ServiceRecipeDto {
   readonly name: string;
   readonly command: string | null;
   readonly port: number;
+  /** "file" = the repo's mend.toml (read-only here); "project" = declared on this machine. */
+  readonly source: "file" | "project";
 }
+
+export const projectRecipes = (projectId: string) =>
+  request<ReadonlyArray<ServiceRecipeDto>>(`/api/projects/${projectId}/service-recipes`);
+
+/** Declaring can be refused for readable reasons (name taken, bad port) — surface them. */
+export const addProjectRecipe = async (
+  projectId: string,
+  input: { readonly name: string; readonly command: string | null; readonly port: number },
+): Promise<ServiceRecipeDto> => {
+  const response = await fetch(`/api/projects/${projectId}/service-recipes`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (response.status === 401) throw redirect({ to: "/login" });
+  if (!response.ok) {
+    const body: { readonly message?: string } = await response.json().catch(() => ({}));
+    throw new Error(body.message ?? `declare failed (${response.status})`);
+  }
+  const body: ServiceRecipeDto = await response.json();
+  return body;
+};
+
+/** 204 on success — no body to parse. */
+export const removeProjectRecipe = async (projectId: string, name: string): Promise<void> => {
+  const response = await fetch(
+    `/api/projects/${projectId}/service-recipes/${encodeURIComponent(name)}`,
+    { method: "DELETE", credentials: "include" },
+  );
+  if (response.status === 401) throw redirect({ to: "/login" });
+  if (!response.ok) throw new Error(`DELETE recipe ${name} responded ${response.status}`);
+};
 
 export const listSessionProcesses = (id: string) =>
   request<ReadonlyArray<SessionProcessDto>>(`/api/sessions/${id}/processes`);

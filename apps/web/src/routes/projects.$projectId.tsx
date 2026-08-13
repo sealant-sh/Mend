@@ -7,10 +7,12 @@ import { AppShell } from "#/components/shell";
 import { SessionStatusDot } from "#/components/status";
 import {
   addProjectMount,
+  addProjectRecipe,
   addReference,
   refreshReference,
   removeProject,
   removeProjectMount,
+  removeProjectRecipe,
   removeReference,
   removeSession,
   selectProjectReferences,
@@ -21,6 +23,7 @@ import {
 import {
   projectDetailQuery,
   projectMountsQuery,
+  projectRecipesQuery,
   projectReferencesQuery,
   queryClient,
   referencesQuery,
@@ -36,6 +39,7 @@ export const Route = createFileRoute("/projects/$projectId")({
       queryClient.ensureQueryData(referencesQuery),
       queryClient.ensureQueryData(projectReferencesQuery(params.projectId)),
       queryClient.ensureQueryData(projectMountsQuery(params.projectId)),
+      queryClient.ensureQueryData(projectRecipesQuery(params.projectId)),
     ]);
   },
   component: ProjectPage,
@@ -186,6 +190,7 @@ function ProjectPage() {
           <aside className="flex flex-col gap-10 lg:border-l lg:border-rule lg:pl-8">
             <ReferencesSection projectId={projectId} />
             <MountsSection projectId={projectId} />
+            <ServicesSection projectId={projectId} />
             <ReviewAutomationSection project={project} />
             <RemoveProjectSection projectId={projectId} />
           </aside>
@@ -458,6 +463,146 @@ function MountsSection({ projectId }: { readonly projectId: string }) {
             className={`w-full px-4 py-2.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground ${mounts.length === 0 ? "" : "border-t border-rule-faint"}`}
           >
             + add folder…
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Declared Services (docs/SESSION-SERVICES.md): the project's recipes on this
+ * machine — the web-editable twin of mend.toml. Sessions offer the union of
+ * both as one-tap launchers; on a name collision the file wins.
+ */
+function ServicesSection({ projectId }: { readonly projectId: string }) {
+  const recipes = useSuspenseQuery(projectRecipesQuery(projectId)).data;
+  const [busy, setBusy] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+
+  const invalidate = () =>
+    queryClient.invalidateQueries({ queryKey: ["project", projectId, "service-recipes"] });
+
+  const remove = (name: string) => {
+    setBusy(name);
+    void removeProjectRecipe(projectId, name)
+      .then(invalidate)
+      .finally(() => setBusy(null));
+  };
+
+  const add = (form: HTMLFormElement) => {
+    const data = new FormData(form);
+    const name = String(data.get("name") ?? "").trim();
+    const command = String(data.get("command") ?? "").trim();
+    const port = Number(String(data.get("port") ?? "").trim());
+    if (name === "" || !Number.isInteger(port)) return;
+    setBusy("add");
+    setAddError(null);
+    void addProjectRecipe(projectId, { name, command: command === "" ? null : command, port })
+      .then(async () => {
+        await invalidate();
+        form.reset();
+        setAdding(false);
+        return null;
+      })
+      .catch((error: unknown) => {
+        setAddError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => setBusy(null));
+  };
+
+  return (
+    <section>
+      <p className="border-b border-rule pb-2 text-xs font-medium text-label">Services</p>
+      <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
+        Commands sessions can run and expose — a dev server, a database. Every session offers these
+        one tap away, beside whatever <span className="font-mono text-[11px]">mend.toml</span>{" "}
+        declares in the repo. Leave the command empty to adopt an already-listening port.
+      </p>
+      <div className="mt-3 overflow-hidden rounded-2xl border border-rule bg-card shadow-xs">
+        {recipes.map((recipe, index) => (
+          <div
+            key={recipe.name}
+            className={`px-4 py-3 ${index === 0 ? "" : "border-t border-rule-faint"}`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <p className="truncate font-sans text-[13px] font-medium text-foreground">
+                {recipe.name}
+              </p>
+              <button
+                type="button"
+                disabled={busy !== null}
+                onClick={() => remove(recipe.name)}
+                className="shrink-0 text-xs text-muted-foreground transition-colors hover:text-danger disabled:opacity-50"
+              >
+                {busy === recipe.name ? "working…" : "remove"}
+              </button>
+            </div>
+            <p className="mt-1 truncate font-mono text-[11px] text-faint">
+              {recipe.command ?? "adopt"} · :{recipe.port}
+            </p>
+          </div>
+        ))}
+        {adding ? (
+          <form
+            className={`flex flex-col gap-2 px-4 py-3 ${recipes.length === 0 ? "" : "border-t border-rule-faint"}`}
+            onSubmit={(event) => {
+              event.preventDefault();
+              add(event.currentTarget);
+            }}
+          >
+            <input
+              name="name"
+              autoFocus
+              placeholder="name (web)"
+              className="w-full rounded-lg border border-input bg-background px-2.5 py-1.5 font-mono text-xs text-foreground placeholder:text-faint"
+            />
+            <input
+              name="command"
+              placeholder="pnpm dev (empty = adopt a listening port)"
+              className="w-full rounded-lg border border-input bg-background px-2.5 py-1.5 font-mono text-xs text-foreground placeholder:text-faint"
+            />
+            <div className="flex items-center justify-between gap-2">
+              <input
+                name="port"
+                inputMode="numeric"
+                placeholder="port (3000)"
+                className="w-28 rounded-lg border border-input bg-background px-2.5 py-1.5 font-mono text-xs text-foreground placeholder:text-faint"
+              />
+              <div className="flex items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAdding(false);
+                    setAddError(null);
+                  }}
+                  className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={busy !== null}
+                  className="rounded-xl border border-border bg-card px-3 py-1.5 font-mono text-xs text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-50"
+                >
+                  {busy === "add" ? "declaring…" : "declare service"}
+                </button>
+              </div>
+            </div>
+            {addError === null ? null : (
+              <p className="border-l-2 border-[var(--sw-red)] pl-2 text-xs text-danger">
+                {addError}
+              </p>
+            )}
+          </form>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setAdding(true)}
+            className={`w-full px-4 py-2.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground ${recipes.length === 0 ? "" : "border-t border-rule-faint"}`}
+          >
+            + declare service…
           </button>
         )}
       </div>
