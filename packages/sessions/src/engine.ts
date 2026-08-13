@@ -134,6 +134,33 @@ const withPermissionDefaults = (
  */
 const runIsGone = (error: SealantPlatformError) => error.status === 404 || error.status === 410;
 
+/** A dead command's last words — the PTY record replays after settle. Bounded, best-effort. */
+const ptyOutputTail = (pty: {
+  output: (options?: { readonly signal?: AbortSignal }) => AsyncIterable<{
+    readonly data: string | Uint8Array;
+  }>;
+}): Effect.Effect<string> =>
+  Effect.tryPromise({
+    try: async () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 3000);
+      let text = "";
+      try {
+        for await (const chunk of pty.output({ signal: controller.signal })) {
+          text +=
+            typeof chunk.data === "string" ? chunk.data : new TextDecoder().decode(chunk.data);
+          if (text.length > 4000) {
+            text = text.slice(-4000);
+          }
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+      return text.slice(-1500).trim();
+    },
+    catch: () => new Error("output unavailable"),
+  }).pipe(Effect.orElseSucceed(() => ""));
+
 /** How long `mend service run` waits for the declared port before reporting unreachable. */
 const SERVICE_START_TIMEOUT_MS = 60_000;
 
@@ -1604,35 +1631,6 @@ export class SessionEngine extends Context.Service<
        * failure it is. A slow starter that outlives the wait is not an
        * error: it surfaces as `unreachable` until it listens.
        */
-      /** The dead command's last words — the record replays after settle. */
-      const ptyOutputTail = (pty: {
-        output: (options?: { readonly signal?: AbortSignal }) => AsyncIterable<{
-          readonly data: string | Uint8Array;
-        }>;
-      }) =>
-        Effect.tryPromise({
-          try: async () => {
-            const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), 3000);
-            let text = "";
-            try {
-              for await (const chunk of pty.output({ signal: controller.signal })) {
-                text +=
-                  typeof chunk.data === "string"
-                    ? chunk.data
-                    : new TextDecoder().decode(chunk.data);
-                if (text.length > 4000) {
-                  text = text.slice(-4000);
-                }
-              }
-            } finally {
-              clearTimeout(timer);
-            }
-            return text.slice(-1500).trim();
-          },
-          catch: () => new Error("output unavailable"),
-        }).pipe(Effect.orElseSucceed(() => ""));
-
       const awaitServicePort = (
         pty: {
           status: () => Promise<{ status: string; exitCode?: number }>;
