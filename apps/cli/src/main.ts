@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { proposeFromCompose, proposeFromPackageJson, renderMendToml } from "./service-init.ts";
 import {
   CONTINUE_COMMANDS,
   gitTopLevel,
@@ -827,6 +828,65 @@ const serviceRestart = async (config: CliConfig, args: ReadonlyArray<string>) =>
   say(`  ${cobalt(serviceUrl(config, restarted))}`);
 };
 
+/**
+ * Scaffold mend.toml from the project's own manifests. Static suggestion,
+ * not detection: package.json scripts and compose port mappings become
+ * recipe proposals the user confirms and commits. Nothing runs.
+ */
+const serviceInit = async (args: ReadonlyArray<string>) => {
+  const root = gitTopLevel(process.cwd()) ?? process.cwd();
+  const target = path.join(root, "mend.toml");
+  if (fs.existsSync(target)) {
+    return fail(`${target} already exists — edit it directly (init never merges)`);
+  }
+  const rootFiles = fs.readdirSync(root);
+  const proposals = [];
+  if (rootFiles.includes("package.json")) {
+    proposals.push(
+      ...proposeFromPackageJson(
+        fs.readFileSync(path.join(root, "package.json"), "utf8"),
+        rootFiles,
+      ),
+    );
+  }
+  for (const composeName of [
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "compose.yml",
+    "compose.yaml",
+  ]) {
+    if (rootFiles.includes(composeName)) {
+      proposals.push(...proposeFromCompose(fs.readFileSync(path.join(root, composeName), "utf8")));
+      break;
+    }
+  }
+  if (proposals.length === 0) {
+    return fail(
+      "nothing to propose — no server-ish package.json script with a nameable port, no compose ports",
+    );
+  }
+  const toml = renderMendToml(proposals);
+  say(dim(`proposed ${target}:`));
+  say("");
+  process.stdout.write(toml);
+  say("");
+  if (!args.includes("--yes")) {
+    if (process.stdin.isTTY !== true) {
+      return fail("non-interactive — pass --yes to write the file");
+    }
+    const readline = await import("node:readline/promises");
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await rl.question("write it? [y/N] ");
+    rl.close();
+    if (answer.trim().toLowerCase() !== "y") {
+      say(dim("nothing written"));
+      return;
+    }
+  }
+  fs.writeFileSync(target, toml);
+  say(`${green("✓")} wrote ${target} — commit it, then: mend service run ${proposals[0]?.name}`);
+};
+
 const serviceCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const [verb, ...rest] = args;
   switch (verb) {
@@ -834,6 +894,8 @@ const serviceCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
       return serviceRun(config, rest);
     case "add":
       return serviceAdd(config, rest);
+    case "init":
+      return serviceInit(rest);
     case "list":
     case undefined:
       return serviceList(config);
@@ -1467,6 +1529,7 @@ const HELP = `mend — the agent workbench
                                         start + supervise a server in the session workspace
   mend service run [session] <name>     start a declared Service (mend.toml recipe)
   mend service <name>                   shorthand for the above
+  mend service init [--yes]             scaffold mend.toml from package.json + compose ports
   mend service add [session] <port> [--name <n>]
                                         adopt a listening workspace port — reachable on this machine
   mend service list                     every live service and its observed state
