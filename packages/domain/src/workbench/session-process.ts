@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 
-import { SealantWorkspaceId, SessionId, SessionProcessId } from "../ids.ts";
+import { SealantRunId, SealantWorkspaceId, SessionId, SessionProcessId } from "../ids.ts";
 
 /**
  * What kind of work a workspace process is doing. The agent is one process in
@@ -38,6 +38,8 @@ export class SessionProcess extends Schema.Class<SessionProcess>("SessionProcess
   sealantWorkspaceId: SealantWorkspaceId,
   /** The platform interactive-session id — the attach handle. Null for adopted Services (no process of ours). */
   sealantSessionId: Schema.NullOr(Schema.String),
+  /** The run recording this process — its record outlives the process AND the workspace. */
+  sealantRunId: Schema.NullOr(SealantRunId),
   kind: SessionProcessKind,
   /** Human name for pickers and lists ("claude", "shell", "web"). */
   label: Schema.NullOr(Schema.String),

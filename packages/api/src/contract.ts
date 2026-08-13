@@ -624,8 +624,19 @@ const sessionsGroup = HttpApiGroup.make("sessions")
   )
   .add(
     // What is running right now, across every session — one list, any device.
+    // ?all=1 includes recently ended Services (post-mortem logs address them).
     HttpApiEndpoint.get("listServices", "/services", {
+      query: { all: Schema.optional(Schema.String) },
       success: Schema.Array(SessionProcess),
+    }),
+  )
+  .add(
+    // A process's recorded output — the record outlives the process AND the
+    // workspace, so a dead Service's logs stay readable.
+    HttpApiEndpoint.get("processOutput", "/processes/:id/output", {
+      params: { id: SessionProcessId },
+      success: Schema.Struct({ text: Schema.String }),
+      error: Schema.Union([NotFound, StoreFailure]),
     }),
   )
   .add(

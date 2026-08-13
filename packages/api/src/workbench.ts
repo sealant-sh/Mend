@@ -17,9 +17,10 @@ import {
 import { MendSettings, workspaceImagesEqual } from "@mend/domain";
 import { FollowUp } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
+import { SealantClient } from "@mend/sealant";
 import { SessionEngine, readServiceRecipes } from "@mend/sessions";
 import { Store, worktreePathOf } from "@mend/store";
-import { Effect } from "effect";
+import { Effect, Stream } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import {
@@ -493,11 +494,49 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         );
       }),
     )
-    .handle("listServices", () =>
+    .handle("listServices", ({ query }) =>
       Effect.gen(function* () {
         const processes = yield* SessionProcessesRepo;
+        if (query.all !== undefined) {
+          return yield* processes.listRecentServices();
+        }
         const live = yield* processes.listLive();
         return live.filter((process) => process.kind === "service");
+      }),
+    )
+    .handle("processOutput", ({ params }) =>
+      Effect.gen(function* () {
+        const processes = yield* SessionProcessesRepo;
+        const sealant = yield* SealantClient;
+        const row = yield* processes.byId(params.id);
+        if (row === null) return yield* new NotFound({ id: params.id });
+        if (row.sealantRunId === null) {
+          return yield* new StoreFailure({
+            message: "This process predates run pointers — its record exists but is unaddressed.",
+          });
+        }
+        const run = yield* sealant
+          .getRun(row.sealantRunId)
+          .pipe(Effect.mapError((error) => new StoreFailure({ message: error.message })));
+        // The record's process id: the first timeline entry that carries one.
+        const entries = yield* sealant.recordTimeline(run).pipe(
+          Stream.take(200),
+          Stream.runCollect,
+          Effect.mapError((error) => new StoreFailure({ message: error.message })),
+        );
+        const processId =
+          [...entries].map((entry) => entry.processId).find((id) => id != null) ?? null;
+        if (processId === null) {
+          return yield* new StoreFailure({
+            message: "The record has no process entries to read output from.",
+          });
+        }
+        const bytes = yield* sealant
+          .recordScrollback(run, processId, "pty")
+          .pipe(Effect.mapError((error) => new StoreFailure({ message: error.message })));
+        // Bounded: the tail is the useful part of a big log.
+        const text = new TextDecoder().decode(bytes);
+        return { text: text.length > 200_000 ? text.slice(-200_000) : text };
       }),
     )
     .handle("restartService", ({ params }) =>

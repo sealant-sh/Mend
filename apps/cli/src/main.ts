@@ -764,15 +764,39 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
   say(dim(`  logs: mend service logs ${service.label ?? service.id.slice(0, 8)}`));
 };
 
-/** Watch a supervised Service's output: record replay, then live tail. */
+/**
+ * Watch a supervised Service's output: record replay, then live tail. A DEAD
+ * Service still answers — its record outlives the process — printed once
+ * instead of followed.
+ */
 const serviceLogs = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const needle = args.find((a) => !a.startsWith("--"));
   if (needle === undefined) return fail("usage: mend service logs <name-or-id-prefix>");
-  const service = await findLiveService(config, needle);
+  const everything = await api<ReadonlyArray<ServiceDto>>(config, "GET", "/services?all=1");
+  const matches = everything.filter(
+    (service) => service.label === needle || service.id.startsWith(needle),
+  );
+  if (matches.length === 0) return fail(`no service matches "${needle}"`);
+  // Prefer the live one; otherwise the newest ended one (list is newest-first).
+  const service =
+    matches.find((m) => m.status !== "exited" && m.status !== "stopped") ?? matches[0];
+  if (service === undefined) return fail(`no service matches "${needle}"`);
   if (service.sealantSessionId === null) {
     return fail(
       `"${needle}" is an adopted port — no process of Mend's, no logs. mend service run supervises.`,
     );
+  }
+  if (service.status === "exited" || service.status === "stopped") {
+    // Post-mortem: print the record, don't attach.
+    const output = await api<{ readonly text: string }>(
+      config,
+      "GET",
+      `/processes/${service.id}/output`,
+    );
+    say(dim(`${service.label ?? service.id.slice(0, 8)} · ${service.status} — recorded output:`));
+    say("");
+    process.stdout.write(output.text.endsWith("\n") ? output.text : `${output.text}\n`);
+    process.exit(0);
   }
   say(
     dim(

@@ -1291,6 +1291,7 @@ export class SessionEngine extends Context.Service<
           sessionId,
           sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
           sealantSessionId: pty.id,
+          sealantRunId,
           kind: "agent",
           label: session.harness,
           argv: shapedArgv,
@@ -1566,6 +1567,7 @@ export class SessionEngine extends Context.Service<
           sessionId,
           sealantWorkspaceId: session.sealantWorkspaceId,
           sealantSessionId: pty.id,
+          sealantRunId: SealantRunId.make(pty.runId),
           kind: "shell",
           label: "shell",
           argv: ["bash"],
@@ -1693,6 +1695,7 @@ export class SessionEngine extends Context.Service<
           sessionId,
           sealantWorkspaceId: workspaceId,
           sealantSessionId: pty.id,
+          sealantRunId: SealantRunId.make(pty.runId),
           kind: "service",
           label,
           argv,
@@ -1745,7 +1748,7 @@ export class SessionEngine extends Context.Service<
         }
         const workspace = yield* sealant.getWorkspace(workspaceId);
         const pty = yield* sealant.openSession(workspace, serviceProcess.argv);
-        yield* processes.setSealantSessionId(processId, pty.id);
+        yield* processes.setSealantSessionId(processId, pty.id, SealantRunId.make(pty.runId));
         yield* processes.setStatus(processId, "starting");
         const reachable = yield* awaitServicePort(
           pty,
