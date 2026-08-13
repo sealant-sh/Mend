@@ -25,7 +25,9 @@ const call = (
   body?: unknown,
 ): Promise<{ status: number; json: unknown }> =>
   new Promise((resolve, reject) => {
-    const request = http.request({ socketPath, method, path: route }, (response) => {
+    // agent: false — every call dials fresh, like the in-workspace helper; a
+    // kept-alive connection would EPIPE against a server that was re-bound.
+    const request = http.request({ socketPath, method, path: route, agent: false }, (response) => {
       let text = "";
       response.on("data", (chunk) => (text += String(chunk)));
       response.on("end", () =>
@@ -44,7 +46,7 @@ describe("SessionSocketHost", () => {
         Effect.gen(function* () {
           const host = yield* SessionSocketHost;
           const seen: unknown[] = [];
-          const dir = yield* host.start(SESSION, {
+          const api: SessionSocketApi = {
             recipes: () => Effect.succeed([{ name: "web", command: "pnpm dev", port: 3000 }]),
             listServices: () => Effect.succeed([]),
             runService: (argv, port, name) =>
@@ -57,7 +59,8 @@ describe("SessionSocketHost", () => {
             restartService: () => Effect.die("unused"),
             gitTransport: () => Effect.die("unused"),
             gitTransportDone: () => Effect.void,
-          });
+          };
+          const dir = yield* host.start(SESSION, api);
           const socketPath = path.join(dir, "mend.sock");
 
           const recipes = yield* Effect.promise(() => call(socketPath, "GET", "/recipes"));
@@ -92,6 +95,20 @@ describe("SessionSocketHost", () => {
             ),
           );
           expect(shim).toContain("/git/transport");
+
+          // A restart re-binds IN PLACE: the workspace bind-mounts this
+          // directory by inode, so recreating it would leave every live
+          // container staring at a dangling, empty /run/mend.
+          const inodeBefore = (yield* Effect.promise(() =>
+            import("node:fs/promises").then((fs) => fs.stat(dir)),
+          )).ino;
+          yield* host.start(SESSION, api);
+          const inodeAfter = (yield* Effect.promise(() =>
+            import("node:fs/promises").then((fs) => fs.stat(dir)),
+          )).ino;
+          expect(inodeAfter).toBe(inodeBefore);
+          const rebound = yield* Effect.promise(() => call(socketPath, "GET", "/recipes"));
+          expect(rebound.status).toBe(200);
 
           yield* host.stop(SESSION);
           const refused = yield* Effect.promise(() =>

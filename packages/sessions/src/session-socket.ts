@@ -413,11 +413,22 @@ export const SessionSocketHostLive: Layer.Layer<SessionSocketHost> = Layer.effec
       sessionId: SessionId,
       api: SessionSocketApi,
     ) {
-      yield* Effect.sync(() => stopSync(sessionId)); // idempotent re-bind
+      // Idempotent re-bind, IN PLACE: a live workspace bind-mounts this
+      // directory, and a bind mount follows the inode — rm -rf + mkdir here
+      // would leave every running container staring at a dangling, empty
+      // /run/mend after a Mend restart (observed live: the helper and the git
+      // shim vanished from the workspace). Close the old server, unlink only
+      // the socket file, rewrite the scripts; the directory survives.
+      const entry = active.get(sessionId);
+      if (entry !== undefined) {
+        active.delete(sessionId);
+        entry.server.close();
+      }
       const dir = path.join(runRoot(), sessionId);
       const socketPath = path.join(dir, "mend.sock");
       yield* Effect.promise(async () => {
         fs.mkdirSync(path.join(dir, "bin"), { recursive: true });
+        fs.rmSync(socketPath, { force: true });
         fs.writeFileSync(path.join(dir, "bin", "mend"), HELPER_SCRIPT, { mode: 0o755 });
         fs.writeFileSync(path.join(dir, "bin", "mend-git-ssh"), GIT_SSH_SHIM_SCRIPT, {
           mode: 0o755,
