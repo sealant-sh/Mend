@@ -17,7 +17,7 @@ import {
 import { MendSettings, workspaceImagesEqual } from "@mend/domain";
 import { FollowUp } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
-import { SessionEngine } from "@mend/sessions";
+import { SessionEngine, readServiceRecipes } from "@mend/sessions";
 import { Store, worktreePathOf } from "@mend/store";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
@@ -472,6 +472,24 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             ServiceBindError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
             ServiceStartError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
           }),
+        );
+      }),
+    )
+    .handle("listRecipes", ({ params }) =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        const projects = yield* ProjectsRepo;
+        const session = yield* sessions
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        const project = yield* projects
+          .byId(session.projectId)
+          .pipe(Effect.mapError(() => new NotFound({ id: session.projectId })));
+        // The session's own worktree copy wins — an agent's edit counts.
+        return yield* readServiceRecipes(worktreePathOf(project.storePath, session.worktree)).pipe(
+          Effect.catchTag("RecipeFileError", (error) =>
+            Effect.fail(new StoreFailure({ message: error.message })),
+          ),
         );
       }),
     )

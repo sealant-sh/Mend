@@ -30,6 +30,7 @@ import {
   ProjectMount,
   Reference,
   ReviewComment,
+  ServiceRecipe,
   Session,
   SessionProcess,
 } from "@mend/domain/workbench";
@@ -611,6 +612,14 @@ const sessionsGroup = HttpApiGroup.make("sessions")
       }),
       success: SessionProcess,
       error: Schema.Union([NotFound, SessionNotLive, StoreFailure]),
+    }),
+  )
+  .add(
+    // The worktree's declared Services (mend.toml): recipes, never processes.
+    HttpApiEndpoint.get("listRecipes", "/sessions/:id/recipes", {
+      params: { id: SessionId },
+      success: Schema.Array(ServiceRecipe),
+      error: Schema.Union([NotFound, StoreFailure]),
     }),
   )
   .add(

@@ -580,6 +580,12 @@ const shellCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
 
 // ─── services: reachable ports, everywhere the session is ───────────────────
 
+interface ServiceRecipeDto {
+  readonly name: string;
+  readonly command: string | null;
+  readonly port: number;
+}
+
 interface ServiceDto {
   readonly id: string;
   readonly sessionId: string;
@@ -683,8 +689,54 @@ const findLiveService = async (config: CliConfig, needle: string): Promise<Servi
  */
 const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const dashdash = args.indexOf("--");
-  const usage = "usage: mend service run [session] --port <port> [--name <n>] -- <command...>";
-  if (dashdash === -1) return fail(usage);
+  const usage =
+    "usage: mend service run [session] --port <port> [--name <n>] -- <command...>\n" +
+    "       mend service run [session] <name>          (a mend.toml recipe)";
+  // No explicit command = a DECLARED Service: resolve the name against the
+  // session worktree's mend.toml and start (or adopt) its recipe.
+  if (dashdash === -1) {
+    const positionals = args.filter((a) => !a.startsWith("--"));
+    const name = positionals.at(-1);
+    if (name === undefined) return fail(usage);
+    const prefix = positionals.length > 1 ? positionals[0] : undefined;
+    const session = await resolveLiveSession(config, prefix);
+    const recipes = await api<ReadonlyArray<ServiceRecipeDto>>(
+      config,
+      "GET",
+      `/sessions/${session.id}/recipes`,
+    );
+    const recipe = recipes.find((entry) => entry.name === name);
+    if (recipe === undefined) {
+      const known = recipes.map((entry) => entry.name).join(", ");
+      return fail(
+        recipes.length === 0
+          ? `no mend.toml recipes in this worktree — declare [service.${name}] first`
+          : `no recipe named "${name}" — declared: ${known}`,
+      );
+    }
+    if (recipe.command === null) {
+      // A port-only recipe is an adopt: something else starts the listener.
+      const service = await api<ServiceDto>(config, "POST", `/sessions/${session.id}/services`, {
+        port: recipe.port,
+        name: recipe.name,
+      });
+      say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
+      say(`  ${cobalt(serviceUrl(config, service))}`);
+      return;
+    }
+    const service = await withSpinner(
+      `starting ${recipe.name} — waiting for :${recipe.port} to answer…`,
+      api<ServiceDto>(config, "POST", `/sessions/${session.id}/services/run`, {
+        argv: ["sh", "-c", recipe.command],
+        port: recipe.port,
+        name: recipe.name,
+      }),
+    );
+    say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
+    say(`  ${cobalt(serviceUrl(config, service))}`);
+    say(dim(`  logs: mend service logs ${service.label ?? service.id.slice(0, 8)}`));
+    return;
+  }
   const argv = args.slice(dashdash + 1);
   if (argv.length === 0) return fail(usage);
   const head = args.slice(0, dashdash);
@@ -1386,6 +1438,7 @@ const HELP = `mend — the agent workbench
   mend shell [session-id-prefix]        open a shell in a live session's workspace
   mend service run [session] --port <p> [--name <n>] -- <command...>
                                         start + supervise a server in the session workspace
+  mend service run [session] <name>     start a declared Service (mend.toml recipe)
   mend service add [session] <port> [--name <n>]
                                         adopt a listening workspace port — reachable on this machine
   mend service list                     every live service and its observed state
