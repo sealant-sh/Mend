@@ -257,9 +257,11 @@ const handleGitConnect = async (
   head: Buffer,
 ): Promise<void> => {
   // A CONNECT response has no body by spec (node's client won't surface one),
-  // so the readable reason travels as a header the shim prints.
+  // so the readable reason travels as a header the shim prints —
+  // percent-encoded, because headers are latin-1 and the messages carry
+  // real punctuation (observed live: an em dash arriving as "â").
   const refuse = (status: string, message: string): void => {
-    const reason = message.replace(/[\r\n]+/g, " · ").slice(0, 900);
+    const reason = encodeURIComponent(message.replace(/[\r\n]+/g, " · ").slice(0, 900));
     socket.write(`HTTP/1.1 ${status}\r\nx-mend-refusal: ${reason}\r\nconnection: close\r\n\r\n`);
     socket.end();
   };

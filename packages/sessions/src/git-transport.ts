@@ -173,11 +173,12 @@ const request = http.request({
 request.on("connect", (res, socket) => {
   if (res.statusCode !== 200) {
     socket.destroy();
-    const reason = res.headers["x-mend-refusal"];
+    const raw = res.headers["x-mend-refusal"];
+    let reason = typeof raw === "string" ? raw : "";
+    // Percent-encoded server-side: headers are latin-1, the words are not.
+    try { reason = decodeURIComponent(reason); } catch {}
     fail(
-      typeof reason === "string" && reason !== ""
-        ? reason
-        : "the git transport was refused (" + res.statusCode + ")",
+      reason !== "" ? reason : "the git transport was refused (" + res.statusCode + ")",
       128,
     );
   }
