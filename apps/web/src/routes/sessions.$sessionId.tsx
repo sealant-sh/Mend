@@ -3,6 +3,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { FollowUpBanner } from "#/components/follow-up";
+import { ServicesCard } from "#/components/services-card";
 import { AppShell } from "#/components/shell";
 import { SessionStatusDot } from "#/components/status";
 import { SessionTerminal } from "#/components/terminal";
@@ -350,6 +351,7 @@ function SessionPage() {
                 ))
               )}
             </div>
+            <ServicesCard sessionId={sessionId} sessionLive={ACTIVE.has(session.status)} />
           </section>
         </div>
       </div>

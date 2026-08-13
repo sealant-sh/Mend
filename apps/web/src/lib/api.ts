@@ -699,6 +699,50 @@ export const checkpointSession = (id: string, trigger: "review-open" | "user-mar
 
 export const changeDiff = (id: string) => request<ChangeDiffDto>(`/api/changes/${id}/diff`);
 
+/** One workspace process — agent, shell, or Service (docs/SESSION-SERVICES.md). */
+export interface SessionProcessDto {
+  readonly id: string;
+  readonly sessionId: string;
+  readonly kind: string;
+  readonly label: string | null;
+  readonly argv: ReadonlyArray<string>;
+  readonly status: string;
+  readonly exitCode: number | null;
+  readonly workspacePort: number | null;
+  readonly hostPort: number | null;
+  readonly exitedAt: string | null;
+}
+
+/** A declared Service recipe from the worktree's mend.toml. */
+export interface ServiceRecipeDto {
+  readonly name: string;
+  readonly command: string | null;
+  readonly port: number;
+}
+
+export const listSessionProcesses = (id: string) =>
+  request<ReadonlyArray<SessionProcessDto>>(`/api/sessions/${id}/processes`);
+
+export const listSessionRecipes = (id: string) =>
+  request<ReadonlyArray<ServiceRecipeDto>>(`/api/sessions/${id}/recipes`);
+
+export const runService = (
+  sessionId: string,
+  input: { argv: ReadonlyArray<string>; port: number; name: string | null },
+) => post<SessionProcessDto>(`/api/sessions/${sessionId}/services/run`, input);
+
+export const addService = (sessionId: string, input: { port: number; name: string | null }) =>
+  post<SessionProcessDto>(`/api/sessions/${sessionId}/services`, input);
+
+export const restartService = (id: string) =>
+  post<SessionProcessDto>(`/api/services/${id}/restart`, {});
+
+export const stopService = (id: string) => post<SessionProcessDto>(`/api/services/${id}/stop`, {});
+
+/** The Service's reachable URL: the API carries no host — the browser's does. */
+export const serviceUrl = (service: SessionProcessDto) =>
+  service.hostPort === null ? null : `http://${window.location.hostname}:${service.hostPort}`;
+
 export const changeComments = (id: string) =>
   request<ReadonlyArray<ReviewCommentDto>>(`/api/changes/${id}/comments`);
 

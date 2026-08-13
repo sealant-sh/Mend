@@ -1,6 +1,8 @@
 import { QueryClient, queryOptions } from "@tanstack/react-query";
 
 import {
+  listSessionProcesses,
+  listSessionRecipes,
   changeComments,
   changeDiff,
   changePasses,
@@ -70,6 +72,18 @@ export const sessionDetailQuery = (id: string) =>
   queryOptions({
     queryKey: ["session", id],
     queryFn: () => sessionDetail(id),
+  });
+
+export const sessionProcessesQuery = (id: string) =>
+  queryOptions({
+    queryKey: ["session", id, "processes"],
+    queryFn: () => listSessionProcesses(id),
+  });
+
+export const sessionRecipesQuery = (id: string) =>
+  queryOptions({
+    queryKey: ["session", id, "recipes"],
+    queryFn: () => listSessionRecipes(id),
   });
 
 export const changeDiffQuery = (id: string) =>
