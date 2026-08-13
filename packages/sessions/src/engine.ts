@@ -1604,8 +1604,42 @@ export class SessionEngine extends Context.Service<
        * failure it is. A slow starter that outlives the wait is not an
        * error: it surfaces as `unreachable` until it listens.
        */
+      /** The dead command's last words — the record replays after settle. */
+      const ptyOutputTail = (pty: {
+        output: (options?: { readonly signal?: AbortSignal }) => AsyncIterable<{
+          readonly data: string | Uint8Array;
+        }>;
+      }) =>
+        Effect.tryPromise({
+          try: async () => {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 3000);
+            let text = "";
+            try {
+              for await (const chunk of pty.output({ signal: controller.signal })) {
+                text +=
+                  typeof chunk.data === "string"
+                    ? chunk.data
+                    : new TextDecoder().decode(chunk.data);
+                if (text.length > 4000) {
+                  text = text.slice(-4000);
+                }
+              }
+            } finally {
+              clearTimeout(timer);
+            }
+            return text.slice(-1500).trim();
+          },
+          catch: () => new Error("output unavailable"),
+        }).pipe(Effect.orElseSucceed(() => ""));
+
       const awaitServicePort = (
-        pty: { status: () => Promise<{ status: string; exitCode?: number }> },
+        pty: {
+          status: () => Promise<{ status: string; exitCode?: number }>;
+          output: (options?: { readonly signal?: AbortSignal }) => AsyncIterable<{
+            readonly data: string | Uint8Array;
+          }>;
+        },
         workspaceId: SealantWorkspaceId,
         workspacePort: number,
         processId: SessionProcessId,
@@ -1623,8 +1657,11 @@ export class SessionEngine extends Context.Service<
             }).pipe(Effect.orElseSucceed(() => null));
             if (status !== null && status.status !== "running" && status.status !== "starting") {
               yield* processes.markExited(processId, "exited", status.exitCode ?? null);
+              const tail = yield* ptyOutputTail(pty);
               return yield* new ServiceStartError({
-                message: `The command exited (code ${status.exitCode ?? "unknown"}) before :${workspacePort} answered — its record has the output.`,
+                message:
+                  `The command exited (code ${status.exitCode ?? "unknown"}) before :${workspacePort} answered.` +
+                  (tail === "" ? "" : `\n--- output ---\n${tail}`),
               });
             }
             if (Date.now() >= deadline) {
