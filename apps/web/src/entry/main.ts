@@ -60,7 +60,7 @@ import {
   startRunToolLayer,
 } from "@mend/jobs";
 import { SealantClientLiveFromEnv } from "@mend/sealant";
-import { ServiceHostLive, SessionEngine } from "@mend/sessions";
+import { ServiceHostLive, SessionEngine, SessionSocketHostLive } from "@mend/sessions";
 import { Store, StoreConfig } from "@mend/store";
 import { Config, Effect, Layer, Schema } from "effect";
 import {
@@ -112,7 +112,10 @@ const DatabaseLive = DrizzleRepositoriesLive.pipe(
 // same layer reference, provided once at MainLive).
 const StoreLive = Store.layer.pipe(Layer.provide(StoreConfig.layer));
 const ServiceHostLayer = ServiceHostLive;
-const SessionEngineLive = SessionEngine.layer.pipe(Layer.provide(ServiceHostLayer));
+const SessionEngineLive = SessionEngine.layer.pipe(
+  Layer.provide(ServiceHostLayer),
+  Layer.provide(SessionSocketHostLive),
+);
 
 // ─── better-auth mounted under /api/auth ────────────────────────────────────
 const AuthRoutes = HttpRouter.use((router) =>

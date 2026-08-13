@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { proposeFromCompose, proposeFromPackageJson, renderMendToml } from "./service-init.ts";
+import {
+  isComposeFile,
+  proposeFromCompose,
+  proposeFromPackageJson,
+  proposeFromWorkspacePackage,
+  renderMendToml,
+  workspaceGlobs,
+} from "./service-init.ts";
 
 describe("proposeFromPackageJson", () => {
   it("reads an explicit --port from the dev script", () => {
@@ -54,6 +61,46 @@ services:
       port: 3306,
     });
     expect(proposals[1]).toMatchObject({ name: "redis", port: 6379 });
+  });
+});
+
+describe("compose flavors and env defaults", () => {
+  it("recognizes every compose filename flavor", () => {
+    expect(isComposeFile("compose.yaml")).toBe(true);
+    expect(isComposeFile("compose.dev.yaml")).toBe(true);
+    expect(isComposeFile("docker-compose.yml")).toBe(true);
+    expect(isComposeFile("compose.json")).toBe(false);
+    expect(isComposeFile("decompose.yaml")).toBe(false);
+  });
+
+  it("reads the declared default of an env-interpolated port", () => {
+    const proposals = proposeFromCompose(
+      'services:\n  mend:\n    ports:\n      - "${MEND_PORT:-3000}:3000"\n',
+    );
+    expect(proposals[0]).toMatchObject({ name: "mend", port: 3000, guessed: false });
+  });
+});
+
+describe("workspace sweep", () => {
+  it("collects globs from pnpm-workspace.yaml and package.json workspaces", () => {
+    expect(
+      workspaceGlobs('packages:\n  - "apps/*"\n  - packages/*\n  - "!**/test"\n', null),
+    ).toEqual(["apps/*", "packages/*"]);
+    expect(workspaceGlobs(null, JSON.stringify({ workspaces: ["apps/*"] }))).toEqual(["apps/*"]);
+  });
+
+  it("proposes a workspace package's server script through the package manager", () => {
+    const proposals = proposeFromWorkspacePackage(
+      "marketing",
+      JSON.stringify({ name: "@mend/marketing", scripts: { dev: "vite dev --port 3102" } }),
+      ["pnpm-lock.yaml"],
+    );
+    expect(proposals[0]).toMatchObject({
+      name: "marketing",
+      command: "pnpm --filter @mend/marketing dev",
+      port: 3102,
+      guessed: false,
+    });
   });
 });
 

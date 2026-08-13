@@ -5,7 +5,14 @@ import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { proposeFromCompose, proposeFromPackageJson, renderMendToml } from "./service-init.ts";
+import {
+  isComposeFile,
+  proposeFromCompose,
+  proposeFromPackageJson,
+  proposeFromWorkspacePackage,
+  renderMendToml,
+  workspaceGlobs,
+} from "./service-init.ts";
 import {
   CONTINUE_COMMANDS,
   gitTopLevel,
@@ -840,24 +847,50 @@ const serviceInit = async (args: ReadonlyArray<string>) => {
     return fail(`${target} already exists — edit it directly (init never merges)`);
   }
   const rootFiles = fs.readdirSync(root);
-  const proposals = [];
+  const proposals: Array<ReturnType<typeof proposeFromCompose>[number]> = [];
+  const readRoot = (name: string) => fs.readFileSync(path.join(root, name), "utf8");
   if (rootFiles.includes("package.json")) {
-    proposals.push(
-      ...proposeFromPackageJson(
-        fs.readFileSync(path.join(root, "package.json"), "utf8"),
-        rootFiles,
-      ),
-    );
+    proposals.push(...proposeFromPackageJson(readRoot("package.json"), rootFiles));
   }
-  for (const composeName of [
-    "docker-compose.yml",
-    "docker-compose.yaml",
-    "compose.yml",
-    "compose.yaml",
-  ]) {
-    if (rootFiles.includes(composeName)) {
-      proposals.push(...proposeFromCompose(fs.readFileSync(path.join(root, composeName), "utf8")));
-      break;
+  // Monorepo sweep: every workspace package, named after its folder.
+  const globs = workspaceGlobs(
+    rootFiles.includes("pnpm-workspace.yaml") ? readRoot("pnpm-workspace.yaml") : null,
+    rootFiles.includes("package.json") ? readRoot("package.json") : null,
+  );
+  for (const glob of globs) {
+    const parent = glob.replace(/\/?\*+$/, "");
+    const dirs = glob.endsWith("*")
+      ? fs.existsSync(path.join(root, parent))
+        ? fs.readdirSync(path.join(root, parent)).map((dir) => path.join(parent, dir))
+        : []
+      : [glob];
+    for (const dir of dirs) {
+      const manifest = path.join(root, dir, "package.json");
+      if (!fs.existsSync(manifest)) continue;
+      for (const proposal of proposeFromWorkspacePackage(
+        path.basename(dir),
+        fs.readFileSync(manifest, "utf8"),
+        rootFiles,
+      )) {
+        if (!proposals.some((existing) => existing.name === proposal.name)) {
+          proposals.push(proposal);
+        }
+      }
+    }
+  }
+  // Every compose flavor in the root, aggregated; non-default files need -f.
+  for (const composeName of rootFiles.filter(isComposeFile).toSorted()) {
+    const isDefault = composeName === "compose.yaml" || composeName === "docker-compose.yml";
+    for (const proposal of proposeFromCompose(readRoot(composeName))) {
+      if (!proposals.some((existing) => existing.name === proposal.name)) {
+        proposals.push({
+          ...proposal,
+          command: isDefault
+            ? proposal.command
+            : proposal.command.replace("docker compose ", `docker compose -f ${composeName} `),
+          source: `${composeName}: ${proposal.source}`,
+        });
+      }
     }
   }
   if (proposals.length === 0) {

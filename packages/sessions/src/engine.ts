@@ -18,8 +18,8 @@ import {
   SealantRunId,
   SealantWorkspaceId,
   SessionId,
+  SessionProcessId,
   type ProjectId,
-  type SessionProcessId,
 } from "@mend/domain";
 import type {
   Checkpoint,
@@ -53,7 +53,13 @@ import {
   ingestNativeSession,
   type ConvertedNativeSession,
 } from "./native-convert.ts";
+import { readServiceRecipes } from "./recipes.ts";
 import { ServiceBindError, ServiceHost } from "./service-host.ts";
+import {
+  SESSION_SOCKET_MOUNT_PATH,
+  SessionSocketHost,
+  type SessionSocketApi,
+} from "./session-socket.ts";
 
 /** How a harness takes an opening prompt (the cross-harness handoff). */
 const promptArgv = (harness: string, prompt: string): ReadonlyArray<string> | null => {
@@ -359,6 +365,7 @@ export class SessionEngine extends Context.Service<
       const sessionRuns = yield* SessionRunsRepo;
       const processes = yield* SessionProcessesRepo;
       const serviceHost = yield* ServiceHost;
+      const socketHost = yield* SessionSocketHost;
       const projects = yield* ProjectsRepo;
       const changes = yield* SessionChangesRepo;
       const checkpoints = yield* CheckpointsRepo;
@@ -806,8 +813,10 @@ export class SessionEngine extends Context.Service<
           }
           const workspace = yield* sealant.getWorkspace(workspaceId);
           yield* sealant.stopWorkspace(workspace);
-          // The container is gone; no row for it can still be live.
+          // The container is gone; no row for it can still be live, and the
+          // in-workspace socket has nobody left to serve.
           yield* processes.reapLiveForWorkspace(workspaceId);
+          yield* socketHost.stop(sessionId);
         }).pipe(
           Effect.catch((error) =>
             Effect.logWarning("session engine: workspace stop failed").pipe(
@@ -964,7 +973,11 @@ export class SessionEngine extends Context.Service<
         const declaredMounts = yield* projectMounts
           .listForProject(project.id)
           .pipe(Effect.orElseSucceed(() => []));
+        // The in-workspace control surface: the session's socket + helper,
+        // bound BEFORE the workspace exists so the mount can carry it.
+        const socketDir = yield* socketHost.start(sessionId, socketApiFor(sessionId));
         const workspaceMounts = [
+          { hostPath: socketDir, mountPath: SESSION_SOCKET_MOUNT_PATH },
           ...selectedReferences.map((reference) => ({
             hostPath: reference.path,
             mountPath: `/workspace/ref/${reference.name}`,
@@ -1234,7 +1247,15 @@ export class SessionEngine extends Context.Service<
             ),
           );
         }
-        if (workspaceMounts.length > 0) {
+        // The helper reaches everyone through PATH, not prompt engineering.
+        yield* sealant
+          .exec(workspace, [
+            "sh",
+            "-c",
+            `ln -sf ${SESSION_SOCKET_MOUNT_PATH}/bin/mend /usr/local/bin/mend`,
+          ])
+          .pipe(Effect.ignore);
+        {
           // Tell the harness the mounts exist — appended to its global memory
           // file in the workspace $HOME (never the worktree: the note is not
           // review content). After state restore, which rewrites $HOME.
@@ -1260,10 +1281,30 @@ export class SessionEngine extends Context.Service<
                   )
                   .join("\n") +
                 `\n\n`;
+          const declaredRecipes = yield* readServiceRecipes(worktree).pipe(
+            Effect.orElseSucceed(() => []),
+          );
+          const recipesLine =
+            declaredRecipes.length === 0
+              ? ""
+              : `Declared Services (mend.toml): ` +
+                declaredRecipes.map((recipe) => recipe.name).join(", ") +
+                ` — start one with \`mend service run <name>\`.\n\n`;
+          const servicesSection =
+            `## Mend Services\n\n` +
+            `For any long-running server (dev server, database), use ` +
+            `\`mend service run --port <port> [--name <n>] -- <command...>\` — it runs the ` +
+            `command supervised in this workspace, waits for the port, and makes it reachable ` +
+            `from the user's own machine. NEVER background a server inside a tool call. ` +
+            `\`mend service add <port>\` adopts something already listening; ` +
+            `\`mend service list\` shows what runs.\n\n` +
+            recipesLine;
           const note =
             `\n<!-- mend:mounts -->\n## Mend mounts\n\nMounted beside the repo:\n\n` +
             referencesSection +
-            foldersSection;
+            foldersSection +
+            `\n` +
+            servicesSection;
           yield* sealant
             .exec(workspace, [
               "sh",
@@ -1785,6 +1826,63 @@ export class SessionEngine extends Context.Service<
         return restarted;
       });
 
+      /**
+       * What a session's in-workspace socket serves — every closure scoped to
+       * that one session; ownership guards make cross-session ids a 404-shaped
+       * error rather than a capability.
+       */
+      const socketApiFor = (sessionId: SessionId): SessionSocketApi => ({
+        recipes: () =>
+          Effect.gen(function* () {
+            const session = yield* sessions.byId(sessionId);
+            const project = yield* projects.byId(session.projectId);
+            return yield* readServiceRecipes(worktreePathOf(project.storePath, session.worktree));
+          }).pipe(
+            Effect.mapError((error) => new Error(String(error.message))),
+            Effect.orDie,
+          ),
+        listServices: () =>
+          processes
+            .listForSession(sessionId)
+            .pipe(
+              Effect.map((rows) =>
+                rows.filter((row) => row.kind === "service" && row.exitedAt === null),
+              ),
+            ),
+        runService: (argv, port, name) =>
+          runService(sessionId, argv, port, name).pipe(
+            Effect.mapError((error) => new Error(error.message)),
+            Effect.orDie,
+          ),
+        addService: (port, name) =>
+          addService(sessionId, port, name).pipe(
+            Effect.mapError((error) => new Error(error.message)),
+            Effect.orDie,
+          ),
+        stopService: (processId) =>
+          Effect.gen(function* () {
+            const row = yield* processes.byId(SessionProcessId.make(processId));
+            if (row === null || row.sessionId !== sessionId) {
+              return yield* new ServiceNotFoundError({ processId });
+            }
+            return yield* stopService(row.id);
+          }).pipe(
+            Effect.mapError((error) => new Error(String(error.message))),
+            Effect.orDie,
+          ),
+        restartService: (processId) =>
+          Effect.gen(function* () {
+            const row = yield* processes.byId(SessionProcessId.make(processId));
+            if (row === null || row.sessionId !== sessionId) {
+              return yield* new ServiceNotFoundError({ processId });
+            }
+            return yield* restartService(row.id);
+          }).pipe(
+            Effect.mapError((error) => new Error(String(error.message))),
+            Effect.orDie,
+          ),
+      });
+
       const stopService = Effect.fn("SessionEngine.stopService")(function* (
         processId: SessionProcessId,
       ) {
@@ -1845,6 +1943,18 @@ export class SessionEngine extends Context.Service<
         // running (a detached client is not intent to stop), so watch them
         // again — the watcher itself records the end if the workspace is gone.
         const liveProcesses = yield* processes.listLive();
+        // Every session with a live workspace gets its socket re-bound: the
+        // dir path is deterministic, so the running container's mount comes
+        // back to life without touching it.
+        const socketSessions = new Set<SessionId>([...reattached].map((id) => SessionId.make(id)));
+        for (const liveProcess of liveProcesses) {
+          socketSessions.add(liveProcess.sessionId);
+        }
+        for (const socketSessionId of socketSessions) {
+          yield* socketHost
+            .start(socketSessionId, socketApiFor(socketSessionId))
+            .pipe(Effect.ignore);
+        }
         for (const liveProcess of liveProcesses) {
           if (liveProcess.kind === "shell") {
             yield* Effect.forkIn(watchProcess(liveProcess), scope);

@@ -51,6 +51,7 @@ import {
   ServiceHost,
   SessionEngine,
   SessionNotLiveError,
+  SessionSocketHost,
 } from "@mend/sessions";
 import { Store, StoreConfig } from "@mend/store";
 import type { CreateOptions, InteractiveSession, Workspace } from "@sealant/sdk";
@@ -189,6 +190,12 @@ const serviceHostStubLayer = Layer.succeed(ServiceHost, {
   start: () => Effect.succeed(43127),
   stop: () => Effect.void,
   probe: () => Effect.succeed(true),
+});
+
+/** Session sockets bind nothing in these worlds. */
+const sessionSocketStubLayer = Layer.succeed(SessionSocketHost, {
+  start: () => Effect.succeed("/tmp/mend-test-socket-dir"),
+  stop: () => Effect.void,
 });
 
 const now = () => new Date();
@@ -571,6 +578,7 @@ const withEngine = <A, E>(
     Layer.provide(sessionRunsLayer(world)),
     Layer.provide(sessionProcessesLayer(world)),
     Layer.provide(serviceHostStubLayer),
+    Layer.provide(sessionSocketStubLayer),
     Layer.provide(changesLayer(world)),
     Layer.provide(checkpointsLayer(world)),
     Layer.provide(referencesEmptyLayer),
@@ -1108,6 +1116,7 @@ describe("SessionEngine", () => {
       Layer.provide(sessionRunsLayer(world)),
       Layer.provide(sessionProcessesLayer(world)),
       Layer.provide(serviceHostStubLayer),
+      Layer.provide(sessionSocketStubLayer),
       Layer.provide(changesLayer(world)),
       Layer.provide(checkpointsLayer(world)),
       Layer.provide(referencesEmptyLayer),
