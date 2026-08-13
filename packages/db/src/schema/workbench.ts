@@ -373,7 +373,7 @@ export const sessionProcesses = pgTable(
       .notNull()
       .references(() => agentSessions.id, { onDelete: "cascade" }),
     sealantWorkspaceId: text().$type<SealantWorkspaceId>().notNull(),
-    sealantSessionId: text().notNull(),
+    sealantSessionId: text(),
     kind: text().$type<SessionProcessKind>().notNull(),
     label: text(),
     argv: jsonb()
@@ -382,6 +382,8 @@ export const sessionProcesses = pgTable(
       .default(sql`'[]'::jsonb`),
     status: text().$type<SessionProcessStatus>().notNull().default("starting"),
     exitCode: integer(),
+    workspacePort: integer(),
+    hostPort: integer(),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     exitedAt: timestamp({ mode: "date", withTimezone: true }),
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),

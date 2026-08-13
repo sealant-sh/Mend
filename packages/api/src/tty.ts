@@ -64,7 +64,15 @@ export const TtyRoutes = HttpRouter.use((router) =>
           if (process === null) {
             return HttpServerResponse.text("unknown process", { status: 404 });
           }
-          target = process;
+          const processPtyId = process.sealantSessionId;
+          if (processPtyId === null) {
+            // Adopted Services forward a port; there is no PTY to attach.
+            return HttpServerResponse.text("process has no platform PTY", { status: 409 });
+          }
+          target = {
+            sealantWorkspaceId: process.sealantWorkspaceId,
+            sealantSessionId: processPtyId,
+          };
         } else if (sessionParam !== null) {
           const session = yield* sessions.byId(SessionId.make(sessionParam)).pipe(Effect.option);
           if (Option.isNone(session)) {

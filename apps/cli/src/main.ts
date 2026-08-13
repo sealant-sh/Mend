@@ -336,6 +336,7 @@ const attachTty = async (
   harness: string,
   from: bigint,
   processId?: string,
+  options?: { readonly readOnly?: boolean },
 ): Promise<"detached" | "ended" | "unavailable"> => {
   const url = new URL(`${config.url}/api/tty`);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
@@ -411,12 +412,16 @@ const attachTty = async (
   try {
     sendResize();
     process.stdout.on("resize", onWinch);
-    if (rawTty) {
-      process.stdin.setRawMode(true);
-      rawModeEnabled = true;
+    // Read-only (logs): never forward stdin — Ctrl+C exits the CLI, the
+    // socket drops, and the process inside keeps running untouched.
+    if (options?.readOnly !== true) {
+      if (rawTty) {
+        process.stdin.setRawMode(true);
+        rawModeEnabled = true;
+      }
+      process.stdin.resume();
+      process.stdin.on("data", onKeys);
     }
-    process.stdin.resume();
-    process.stdin.on("data", onKeys);
     ws.addEventListener("message", onTtyFrame);
     await finished;
     return detached ? "detached" : "ended";
@@ -573,6 +578,200 @@ const shellCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
   process.exit(0);
 };
 
+// ─── services: reachable ports, everywhere the session is ───────────────────
+
+interface ServiceDto {
+  readonly id: string;
+  readonly sessionId: string;
+  readonly kind: string;
+  readonly label: string | null;
+  readonly status: string;
+  readonly workspacePort: number | null;
+  readonly hostPort: number | null;
+  readonly sealantSessionId: string | null;
+}
+
+const serviceUrl = (config: CliConfig, service: ServiceDto): string => {
+  const host = new URL(config.url).hostname || "localhost";
+  return `http://${host}:${service.hostPort ?? "?"}`;
+};
+
+const printService = (config: CliConfig, service: ServiceDto) => {
+  const status = service.status === "reachable" ? green(service.status) : amber(service.status);
+  say(
+    `${(service.label ?? service.id.slice(0, 8)).padEnd(12)}  ${dim(`:${service.workspacePort ?? "?"} →`)} ${serviceUrl(config, service)}  ${status}  ${dim(service.id.slice(0, 8))}`,
+  );
+};
+
+/**
+ * Adopt an already-listening workspace port as a Service: Mend binds a host
+ * port on its private interfaces and pumps every connection into the
+ * session's workspace. No supervision — reachability is the observation.
+ */
+const serviceAdd = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const nameFlag = args.indexOf("--name");
+  const name =
+    nameFlag !== -1 && args[nameFlag + 1] !== undefined ? String(args[nameFlag + 1]) : null;
+  const positional = args.filter(
+    (a, i) => !a.startsWith("--") && (nameFlag === -1 || i !== nameFlag + 1),
+  );
+  const portRaw = positional.find((a) => /^\d+$/.test(a));
+  if (portRaw === undefined) {
+    return fail("usage: mend service add [session] <port> [--name <n>]");
+  }
+  const port = Number(portRaw);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return fail(`"${portRaw}" is not a TCP port`);
+  }
+  const prefix = positional.find((a) => a !== portRaw);
+  const session = await resolveLiveSession(config, prefix);
+
+  const service = await api<ServiceDto>(config, "POST", `/sessions/${session.id}/services`, {
+    port,
+    name,
+  });
+  say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
+  say(`  ${cobalt(serviceUrl(config, service))}`);
+  if (service.status !== "reachable") {
+    say(dim(`  nothing answered on :${port} yet — the URL goes live when something listens`));
+  }
+};
+
+const serviceList = async (config: CliConfig) => {
+  const services = await api<ReadonlyArray<ServiceDto>>(config, "GET", "/services");
+  if (services.length === 0) {
+    say(dim("no live services — mend service add <port> adopts a listening one"));
+    return;
+  }
+  for (const service of services) printService(config, service);
+};
+
+const serviceStop = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const needle = args.find((a) => !a.startsWith("--"));
+  if (needle === undefined) return fail("usage: mend service stop <name-or-id-prefix>");
+  const services = await api<ReadonlyArray<ServiceDto>>(config, "GET", "/services");
+  const matches = services.filter(
+    (service) => service.label === needle || service.id.startsWith(needle),
+  );
+  if (matches.length === 0) return fail(`no live service matches "${needle}"`);
+  const match = matches[0];
+  if (matches.length > 1 || match === undefined) {
+    return fail(`"${needle}" is ambiguous — use more of the id`);
+  }
+  const stoppedService = await api<ServiceDto>(config, "POST", `/services/${match.id}/stop`);
+  say(`${green("✓")} stopped · ${stoppedService.label ?? stoppedService.id.slice(0, 8)}`);
+};
+
+const findLiveService = async (config: CliConfig, needle: string): Promise<ServiceDto> => {
+  const services = await api<ReadonlyArray<ServiceDto>>(config, "GET", "/services");
+  const matches = services.filter(
+    (service) => service.label === needle || service.id.startsWith(needle),
+  );
+  if (matches.length === 0) return fail(`no live service matches "${needle}"`);
+  const match = matches[0];
+  if (matches.length > 1 || match === undefined) {
+    return fail(`"${needle}" is ambiguous — use more of the id`);
+  }
+  return match;
+};
+
+/**
+ * Start and supervise a Service: the command runs as its own PTY process in
+ * the session's workspace (own record = its logs), Mend waits for the
+ * declared port to answer, then exposes it like any Service. The command
+ * never occupies the agent's terminal or a tool call.
+ */
+const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const dashdash = args.indexOf("--");
+  const usage = "usage: mend service run [session] --port <port> [--name <n>] -- <command...>";
+  if (dashdash === -1) return fail(usage);
+  const argv = args.slice(dashdash + 1);
+  if (argv.length === 0) return fail(usage);
+  const head = args.slice(0, dashdash);
+  const portFlag = head.indexOf("--port");
+  const port = portFlag !== -1 ? Number(head[portFlag + 1]) : Number.NaN;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return fail(usage);
+  const nameFlag = head.indexOf("--name");
+  const name =
+    nameFlag !== -1 && head[nameFlag + 1] !== undefined ? String(head[nameFlag + 1]) : null;
+  const prefix = head.find(
+    (a, i) => !a.startsWith("--") && i !== portFlag + 1 && i !== nameFlag + 1,
+  );
+  const session = await resolveLiveSession(config, prefix);
+
+  const service = await withSpinner(
+    `starting ${name ?? argv[0]} — waiting for :${port} to answer…`,
+    api<ServiceDto>(config, "POST", `/sessions/${session.id}/services/run`, {
+      argv,
+      port,
+      name,
+    }),
+  );
+  say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
+  say(`  ${cobalt(serviceUrl(config, service))}`);
+  say(dim(`  logs: mend service logs ${service.label ?? service.id.slice(0, 8)}`));
+};
+
+/** Watch a supervised Service's output: record replay, then live tail. */
+const serviceLogs = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const needle = args.find((a) => !a.startsWith("--"));
+  if (needle === undefined) return fail("usage: mend service logs <name-or-id-prefix>");
+  const service = await findLiveService(config, needle);
+  if (service.sealantSessionId === null) {
+    return fail(
+      `"${needle}" is an adopted port — no process of Mend's, no logs. mend service run supervises.`,
+    );
+  }
+  say(
+    dim(
+      `following ${service.label ?? service.id.slice(0, 8)} — Ctrl+C detaches, the service keeps running`,
+    ),
+  );
+  say("");
+  const outcome = await attachTty(config, service.sessionId, "service", 0n, service.id, {
+    readOnly: true,
+  });
+  if (outcome === "unavailable") {
+    return fail(`tty attach unavailable: could not connect to ${config.url}`);
+  }
+  say("");
+  say(dim("stream ended"));
+  process.exit(0);
+};
+
+const serviceRestart = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const needle = args.find((a) => !a.startsWith("--"));
+  if (needle === undefined) return fail("usage: mend service restart <name-or-id-prefix>");
+  const service = await findLiveService(config, needle);
+  const restarted = await withSpinner(
+    `restarting ${service.label ?? service.id.slice(0, 8)}…`,
+    api<ServiceDto>(config, "POST", `/services/${service.id}/restart`),
+  );
+  say(`${green("✓")} restarted · ${restarted.status}`);
+  say(`  ${cobalt(serviceUrl(config, restarted))}`);
+};
+
+const serviceCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const [verb, ...rest] = args;
+  switch (verb) {
+    case "run":
+      return serviceRun(config, rest);
+    case "add":
+      return serviceAdd(config, rest);
+    case "list":
+    case undefined:
+      return serviceList(config);
+    case "logs":
+      return serviceLogs(config, rest);
+    case "restart":
+      return serviceRestart(config, rest);
+    case "stop":
+      return serviceStop(config, rest);
+    default:
+      return fail(`unknown service command "${verb}" — try: run, add, list, logs, restart, stop`);
+  }
+};
+
 // ─── completions: live sessions under TAB ───────────────────────────────────
 
 /**
@@ -605,6 +804,7 @@ _mend() {
     'codex:new session + codex' 'claude:new session + claude' 'opencode:new session + opencode'
     'run:new session + arbitrary command'
     'attach:reattach to a running session' 'shell:open a shell in a live session workspace'
+    'service:reachable ports — add, list, stop'
     'continue:resume with the pending follow-up' 'resume:rejoin a settled session'
     'rejoin:attach if live, otherwise resume'
     'projects:adopted projects' 'sessions:sessions with review facts' 'status:active sessions'
@@ -628,7 +828,7 @@ _mend "$@"
 const BASH_COMPLETIONS = `_mend() {
   local cur=\${COMP_WORDS[COMP_CWORD]}
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "adopt codex claude opencode run attach shell continue resume rejoin projects sessions status ui help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "adopt codex claude opencode run attach shell service continue resume rejoin projects sessions status ui help" -- "$cur") )
     return
   fi
   case \${COMP_WORDS[1]} in
@@ -1184,6 +1384,14 @@ const HELP = `mend — the agent workbench
   mend run -- <command...>              same, with an arbitrary command
   mend attach <session-id-prefix>       reattach this terminal to a running session
   mend shell [session-id-prefix]        open a shell in a live session's workspace
+  mend service run [session] --port <p> [--name <n>] -- <command...>
+                                        start + supervise a server in the session workspace
+  mend service add [session] <port> [--name <n>]
+                                        adopt a listening workspace port — reachable on this machine
+  mend service list                     every live service and its observed state
+  mend service logs <name-or-id>        follow a supervised service's output (replay, then live)
+  mend service restart <name-or-id>     re-run its recorded command — same URL
+  mend service stop <name-or-id>        stop a service (closes its host port)
   mend continue [session-id]            resume a session with its pending review follow-up
   mend resume [session-id] [--with h]   rejoin a settled session (state restored; --with switches harness)
   mend rejoin [session-id] [--harness h] attach if live, otherwise resume; newest live wins
@@ -1213,6 +1421,8 @@ const main = async () => {
       return attach(config, rest);
     case "shell":
       return shellCommand(config, rest);
+    case "service":
+      return serviceCommand(config, rest);
     case "completions":
       return completionsCommand(rest);
     case "__complete":
