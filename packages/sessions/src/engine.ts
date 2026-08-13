@@ -292,6 +292,7 @@ export class SessionEngine extends Context.Service<
       sessionId: SessionId,
       workspacePort: number,
       name: string | null,
+      protocol?: "tcp" | "udp",
     ) => Effect.Effect<
       SessionProcess,
       SessionNotFoundError | SessionNotLiveError | ServiceBindError
@@ -307,6 +308,7 @@ export class SessionEngine extends Context.Service<
       argv: ReadonlyArray<string>,
       workspacePort: number,
       name: string | null,
+      protocol?: "tcp" | "udp",
     ) => Effect.Effect<
       SessionProcess,
       | SessionNotFoundError
@@ -1647,6 +1649,7 @@ export class SessionEngine extends Context.Service<
         sessionId: SessionId,
         workspacePort: number,
         name: string | null,
+        protocol: "tcp" | "udp" = "tcp",
       ) {
         const session = yield* sessions.byId(sessionId);
         if (session.sealantWorkspaceId === null || session.settledAt !== null) {
@@ -1662,7 +1665,14 @@ export class SessionEngine extends Context.Service<
         }
         // An add is adoption, not a claim: a port nobody answers on yet is
         // still a valid Service — it just reads unreachable until it does.
-        const reachable = yield* serviceHost.probe(workspaceId, workspacePort);
+        // UDP has no handshake to probe: the row starts "running" and a
+        // reply (the only evidence there is) flips it reachable.
+        const status =
+          protocol === "udp"
+            ? ("running" as const)
+            : (yield* serviceHost.probe(workspaceId, workspacePort))
+              ? ("reachable" as const)
+              : ("unreachable" as const);
         const serviceProcess = yield* processes.create({
           sessionId,
           sealantWorkspaceId: workspaceId,
@@ -1670,11 +1680,12 @@ export class SessionEngine extends Context.Service<
           kind: "service",
           label,
           argv: [],
-          status: reachable ? "reachable" : "unreachable",
+          status,
           workspacePort,
+          protocol,
         });
         const hostPort = yield* serviceHost
-          .start({ processId: serviceProcess.id, workspaceId, workspacePort })
+          .start({ processId: serviceProcess.id, workspaceId, workspacePort, protocol })
           .pipe(
             // The row must not survive a listener that never existed.
             Effect.tapError(() => processes.markExited(serviceProcess.id, "exited", null)),
@@ -1743,6 +1754,7 @@ export class SessionEngine extends Context.Service<
         argv: ReadonlyArray<string>,
         workspacePort: number,
         name: string | null,
+        protocol: "tcp" | "udp" = "tcp",
       ) {
         const session = yield* sessions.byId(sessionId);
         if (session.sealantWorkspaceId === null || session.settledAt !== null) {
@@ -1768,16 +1780,42 @@ export class SessionEngine extends Context.Service<
           argv,
           status: "starting",
           workspacePort,
+          protocol,
         });
-        const reachable = yield* awaitServicePort(
-          pty,
-          workspaceId,
-          workspacePort,
-          serviceProcess.id,
-        );
-        yield* processes.setStatus(serviceProcess.id, reachable ? "reachable" : "unreachable");
+        // UDP offers no port handshake to await: give the command a moment
+        // to die on the spot (bad flag, missing binary), then call it
+        // running — replies are the only reachability evidence after that.
+        if (protocol === "udp") {
+          yield* Effect.sleep("1500 millis");
+          const early = yield* Effect.tryPromise({
+            try: () => pty.status(),
+            catch: () => new Error("status failed"),
+          }).pipe(Effect.orElseSucceed(() => null));
+          if (early !== null && early.status !== "running" && early.status !== "starting") {
+            yield* processes.markExited(serviceProcess.id, "exited", early.exitCode ?? null);
+            const tail = yield* ptyOutputTail(pty);
+            return yield* new ServiceStartError({
+              message:
+                `The command exited (code ${early.exitCode ?? "unknown"}) immediately.` +
+                (tail === ""
+                  ? ""
+                  : `
+--- output ---
+${tail}`),
+            });
+          }
+          yield* processes.setStatus(serviceProcess.id, "running");
+        } else {
+          const reachable = yield* awaitServicePort(
+            pty,
+            workspaceId,
+            workspacePort,
+            serviceProcess.id,
+          );
+          yield* processes.setStatus(serviceProcess.id, reachable ? "reachable" : "unreachable");
+        }
         const hostPort = yield* serviceHost
-          .start({ processId: serviceProcess.id, workspaceId, workspacePort })
+          .start({ processId: serviceProcess.id, workspaceId, workspacePort, protocol })
           .pipe(
             Effect.tapError(() =>
               closeServicePty(workspaceId, pty.id).pipe(
@@ -1817,13 +1855,17 @@ export class SessionEngine extends Context.Service<
         const pty = yield* sealant.openSession(workspace, serviceProcess.argv);
         yield* processes.setSealantSessionId(processId, pty.id, SealantRunId.make(pty.runId));
         yield* processes.setStatus(processId, "starting");
-        const reachable = yield* awaitServicePort(
-          pty,
-          workspaceId,
-          serviceProcess.workspacePort,
-          processId,
-        );
-        yield* processes.setStatus(processId, reachable ? "reachable" : "unreachable");
+        if (serviceProcess.protocol === "udp") {
+          yield* processes.setStatus(processId, "running");
+        } else {
+          const reachable = yield* awaitServicePort(
+            pty,
+            workspaceId,
+            serviceProcess.workspacePort,
+            processId,
+          );
+          yield* processes.setStatus(processId, reachable ? "reachable" : "unreachable");
+        }
         const restarted = (yield* processes.byId(processId)) ?? serviceProcess;
         yield* Effect.forkIn(watchProcess(restarted), scope);
         return restarted;
@@ -1855,13 +1897,13 @@ export class SessionEngine extends Context.Service<
                 rows.filter((row) => row.kind === "service" && row.exitedAt === null),
               ),
             ),
-        runService: (argv, port, name) =>
-          runService(sessionId, argv, port, name).pipe(
+        runService: (argv, port, name, protocol) =>
+          runService(sessionId, argv, port, name, protocol).pipe(
             Effect.mapError((error) => new Error(error.message)),
             Effect.orDie,
           ),
-        addService: (port, name) =>
-          addService(sessionId, port, name).pipe(
+        addService: (port, name, protocol) =>
+          addService(sessionId, port, name, protocol).pipe(
             Effect.mapError((error) => new Error(error.message)),
             Effect.orDie,
           ),
@@ -1978,6 +2020,7 @@ export class SessionEngine extends Context.Service<
                 processId: liveProcess.id,
                 workspaceId: liveProcess.sealantWorkspaceId,
                 workspacePort: liveProcess.workspacePort,
+                protocol: liveProcess.protocol,
                 ...(liveProcess.hostPort === null
                   ? {}
                   : { preferredHostPort: liveProcess.hostPort }),

@@ -104,14 +104,38 @@ describe("workspace sweep", () => {
   });
 });
 
+describe("proposeFromCompose udp", () => {
+  it("proposes udp for a /udp published mapping and renders the protocol line", () => {
+    const compose = [
+      "services:",
+      "  game:",
+      "    image: factorio",
+      "    ports:",
+      '      - "34197:34197/udp"',
+    ].join("\n");
+    const proposals = proposeFromCompose(compose);
+    expect(proposals[0]).toMatchObject({ name: "game", port: 34197, protocol: "udp" });
+    const toml = renderMendToml(proposals);
+    expect(toml).toContain('protocol = "udp"');
+  });
+});
+
 describe("renderMendToml", () => {
   it("renders a commented, committable file", () => {
     const toml = renderMendToml([
-      { name: "web", command: "pnpm run dev", port: 5173, guessed: true, source: "package.json" },
+      {
+        name: "web",
+        command: "pnpm run dev",
+        port: 5173,
+        protocol: "tcp",
+        guessed: true,
+        source: "package.json",
+      },
       {
         name: "mysql",
         command: "docker compose up mysql",
         port: 3306,
+        protocol: "tcp",
         guessed: false,
         source: "compose",
       },

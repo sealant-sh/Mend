@@ -496,10 +496,16 @@ function ServicesSection({ projectId }: { readonly projectId: string }) {
     const name = String(data.get("name") ?? "").trim();
     const command = String(data.get("command") ?? "").trim();
     const port = Number(String(data.get("port") ?? "").trim());
+    const protocol = data.get("udp") === "on" ? ("udp" as const) : ("tcp" as const);
     if (name === "" || !Number.isInteger(port)) return;
     setBusy("add");
     setAddError(null);
-    void addProjectRecipe(projectId, { name, command: command === "" ? null : command, port })
+    void addProjectRecipe(projectId, {
+      name,
+      command: command === "" ? null : command,
+      port,
+      protocol,
+    })
       .then(async () => {
         await invalidate();
         form.reset();
@@ -541,6 +547,7 @@ function ServicesSection({ projectId }: { readonly projectId: string }) {
             </div>
             <p className="mt-1 truncate font-mono text-[11px] text-faint">
               {recipe.command ?? "adopt"} · :{recipe.port}
+              {recipe.protocol === "udp" ? "/udp" : ""}
             </p>
           </div>
         ))}
@@ -564,12 +571,22 @@ function ServicesSection({ projectId }: { readonly projectId: string }) {
               className="w-full rounded-lg border border-input bg-background px-2.5 py-1.5 font-mono text-xs text-foreground placeholder:text-faint"
             />
             <div className="flex items-center justify-between gap-2">
-              <input
-                name="port"
-                inputMode="numeric"
-                placeholder="port (3000)"
-                className="w-28 rounded-lg border border-input bg-background px-2.5 py-1.5 font-mono text-xs text-foreground placeholder:text-faint"
-              />
+              <span className="flex items-center gap-2.5">
+                <input
+                  name="port"
+                  inputMode="numeric"
+                  placeholder="port (3000)"
+                  className="w-28 rounded-lg border border-input bg-background px-2.5 py-1.5 font-mono text-xs text-foreground placeholder:text-faint"
+                />
+                <label className="flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    name="udp"
+                    className="size-3.5 accent-[var(--sw-accent)]"
+                  />
+                  udp
+                </label>
+              </span>
               <div className="flex items-center gap-2.5">
                 <button
                   type="button"

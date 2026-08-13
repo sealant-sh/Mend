@@ -1,3 +1,4 @@
+import * as dgram from "node:dgram";
 import { once } from "node:events";
 import * as net from "node:net";
 
@@ -13,6 +14,14 @@ import * as Context from "effect/Context";
  * listener per Service on the machine's private interfaces, and per accepted
  * connection one `workspace.forward(port)` byte pipe into the workspace —
  * accept, dial, pump, nothing protocol-aware anywhere.
+ *
+ * UDP Services bind a datagram socket instead. Each source address is one
+ * flow: its first datagram dials the workspace (loopback AND the docker
+ * sidecar — UDP has no refused connect to drive the TCP fallback chain, so
+ * both are dialed and the first target that answers is pinned). One frame on
+ * the forward is exactly one datagram, both directions. Reachability is
+ * traffic-driven only: a reply is evidence, silence is not — an idle UDP
+ * Service simply keeps whatever status it had.
  *
  * Interfaces and port range are operator policy, not platform facts:
  *   MEND_SERVICE_HOSTS      comma-separated bind addresses (default 127.0.0.1)
@@ -37,6 +46,8 @@ export interface ServiceStartInput {
   readonly processId: SessionProcessId;
   readonly workspaceId: SealantWorkspaceId;
   readonly workspacePort: number;
+  /** Declared transport; UDP binds a datagram socket and relays flows. */
+  readonly protocol: "tcp" | "udp";
   /** Reconciliation passes the recorded port so restarts keep URLs stable. */
   readonly preferredHostPort?: number;
 }
@@ -104,8 +115,24 @@ const pump = (socket: net.Socket, forward: WorkspaceForward): void => {
   })();
 };
 
+/** One UDP peer's relay: the dialed forwards, pinned to whichever answered. */
+interface UdpFlow {
+  forwards: WorkspaceForward[];
+  pinned: WorkspaceForward | null;
+  /** Datagrams that arrived before any dial finished — flushed on attach so a
+   * single-shot client (DNS-style) does not lose its first packet. Bounded:
+   * UDP's own contract is drop, not queue. */
+  pending: Uint8Array[];
+  lastSeen: number;
+}
+
+/** How many pre-dial datagrams to hold per flow before dropping. */
+const UDP_PENDING_MAX = 16;
+
 interface ActiveService {
   readonly servers: ReadonlyArray<net.Server>;
+  readonly dgrams: ReadonlyArray<dgram.Socket>;
+  readonly flows: Map<string, UdpFlow>;
   readonly timer: NodeJS.Timeout;
   /** Live pump sockets — a shutdown must sever these or the process never exits. */
   readonly sockets: Set<net.Socket>;
@@ -113,6 +140,9 @@ interface ActiveService {
 }
 
 const PROBE_INTERVAL_MS = 20_000;
+
+/** A UDP flow with no datagram either way for this long is over. */
+const UDP_FLOW_IDLE_MS = 120_000;
 
 export const ServiceHostLive: Layer.Layer<
   ServiceHost,
@@ -175,6 +205,15 @@ export const ServiceHostLive: Layer.Layer<
       for (const server of entry.servers) {
         server.close();
       }
+      for (const socket of entry.dgrams) {
+        socket.close();
+      }
+      for (const flow of entry.flows.values()) {
+        for (const forward of flow.forwards) {
+          forward.close();
+        }
+      }
+      entry.flows.clear();
       // server.close() only stops accepting; established pumps must be
       // severed or they hold the event loop (and a graceful shutdown) open.
       for (const socket of entry.sockets) {
@@ -195,6 +234,9 @@ export const ServiceHostLive: Layer.Layer<
       );
 
     const start = Effect.fn("ServiceHost.start")(function* (input: ServiceStartInput) {
+      if (input.protocol === "udp") {
+        return yield* startUdp(input);
+      }
       const hosts = bindHosts();
       const { min, max } = portRange();
       const candidates = input.preferredHostPort === undefined ? [] : [input.preferredHostPort];
@@ -273,7 +315,192 @@ export const ServiceHostLive: Layer.Layer<
           );
         }, PROBE_INTERVAL_MS);
         timer.unref();
-        active.set(input.processId, { servers, timer, sockets: new Set(), lastStatus: null });
+        active.set(input.processId, {
+          servers,
+          dgrams: [],
+          flows: new Map(),
+          timer,
+          sockets: new Set(),
+          lastStatus: null,
+        });
+        return port;
+      }
+
+      return yield* new ServiceBindError({
+        message: `No free host port in ${min}..${max} on ${hosts.join(", ")}.`,
+      });
+    });
+
+    /** Dial one UDP forward to a target; null when the target cannot resolve. */
+    const dialUdp = (
+      workspaceId: SealantWorkspaceId,
+      workspacePort: number,
+      host: "127.0.0.1" | "docker",
+    ): Promise<WorkspaceForward | null> =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const workspace = yield* sealant.getWorkspace(workspaceId);
+          return yield* sealant.forward(workspace, workspacePort, host, "udp");
+        }).pipe(
+          Effect.map((forward): WorkspaceForward | null => forward),
+          Effect.catch(() => Effect.succeed(null)),
+        ),
+      );
+
+    const startUdp = Effect.fn("ServiceHost.startUdp")(function* (input: ServiceStartInput) {
+      const hosts = bindHosts();
+      const { min, max } = portRange();
+      const candidates = input.preferredHostPort === undefined ? [] : [input.preferredHostPort];
+      for (let port = min; port <= max; port++) {
+        if (port !== input.preferredHostPort) {
+          candidates.push(port);
+        }
+      }
+
+      const openFlow = (socket: dgram.Socket, peer: dgram.RemoteInfo): UdpFlow => {
+        const flow: UdpFlow = { forwards: [], pinned: null, pending: [], lastSeen: Date.now() };
+        // Both possible targets, concurrently: a native process listens on
+        // the workspace loopback, inner compose publishes on the sidecar.
+        // The first one that sends anything back is THE target; the other
+        // forward closes. Until then outbound datagrams go to both — the
+        // wrong target simply drops them, which is UDP's own contract.
+        const attach = (forward: WorkspaceForward | null): void => {
+          if (forward === null) {
+            return;
+          }
+          const entry = active.get(input.processId);
+          if (entry === undefined) {
+            forward.close();
+            return;
+          }
+          flow.forwards.push(forward);
+          for (const datagram of flow.pending.splice(0)) {
+            forward.send(datagram);
+          }
+          void (async () => {
+            try {
+              for await (const chunk of forward.output) {
+                flow.lastSeen = Date.now();
+                if (flow.pinned === null) {
+                  flow.pinned = forward;
+                  for (const other of flow.forwards) {
+                    if (other !== forward) {
+                      other.close();
+                    }
+                  }
+                  flow.forwards = [forward];
+                  // A reply is the only reachability evidence UDP has.
+                  void observe(input.processId, "reachable");
+                }
+                socket.send(chunk, peer.port, peer.address);
+              }
+            } catch {
+              // Forward died; the flow reaps on idle or service stop.
+            }
+          })();
+        };
+        void dialUdp(input.workspaceId, input.workspacePort, "127.0.0.1").then(attach);
+        void dialUdp(input.workspaceId, input.workspacePort, "docker").then(attach);
+        return flow;
+      };
+
+      const bindAllUdp = (port: number) =>
+        Effect.tryPromise({
+          try: async () => {
+            const sockets: dgram.Socket[] = [];
+            try {
+              for (const host of hosts) {
+                const socket = dgram.createSocket(host.includes(":") ? "udp6" : "udp4");
+                await new Promise<void>((resolve, reject) => {
+                  socket.once("error", reject);
+                  socket.bind(port, host, () => {
+                    socket.removeListener("error", reject);
+                    resolve();
+                  });
+                });
+                sockets.push(socket);
+              }
+              return sockets;
+            } catch (cause) {
+              for (const socket of sockets) {
+                socket.close();
+              }
+              throw cause;
+            }
+          },
+          catch: () => new Error(`port ${port} is taken`),
+        }).pipe(Effect.option);
+
+      for (const port of candidates) {
+        const bound = yield* bindAllUdp(port);
+        if (Option.isNone(bound)) {
+          continue;
+        }
+        const sockets = bound.value;
+        for (const socket of sockets) {
+          socket.on("message", (data, peer) => {
+            const entry = active.get(input.processId);
+            if (entry === undefined) {
+              return;
+            }
+            const key = `${peer.address}:${peer.port}`;
+            let flow = entry.flows.get(key);
+            if (flow === undefined) {
+              flow = openFlow(socket, peer);
+              entry.flows.set(key, flow);
+            }
+            flow.lastSeen = Date.now();
+            if (flow.pinned !== null) {
+              flow.pinned.send(data);
+              return;
+            }
+            if (flow.forwards.length === 0) {
+              // Dials still in flight — hold a bounded handful for the flush.
+              if (flow.pending.length < UDP_PENDING_MAX) {
+                flow.pending.push(data);
+              }
+              return;
+            }
+            for (const forward of flow.forwards) {
+              forward.send(data);
+            }
+          });
+        }
+        // The supervisor follows the record (row exited → close) and reaps
+        // idle flows. No probe: UDP offers no handshake to observe.
+        const timer = setInterval(() => {
+          void Effect.runPromise(
+            Effect.gen(function* () {
+              const row = yield* processes.byId(input.processId);
+              if (row === null || row.exitedAt !== null) {
+                stopSync(input.processId);
+                return;
+              }
+              const entry = active.get(input.processId);
+              if (entry === undefined) {
+                return;
+              }
+              const now = Date.now();
+              for (const [key, flow] of entry.flows) {
+                if (now - flow.lastSeen > UDP_FLOW_IDLE_MS) {
+                  for (const forward of flow.forwards) {
+                    forward.close();
+                  }
+                  entry.flows.delete(key);
+                }
+              }
+            }).pipe(Effect.ignore),
+          );
+        }, PROBE_INTERVAL_MS);
+        timer.unref();
+        active.set(input.processId, {
+          servers: [],
+          dgrams: sockets,
+          flows: new Map(),
+          timer,
+          sockets: new Set(),
+          lastStatus: null,
+        });
         return port;
       }
 

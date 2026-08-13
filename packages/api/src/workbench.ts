@@ -319,6 +319,7 @@ export const ProjectRecipesGroupLive = HttpApiBuilder.group(MendApi, "projectRec
             name: payload.name,
             command: command === undefined || command === "" ? null : command,
             port: payload.port,
+            protocol: payload.protocol ?? "tcp",
           })
           .pipe(
             Effect.catchTag("RecipeNameTakenError", () =>
@@ -501,36 +502,42 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     .handle("addService", ({ params, payload }) =>
       Effect.gen(function* () {
         const engine = yield* SessionEngine;
-        return yield* engine.addService(params.id, payload.port, payload.name).pipe(
-          Effect.catchTag("SessionNotFoundError", () =>
-            Effect.fail(new NotFound({ id: params.id })),
-          ),
-          Effect.catchTag("SessionNotLiveError", () =>
-            Effect.fail(new SessionNotLive({ id: params.id })),
-          ),
-          Effect.catchTag("ServiceBindError", (error) =>
-            Effect.fail(new StoreFailure({ message: error.message })),
-          ),
-        );
+        return yield* engine
+          .addService(params.id, payload.port, payload.name, payload.protocol)
+          .pipe(
+            Effect.catchTag("SessionNotFoundError", () =>
+              Effect.fail(new NotFound({ id: params.id })),
+            ),
+            Effect.catchTag("SessionNotLiveError", () =>
+              Effect.fail(new SessionNotLive({ id: params.id })),
+            ),
+            Effect.catchTag("ServiceBindError", (error) =>
+              Effect.fail(new StoreFailure({ message: error.message })),
+            ),
+          );
       }),
     )
     .handle("runService", ({ params, payload }) =>
       Effect.gen(function* () {
         const engine = yield* SessionEngine;
-        return yield* engine.runService(params.id, payload.argv, payload.port, payload.name).pipe(
-          Effect.catchTag("SessionNotFoundError", () =>
-            Effect.fail(new NotFound({ id: params.id })),
-          ),
-          Effect.catchTag("SessionNotLiveError", () =>
-            Effect.fail(new SessionNotLive({ id: params.id })),
-          ),
-          Effect.catchTags({
-            SealantPlatformError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            ServiceBindError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
-            ServiceStartError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
-          }),
-        );
+        return yield* engine
+          .runService(params.id, payload.argv, payload.port, payload.name, payload.protocol)
+          .pipe(
+            Effect.catchTag("SessionNotFoundError", () =>
+              Effect.fail(new NotFound({ id: params.id })),
+            ),
+            Effect.catchTag("SessionNotLiveError", () =>
+              Effect.fail(new SessionNotLive({ id: params.id })),
+            ),
+            Effect.catchTags({
+              SealantPlatformError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+              ServiceBindError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+              ServiceStartError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+            }),
+          );
       }),
     )
     .handle("listRecipes", ({ params }) =>

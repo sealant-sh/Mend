@@ -12,6 +12,8 @@ export class ServiceRecipe extends Schema.Class<ServiceRecipe>("ServiceRecipe")(
   command: Schema.NullOr(Schema.String),
   /** The port the Service listens on inside the workspace. */
   port: Schema.Int,
+  /** Declared transport; UDP entries relay datagrams instead of a byte stream. */
+  protocol: Schema.Literals(["tcp", "udp"]),
   /** Where it was declared: the repo's mend.toml (travels, reviewable) or this machine's project row. */
   source: Schema.Literals(["file", "project"]),
 }) {}

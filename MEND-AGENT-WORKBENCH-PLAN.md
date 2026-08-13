@@ -1288,6 +1288,23 @@ understand the work.
   and fixed configuration paths on its host and suggest additions; it never enumerates or reads the
   user's home-directory contents. Observations are suggestions, not an automatic copy.
 
+- **2026-08-14 — Git access: host-owned credentials, workspace shim.** Remote git never enters a
+  workspace: the host owns clone/fetch/push with two per-project auth modes (ambient, or a
+  Mend-generated deploy key whose public half the UI hands out), and plain `git push` inside a
+  session works through a `GIT_SSH_COMMAND` shim that carries transport bytes over the session
+  socket to the host — stock git, no credential in the container, host-side seam for per-user
+  identity and audit/gating later. Hardware keys get an optional agent bridge (laptop
+  reverse-forwards its ssh-agent; touch happens where the key is). Design and scorecard:
+  `docs/GIT-ACCESS.md`.
+
+- **2026-08-13 — Workspace images: prebuilt stays, custom bases planned.** Confirmed sessions reuse
+  one cache-ordered image per os family (containers are per-session, images are not); sealantd is a
+  fully static musl binary on `scratch`, so any Linux base can host a workspace. Direction:
+  plan-hash build short-circuit, an ubuntu family, then `baseImage` custom images (sealant overlays
+  one static binary + env + entrypoint) with a per-project three-field editor — base, packages,
+  setup; not a compose editor (compose lives inside the workspace's docker sidecar). Facts and
+  sequence: `docs/WORKSPACE-IMAGES.md`.
+
 - **2026-08-10 — Resumed sessions retain every Sealant run.** A Mend session is the stable logical
   conversation, worktree, and change; each launch or settled-session resume creates an ordered
   Sealant run with its own sequence space and supervision cursor. Mend stores only that membership

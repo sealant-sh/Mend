@@ -114,11 +114,19 @@ export const readServiceRecipes = (
           message: `[service.${name}].command must be a non-empty shell command when present.`,
         });
       }
+      const protocol = entry["protocol"];
+      if (protocol !== undefined && protocol !== "tcp" && protocol !== "udp") {
+        return yield* new RecipeFileError({
+          path: filePath,
+          message: `[service.${name}].protocol must be "tcp" or "udp" when present.`,
+        });
+      }
       recipes.push(
         new ServiceRecipe({
           name,
           command: command === undefined ? null : command.trim(),
           port,
+          protocol: protocol ?? "tcp",
           source: "file",
         }),
       );

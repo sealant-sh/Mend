@@ -34,8 +34,13 @@ export interface SessionSocketApi {
     argv: ReadonlyArray<string>,
     port: number,
     name: string | null,
+    protocol?: "tcp" | "udp",
   ) => Effect.Effect<unknown>;
-  readonly addService: (port: number, name: string | null) => Effect.Effect<unknown>;
+  readonly addService: (
+    port: number,
+    name: string | null,
+    protocol?: "tcp" | "udp",
+  ) => Effect.Effect<unknown>;
   readonly stopService: (processId: string) => Effect.Effect<unknown>;
   readonly restartService: (processId: string) => Effect.Effect<unknown>;
 }
@@ -98,7 +103,7 @@ const fail = (message) => {
 const printService = (s) =>
   console.log(
     (s.label ?? s.id.slice(0, 8)).padEnd(12) +
-      "  :" + (s.workspacePort ?? "?") +
+      "  :" + (s.workspacePort ?? "?") + (s.protocol === "udp" ? "/udp" : "") +
       "  " + s.status +
       "  " + s.id.slice(0, 8),
   );
@@ -131,8 +136,8 @@ const main = async () => {
             fail('no recipe named "' + name + '" — declared: ' + (recipes.map((r) => r.name).join(", ") || "none"));
           }
           const service = recipe.command === null
-            ? await request("POST", "/services/add", { port: recipe.port, name: recipe.name })
-            : await request("POST", "/services/run", { argv: ["sh", "-c", recipe.command], port: recipe.port, name: recipe.name });
+            ? await request("POST", "/services/add", { port: recipe.port, name: recipe.name, protocol: recipe.protocol })
+            : await request("POST", "/services/run", { argv: ["sh", "-c", recipe.command], port: recipe.port, name: recipe.name, protocol: recipe.protocol });
           console.log("Service " + (service.label ?? "") + " · " + service.status + " · reachable from the user's machine");
           return;
         }
@@ -142,10 +147,11 @@ const main = async () => {
         const port = portFlag === -1 ? NaN : Number(head[portFlag + 1]);
         const nameFlag = head.indexOf("--name");
         const name = nameFlag === -1 ? null : (head[nameFlag + 1] ?? null);
+        const protocol = head.includes("--udp") ? "udp" : "tcp";
         if (!Number.isInteger(port) || argv.length === 0) {
-          fail("usage: mend service run --port <p> [--name <n>] -- <command...>");
+          fail("usage: mend service run --port <p> [--name <n>] [--udp] -- <command...>");
         }
-        const service = await request("POST", "/services/run", { argv, port, name });
+        const service = await request("POST", "/services/run", { argv, port, name, protocol });
         console.log("Service " + (service.label ?? "") + " · " + service.status + " · reachable from the user's machine");
         return;
       }
@@ -153,8 +159,9 @@ const main = async () => {
         const port = Number(rest.find((a) => /^\\d+$/.test(a)));
         const nameFlag = rest.indexOf("--name");
         const name = nameFlag === -1 ? null : (rest[nameFlag + 1] ?? null);
-        if (!Number.isInteger(port)) fail("usage: mend service add <port> [--name <n>]");
-        const service = await request("POST", "/services/add", { port, name });
+        const protocol = rest.includes("--udp") ? "udp" : "tcp";
+        if (!Number.isInteger(port)) fail("usage: mend service add <port> [--name <n>] [--udp]");
+        const service = await request("POST", "/services/add", { port, name, protocol });
         console.log("Service " + (service.label ?? "") + " · " + service.status);
         return;
       }
@@ -257,17 +264,19 @@ export const SessionSocketHostLive: Layer.Layer<SessionSocketHost> = Layer.effec
           const argv = Array.isArray(body["argv"]) ? body["argv"].map(String) : [];
           const port = Number(body["port"]);
           const name = typeof body["name"] === "string" ? body["name"] : null;
+          const protocol = body["protocol"] === "udp" ? ("udp" as const) : ("tcp" as const);
           if (argv.length === 0 || !Number.isInteger(port)) {
             return respond(400, { message: "argv and port are required" });
           }
-          return respond(200, await Effect.runPromise(api.runService(argv, port, name)));
+          return respond(200, await Effect.runPromise(api.runService(argv, port, name, protocol)));
         }
         if (route === "POST /services/add") {
           const body = asRecord(await readBody(request));
           const port = Number(body["port"]);
           const name = typeof body["name"] === "string" ? body["name"] : null;
+          const protocol = body["protocol"] === "udp" ? ("udp" as const) : ("tcp" as const);
           if (!Number.isInteger(port)) return respond(400, { message: "port is required" });
-          return respond(200, await Effect.runPromise(api.addService(port, name)));
+          return respond(200, await Effect.runPromise(api.addService(port, name, protocol)));
         }
         const action = /^POST \/services\/([^/]+)\/(stop|restart)$/.exec(route);
         if (action?.[1] !== undefined) {

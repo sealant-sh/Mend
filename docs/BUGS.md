@@ -20,3 +20,16 @@ Fixed and removed:
   injecting every baked harness's credentials, selected by what actually launches (argv "bash"),
   covering shell sessions AND shell resumes.
 -->
+
+## Graceful shutdown can wedge with live sessions
+
+Observed 2026-08-13 while live-testing UDP Services: on `node --watch` restart (SIGTERM), the child
+released :3105 but hung forever holding the Service listeners (TCP and UDP), all session unix
+sockets, and its platform connections — the engine scope's teardown never reached the ServiceHost /
+SessionSocketHost finalizers. Inspector dump showed the finalizer chain stalled with live watch
+fibers; the suspect is an `Effect.tryPromise` on a pending SDK call (record stream / PTY status)
+with no abort signal, which is uninterruptible while pending. Reproduced twice with 3 live sessions.
+
+Mitigated in `apps/web/src/entry/main.ts` with a 5s shutdown deadline (unref'd timer →
+`process.exit`). Root fix: thread `AbortSignal` through the engine's SDK polling calls so
+interruption can actually cancel them.

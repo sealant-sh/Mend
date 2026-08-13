@@ -709,6 +709,7 @@ export interface SessionProcessDto {
   readonly status: string;
   readonly exitCode: number | null;
   readonly workspacePort: number | null;
+  readonly protocol: "tcp" | "udp";
   readonly hostPort: number | null;
   readonly exitedAt: string | null;
 }
@@ -718,6 +719,7 @@ export interface ServiceRecipeDto {
   readonly name: string;
   readonly command: string | null;
   readonly port: number;
+  readonly protocol: "tcp" | "udp";
   /** "file" = the repo's mend.toml (read-only here); "project" = declared on this machine. */
   readonly source: "file" | "project";
 }
@@ -728,7 +730,12 @@ export const projectRecipes = (projectId: string) =>
 /** Declaring can be refused for readable reasons (name taken, bad port) — surface them. */
 export const addProjectRecipe = async (
   projectId: string,
-  input: { readonly name: string; readonly command: string | null; readonly port: number },
+  input: {
+    readonly name: string;
+    readonly command: string | null;
+    readonly port: number;
+    readonly protocol: "tcp" | "udp";
+  },
 ): Promise<ServiceRecipeDto> => {
   const response = await fetch(`/api/projects/${projectId}/service-recipes`, {
     method: "POST",
@@ -763,20 +770,33 @@ export const listSessionRecipes = (id: string) =>
 
 export const runService = (
   sessionId: string,
-  input: { argv: ReadonlyArray<string>; port: number; name: string | null },
+  input: {
+    argv: ReadonlyArray<string>;
+    port: number;
+    name: string | null;
+    protocol?: "tcp" | "udp";
+  },
 ) => post<SessionProcessDto>(`/api/sessions/${sessionId}/services/run`, input);
 
-export const addService = (sessionId: string, input: { port: number; name: string | null }) =>
-  post<SessionProcessDto>(`/api/sessions/${sessionId}/services`, input);
+export const addService = (
+  sessionId: string,
+  input: { port: number; name: string | null; protocol?: "tcp" | "udp" },
+) => post<SessionProcessDto>(`/api/sessions/${sessionId}/services`, input);
 
 export const restartService = (id: string) =>
   post<SessionProcessDto>(`/api/services/${id}/restart`, {});
 
 export const stopService = (id: string) => post<SessionProcessDto>(`/api/services/${id}/stop`, {});
 
-/** The Service's reachable URL: the API carries no host — the browser's does. */
+/** The Service's reachable URL: the API carries no host — the browser's does. UDP has no page. */
 export const serviceUrl = (service: SessionProcessDto) =>
-  service.hostPort === null ? null : `http://${window.location.hostname}:${service.hostPort}`;
+  service.hostPort === null || service.protocol === "udp"
+    ? null
+    : `http://${window.location.hostname}:${service.hostPort}`;
+
+/** What a client would connect to — the copyable fact, any protocol. */
+export const serviceEndpoint = (service: SessionProcessDto) =>
+  service.hostPort === null ? null : `${window.location.hostname}:${service.hostPort}`;
 
 export const changeComments = (id: string) =>
   request<ReadonlyArray<ReviewCommentDto>>(`/api/changes/${id}/comments`);

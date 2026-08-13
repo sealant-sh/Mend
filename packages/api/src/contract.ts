@@ -509,6 +509,7 @@ export class AddProjectServiceRecipe extends Schema.Class<AddProjectServiceRecip
   name: Schema.String,
   command: Schema.NullOr(Schema.String),
   port: Schema.Int,
+  protocol: Schema.optional(Schema.Literals(["tcp", "udp"])),
 }) {}
 
 /**
@@ -633,6 +634,7 @@ const sessionsGroup = HttpApiGroup.make("sessions")
       payload: Schema.Struct({
         port: Schema.Int,
         name: Schema.NullOr(Schema.String),
+        protocol: Schema.optional(Schema.Literals(["tcp", "udp"])),
       }),
       success: SessionProcess,
       error: Schema.Union([NotFound, SessionNotLive, StoreFailure]),
@@ -647,6 +649,7 @@ const sessionsGroup = HttpApiGroup.make("sessions")
         argv: Schema.Array(Schema.String),
         port: Schema.Int,
         name: Schema.NullOr(Schema.String),
+        protocol: Schema.optional(Schema.Literals(["tcp", "udp"])),
       }),
       success: SessionProcess,
       error: Schema.Union([NotFound, SessionNotLive, StoreFailure]),

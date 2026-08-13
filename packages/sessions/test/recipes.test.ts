@@ -15,6 +15,29 @@ const worktreeWith = (toml: string | null): string => {
 };
 
 describe("readServiceRecipes", () => {
+  it("reads a udp recipe and defaults protocol to tcp", async () => {
+    const worktree = worktreeWith(
+      [
+        "[service.game]",
+        'command = "./server"',
+        "port = 34197",
+        'protocol = "udp"',
+        "",
+        "[service.web]",
+        'command = "pnpm dev"',
+        "port = 3000",
+      ].join("\n"),
+    );
+    const recipes = await Effect.runPromise(readServiceRecipes(worktree));
+    expect(recipes.find((r) => r.name === "game")?.protocol).toBe("udp");
+    expect(recipes.find((r) => r.name === "web")?.protocol).toBe("tcp");
+  });
+
+  it("refuses a protocol that is neither tcp nor udp", async () => {
+    const worktree = worktreeWith(["[service.x]", "port = 1", 'protocol = "sctp"'].join("\n"));
+    await expect(Effect.runPromise(readServiceRecipes(worktree))).rejects.toThrow(/protocol/);
+  });
+
   it("reads run and adopt recipes", async () => {
     const worktree = worktreeWith(`
 [service.web]

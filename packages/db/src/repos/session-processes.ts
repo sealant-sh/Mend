@@ -32,6 +32,8 @@ export interface NewSessionProcess {
   readonly status?: SessionProcessStatus;
   readonly workspacePort?: number | null;
   readonly hostPort?: number | null;
+  /** Declared transport for Services; defaults to tcp. */
+  readonly protocol?: "tcp" | "udp";
 }
 
 /**
