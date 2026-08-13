@@ -1557,6 +1557,13 @@ export class SessionEngine extends Context.Service<
           return yield* new SessionNotLiveError({ sessionId });
         }
         const workspaceId = session.sealantWorkspaceId;
+        const label = name ?? `port-${workspacePort}`;
+        const liveHere = yield* processes.listLiveForWorkspace(workspaceId);
+        if (liveHere.some((row) => row.kind === "service" && row.label === label)) {
+          return yield* new ServiceBindError({
+            message: `A live Service named "${label}" already exists in this session — stop it or pick another name.`,
+          });
+        }
         // An add is adoption, not a claim: a port nobody answers on yet is
         // still a valid Service — it just reads unreachable until it does.
         const reachable = yield* serviceHost.probe(workspaceId, workspacePort);
@@ -1565,7 +1572,7 @@ export class SessionEngine extends Context.Service<
           sealantWorkspaceId: workspaceId,
           sealantSessionId: null,
           kind: "service",
-          label: name ?? `port-${workspacePort}`,
+          label,
           argv: [],
           status: reachable ? "reachable" : "unreachable",
           workspacePort,
@@ -1638,6 +1645,13 @@ export class SessionEngine extends Context.Service<
           return yield* new SessionNotLiveError({ sessionId });
         }
         const workspaceId = session.sealantWorkspaceId;
+        const label = name ?? argv[0] ?? "service";
+        const liveHere = yield* processes.listLiveForWorkspace(workspaceId);
+        if (liveHere.some((row) => row.kind === "service" && row.label === label)) {
+          return yield* new ServiceBindError({
+            message: `A live Service named "${label}" already exists in this session — stop it or pick another name.`,
+          });
+        }
         const workspace = yield* sealant.getWorkspace(workspaceId);
         const pty = yield* sealant.openSession(workspace, argv);
         const serviceProcess = yield* processes.create({
@@ -1645,7 +1659,7 @@ export class SessionEngine extends Context.Service<
           sealantWorkspaceId: workspaceId,
           sealantSessionId: pty.id,
           kind: "service",
-          label: name ?? argv[0] ?? "service",
+          label,
           argv,
           status: "starting",
           workspacePort,
