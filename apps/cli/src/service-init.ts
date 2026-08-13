@@ -118,7 +118,10 @@ export const proposeFromCompose = (composeText: string): ReadonlyArray<ServicePr
       continue;
     }
     if (inPorts) {
-      const mapping = /^\s+-\s+["']?(\d{2,5})(?::\d{2,5})?/.exec(line);
+      const mapping =
+        /^\s+-\s+["']?(\d{2,5}):/.exec(line) ??
+        /^\s+-\s+["']?\$\{[A-Z_a-z0-9]+:-(\d{2,5})\}:/.exec(line) ??
+        /^\s+-\s+["']?(\d{2,5})["']?\s*$/.exec(line);
       if (mapping?.[1] !== undefined) {
         const port = Number(mapping[1]);
         if (port >= 1 && port <= 65535 && !proposals.some((p) => p.name === current)) {
@@ -137,6 +140,84 @@ export const proposeFromCompose = (composeText: string): ReadonlyArray<ServicePr
     }
   }
   return proposals;
+};
+
+/** Any compose flavor counts: compose.yaml, docker-compose.yml, compose.dev.yaml… */
+export const isComposeFile = (name: string): boolean =>
+  /^(docker-)?compose(\.[\w.-]+)?\.ya?ml$/.test(name);
+
+/** Workspace dir globs from pnpm-workspace.yaml / package.json "workspaces". Single-level only. */
+export const workspaceGlobs = (
+  pnpmWorkspaceText: string | null,
+  packageJsonText: string | null,
+): ReadonlyArray<string> => {
+  const globs: string[] = [];
+  if (pnpmWorkspaceText !== null) {
+    let inPackages = false;
+    for (const line of pnpmWorkspaceText.split("\n")) {
+      if (/^packages:\s*$/.test(line)) {
+        inPackages = true;
+        continue;
+      }
+      if (inPackages && /^\S/.test(line)) inPackages = false;
+      if (!inPackages) continue;
+      const entry = /^\s+-\s+["']?([^"'#]+?)["']?\s*$/.exec(line);
+      if (entry?.[1] !== undefined && !entry[1].startsWith("!")) globs.push(entry[1].trim());
+    }
+  }
+  if (packageJsonText !== null) {
+    try {
+      const parsed = JSON.parse(packageJsonText) as { workspaces?: unknown };
+      if (Array.isArray(parsed.workspaces)) {
+        globs.push(...parsed.workspaces.filter((g): g is string => typeof g === "string"));
+      }
+    } catch {
+      // no workspaces to read
+    }
+  }
+  return globs;
+};
+
+/** A workspace package's proposal: named after its folder, run through the package manager. */
+export const proposeFromWorkspacePackage = (
+  dirName: string,
+  packageJsonText: string,
+  rootFiles: ReadonlyArray<string>,
+): ReadonlyArray<ServiceProposal> => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(packageJsonText);
+  } catch {
+    return [];
+  }
+  if (typeof parsed !== "object" || parsed === null) return [];
+  const pkg = parsed as { name?: unknown; scripts?: Record<string, unknown> };
+  const scripts = pkg.scripts;
+  if (typeof scripts !== "object" || scripts === null) return [];
+  const pkgName = typeof pkg.name === "string" ? pkg.name : dirName;
+  const pm = packageManagerOf(rootFiles);
+  const runner =
+    pm === "pnpm"
+      ? (script: string) => `pnpm --filter ${pkgName} ${script}`
+      : pm === "yarn"
+        ? (script: string) => `yarn workspace ${pkgName} ${script}`
+        : (script: string) => `${pm} run ${script} --workspace ${pkgName}`;
+  for (const scriptName of SERVER_SCRIPTS) {
+    const script = scripts[scriptName];
+    if (typeof script !== "string") continue;
+    const port = portFromScript(script);
+    if (port === null) continue;
+    return [
+      {
+        name: dirName,
+        command: runner(scriptName),
+        port: port.port,
+        guessed: port.guessed,
+        source: `${dirName}/package.json "${scriptName}": ${script}`,
+      },
+    ];
+  }
+  return [];
 };
 
 /** The proposal as the file the user will commit. */
