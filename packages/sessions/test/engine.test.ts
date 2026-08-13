@@ -273,6 +273,16 @@ const sessionProcessesLayer = (world: World) => {
           world.processes.set(id, new SessionProcess({ ...process, hostPort, updatedAt: now() }));
         }
       }),
+    setSealantSessionId: (id, sealantSessionId) =>
+      Effect.sync(() => {
+        const process = world.processes.get(id);
+        if (process !== undefined && process.exitedAt === null) {
+          world.processes.set(
+            id,
+            new SessionProcess({ ...process, sealantSessionId, updatedAt: now() }),
+          );
+        }
+      }),
     markExited: (id, outcome, exitCode) =>
       Effect.sync(() => {
         const process = world.processes.get(id);
@@ -802,6 +812,40 @@ describe("SessionEngine", () => {
           expect(stopped).toEqual(["workspace-1"]);
         }),
       { sealantLayer: sealantLaunchLayer(created, undefined, stopped) },
+    );
+  });
+
+  it("runService supervises a command; restart keeps the row, port, and URL", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+
+          const service = yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web");
+          expect(service.kind).toBe("service");
+          expect(service.sealantSessionId).toBe("pty-1");
+          expect(service.argv).toEqual(["pnpm", "dev"]);
+          expect(service.status).toBe("reachable");
+          expect(service.hostPort).toBe(43127);
+
+          const restarted = yield* engine.restartService(service.id);
+          expect(restarted.id).toBe(service.id);
+          expect(restarted.hostPort).toBe(43127);
+          expect(restarted.status).toBe("reachable");
+
+          const stopped = yield* engine.stopService(service.id);
+          expect(stopped.status).toBe("stopped");
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
     );
   });
 

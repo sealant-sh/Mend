@@ -112,6 +112,7 @@ const processesStubLayer = Layer.succeed(SessionProcessesRepo, {
   listLive: () => Effect.succeed([]),
   setStatus: () => Effect.void,
   setHostPort: () => Effect.void,
+  setSealantSessionId: () => Effect.void,
   markExited: () => Effect.void,
   reapLiveForWorkspace: () => Effect.void,
 });

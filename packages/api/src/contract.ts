@@ -600,9 +600,31 @@ const sessionsGroup = HttpApiGroup.make("sessions")
     }),
   )
   .add(
+    // Start and supervise a Service: a PTY-backed command in the session's
+    // workspace, awaited until the declared port answers.
+    HttpApiEndpoint.post("runService", "/sessions/:id/services/run", {
+      params: { id: SessionId },
+      payload: Schema.Struct({
+        argv: Schema.Array(Schema.String),
+        port: Schema.Int,
+        name: Schema.NullOr(Schema.String),
+      }),
+      success: SessionProcess,
+      error: Schema.Union([NotFound, SessionNotLive, StoreFailure]),
+    }),
+  )
+  .add(
     // What is running right now, across every session — one list, any device.
     HttpApiEndpoint.get("listServices", "/services", {
       success: Schema.Array(SessionProcess),
+    }),
+  )
+  .add(
+    // Re-run the recorded command: same row, same host port, same URL.
+    HttpApiEndpoint.post("restartService", "/services/:id/restart", {
+      params: { id: SessionProcessId },
+      success: SessionProcess,
+      error: Schema.Union([NotFound, StoreFailure]),
     }),
   )
   .add(

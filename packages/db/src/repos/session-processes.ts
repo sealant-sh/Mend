@@ -46,6 +46,11 @@ export class SessionProcessesRepo extends Context.Service<
     readonly setStatus: (id: SessionProcessId, status: SessionProcessStatus) => Effect.Effect<void>;
     /** Record the bound host port once the listener exists (Services only). */
     readonly setHostPort: (id: SessionProcessId, hostPort: number) => Effect.Effect<void>;
+    /** Point a LIVE row at a fresh platform PTY (Service restart keeps identity + URL). */
+    readonly setSealantSessionId: (
+      id: SessionProcessId,
+      sealantSessionId: string,
+    ) => Effect.Effect<void>;
     readonly markExited: (
       id: SessionProcessId,
       outcome: "exited" | "stopped",
@@ -154,6 +159,17 @@ export const SessionProcessesRepoLive: Layer.Layer<SessionProcessesRepo, never, 
           .pipe(Effect.orDie);
       });
 
+      const setSealantSessionId = Effect.fn("SessionProcessesRepo.setSealantSessionId")(function* (
+        id: SessionProcessId,
+        sealantSessionId: string,
+      ) {
+        yield* db
+          .update(sessionProcesses)
+          .set({ sealantSessionId, updatedAt: new Date() })
+          .where(and(eq(sessionProcesses.id, id), isNull(sessionProcesses.exitedAt)))
+          .pipe(Effect.orDie);
+      });
+
       const markExited = Effect.fn("SessionProcessesRepo.markExited")(function* (
         id: SessionProcessId,
         outcome: "exited" | "stopped",
@@ -192,6 +208,7 @@ export const SessionProcessesRepoLive: Layer.Layer<SessionProcessesRepo, never, 
         listLive,
         setStatus,
         setHostPort,
+        setSealantSessionId,
         markExited,
         reapLiveForWorkspace,
       };
