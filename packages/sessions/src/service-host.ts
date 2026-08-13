@@ -107,6 +107,8 @@ const pump = (socket: net.Socket, forward: WorkspaceForward): void => {
 interface ActiveService {
   readonly servers: ReadonlyArray<net.Server>;
   readonly timer: NodeJS.Timeout;
+  /** Live pump sockets — a shutdown must sever these or the process never exits. */
+  readonly sockets: Set<net.Socket>;
   lastStatus: "reachable" | "unreachable" | null;
 }
 
@@ -122,6 +124,17 @@ export const ServiceHostLive: Layer.Layer<
     const sealant = yield* SealantClient;
     const processes = yield* SessionProcessesRepo;
     const active = new Map<SessionProcessId, ActiveService>();
+
+    // Graceful shutdown: close every listener and sever every pump, or the
+    // open handles keep the process alive and `pnpm dev` restarts wedge into
+    // a half-dead server (HTTP gone, Service ports still held).
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        for (const processId of Array.from(active.keys())) {
+          stopSync(processId);
+        }
+      }),
+    );
 
     /**
      * "The workspace's port" is one namespace to the user, two to Docker: a
@@ -162,6 +175,12 @@ export const ServiceHostLive: Layer.Layer<
       for (const server of entry.servers) {
         server.close();
       }
+      // server.close() only stops accepting; established pumps must be
+      // severed or they hold the event loop (and a graceful shutdown) open.
+      for (const socket of entry.sockets) {
+        socket.destroy();
+      }
+      entry.sockets.clear();
     };
 
     const probe = (workspaceId: SealantWorkspaceId, workspacePort: number) =>
@@ -186,6 +205,11 @@ export const ServiceHostLive: Layer.Layer<
       }
 
       const onConnection = (socket: net.Socket): void => {
+        const entry = active.get(input.processId);
+        if (entry !== undefined) {
+          entry.sockets.add(socket);
+          socket.once("close", () => entry.sockets.delete(socket));
+        }
         void Effect.runPromise(dial(input.workspaceId, input.workspacePort).pipe(Effect.option))
           .then((forward) => {
             if (Option.isNone(forward)) {
@@ -249,7 +273,7 @@ export const ServiceHostLive: Layer.Layer<
           );
         }, PROBE_INTERVAL_MS);
         timer.unref();
-        active.set(input.processId, { servers, timer, lastStatus: null });
+        active.set(input.processId, { servers, timer, sockets: new Set(), lastStatus: null });
         return port;
       }
 
