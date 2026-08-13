@@ -16,11 +16,19 @@ import {
   SettingsRepo,
 } from "@mend/db";
 import { MendSettings, workspaceImagesEqual } from "@mend/domain";
-import { FollowUp } from "@mend/domain/workbench";
+import { FollowUp, type GitAuthMode } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
 import { SealantClient } from "@mend/sealant";
 import { RECIPE_NAME, SessionEngine, mergeRecipes, readServiceRecipes } from "@mend/sessions";
-import { Store, worktreePathOf } from "@mend/store";
+import {
+  MendKeys,
+  Store,
+  describeGitRemoteFailure,
+  remoteGitEnv,
+  sshCommandFor,
+  worktreePathOf,
+  type GitError,
+} from "@mend/store";
 import { Effect, Stream } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
@@ -29,6 +37,7 @@ import {
   ChangedFileView,
   ChangeStats,
   CurrentUser,
+  GitKeyView,
   MendApi,
   NotFound,
   ProjectDetail,
@@ -61,6 +70,36 @@ const STORE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 /** Live session states — removal refuses these; project removal stops them. */
 const LIVE_STATES = new Set(["starting", "running", "waiting", "idle"]);
+
+/**
+ * A remote git failure as a `StoreFailure`: a readable sentence when the
+ * stderr matched a known ssh/auth shape (docs/GIT-ACCESS.md — permission
+ * denied, unknown host key, timeout), the stderr verbatim when it didn't.
+ */
+const readableGitFailure = (error: GitError, mode: GitAuthMode): StoreFailure => {
+  if (error.stderr === "") return new StoreFailure({ message: String(error) });
+  const described = describeGitRemoteFailure(error.stderr, mode);
+  return new StoreFailure({ message: described ?? error.stderr });
+};
+
+/**
+ * The resolved env for a remote git op under `mode` — the host-side half of
+ * the credential seam. Generates the machine key on first mend-key use.
+ */
+const remoteEnvFor = (mode: GitAuthMode) =>
+  Effect.gen(function* () {
+    const keys = yield* MendKeys;
+    if (mode === "ambient") return remoteGitEnv(sshCommandFor("ambient", null));
+    const key = yield* keys
+      .ensure()
+      .pipe(
+        Effect.mapError(
+          (error) =>
+            new StoreFailure({ message: `Could not create the Mend key: ${error.stderr}` }),
+        ),
+      );
+    return remoteGitEnv(sshCommandFor("mend-key", key.privateKeyPath));
+  });
 
 /** One settings document; PUT replaces it (clients edit what GET returned). */
 export const SettingsGroupLive = HttpApiBuilder.group(MendApi, "settings", (handlers) =>
@@ -137,20 +176,18 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
             message: `"${payload.name}" is already adopted — its store lives at ${existing.storePath}`,
           });
         }
-        const adopted = yield* store.adopt(payload.name, payload.source).pipe(
-          Effect.mapError(
-            (error) =>
-              new StoreFailure({
-                message: error.cause.stderr === "" ? String(error) : error.cause.stderr,
-              }),
-          ),
-        );
+        const mode = payload.gitAuthMode ?? "ambient";
+        const remoteEnv = yield* remoteEnvFor(mode);
+        const adopted = yield* store
+          .adopt(payload.name, payload.source, remoteEnv)
+          .pipe(Effect.mapError((error) => readableGitFailure(error.cause, mode)));
         return yield* projects.create({
           name: payload.name,
           originUrl: payload.source,
           storePath: adopted.storePath,
           defaultBranch: adopted.defaultBranch,
           adoptedSha: adopted.headSha,
+          gitAuthMode: mode,
         });
       }),
     )
@@ -201,6 +238,53 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
             autoSuggest: payload.autoSuggest,
           })
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+      }),
+    )
+    .handle("gitAuth", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        // Resolving the env generates the key on first mend-key use, so the
+        // settings card can show a public key the moment the mode lands.
+        yield* remoteEnvFor(payload.gitAuthMode);
+        return yield* projects
+          .setGitAuthMode(params.id, payload.gitAuthMode)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+      }),
+    ),
+);
+
+/** The machine's Mend git key — public half only, ever (docs/GIT-ACCESS.md). */
+export const GitKeysGroupLive = HttpApiBuilder.group(MendApi, "gitKeys", (handlers) =>
+  handlers
+    .handle("show", () =>
+      Effect.gen(function* () {
+        const keys = yield* MendKeys;
+        const key = yield* keys.read().pipe(Effect.orDie);
+        return key === null
+          ? new GitKeyView({ exists: false, publicKey: null, fingerprint: null })
+          : new GitKeyView({
+              exists: true,
+              publicKey: key.publicKey,
+              fingerprint: key.fingerprint,
+            });
+      }),
+    )
+    .handle("init", () =>
+      Effect.gen(function* () {
+        const keys = yield* MendKeys;
+        const key = yield* keys
+          .ensure()
+          .pipe(
+            Effect.mapError(
+              (error) =>
+                new StoreFailure({ message: `Could not create the Mend key: ${error.stderr}` }),
+            ),
+          );
+        return new GitKeyView({
+          exists: true,
+          publicKey: key.publicKey,
+          fingerprint: key.fingerprint,
+        });
       }),
     ),
 );
@@ -365,14 +449,11 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
             message: `"${payload.name}" already exists — its clone lives at ${existing.path}`,
           });
         }
-        const cloned = yield* store.cloneReference(payload.name, payload.source, payload.ref).pipe(
-          Effect.mapError(
-            (error) =>
-              new StoreFailure({
-                message: error.cause.stderr === "" ? String(error) : error.cause.stderr,
-              }),
-          ),
-        );
+        // References are a global list with no project to carry a mode — ambient.
+        const remoteEnv = yield* remoteEnvFor("ambient");
+        const cloned = yield* store
+          .cloneReference(payload.name, payload.source, payload.ref, remoteEnv)
+          .pipe(Effect.mapError((error) => readableGitFailure(error.cause, "ambient")));
         return yield* references.create({
           name: payload.name,
           originUrl: payload.source,
@@ -400,9 +481,10 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
         const reference = yield* references
           .byId(params.id)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        const remoteEnv = yield* remoteEnvFor("ambient");
         const refreshed = yield* store
-          .refreshReference(reference.path, reference.pinnedRef)
-          .pipe(Effect.mapError((error) => new StoreFailure({ message: error.stderr })));
+          .refreshReference(reference.path, reference.pinnedRef, remoteEnv)
+          .pipe(Effect.mapError((error) => readableGitFailure(error, "ambient")));
         yield* references.setHead(params.id, refreshed.headSha);
         return yield* references
           .byId(params.id)

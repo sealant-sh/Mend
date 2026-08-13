@@ -111,8 +111,16 @@ export const sessionStatePathOf = (storePath: string, sessionId: string) =>
 export class Store extends Context.Service<
   Store,
   {
-    /** Clone `source` (URL or local path) into the store as a bare repo. */
-    readonly adopt: (name: string, source: string) => Effect.Effect<AdoptedRepo, AdoptError>;
+    /**
+     * Clone `source` (URL or local path) into the store as a bare repo.
+     * `remoteEnv` carries the resolved auth (`GIT_SSH_COMMAND`, prompt policy)
+     * from the git-auth seam — the store itself never decides credentials.
+     */
+    readonly adopt: (
+      name: string,
+      source: string,
+      remoteEnv: Record<string, string>,
+    ) => Effect.Effect<AdoptedRepo, AdoptError>;
     /** Create the session's worktree on its own branch from `base` (default branch when null). */
     readonly createWorktree: (
       storePath: string,
@@ -169,11 +177,13 @@ export class Store extends Context.Service<
       name: string,
       source: string,
       ref: string | null,
+      remoteEnv: Record<string, string>,
     ) => Effect.Effect<ReferenceClone, ReferenceCloneError>;
     /** Re-fetch the pinned ref (or the clone's branch) shallow and hard-reset to it. */
     readonly refreshReference: (
       clonePath: string,
       ref: string | null,
+      remoteEnv: Record<string, string>,
     ) => Effect.Effect<ReferenceClone, GitError>;
     /** Delete the clone directory. Selection rows are the caller's concern. */
     readonly removeReference: (clonePath: string) => Effect.Effect<void>;
@@ -207,14 +217,16 @@ export class Store extends Context.Service<
           }
         });
 
-      const adopt = Effect.fn("Store.adopt")(function* (name: string, source: string) {
+      const adopt = Effect.fn("Store.adopt")(function* (
+        name: string,
+        source: string,
+        remoteEnv: Record<string, string>,
+      ) {
         const projectDir = path.join(config.root, name);
         const storePath = path.join(projectDir, "repo.git");
         const attempt = Effect.gen(function* () {
           yield* Effect.sync(() => fs.mkdirSync(config.root, { recursive: true }));
-          yield* git(["clone", "--bare", source, storePath], config.root, {
-            GIT_TERMINAL_PROMPT: "0",
-          });
+          yield* git(["clone", "--bare", source, storePath], config.root, remoteEnv);
           // Bare clones don't fetch new branches by default — make later syncs sane.
           yield* git(
             ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
@@ -398,6 +410,7 @@ export class Store extends Context.Service<
         name: string,
         source: string,
         ref: string | null,
+        remoteEnv: Record<string, string>,
       ) {
         const referencesRoot = path.join(config.root, "_references");
         const clonePath = path.join(referencesRoot, name);
@@ -413,7 +426,7 @@ export class Store extends Context.Service<
               clonePath,
             ],
             referencesRoot,
-            { GIT_TERMINAL_PROMPT: "0" },
+            remoteEnv,
           );
           const head = yield* git(["rev-parse", "HEAD"], clonePath);
           return { path: clonePath, headSha: sha(head) };
@@ -426,14 +439,13 @@ export class Store extends Context.Service<
       const refreshReference = Effect.fn("Store.refreshReference")(function* (
         clonePath: string,
         ref: string | null,
+        remoteEnv: Record<string, string>,
       ) {
         // No pin = follow whatever branch the clone is on. FETCH_HEAD + hard
         // reset handles branches and tags uniformly, force-pushes included —
         // a reference clone has no local work to protect.
         const target = ref ?? (yield* git(["symbolic-ref", "--short", "HEAD"], clonePath));
-        yield* git(["fetch", "--depth", "1", "origin", target], clonePath, {
-          GIT_TERMINAL_PROMPT: "0",
-        });
+        yield* git(["fetch", "--depth", "1", "origin", target], clonePath, remoteEnv);
         yield* git(["reset", "--hard", "FETCH_HEAD"], clonePath);
         const head = yield* git(["rev-parse", "HEAD"], clonePath);
         return { path: clonePath, headSha: sha(head) };

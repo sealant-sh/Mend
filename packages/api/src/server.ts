@@ -34,6 +34,7 @@ import {
 } from "./contract.ts";
 import { GithubGroupLive } from "./github.ts";
 import {
+  GitKeysGroupLive,
   ProjectMountsGroupLive,
   ProjectRecipesGroupLive,
   ProjectsGroupLive,
@@ -394,6 +395,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
   Layer.provide(BriefsGroupLive),
   Layer.provide(RunsGroupLive),
   Layer.provide(ProjectsGroupLive),
+  Layer.provide(GitKeysGroupLive),
   Layer.provide(ProjectMountsGroupLive),
   Layer.provide(ProjectRecipesGroupLive),
   Layer.provide(ReferencesGroupLive),

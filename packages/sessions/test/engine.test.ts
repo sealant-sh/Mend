@@ -341,6 +341,7 @@ const referencesEmptyLayer = Layer.succeed(ReferencesRepo, {
 const projectsLayer = (world: World) =>
   Layer.succeed(ProjectsRepo, {
     create: () => Effect.die("not in test"),
+    setGitAuthMode: () => Effect.die("not in test"),
     byId: (id) => {
       const found = world.projects.get(id);
       return found === undefined
@@ -550,7 +551,7 @@ const setup = (tmp: string, world: World) => {
 
   return Effect.gen(function* () {
     const store = yield* Store;
-    const adopted = yield* store.adopt("fixture", origin);
+    const adopted = yield* store.adopt("fixture", origin, { GIT_TERMINAL_PROMPT: "0" });
     const project = new Project({
       id: ProjectId.make("proj-1"),
       name: "fixture",
@@ -560,6 +561,7 @@ const setup = (tmp: string, world: World) => {
       adoptedSha: Sha.make(adopted.headSha),
       autoTour: "inherit",
       autoSuggest: "inherit",
+      gitAuthMode: "ambient",
       createdAt: now(),
       updatedAt: now(),
     });
