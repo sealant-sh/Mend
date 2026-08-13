@@ -2,22 +2,21 @@
 
 Observed, reproducible, not yet fixed. Newest first; delete entries when they ship.
 
-## 2026-08-13 · shell exit settles the session as failed
+## 2026-08-13 · shell state restore references sessions the CLIs cannot open
 
-Entering a shell (shell-kind session, or a shell resume) and leaving it with a plain `exit` marks
-the SESSION as `failed`. Suspects, unverified: the platform loses the exit code on a clean exit
-(PLATFORM-FEEDBACK.md 2026-08-12), so a settle path that distinguishes success by exit code may
-misread `undefined`; or the run-level settle (`supervise` → `waitRun`) reports a non-completed
-outcome for bash. `watchPty` treats `undefined` as completed, so the failed verdict likely comes
-from the supervision path, not the watcher. Fix belongs with the exit-code platform fix, or the
-settle paths stop guessing when the code is unknown.
+Inside a shell session, the agent CLIs list past conversations that fail to open ("imagined"
+sessions). Likely the restored/converted harness state (the conversation-lands-everywhere launch
+invariant) placing session files whose provider-side ids or paths don't resolve in this fresh
+workspace. Needs: reproduce with a specific harness, inspect what the restore/convert placed in
+`$HOME`, and decide what the invariant should write for a session that never ran that harness.
 
-## 2026-08-13 · shell sessions: harness auth and state folders are wrong-shaped
-
-Inside a shell-kind session (picker-spawned, harness "shell"), the agent CLIs are present (unified
-image) but unauthenticated: `platformShape("shell")` falls to the default branch — opencode image
-shape, `{ github }` credentials only — so no claude/codex connected-account credentials are
-injected. Separately, the restored/converted state folders can reference PAST sessions the CLIs then
-list but cannot open ("imagined" sessions). Needs: a real platform shape for shell sessions
-(credentials for every baked harness), and a look at what state restore should place for a session
-that never ran that harness.
+<!--
+Fixed and removed:
+- 2026-08-13 · shell exit settles the session as failed — bash's `exit` returns $? (^C then exit
+  reads 130); the watcher now settles interactive shells as completed regardless of exit code,
+  keeping the observed code in the summary. The platform run was never at fault (verified live:
+  run settles completed/0).
+- 2026-08-13 · shell sessions had no harness credentials — platformShape gained a "shell" branch
+  injecting every baked harness's credentials, selected by what actually launches (argv "bash"),
+  covering shell sessions AND shell resumes.
+-->
