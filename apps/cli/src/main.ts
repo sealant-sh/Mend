@@ -820,7 +820,10 @@ const serviceCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
     case "stop":
       return serviceStop(config, rest);
     default:
-      return fail(`unknown service command "${verb}" — try: run, add, list, logs, restart, stop`);
+      // Sugar: `mend service mysql` reads as `mend service run mysql` — a
+      // bare word that isn't a verb is a recipe name. A miss still explains
+      // itself (declared recipes are listed in the failure).
+      return serviceRun(config, [verb, ...rest]);
   }
 };
 
@@ -1439,6 +1442,7 @@ const HELP = `mend — the agent workbench
   mend service run [session] --port <p> [--name <n>] -- <command...>
                                         start + supervise a server in the session workspace
   mend service run [session] <name>     start a declared Service (mend.toml recipe)
+  mend service <name>                   shorthand for the above
   mend service add [session] <port> [--name <n>]
                                         adopt a listening workspace port — reachable on this machine
   mend service list                     every live service and its observed state
