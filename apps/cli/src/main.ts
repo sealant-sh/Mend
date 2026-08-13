@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { proposeFromCompose, proposeFromPackageJson, renderMendToml } from "./service-init.ts";
 import {
   CONTINUE_COMMANDS,
   gitTopLevel,
@@ -580,6 +581,12 @@ const shellCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
 
 // ─── services: reachable ports, everywhere the session is ───────────────────
 
+interface ServiceRecipeDto {
+  readonly name: string;
+  readonly command: string | null;
+  readonly port: number;
+}
+
 interface ServiceDto {
   readonly id: string;
   readonly sessionId: string;
@@ -683,8 +690,54 @@ const findLiveService = async (config: CliConfig, needle: string): Promise<Servi
  */
 const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const dashdash = args.indexOf("--");
-  const usage = "usage: mend service run [session] --port <port> [--name <n>] -- <command...>";
-  if (dashdash === -1) return fail(usage);
+  const usage =
+    "usage: mend service run [session] --port <port> [--name <n>] -- <command...>\n" +
+    "       mend service run [session] <name>          (a mend.toml recipe)";
+  // No explicit command = a DECLARED Service: resolve the name against the
+  // session worktree's mend.toml and start (or adopt) its recipe.
+  if (dashdash === -1) {
+    const positionals = args.filter((a) => !a.startsWith("--"));
+    const name = positionals.at(-1);
+    if (name === undefined) return fail(usage);
+    const prefix = positionals.length > 1 ? positionals[0] : undefined;
+    const session = await resolveLiveSession(config, prefix);
+    const recipes = await api<ReadonlyArray<ServiceRecipeDto>>(
+      config,
+      "GET",
+      `/sessions/${session.id}/recipes`,
+    );
+    const recipe = recipes.find((entry) => entry.name === name);
+    if (recipe === undefined) {
+      const known = recipes.map((entry) => entry.name).join(", ");
+      return fail(
+        recipes.length === 0
+          ? `no mend.toml recipes in this worktree — declare [service.${name}] first`
+          : `no recipe named "${name}" — declared: ${known}`,
+      );
+    }
+    if (recipe.command === null) {
+      // A port-only recipe is an adopt: something else starts the listener.
+      const service = await api<ServiceDto>(config, "POST", `/sessions/${session.id}/services`, {
+        port: recipe.port,
+        name: recipe.name,
+      });
+      say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
+      say(`  ${cobalt(serviceUrl(config, service))}`);
+      return;
+    }
+    const service = await withSpinner(
+      `starting ${recipe.name} — waiting for :${recipe.port} to answer…`,
+      api<ServiceDto>(config, "POST", `/sessions/${session.id}/services/run`, {
+        argv: ["sh", "-c", recipe.command],
+        port: recipe.port,
+        name: recipe.name,
+      }),
+    );
+    say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
+    say(`  ${cobalt(serviceUrl(config, service))}`);
+    say(dim(`  logs: mend service logs ${service.label ?? service.id.slice(0, 8)}`));
+    return;
+  }
   const argv = args.slice(dashdash + 1);
   if (argv.length === 0) return fail(usage);
   const head = args.slice(0, dashdash);
@@ -712,15 +765,39 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
   say(dim(`  logs: mend service logs ${service.label ?? service.id.slice(0, 8)}`));
 };
 
-/** Watch a supervised Service's output: record replay, then live tail. */
+/**
+ * Watch a supervised Service's output: record replay, then live tail. A DEAD
+ * Service still answers — its record outlives the process — printed once
+ * instead of followed.
+ */
 const serviceLogs = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const needle = args.find((a) => !a.startsWith("--"));
   if (needle === undefined) return fail("usage: mend service logs <name-or-id-prefix>");
-  const service = await findLiveService(config, needle);
+  const everything = await api<ReadonlyArray<ServiceDto>>(config, "GET", "/services?all=1");
+  const matches = everything.filter(
+    (service) => service.label === needle || service.id.startsWith(needle),
+  );
+  if (matches.length === 0) return fail(`no service matches "${needle}"`);
+  // Prefer the live one; otherwise the newest ended one (list is newest-first).
+  const service =
+    matches.find((m) => m.status !== "exited" && m.status !== "stopped") ?? matches[0];
+  if (service === undefined) return fail(`no service matches "${needle}"`);
   if (service.sealantSessionId === null) {
     return fail(
       `"${needle}" is an adopted port — no process of Mend's, no logs. mend service run supervises.`,
     );
+  }
+  if (service.status === "exited" || service.status === "stopped") {
+    // Post-mortem: print the record, don't attach.
+    const output = await api<{ readonly text: string }>(
+      config,
+      "GET",
+      `/processes/${service.id}/output`,
+    );
+    say(dim(`${service.label ?? service.id.slice(0, 8)} · ${service.status} — recorded output:`));
+    say("");
+    process.stdout.write(output.text.endsWith("\n") ? output.text : `${output.text}\n`);
+    process.exit(0);
   }
   say(
     dim(
@@ -751,6 +828,65 @@ const serviceRestart = async (config: CliConfig, args: ReadonlyArray<string>) =>
   say(`  ${cobalt(serviceUrl(config, restarted))}`);
 };
 
+/**
+ * Scaffold mend.toml from the project's own manifests. Static suggestion,
+ * not detection: package.json scripts and compose port mappings become
+ * recipe proposals the user confirms and commits. Nothing runs.
+ */
+const serviceInit = async (args: ReadonlyArray<string>) => {
+  const root = gitTopLevel(process.cwd()) ?? process.cwd();
+  const target = path.join(root, "mend.toml");
+  if (fs.existsSync(target)) {
+    return fail(`${target} already exists — edit it directly (init never merges)`);
+  }
+  const rootFiles = fs.readdirSync(root);
+  const proposals = [];
+  if (rootFiles.includes("package.json")) {
+    proposals.push(
+      ...proposeFromPackageJson(
+        fs.readFileSync(path.join(root, "package.json"), "utf8"),
+        rootFiles,
+      ),
+    );
+  }
+  for (const composeName of [
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "compose.yml",
+    "compose.yaml",
+  ]) {
+    if (rootFiles.includes(composeName)) {
+      proposals.push(...proposeFromCompose(fs.readFileSync(path.join(root, composeName), "utf8")));
+      break;
+    }
+  }
+  if (proposals.length === 0) {
+    return fail(
+      "nothing to propose — no server-ish package.json script with a nameable port, no compose ports",
+    );
+  }
+  const toml = renderMendToml(proposals);
+  say(dim(`proposed ${target}:`));
+  say("");
+  process.stdout.write(toml);
+  say("");
+  if (!args.includes("--yes")) {
+    if (process.stdin.isTTY !== true) {
+      return fail("non-interactive — pass --yes to write the file");
+    }
+    const readline = await import("node:readline/promises");
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await rl.question("write it? [y/N] ");
+    rl.close();
+    if (answer.trim().toLowerCase() !== "y") {
+      say(dim("nothing written"));
+      return;
+    }
+  }
+  fs.writeFileSync(target, toml);
+  say(`${green("✓")} wrote ${target} — commit it, then: mend service run ${proposals[0]?.name}`);
+};
+
 const serviceCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const [verb, ...rest] = args;
   switch (verb) {
@@ -758,6 +894,8 @@ const serviceCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
       return serviceRun(config, rest);
     case "add":
       return serviceAdd(config, rest);
+    case "init":
+      return serviceInit(rest);
     case "list":
     case undefined:
       return serviceList(config);
@@ -768,7 +906,10 @@ const serviceCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
     case "stop":
       return serviceStop(config, rest);
     default:
-      return fail(`unknown service command "${verb}" — try: run, add, list, logs, restart, stop`);
+      // Sugar: `mend service mysql` reads as `mend service run mysql` — a
+      // bare word that isn't a verb is a recipe name. A miss still explains
+      // itself (declared recipes are listed in the failure).
+      return serviceRun(config, [verb, ...rest]);
   }
 };
 
@@ -1386,6 +1527,9 @@ const HELP = `mend — the agent workbench
   mend shell [session-id-prefix]        open a shell in a live session's workspace
   mend service run [session] --port <p> [--name <n>] -- <command...>
                                         start + supervise a server in the session workspace
+  mend service run [session] <name>     start a declared Service (mend.toml recipe)
+  mend service <name>                   shorthand for the above
+  mend service init [--yes]             scaffold mend.toml from package.json + compose ports
   mend service add [session] <port> [--name <n>]
                                         adopt a listening workspace port — reachable on this machine
   mend service list                     every live service and its observed state

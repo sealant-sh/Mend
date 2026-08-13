@@ -374,6 +374,7 @@ export const sessionProcesses = pgTable(
       .references(() => agentSessions.id, { onDelete: "cascade" }),
     sealantWorkspaceId: text().$type<SealantWorkspaceId>().notNull(),
     sealantSessionId: text(),
+    sealantRunId: text().$type<SealantRunId>(),
     kind: text().$type<SessionProcessKind>().notNull(),
     label: text(),
     argv: jsonb()

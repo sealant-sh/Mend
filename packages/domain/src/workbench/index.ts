@@ -25,6 +25,7 @@ export * from "./pass.ts";
 export * from "./project.ts";
 export * from "./reference.ts";
 export * from "./review-comment.ts";
+export * from "./service-recipe.ts";
 export * from "./session.ts";
 export * from "./session-process.ts";
 export * from "./session-run.ts";

@@ -94,6 +94,19 @@ const platformShape = (
         harness: claudeCode(),
         credentialAttempts: withGitHubCredentialFallback({ claude: true }),
       };
+    case "shell":
+      // A shell is an open workbench: the unified image carries EVERY baked
+      // agent CLI, so a shell session gets every harness's credentials — the
+      // user may open either agent from inside (docs/BUGS.md 2026-08-13).
+      return {
+        harness: codex(),
+        credentialAttempts: [
+          { claude: true, codex: true, github: true },
+          { claude: true, codex: true },
+          { github: true },
+          undefined,
+        ],
+      };
     default:
       return { harness: opencode(), credentialAttempts: [{ github: true }, undefined] };
   }
@@ -133,6 +146,33 @@ const withPermissionDefaults = (
  * didn't start.
  */
 const runIsGone = (error: SealantPlatformError) => error.status === 404 || error.status === 410;
+
+/** A dead command's last words — the PTY record replays after settle. Bounded, best-effort. */
+const ptyOutputTail = (pty: {
+  output: (options?: { readonly signal?: AbortSignal }) => AsyncIterable<{
+    readonly data: string | Uint8Array;
+  }>;
+}): Effect.Effect<string> =>
+  Effect.tryPromise({
+    try: async () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 3000);
+      let text = "";
+      try {
+        for await (const chunk of pty.output({ signal: controller.signal })) {
+          text +=
+            typeof chunk.data === "string" ? chunk.data : new TextDecoder().decode(chunk.data);
+          if (text.length > 4000) {
+            text = text.slice(-4000);
+          }
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+      return text.slice(-1500).trim();
+    },
+    catch: () => new Error("output unavailable"),
+  }).pipe(Effect.orElseSucceed(() => ""));
 
 /** How long `mend service run` waits for the declared port before reporting unreachable. */
 const SERVICE_START_TIMEOUT_MS = 60_000;
@@ -899,7 +939,9 @@ export class SessionEngine extends Context.Service<
         const project = yield* projects.byId(session.projectId);
         const settings = yield* settingsRepo.get();
         const worktree = worktreePathOf(project.storePath, session.worktree);
-        const shape = platformShape(session.harness);
+        // A bash launch (shell session, shell resume) is an open workbench:
+        // shape by what actually launches, not the session's harness identity.
+        const shape = platformShape(argv[0] === "bash" ? "shell" : session.harness);
         const stateDir = sessionStatePathOf(project.storePath, session.id);
         // An explicit null skips both the read and the restore (a shell
         // resume tolerates a session that never harvested state).
@@ -1264,6 +1306,7 @@ export class SessionEngine extends Context.Service<
           sessionId,
           sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
           sealantSessionId: pty.id,
+          sealantRunId,
           kind: "agent",
           label: session.harness,
           argv: shapedArgv,
@@ -1304,8 +1347,16 @@ export class SessionEngine extends Context.Service<
             if (status.status === "running") continue;
             const current = yield* sessions.byId(sessionId);
             if (current.settledAt !== null) return;
+            // An interactive shell's exit status is bash's $? — the LAST
+            // command's status, not a verdict: `^C` then `exit` reads 130,
+            // and nobody means "failed" by that (docs/BUGS.md 2026-08-13).
+            // The observed code still lands in the summary; only the verdict
+            // stops guessing.
+            const interactiveShell = shapedArgv[0] === "bash";
             const outcome =
-              status.exitCode === undefined || status.exitCode === 0 ? "completed" : "failed";
+              interactiveShell || status.exitCode === undefined || status.exitCode === 0
+                ? "completed"
+                : "failed";
             // The watcher knows the observed exit precisely; the sweep's reap
             // would only record "exited" with the code lost.
             yield* processes.markExited(agentProcess.id, "exited", status.exitCode ?? null);
@@ -1539,6 +1590,7 @@ export class SessionEngine extends Context.Service<
           sessionId,
           sealantWorkspaceId: session.sealantWorkspaceId,
           sealantSessionId: pty.id,
+          sealantRunId: SealantRunId.make(pty.runId),
           kind: "shell",
           label: "shell",
           argv: ["bash"],
@@ -1605,7 +1657,12 @@ export class SessionEngine extends Context.Service<
        * error: it surfaces as `unreachable` until it listens.
        */
       const awaitServicePort = (
-        pty: { status: () => Promise<{ status: string; exitCode?: number }> },
+        pty: {
+          status: () => Promise<{ status: string; exitCode?: number }>;
+          output: (options?: { readonly signal?: AbortSignal }) => AsyncIterable<{
+            readonly data: string | Uint8Array;
+          }>;
+        },
         workspaceId: SealantWorkspaceId,
         workspacePort: number,
         processId: SessionProcessId,
@@ -1623,8 +1680,11 @@ export class SessionEngine extends Context.Service<
             }).pipe(Effect.orElseSucceed(() => null));
             if (status !== null && status.status !== "running" && status.status !== "starting") {
               yield* processes.markExited(processId, "exited", status.exitCode ?? null);
+              const tail = yield* ptyOutputTail(pty);
               return yield* new ServiceStartError({
-                message: `The command exited (code ${status.exitCode ?? "unknown"}) before :${workspacePort} answered — its record has the output.`,
+                message:
+                  `The command exited (code ${status.exitCode ?? "unknown"}) before :${workspacePort} answered.` +
+                  (tail === "" ? "" : `\n--- output ---\n${tail}`),
               });
             }
             if (Date.now() >= deadline) {
@@ -1658,6 +1718,7 @@ export class SessionEngine extends Context.Service<
           sessionId,
           sealantWorkspaceId: workspaceId,
           sealantSessionId: pty.id,
+          sealantRunId: SealantRunId.make(pty.runId),
           kind: "service",
           label,
           argv,
@@ -1710,7 +1771,7 @@ export class SessionEngine extends Context.Service<
         }
         const workspace = yield* sealant.getWorkspace(workspaceId);
         const pty = yield* sealant.openSession(workspace, serviceProcess.argv);
-        yield* processes.setSealantSessionId(processId, pty.id);
+        yield* processes.setSealantSessionId(processId, pty.id, SealantRunId.make(pty.runId));
         yield* processes.setStatus(processId, "starting");
         const reachable = yield* awaitServicePort(
           pty,

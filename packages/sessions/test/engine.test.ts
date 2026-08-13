@@ -237,6 +237,7 @@ const sessionProcessesLayer = (world: World) => {
           id: SessionProcessId.make(crypto.randomUUID()),
           status: input.status ?? "running",
           exitCode: null,
+          sealantRunId: input.sealantRunId ?? null,
           workspacePort: input.workspacePort ?? null,
           hostPort: input.hostPort ?? null,
           createdAt: now(),
@@ -273,16 +274,18 @@ const sessionProcessesLayer = (world: World) => {
           world.processes.set(id, new SessionProcess({ ...process, hostPort, updatedAt: now() }));
         }
       }),
-    setSealantSessionId: (id, sealantSessionId) =>
+    setSealantSessionId: (id, sealantSessionId, sealantRunId) =>
       Effect.sync(() => {
         const process = world.processes.get(id);
         if (process !== undefined && process.exitedAt === null) {
           world.processes.set(
             id,
-            new SessionProcess({ ...process, sealantSessionId, updatedAt: now() }),
+            new SessionProcess({ ...process, sealantSessionId, sealantRunId, updatedAt: now() }),
           );
         }
       }),
+    listRecentServices: () =>
+      Effect.succeed([...world.processes.values()].filter((process) => process.kind === "service")),
     markExited: (id, outcome, exitCode) =>
       Effect.sync(() => {
         const process = world.processes.get(id);
@@ -666,6 +669,7 @@ describe("SessionEngine", () => {
             sessionId: session.id,
             sealantWorkspaceId: SealantWorkspaceId.make("workspace-1"),
             sealantSessionId: "pty-2",
+            sealantRunId: null,
             kind: "shell",
             label: "shell",
             argv: ["bash", "-i"],

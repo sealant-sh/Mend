@@ -1,10 +1,15 @@
-import { SessionProcessId, type SealantWorkspaceId, type SessionId } from "@mend/domain";
+import {
+  SessionProcessId,
+  type SealantRunId,
+  type SealantWorkspaceId,
+  type SessionId,
+} from "@mend/domain";
 import {
   SessionProcess,
   type SessionProcessKind,
   type SessionProcessStatus,
 } from "@mend/domain/workbench";
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
@@ -16,6 +21,8 @@ export interface NewSessionProcess {
   readonly sealantWorkspaceId: SealantWorkspaceId;
   /** Null for adopted Services — a port Mend forwards without owning a process. */
   readonly sealantSessionId: string | null;
+  /** The run recording this process; null for adopted Services. */
+  readonly sealantRunId?: SealantRunId | null;
   readonly kind: SessionProcessKind;
   readonly label: string | null;
   readonly argv: ReadonlyArray<string>;
@@ -42,14 +49,17 @@ export class SessionProcessesRepo extends Context.Service<
     ) => Effect.Effect<ReadonlyArray<SessionProcess>>;
     /** Every live row across all workspaces — boot re-attaches watchers from this. */
     readonly listLive: () => Effect.Effect<ReadonlyArray<SessionProcess>>;
+    /** Services newest-first, live AND recently ended — post-mortem logs address the dead. */
+    readonly listRecentServices: () => Effect.Effect<ReadonlyArray<SessionProcess>>;
     /** Flip a LIVE row's observed state (reachable ⇄ unreachable, starting → running). */
     readonly setStatus: (id: SessionProcessId, status: SessionProcessStatus) => Effect.Effect<void>;
     /** Record the bound host port once the listener exists (Services only). */
     readonly setHostPort: (id: SessionProcessId, hostPort: number) => Effect.Effect<void>;
-    /** Point a LIVE row at a fresh platform PTY (Service restart keeps identity + URL). */
+    /** Point a LIVE row at a fresh platform PTY + run (Service restart keeps identity + URL). */
     readonly setSealantSessionId: (
       id: SessionProcessId,
       sealantSessionId: string,
+      sealantRunId: SealantRunId | null,
     ) => Effect.Effect<void>;
     readonly markExited: (
       id: SessionProcessId,
@@ -138,6 +148,17 @@ export const SessionProcessesRepoLive: Layer.Layer<SessionProcessesRepo, never, 
         },
       );
 
+      const listRecentServices = Effect.fn("SessionProcessesRepo.listRecentServices")(function* () {
+        const rows = yield* db
+          .select()
+          .from(sessionProcesses)
+          .where(eq(sessionProcesses.kind, "service"))
+          .orderBy(desc(sessionProcesses.createdAt))
+          .limit(100)
+          .pipe(Effect.orDie);
+        return rows.map(toSessionProcess);
+      });
+
       const listLive = Effect.fn("SessionProcessesRepo.listLive")(function* () {
         const rows = yield* db
           .select()
@@ -162,10 +183,11 @@ export const SessionProcessesRepoLive: Layer.Layer<SessionProcessesRepo, never, 
       const setSealantSessionId = Effect.fn("SessionProcessesRepo.setSealantSessionId")(function* (
         id: SessionProcessId,
         sealantSessionId: string,
+        sealantRunId: SealantRunId | null,
       ) {
         yield* db
           .update(sessionProcesses)
-          .set({ sealantSessionId, updatedAt: new Date() })
+          .set({ sealantSessionId, sealantRunId, updatedAt: new Date() })
           .where(and(eq(sessionProcesses.id, id), isNull(sessionProcesses.exitedAt)))
           .pipe(Effect.orDie);
       });
@@ -206,6 +228,7 @@ export const SessionProcessesRepoLive: Layer.Layer<SessionProcessesRepo, never, 
         listForSession,
         listLiveForWorkspace,
         listLive,
+        listRecentServices,
         setStatus,
         setHostPort,
         setSealantSessionId,

@@ -18,7 +18,8 @@
     "@mend/sealant": "workspace:*",
     "@mend/store": "workspace:*",
     "@sealant/sdk": "catalog:",
-    "effect": "catalog:"
+    "effect": "catalog:",
+    "smol-toml": "1.4.2"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",

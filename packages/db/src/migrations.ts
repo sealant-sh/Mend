@@ -569,6 +569,17 @@ const servicePorts = Effect.gen(function* () {
     WHERE exited_at IS NULL AND host_port IS NOT NULL`;
 });
 
+/**
+ * Services' post-mortem logs read the RECORD (the process is gone; the record isn't), which needs
+ * the run pointer on the process row. Null for rows created before this — their records exist but
+ * are unaddressed.
+ */
+const processRunPointers = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE session_processes ADD COLUMN sealant_run_id text`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -588,4 +599,5 @@ export const migrations = {
   "0015_session_run_history": sessionRunHistory,
   "0016_session_processes": sessionProcesses,
   "0017_service_ports": servicePorts,
+  "0018_process_run_pointers": processRunPointers,
 };
