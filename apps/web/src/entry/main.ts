@@ -40,6 +40,7 @@ import {
   SessionRunsRepoLive,
   SessionsRepoLive,
   SettingsRepoLive,
+  UserDotfilesRepoLive,
 } from "@mend/db";
 import type { ChangeId } from "@mend/domain";
 import {
@@ -73,6 +74,8 @@ import { ServiceHostLive, SessionEngine, SessionSocketHostLive } from "@mend/ses
 import {
   AgentBridge,
   AgentBridgeLive,
+  DotfilesStore,
+  DotfilesStoreLive,
   MendKeys,
   MendKeysConfigLive,
   MendKeysLive,
@@ -98,6 +101,7 @@ const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..
 
 // ─── Data: Postgres, migrated before anything reads it ─────────────────────
 const DrizzleRepositoriesLive = Layer.mergeAll(
+  UserDotfilesRepoLive,
   SessionGitOpsRepoLive,
   SessionProcessesRepoLive,
   SessionRunsRepoLive,
@@ -130,6 +134,10 @@ const DatabaseLive = DrizzleRepositoriesLive.pipe(
 // One instance each: the API handlers and the worker share them (memoized —
 // same layer reference, provided once at MainLive).
 const StoreLive = Store.layer.pipe(Layer.provide(StoreConfig.layer));
+// The per-user dotfiles store shares the same root (bare git repos under _dotfiles/).
+const DotfilesStoreLayer: Layer.Layer<DotfilesStore> = DotfilesStoreLive.pipe(
+  Layer.provide(StoreConfig.layer),
+);
 const KeysLive: Layer.Layer<MendKeys> = MendKeysLive.pipe(Layer.provide(MendKeysConfigLive));
 // One bridge instance: the WS route attaches signers, the API and engine ask it.
 const BridgeLive: Layer.Layer<AgentBridge> = AgentBridgeLive.pipe(
@@ -139,6 +147,7 @@ const ServiceHostLayer = ServiceHostLive;
 const SessionEngineLive = SessionEngine.layer.pipe(
   Layer.provide(ServiceHostLayer),
   Layer.provide(SessionSocketHostLive),
+  Layer.provide(DotfilesStoreLayer),
 );
 
 // ─── better-auth mounted under /api/auth ────────────────────────────────────
