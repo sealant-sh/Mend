@@ -31,7 +31,7 @@ export interface DotfilesSnapshotFile {
   readonly path: string;
   readonly contentsBase64: string;
   /** Octal file mode (e.g. "644", "755"); defaults to 644. */
-  readonly mode?: string;
+  readonly mode?: string | undefined;
 }
 
 export interface DotfilesSnapshotSummary {

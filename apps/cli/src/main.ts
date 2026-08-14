@@ -6,6 +6,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { readSyncFiles, scanDotfileCandidates } from "./dotfiles.ts";
 import {
   isComposeFile,
   proposeFromCompose,
@@ -59,6 +60,21 @@ interface ProjectDto {
   readonly storePath: string;
   readonly defaultBranch: string;
   readonly gitAuthMode: "ambient" | "mend-key" | "bridge";
+}
+
+/** The account's dotfiles: repository knob + store snapshot (see `mend dotfiles`). */
+interface DotfilesDto {
+  readonly repository: {
+    readonly url: string;
+    readonly ref: string | null;
+    readonly bootstrap: boolean;
+  } | null;
+  readonly snapshot: {
+    readonly sha: string;
+    readonly source: string;
+    readonly committedAt: string;
+    readonly files: ReadonlyArray<{ readonly path: string; readonly bytes: number }>;
+  } | null;
 }
 
 /** The machine's Mend deploy key — public half only; the server never sends more. */
@@ -1160,6 +1176,92 @@ const keysCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
   }
 };
 
+const formatDotfileBytes = (bytes: number): string =>
+  bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
+
+const dotfilesShow = async (config: CliConfig) => {
+  const dotfiles = await api<DotfilesDto>(config, "GET", "/dotfiles");
+  if (dotfiles.repository === null) {
+    say(`repo      ${dim("none")}`);
+  } else {
+    const branch = dotfiles.repository.ref ?? "default branch";
+    const bootstrap = dotfiles.repository.bootstrap ? "install.sh on" : "install.sh off";
+    say(`repo      ${dotfiles.repository.url} ${dim(`(${branch} · ${bootstrap})`)}`);
+  }
+  if (dotfiles.snapshot === null) {
+    say(`snapshot  ${dim("none — sync from this machine: mend dotfiles sync --all")}`);
+    return;
+  }
+  const snapshot = dotfiles.snapshot;
+  say(
+    `snapshot  ${snapshot.files.length} file${snapshot.files.length === 1 ? "" : "s"} · from ${snapshot.source} · ${dim(snapshot.sha.slice(0, 7))}`,
+  );
+  for (const file of snapshot.files) {
+    say(`  ${file.path.padEnd(36)} ${dim(formatDotfileBytes(file.bytes))}`);
+  }
+};
+
+/**
+ * `mend dotfiles sync` — capture home files ON THIS MACHINE and stream them into the server's
+ * per-user dotfiles store. This is the whole point of the store: the server may be a VPS whose
+ * home directory belongs to a service account, so contents are read here, where they live.
+ */
+const dotfilesSync = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const all = args.includes("--all");
+  const paths_ = args.filter((arg) => !arg.startsWith("--"));
+  const home = os.homedir();
+
+  if (!all && paths_.length === 0) {
+    const found = scanDotfileCandidates(home);
+    if (found.length === 0) {
+      say(dim("no known config files found under ~"));
+      return;
+    }
+    let group = "";
+    for (const entry of found) {
+      if (entry.group !== group) {
+        group = entry.group;
+        say(dim(group));
+      }
+      say(`  ${entry.path.padEnd(36)} ${dim(formatDotfileBytes(entry.bytes))}`);
+    }
+    say("");
+    say(
+      `sync everything with ${cobalt("mend dotfiles sync --all")}, or pick: ${cobalt("mend dotfiles sync .zshrc .gitconfig")}`,
+    );
+    return;
+  }
+
+  const selected = all ? scanDotfileCandidates(home).map((entry) => entry.path) : paths_;
+  if (selected.length === 0) return fail("nothing to sync — no known config files found under ~");
+  const read = readSyncFiles(home, selected);
+  if ("error" in read) return fail(read.error);
+
+  const result = await api<DotfilesDto>(config, "POST", "/dotfiles/snapshot", {
+    files: read.files,
+    source: os.hostname(),
+    merge: false,
+  });
+  const snapshot = result.snapshot;
+  if (snapshot === null) return fail("the server accepted the sync but reports no snapshot");
+  say(
+    `${green("synced")} ${snapshot.files.length} file${snapshot.files.length === 1 ? "" : "s"} from ${os.hostname()} · ${dim(snapshot.sha.slice(0, 7))} ${dim("— applies from the next session launch")}`,
+  );
+};
+
+const dotfilesCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const [verb, ...rest] = args;
+  switch (verb) {
+    case "sync":
+      return dotfilesSync(config, rest);
+    case "show":
+    case undefined:
+      return dotfilesShow(config);
+    default:
+      return fail(`unknown dotfiles command "${verb}" — try: mend dotfiles sync | show`);
+  }
+};
+
 // ─── completions: live sessions under TAB ───────────────────────────────────
 
 /**
@@ -1773,6 +1875,8 @@ const HELP = `mend — the agent workbench
                                         URL — GitHub, GitLab, self-hosted, ssh://, a local path)
   mend keys init                        generate the machine's Mend deploy key (ed25519)
   mend keys show                        print the public key — add it as a deploy key on your git host
+  mend dotfiles                         your dotfiles on the server: repo + synced home files
+  mend dotfiles sync [--all | paths…]   capture config files from THIS machine into your store
   mend keys share                       relay THIS machine's ssh-agent to the server (bridge mode:
                                         hardware keys sign here; Ctrl-C stops sharing)
   mend codex|claude|opencode            new session worktree + launch the harness in it
@@ -1823,6 +1927,8 @@ const main = async () => {
       return serviceCommand(config, rest);
     case "keys":
       return keysCommand(config, rest);
+    case "dotfiles":
+      return dotfilesCommand(config, rest);
     case "completions":
       return completionsCommand(rest);
     case "__complete":

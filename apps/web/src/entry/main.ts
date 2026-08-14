@@ -342,6 +342,8 @@ const MainLive = Layer.unwrap(
       // The session engine and store serve both the API handlers and the worker.
       Layer.provide(SessionEngineLive),
       Layer.provide(StoreLive),
+      // The per-user dotfiles store — the dotfiles API group reads/writes it directly.
+      Layer.provide(DotfilesStoreLayer),
       // The machine's Mend git key (docs/GIT-ACCESS.md — the mend-key auth mode).
       Layer.provide(KeysLive),
       // The ssh-agent bridge (decision 2) — signer presence + bridged git ops.

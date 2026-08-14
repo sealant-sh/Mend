@@ -18,6 +18,7 @@ import {
   removeSession,
   selectProjectReferences,
   setProjectAutomation,
+  setProjectApplyDotfiles,
   setProjectGitAuth,
   setProjectWorkspaceImage,
   type AutomationChoiceDto,
@@ -202,6 +203,7 @@ function ProjectPage() {
             <MountsSection projectId={projectId} />
             <ServicesSection projectId={projectId} />
             <WorkspaceImageSection project={project} />
+            <DotfilesSection project={project} />
             <GitAccessSection project={project} />
             <ReviewAutomationSection project={project} />
             <RemoveProjectSection projectId={projectId} />
@@ -481,23 +483,43 @@ function WorkspaceImageSection({ project }: { readonly project: ProjectDto }) {
             ))}
           </div>
           {draft.mode === "family" ? (
-            <div className="flex flex-wrap gap-1">
-              {WORKSPACE_OS_CHOICES.map((os) => (
-                <button
-                  key={os}
-                  type="button"
-                  disabled={busy}
-                  onClick={() => setDraft({ ...draft, os })}
-                  className={`rounded-lg border px-2 py-1 font-mono text-[11px] transition-colors disabled:opacity-50 ${
-                    draft.os === os
-                      ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
-                      : "border-border bg-card text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {OS_LABELS[os].toLowerCase()}
-                </button>
-              ))}
-            </div>
+            <>
+              <div className="flex flex-wrap gap-1">
+                {WORKSPACE_OS_CHOICES.map((os) => (
+                  <button
+                    key={os}
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setDraft({ ...draft, os })}
+                    className={`rounded-lg border px-2 py-1 font-mono text-[11px] transition-colors disabled:opacity-50 ${
+                      draft.os === os
+                        ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
+                        : "border-border bg-card text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {OS_LABELS[os].toLowerCase()}
+                  </button>
+                ))}
+              </div>
+              <div className="flex flex-wrap items-baseline gap-1">
+                <span className="mr-1 text-[11px] text-muted-foreground">shell</span>
+                {(["bash", "zsh", "fish"] as const).map((shell) => (
+                  <button
+                    key={shell}
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setDraft({ ...draft, shell })}
+                    className={`rounded-lg border px-2 py-1 font-mono text-[11px] transition-colors disabled:opacity-50 ${
+                      draft.shell === shell
+                        ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
+                        : "border-border bg-card text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {shell}
+                  </button>
+                ))}
+              </div>
+            </>
           ) : (
             <>
               <input
@@ -575,6 +597,65 @@ function WorkspaceImageSection({ project }: { readonly project: ProjectDto }) {
           </div>
         </div>
       )}
+    </section>
+  );
+}
+
+/**
+ * Whether sessions in this project receive the launching user's dotfiles (repo + synced home
+ * files, configured per account in Settings). A boolean, not a cascade: dotfiles are identity,
+ * so the only project-level question is "does this project want them applied". Custom-image
+ * projects skip dotfiles regardless — a BYO base brings its own environment, and the platform
+ * rejects them there.
+ */
+function DotfilesSection({ project }: { readonly project: ProjectDto }) {
+  const settings = useQuery(settingsQuery);
+  const customImage = (project.workspaceImage ?? settings.data?.workspaceImage)?.mode === "custom";
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = (applyDotfiles: boolean) => {
+    setBusy(true);
+    setError(null);
+    void setProjectApplyDotfiles(project.id, applyDotfiles)
+      .then(() => queryClient.invalidateQueries({ queryKey: ["project", project.id] }))
+      .catch((cause: unknown) =>
+        setError(cause instanceof Error ? cause.message : "Could not save the dotfiles switch."),
+      )
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <section>
+      <p className="border-b border-rule pb-2 text-xs font-medium text-label">Dotfiles</p>
+      {customImage ? (
+        <p className="mt-2.5 font-mono text-xs text-faint">custom image · dotfiles not applied</p>
+      ) : (
+        <div className="mt-2.5 flex items-center justify-between gap-3">
+          <p className="min-w-0 font-mono text-xs text-ink-2">
+            {project.applyDotfiles ? "your dotfiles · applied at launch" : "dotfiles · off"}
+            <span className="text-faint"> · set up in Settings</span>
+          </p>
+          <div className="flex shrink-0 gap-1">
+            {([true, false] as const).map((value) => (
+              <button
+                key={String(value)}
+                type="button"
+                disabled={busy}
+                onClick={() => save(value)}
+                className={`rounded-lg border px-2 py-1 font-mono text-[11px] transition-colors disabled:opacity-50 ${
+                  project.applyDotfiles === value
+                    ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
+                    : "border-border bg-card text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {value ? "on" : "off"}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {error === null ? null : <p className="mt-2 text-xs leading-relaxed text-danger">{error}</p>}
     </section>
   );
 }
