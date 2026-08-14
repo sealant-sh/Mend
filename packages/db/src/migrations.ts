@@ -661,6 +661,31 @@ const projectWorkspaceImage = Effect.gen(function* () {
     ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS workspace_image jsonb`;
 });
 
+/**
+ * The per-user dotfiles model: dotfiles are identity, not instance configuration. Config rides a
+ * per-user row (the snapshot content itself lives in the dotfiles store — a bare git repo per
+ * user under the store root, not the database); projects carry only an apply switch; sessions
+ * stamp what they actually launched with plus who provisioned them. The DROP covers dev
+ * instances that ran this migration's earlier per-project-jsonb shape before it merged.
+ */
+const dotfilesStore = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS user_dotfiles (
+      user_id text PRIMARY KEY,
+      repository jsonb,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`
+    ALTER TABLE projects DROP COLUMN IF EXISTS dotfiles`;
+  yield* sql`
+    ALTER TABLE projects ADD COLUMN IF NOT EXISTS apply_dotfiles boolean NOT NULL DEFAULT true`;
+  yield* sql`
+    ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS dotfiles jsonb`;
+  yield* sql`
+    ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS owner_user_id text`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -686,4 +711,5 @@ export const migrations = {
   "0021_project_git_auth": projectGitAuth,
   "0022_session_git_ops": sessionGitOps,
   "0023_project_workspace_image": projectWorkspaceImage,
+  "0024_dotfiles_store": dotfilesStore,
 };

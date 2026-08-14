@@ -14,6 +14,7 @@ const image = (packages: ReadonlyArray<string>): SettingsDto["workspaceImage"] =
   mode: "family",
   os: "arch",
   packages,
+  shell: "bash",
   services: { docker: true },
 });
 
@@ -76,6 +77,7 @@ describe("workspace environment form", () => {
       mode: "family",
       os: "nix",
       packages: ["pnpm", "uv"],
+      shell: "bash",
       services: { docker: true },
     });
     expect(rejected.savedImage).toEqual(image(["pnpm"]));
@@ -84,6 +86,7 @@ describe("workspace environment form", () => {
       mode: "family",
       os: "nix",
       packages: ["pnpm", "uv"],
+      shell: "bash",
       services: { docker: true },
     };
     const saved = workspaceEnvironmentFormReducer(rejected, {

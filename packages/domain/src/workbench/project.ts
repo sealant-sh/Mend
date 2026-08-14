@@ -55,6 +55,12 @@ export class Project extends Schema.Class<Project>("Project")({
   gitAuthMode: GitAuthMode,
   /** Override of the Settings default workspace image; null inherits it. */
   workspaceImage: Schema.NullOr(WorkspaceImage),
+  /**
+   * Whether sessions here receive the launching user's dotfiles (per-user store + repo). A
+   * boolean, not a cascade: dotfiles are identity, so the only project-level question is
+   * "does this project want them applied".
+   */
+  applyDotfiles: Schema.Boolean,
   createdAt: Schema.Date,
   updatedAt: Schema.Date,
 }) {}

@@ -32,6 +32,14 @@ const workspaceImageServices = Schema.Struct({
   docker: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
 }).pipe(Schema.withDecodingDefaultKey(Effect.succeed({ docker: true })));
 
+export const WorkspaceShell = Schema.Literals(["bash", "zsh", "fish"]);
+export type WorkspaceShell = typeof WorkspaceShell.Type;
+
+/** Rows written before the shell knob existed decode to bash — the platform's own default. */
+const shellWithDefault = WorkspaceShell.pipe(
+  Schema.withDecodingDefaultKey(Effect.succeed("bash" as const)),
+);
+
 /**
  * A managed OS family image: distro base, portable package names resolved by the platform
  * against that distro's archive. Rows written before custom mode existed decode here — a
@@ -43,6 +51,12 @@ export const FamilyWorkspaceImage = Schema.Struct({
   ),
   os: WorkspaceImageOs,
   packages: Schema.Array(Schema.String),
+  /**
+   * Login shell inside the workspace — installed and switched to, so shell dotfiles take effect.
+   * Family images only: custom bases guarantee just a POSIX shell, so the knob does not exist
+   * there (the platform would reject it).
+   */
+  shell: shellWithDefault,
   services: workspaceImageServices,
 });
 export type FamilyWorkspaceImage = typeof FamilyWorkspaceImage.Type;
@@ -69,6 +83,7 @@ export const defaultWorkspaceImage: WorkspaceImage = {
   mode: "family",
   os: "arch",
   packages: [...DEFAULT_WORKSPACE_PACKAGES],
+  shell: "bash",
   services: { docker: true },
 };
 
@@ -83,7 +98,7 @@ export const workspaceImagesEqual = (left: WorkspaceImage, right: WorkspaceImage
     return false;
   }
   if (left.mode === "family" && right.mode === "family") {
-    return left.os === right.os;
+    return left.os === right.os && left.shell === right.shell;
   }
   if (left.mode === "custom" && right.mode === "custom") {
     return (
@@ -96,6 +111,40 @@ export const workspaceImagesEqual = (left: WorkspaceImage, right: WorkspaceImage
 const workspaceImageWithDefault = WorkspaceImage.pipe(
   Schema.withDecodingDefaultKey(Effect.succeed(defaultWorkspaceImage)),
 );
+
+export const DotfilesManager = Schema.Literals(["auto", "chezmoi", "stow", "copy"]);
+export type DotfilesManager = typeof DotfilesManager.Type;
+
+/**
+ * A dotfiles repository resolved by the Mend server at every session launch: cloned with the
+ * server host's git/ssh setup, packed, and shipped into the workspace as an archive. No URL or
+ * credential ever reaches the container, and every session gets the branch tip as of its launch.
+ * Dotfiles are identity, not instance configuration — this rides per-user (see the dotfiles
+ * store), never in the global settings document.
+ */
+export const DotfilesRepository = Schema.Struct({
+  url: Schema.String,
+  /** Null clones the remote's default branch — never assumed to be `main`. */
+  ref: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  /** How the tree applies in the workspace; auto detects chezmoi/stow layouts, else copies. */
+  manager: DotfilesManager.pipe(Schema.withDecodingDefaultKey(Effect.succeed("auto" as const))),
+  /** Run the repo's `./install.sh` (when present) after applying. */
+  bootstrap: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
+});
+export type DotfilesRepository = typeof DotfilesRepository.Type;
+
+export const dotfilesRepositoriesEqual = (
+  left: DotfilesRepository | null,
+  right: DotfilesRepository | null,
+): boolean => {
+  if (left === null || right === null) return left === right;
+  return (
+    left.url === right.url &&
+    left.ref === right.ref &&
+    left.manager === right.manager &&
+    left.bootstrap === right.bootstrap
+  );
+};
 
 export class MendSettings extends Schema.Class<MendSettings>("MendSettings")({
   prMode: PrMode,

@@ -607,12 +607,16 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     .handle("create", ({ params, payload }) =>
       Effect.gen(function* () {
         const engine = yield* SessionEngine;
+        // Ownership is stamped at provision: launches apply the OWNER's dotfiles, and the
+        // auth middleware guarantees a real account here (the CLI's static token included).
+        const caller = yield* CurrentUser;
         return yield* engine
           .provision({
             projectId: params.id,
             harness: payload.harness,
             label: payload.label,
             base: payload.base,
+            ownerUserId: caller.user.id,
           })
           .pipe(
             Effect.catchTag("ProjectNotFoundError", () =>

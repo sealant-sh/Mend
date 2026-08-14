@@ -48,6 +48,11 @@ export class ProjectsRepo extends Context.Service<
       id: ProjectId,
       image: WorkspaceImage | null,
     ) => Effect.Effect<Project, ProjectNotFoundError>;
+    /** Whether sessions here receive the launching user's dotfiles. */
+    readonly setApplyDotfiles: (
+      id: ProjectId,
+      applyDotfiles: boolean,
+    ) => Effect.Effect<Project, ProjectNotFoundError>;
     /** Hard delete — sessions and everything under them cascade. */
     readonly remove: (id: ProjectId) => Effect.Effect<void>;
   }
@@ -158,6 +163,22 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return updated;
       });
 
+      const setApplyDotfiles = Effect.fn("ProjectsRepo.setApplyDotfiles")(function* (
+        id: ProjectId,
+        applyDotfiles: boolean,
+      ) {
+        const [row] = yield* db
+          .update(projects)
+          .set({ applyDotfiles, updatedAt: new Date() })
+          .where(eq(projects.id, id))
+          .returning()
+          .pipe(Effect.orDie);
+        if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
+        const updated = toProject(row);
+        yield* notifyEvent(sql, { type: "project", projectId: id });
+        return updated;
+      });
+
       const remove = Effect.fn("ProjectsRepo.remove")(function* (id: ProjectId) {
         yield* db.delete(projects).where(eq(projects.id, id)).pipe(Effect.orDie);
         yield* notifyEvent(sql, { type: "project", projectId: id });
@@ -171,6 +192,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         setAutomation,
         setGitAuthMode,
         setWorkspaceImage,
+        setApplyDotfiles,
         remove,
       };
     }),

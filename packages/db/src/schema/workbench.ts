@@ -34,6 +34,7 @@ import {
   type SessionId,
   type SessionProcessId,
   type Sha,
+  DotfilesRepository,
   WorkspaceImage,
 } from "@mend/domain";
 import type {
@@ -53,6 +54,7 @@ import type {
   SessionExtraMount,
   SessionProcessKind,
   SessionProcessStatus,
+  SessionDotfiles,
   SessionReferenceMount,
   SessionStatus,
 } from "@mend/domain/workbench";
@@ -215,7 +217,19 @@ export const projects = pgTable("projects", {
   gitAuthMode: text().$type<GitAuthMode>().notNull().default("ambient"),
   // NULL inherits the global settings.workspaceImage default.
   workspaceImage: jsonb().$type<typeof WorkspaceImage.Encoded>(),
+  // Whether sessions here receive the launching user's dotfiles.
+  applyDotfiles: boolean().notNull().default(true),
   createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Per-user dotfiles configuration — the repository knob only. Snapshot CONTENT lives in the
+ * dotfiles store (a bare git repo per user under the store root), never in the database.
+ */
+export const userDotfiles = pgTable("user_dotfiles", {
+  userId: text().primaryKey(),
+  repository: jsonb().$type<typeof DotfilesRepository.Encoded>(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -330,6 +344,11 @@ export const agentSessions = pgTable(
     // The image this session actually launched with — stamped at launch, never rewritten by a
     // later project-setting change. NULL for sessions from before the column (or not launched).
     workspaceImage: jsonb().$type<typeof WorkspaceImage.Encoded>(),
+    // The dotfiles this session actually launched with — stamped at launch, same contract as
+    // workspaceImage above.
+    dotfiles: jsonb().$type<typeof SessionDotfiles.Encoded>(),
+    // Who provisioned the session — whose dotfiles apply. NULL for pre-column rows.
+    ownerUserId: text(),
     status: text().$type<SessionStatus>().notNull().default("starting"),
     summary: text(),
     lastSeenSequence: bigint({ mode: "bigint" }).notNull().default(0n),
