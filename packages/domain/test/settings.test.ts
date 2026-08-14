@@ -6,6 +6,7 @@ import { defaultSettings, MendSettings } from "../src/settings.ts";
 describe("MendSettings workspace image profile", () => {
   it("defaults new installs to the standard Arch developer image", () => {
     expect(defaultSettings.workspaceImage).toEqual({
+      mode: "family",
       os: "arch",
       packages: [
         "pnpm",
@@ -34,6 +35,7 @@ describe("MendSettings workspace image profile", () => {
     });
 
     expect(decoded.workspaceImage).toEqual({
+      mode: "family",
       os: "arch",
       packages: [
         "pnpm",

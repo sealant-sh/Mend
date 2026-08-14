@@ -11,6 +11,7 @@ import {
 } from "./workspace-environment";
 
 const image = (packages: ReadonlyArray<string>): SettingsDto["workspaceImage"] => ({
+  mode: "family",
   os: "arch",
   packages,
   services: { docker: true },
@@ -72,6 +73,7 @@ describe("workspace environment form", () => {
     });
 
     expect(workspaceImageFromForm(rejected)).toEqual({
+      mode: "family",
       os: "nix",
       packages: ["pnpm", "uv"],
       services: { docker: true },
@@ -79,6 +81,7 @@ describe("workspace environment form", () => {
     expect(rejected.savedImage).toEqual(image(["pnpm"]));
 
     const savedImage: SettingsDto["workspaceImage"] = {
+      mode: "family",
       os: "nix",
       packages: ["pnpm", "uv"],
       services: { docker: true },

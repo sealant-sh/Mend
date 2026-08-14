@@ -1,5 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
-import { ProjectId, type Sha } from "@mend/domain";
+import { ProjectId, WorkspaceImage, type Sha } from "@mend/domain";
 import { Project, type AutomationChoice, type GitAuthMode } from "@mend/domain/workbench";
 import { asc, eq } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
@@ -43,12 +43,23 @@ export class ProjectsRepo extends Context.Service<
       id: ProjectId,
       mode: GitAuthMode,
     ) => Effect.Effect<Project, ProjectNotFoundError>;
+    /** The project's workspace-image override; null returns it to the Settings default. */
+    readonly setWorkspaceImage: (
+      id: ProjectId,
+      image: WorkspaceImage | null,
+    ) => Effect.Effect<Project, ProjectNotFoundError>;
     /** Hard delete — sessions and everything under them cascade. */
     readonly remove: (id: ProjectId) => Effect.Effect<void>;
   }
 >()("@mend/db/ProjectsRepo") {}
 
-const toProject = (row: typeof projects.$inferSelect): Project => new Project(row);
+const decodeWorkspaceImage = Schema.decodeUnknownSync(WorkspaceImage);
+
+const toProject = (row: typeof projects.$inferSelect): Project =>
+  new Project({
+    ...row,
+    workspaceImage: row.workspaceImage === null ? null : decodeWorkspaceImage(row.workspaceImage),
+  });
 
 export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClient.PgClient> =
   Layer.effect(
@@ -131,11 +142,36 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return updated;
       });
 
+      const setWorkspaceImage = Effect.fn("ProjectsRepo.setWorkspaceImage")(function* (
+        id: ProjectId,
+        image: WorkspaceImage | null,
+      ) {
+        const [row] = yield* db
+          .update(projects)
+          .set({ workspaceImage: image, updatedAt: new Date() })
+          .where(eq(projects.id, id))
+          .returning()
+          .pipe(Effect.orDie);
+        if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
+        const updated = toProject(row);
+        yield* notifyEvent(sql, { type: "project", projectId: id });
+        return updated;
+      });
+
       const remove = Effect.fn("ProjectsRepo.remove")(function* (id: ProjectId) {
         yield* db.delete(projects).where(eq(projects.id, id)).pipe(Effect.orDie);
         yield* notifyEvent(sql, { type: "project", projectId: id });
       });
 
-      return { create, byId, byName, list, setAutomation, setGitAuthMode, remove };
+      return {
+        create,
+        byId,
+        byName,
+        list,
+        setAutomation,
+        setGitAuthMode,
+        setWorkspaceImage,
+        remove,
+      };
     }),
   );

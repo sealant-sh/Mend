@@ -5,6 +5,14 @@ import type { SettingsDto, WorkspacePackageResolutionDto } from "./api";
 export { workspaceImagesEqual };
 
 type WorkspaceImage = SettingsDto["workspaceImage"];
+type WorkspaceImageOs = Extract<WorkspaceImage, { mode: "family" }>["os"];
+
+export const OS_LABELS: Record<WorkspaceImageOs, string> = {
+  fedora: "Fedora",
+  arch: "Arch",
+  nix: "Nix",
+  ubuntu: "Ubuntu",
+};
 
 export const parsePackageDraft = (draft: string) => {
   const packages = [
@@ -19,9 +27,19 @@ export const parsePackageDraft = (draft: string) => {
   return invalid === undefined ? { packages, invalid: null } : { packages, invalid };
 };
 
+/** One setup command per line, verbatim — commands are not package names, no normalization. */
+export const parseSetupDraft = (draft: string): ReadonlyArray<string> =>
+  draft
+    .split("\n")
+    .map((value) => value.trim())
+    .filter((value) => value !== "");
+
 export interface WorkspaceEnvironmentFormState {
   readonly savedImage: WorkspaceImage;
-  readonly os: WorkspaceImage["os"];
+  readonly mode: WorkspaceImage["mode"];
+  readonly os: WorkspaceImageOs;
+  readonly baseImage: string;
+  readonly setupDraft: string;
   readonly docker: boolean;
   readonly packageDraft: string;
   readonly phase: "idle" | "saving" | "saved";
@@ -30,7 +48,10 @@ export interface WorkspaceEnvironmentFormState {
 }
 
 export type WorkspaceEnvironmentFormAction =
-  | { readonly type: "os-changed"; readonly os: WorkspaceImage["os"] }
+  | { readonly type: "mode-changed"; readonly mode: WorkspaceImage["mode"] }
+  | { readonly type: "os-changed"; readonly os: WorkspaceImageOs }
+  | { readonly type: "base-image-changed"; readonly baseImage: string }
+  | { readonly type: "setup-changed"; readonly setupDraft: string }
   | { readonly type: "docker-toggled" }
   | { readonly type: "packages-changed"; readonly packageDraft: string }
   | {
@@ -54,7 +75,10 @@ export const createWorkspaceEnvironmentForm = (
   workspaceImage: WorkspaceImage,
 ): WorkspaceEnvironmentFormState => ({
   savedImage: workspaceImage,
-  os: workspaceImage.os,
+  mode: workspaceImage.mode,
+  os: workspaceImage.mode === "family" ? workspaceImage.os : "arch",
+  baseImage: workspaceImage.mode === "custom" ? workspaceImage.baseImage : "",
+  setupDraft: workspaceImage.mode === "custom" ? workspaceImage.setupCommands.join("\n") : "",
   docker: workspaceImage.services.docker,
   packageDraft: workspaceImage.packages.join("\n"),
   phase: "idle",
@@ -74,8 +98,14 @@ export const workspaceEnvironmentFormReducer = (
   action: WorkspaceEnvironmentFormAction,
 ): WorkspaceEnvironmentFormState => {
   switch (action.type) {
+    case "mode-changed":
+      return edited({ ...state, mode: action.mode });
     case "os-changed":
       return edited({ ...state, os: action.os });
+    case "base-image-changed":
+      return edited({ ...state, baseImage: action.baseImage });
+    case "setup-changed":
+      return edited({ ...state, setupDraft: action.setupDraft });
     case "docker-toggled":
       return { ...state, docker: !state.docker, phase: "idle", error: null };
     case "packages-changed":
@@ -95,28 +125,34 @@ export const workspaceEnvironmentFormReducer = (
       return { ...state, phase: "idle", resolutions: action.resolutions, error: null };
     case "save-succeeded":
       return {
-        savedImage: action.workspaceImage,
-        os: action.workspaceImage.os,
-        docker: action.workspaceImage.services.docker,
-        packageDraft: action.workspaceImage.packages.join("\n"),
+        ...createWorkspaceEnvironmentForm(action.workspaceImage),
         phase: "saved",
         resolutions: action.resolutions,
-        error: null,
       };
     case "save-failed":
       return { ...state, phase: "idle", error: action.message };
   }
 };
 
-export const workspaceImageFromForm = (state: WorkspaceEnvironmentFormState): WorkspaceImage => ({
-  os: state.os,
-  packages: parsePackageDraft(state.packageDraft).packages,
-  services: { docker: state.docker },
-});
+export const workspaceImageFromForm = (state: WorkspaceEnvironmentFormState): WorkspaceImage =>
+  state.mode === "custom"
+    ? {
+        mode: "custom",
+        baseImage: state.baseImage.trim(),
+        packages: parsePackageDraft(state.packageDraft).packages,
+        setupCommands: parseSetupDraft(state.setupDraft),
+        services: { docker: state.docker },
+      }
+    : {
+        mode: "family",
+        os: state.os,
+        packages: parsePackageDraft(state.packageDraft).packages,
+        services: { docker: state.docker },
+      };
 
 export const resolutionIssue = (
   resolution: WorkspacePackageResolutionDto,
-  os: SettingsDto["workspaceImage"]["os"],
+  os: WorkspaceImageOs,
 ) => {
   if (resolution.status === "resolved" && resolution.supported) return null;
   if (resolution.status === "ambiguous") {
@@ -126,5 +162,5 @@ export const resolutionIssue = (
   }
   if (resolution.status === "not-found") return "Sealant could not find this package.";
   if (resolution.status === "invalid") return "Sealant rejected this package name.";
-  return `Sealant found the package, but not for ${os === "arch" ? "Arch" : "Nix"}.`;
+  return `Sealant found the package, but not for ${OS_LABELS[os]}.`;
 };

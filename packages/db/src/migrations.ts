@@ -648,6 +648,19 @@ const sessionGitOps = Effect.gen(function* () {
     CREATE INDEX session_git_ops_session_idx ON session_git_ops (session_id, started_at)`;
 });
 
+/**
+ * Per-project workspace image (docs/WORKSPACE-IMAGES.md): NULL inherits the global
+ * settings.workspaceImage default. Sessions stamp the image they actually launched with, so a
+ * later project-setting change never rewrites what a past session ran on.
+ */
+const projectWorkspaceImage = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE projects ADD COLUMN IF NOT EXISTS workspace_image jsonb`;
+  yield* sql`
+    ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS workspace_image jsonb`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -672,4 +685,5 @@ export const migrations = {
   "0020_service_protocol": serviceProtocol,
   "0021_project_git_auth": projectGitAuth,
   "0022_session_git_ops": sessionGitOps,
+  "0023_project_workspace_image": projectWorkspaceImage,
 };

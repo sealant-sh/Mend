@@ -234,6 +234,16 @@ export class ServiceStartError extends Schema.TaggedErrorClass<ServiceStartError
   },
 ) {}
 
+/** A custom-image setup command exited nonzero — the launch fails rather than run half-prepared. */
+export class SessionLaunchSetupError extends Schema.TaggedErrorClass<SessionLaunchSetupError>()(
+  "SessionLaunchSetupError",
+  {
+    sessionId: Schema.String,
+    command: Schema.String,
+    message: Schema.String,
+  },
+) {}
+
 /**
  * The workbench session engine (plan §7.2, M1) — the supervisor extracted from
  * the queue-era run starter (docs/M0-INVENTORY.md), rewired onto sessions and
@@ -273,7 +283,11 @@ export class SessionEngine extends Context.Service<
       argv: ReadonlyArray<string>,
     ) => Effect.Effect<
       Session,
-      SessionNotFoundError | ProjectNotFoundError | SealantPlatformError | HarnessStateError
+      | SessionNotFoundError
+      | ProjectNotFoundError
+      | SealantPlatformError
+      | HarnessStateError
+      | SessionLaunchSetupError
     >;
     /** Snapshot the worktree now — review-open and user-mark come through here. */
     readonly checkpointNow: (
@@ -356,7 +370,11 @@ export class SessionEngine extends Context.Service<
       harness: string | null,
     ) => Effect.Effect<
       Session,
-      SessionNotFoundError | ProjectNotFoundError | SealantPlatformError | HarnessStateError
+      | SessionNotFoundError
+      | ProjectNotFoundError
+      | SealantPlatformError
+      | HarnessStateError
+      | SessionLaunchSetupError
     >;
     /**
      * The session's conversation as the canonical record — read LIVE from the
@@ -1027,15 +1045,21 @@ export class SessionEngine extends Context.Service<
         if (session.sealantWorkspaceId !== null) {
           yield* stopWorkspaceQuietly(sessionId, { force: true });
         }
+        // The project's workspace-image override wins; null inherits the global default. The
+        // session records whichever one it ACTUALLY launched with, so a later settings change
+        // never rewrites what a past session ran on.
+        const workspaceImage = project.workspaceImage ?? settings.workspaceImage;
         const createWorkspace = (credentials: WorkspaceCredentialsOptions | undefined) =>
           sealant.createWorkspace({
             source: { kind: "mount", path: worktree },
             ...(workspaceMounts.length === 0 ? {} : { mounts: workspaceMounts }),
             harness: shape.harness,
             name: `mend-${session.id.slice(0, 8)}`,
-            os: settings.workspaceImage.os,
-            packages: settings.workspaceImage.packages,
-            services: settings.workspaceImage.services,
+            ...(workspaceImage.mode === "custom"
+              ? { baseImage: workspaceImage.baseImage }
+              : { os: workspaceImage.os }),
+            packages: workspaceImage.packages,
+            services: workspaceImage.services,
             // Belt for every path that forgets to stop: the platform reaper.
             ttl: "12h",
             // Requires the platform at 0.7.1+ (sealant#114): 0.7.0 dropped every
@@ -1063,6 +1087,24 @@ export class SessionEngine extends Context.Service<
         const workspace = yield* createWithCredentialFallback(shape.credentialAttempts).pipe(
           settleOnFailure,
         );
+        yield* sessions.setWorkspaceImage(sessionId, workspaceImage);
+
+        // Custom-image setup commands run in the fresh workspace BEFORE anything else (state
+        // restore, harness launch). They are part of the image contract, so a failing one fails
+        // the launch loudly instead of handing the agent a half-prepared environment.
+        if (workspaceImage.mode === "custom") {
+          for (const command of workspaceImage.setupCommands) {
+            const result = yield* sealant
+              .exec(workspace, ["sh", "-lc", command])
+              .pipe(settleOnFailure);
+            if (result.exitCode !== 0) {
+              const message = `setup command failed (exit ${result.exitCode}): ${command}`;
+              yield* sessions.settle(sessionId, "failed", message).pipe(Effect.ignore);
+              yield* sealant.stopWorkspace(workspace).pipe(Effect.ignore);
+              return yield* new SessionLaunchSetupError({ sessionId, command, message });
+            }
+          }
+        }
 
         // A relaunch restores the ORIGINAL harness's saved state into the
         // fresh workspace before anything starts — for a same-harness launch
