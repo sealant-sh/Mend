@@ -304,6 +304,7 @@ export interface ProjectDto {
   readonly autoTour: AutomationChoiceDto;
   readonly autoSuggest: AutomationChoiceDto;
   readonly gitAuthMode: GitAuthModeDto;
+  readonly workspaceImage: WorkspaceImageDto | null;
   readonly createdAt: string;
 }
 
@@ -482,17 +483,29 @@ export interface ChangePassDto {
 export const changePasses = (changeId: string) =>
   request<ReadonlyArray<ChangePassDto>>(`/api/changes/${changeId}/passes`);
 
+/** The workspace image: a managed OS family, or a custom base with exactly three knobs. */
+export type WorkspaceImageDto =
+  | {
+      readonly mode: "family";
+      readonly os: "fedora" | "arch" | "nix" | "ubuntu";
+      readonly packages: ReadonlyArray<string>;
+      readonly services: { readonly docker: boolean };
+    }
+  | {
+      readonly mode: "custom";
+      readonly baseImage: string;
+      readonly packages: ReadonlyArray<string>;
+      readonly setupCommands: ReadonlyArray<string>;
+      readonly services: { readonly docker: boolean };
+    };
+
 /** Product settings, one document; PUT replaces it (edit what GET returned). */
 export interface SettingsDto {
   readonly prMode: "draft-immediately" | "pr-on-approval";
   readonly concurrency: number;
   readonly autoTour: boolean;
   readonly autoSuggest: boolean;
-  readonly workspaceImage: {
-    readonly os: "arch" | "nix";
-    readonly packages: ReadonlyArray<string>;
-    readonly services: { readonly docker: boolean };
-  };
+  readonly workspaceImage: WorkspaceImageDto;
 }
 
 export interface WorkspacePackageResolutionDto {
@@ -548,6 +561,23 @@ export const setProjectAutomation = (
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(choices),
+  });
+
+export interface ProjectWorkspaceImageSaveResultDto {
+  readonly saved: boolean;
+  readonly project: ProjectDto | null;
+  readonly resolutions: ReadonlyArray<WorkspacePackageResolutionDto>;
+}
+
+/** The project's workspace-image override; null returns it to the Settings default. */
+export const setProjectWorkspaceImage = (
+  projectId: string,
+  workspaceImage: WorkspaceImageDto | null,
+) =>
+  request<ProjectWorkspaceImageSaveResultDto>(`/api/projects/${projectId}/workspace-image`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ workspaceImage }),
   });
 
 /** A workbench SSE event — pointers only; clients re-read through the API. */

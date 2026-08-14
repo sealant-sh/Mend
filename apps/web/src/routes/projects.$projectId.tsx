@@ -19,9 +19,12 @@ import {
   selectProjectReferences,
   setProjectAutomation,
   setProjectGitAuth,
+  setProjectWorkspaceImage,
   type AutomationChoiceDto,
   type GitAuthModeDto,
   type ProjectDto,
+  type WorkspaceImageDto,
+  type WorkspacePackageResolutionDto,
 } from "#/lib/api";
 import {
   gitBridgeQuery,
@@ -32,9 +35,11 @@ import {
   projectReferencesQuery,
   queryClient,
   referencesQuery,
+  settingsQuery,
 } from "#/lib/queries";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 import { HARNESSES, LIVE_STATES, sessionMenu, startSession } from "#/lib/workbench-menus";
+import { OS_LABELS, parsePackageDraft, resolutionIssue } from "#/lib/workspace-environment";
 
 export const Route = createFileRoute("/projects/$projectId")({
   ssr: false,
@@ -196,6 +201,7 @@ function ProjectPage() {
             <ReferencesSection projectId={projectId} />
             <MountsSection projectId={projectId} />
             <ServicesSection projectId={projectId} />
+            <WorkspaceImageSection project={project} />
             <GitAccessSection project={project} />
             <ReviewAutomationSection project={project} />
             <RemoveProjectSection projectId={projectId} />
@@ -328,6 +334,242 @@ function GitAccessSection({ project }: { readonly project: ProjectDto }) {
  * when a session settles. `inherit` follows the Settings defaults; the
  * override is the project's own word either way.
  */
+const WORKSPACE_OS_CHOICES = ["arch", "fedora", "ubuntu", "nix"] as const;
+
+/** The image summarized the way a status line would say it — terse mono facts. */
+const workspaceImageSummary = (image: WorkspaceImageDto): string =>
+  image.mode === "custom"
+    ? `custom · ${image.baseImage}`
+    : `${OS_LABELS[image.os].toLowerCase()} · ${image.packages.length} packages`;
+
+/**
+ * The project's workspace image: a managed OS family, or a custom base image
+ * with exactly three knobs — base ref, extra packages, setup commands. Not a
+ * compose editor: the workspace is one container; compose already lives
+ * inside it (the dind sidecar). Null inherits the Settings default; sessions
+ * record the image they actually launched with.
+ */
+function WorkspaceImageSection({ project }: { readonly project: ProjectDto }) {
+  const settings = useQuery(settingsQuery);
+  const inherited = settings.data?.workspaceImage ?? null;
+  const effective = project.workspaceImage ?? inherited;
+  const [draft, setDraft] = useState<{
+    readonly mode: "family" | "custom";
+    readonly os: (typeof WORKSPACE_OS_CHOICES)[number];
+    readonly baseImage: string;
+    readonly packagesDraft: string;
+    readonly setupDraft: string;
+    readonly docker: boolean;
+  } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [rejections, setRejections] = useState<ReadonlyArray<WorkspacePackageResolutionDto>>([]);
+
+  const openEditor = () => {
+    const from = effective;
+    setError(null);
+    setRejections([]);
+    setDraft(
+      from === null || from.mode === "family"
+        ? {
+            mode: "family",
+            os: from === null ? "arch" : from.os,
+            baseImage: "",
+            packagesDraft: (from?.packages ?? []).join("\n"),
+            setupDraft: "",
+            docker: from?.services.docker ?? true,
+          }
+        : {
+            mode: "custom",
+            os: "arch",
+            baseImage: from.baseImage,
+            packagesDraft: from.packages.join("\n"),
+            setupDraft: from.setupCommands.join("\n"),
+            docker: from.services.docker,
+          },
+    );
+  };
+
+  const save = (image: WorkspaceImageDto | null) => {
+    setBusy(true);
+    setError(null);
+    setRejections([]);
+    void setProjectWorkspaceImage(project.id, image)
+      .then((result) => {
+        if (!result.saved) {
+          setRejections(result.resolutions.filter((r) => r.status !== "resolved" || !r.supported));
+          return;
+        }
+        setDraft(null);
+        return queryClient.invalidateQueries({ queryKey: ["project", project.id] });
+      })
+      .catch((cause: unknown) =>
+        setError(cause instanceof Error ? cause.message : "Could not save the workspace image."),
+      )
+      .finally(() => setBusy(false));
+  };
+
+  const draftImage = (): WorkspaceImageDto | null => {
+    if (draft === null) return null;
+    const packages = parsePackageDraft(draft.packagesDraft).packages;
+    return draft.mode === "custom"
+      ? {
+          mode: "custom",
+          baseImage: draft.baseImage.trim(),
+          packages,
+          setupCommands: draft.setupDraft
+            .split("\n")
+            .map((line) => line.trim())
+            .filter((line) => line !== ""),
+          services: { docker: draft.docker },
+        }
+      : { mode: "family", os: draft.os, packages, services: { docker: draft.docker } };
+  };
+
+  return (
+    <section>
+      <p className="border-b border-rule pb-2 text-xs font-medium text-label">Workspace image</p>
+      {draft === null ? (
+        <>
+          <p className="mt-2.5 font-mono text-xs text-ink-2">
+            {effective === null ? "settings default" : workspaceImageSummary(effective)}
+            {project.workspaceImage === null ? (
+              <span className="text-faint"> · inherited</span>
+            ) : (
+              <span className="text-faint"> · project override</span>
+            )}
+          </p>
+          <button
+            type="button"
+            onClick={openEditor}
+            className="mt-2 font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+          >
+            Edit…
+          </button>
+        </>
+      ) : (
+        <div className="mt-3 flex flex-col gap-3">
+          <div className="flex gap-1">
+            {(
+              [
+                { mode: "family", label: "os family" },
+                { mode: "custom", label: "custom image" },
+              ] as const
+            ).map((option) => (
+              <button
+                key={option.mode}
+                type="button"
+                disabled={busy}
+                onClick={() => setDraft({ ...draft, mode: option.mode })}
+                className={`rounded-lg border px-2 py-1 font-mono text-[11px] transition-colors disabled:opacity-50 ${
+                  draft.mode === option.mode
+                    ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
+                    : "border-border bg-card text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          {draft.mode === "family" ? (
+            <div className="flex flex-wrap gap-1">
+              {WORKSPACE_OS_CHOICES.map((os) => (
+                <button
+                  key={os}
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setDraft({ ...draft, os })}
+                  className={`rounded-lg border px-2 py-1 font-mono text-[11px] transition-colors disabled:opacity-50 ${
+                    draft.os === os
+                      ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
+                      : "border-border bg-card text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {OS_LABELS[os].toLowerCase()}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <>
+              <input
+                type="text"
+                value={draft.baseImage}
+                disabled={busy}
+                placeholder="node:22-bookworm"
+                spellCheck={false}
+                aria-label="Base image reference"
+                onChange={(event) => setDraft({ ...draft, baseImage: event.target.value })}
+                className="w-full rounded-lg border border-input bg-card px-2.5 py-1.5 font-mono text-[11.5px] text-foreground outline-none transition-colors focus:border-[var(--sw-accent)]"
+              />
+              <textarea
+                value={draft.setupDraft}
+                disabled={busy}
+                rows={2}
+                spellCheck={false}
+                placeholder="setup commands · one per line"
+                aria-label="Setup commands"
+                onChange={(event) => setDraft({ ...draft, setupDraft: event.target.value })}
+                className="w-full resize-y rounded-lg border border-input bg-card px-2.5 py-1.5 font-mono text-[11.5px] leading-relaxed text-foreground outline-none transition-colors focus:border-[var(--sw-accent)]"
+              />
+            </>
+          )}
+          <textarea
+            value={draft.packagesDraft}
+            disabled={busy}
+            rows={3}
+            spellCheck={false}
+            placeholder={
+              draft.mode === "family" ? "packages · one per line" : "extra packages · one per line"
+            }
+            aria-label="Packages"
+            onChange={(event) => setDraft({ ...draft, packagesDraft: event.target.value })}
+            className="w-full resize-y rounded-lg border border-input bg-card px-2.5 py-1.5 font-mono text-[11.5px] leading-relaxed text-foreground outline-none transition-colors focus:border-[var(--sw-accent)]"
+          />
+          {rejections.length === 0 ? null : (
+            <div className="flex flex-col gap-1">
+              {rejections.map((resolution) => (
+                <p key={resolution.requested} className="text-xs leading-relaxed text-danger">
+                  <span className="font-mono">{resolution.requested}</span> ·{" "}
+                  {resolutionIssue(resolution, draft.os)}
+                </p>
+              ))}
+            </div>
+          )}
+          {error === null ? null : <p className="text-xs leading-relaxed text-danger">{error}</p>}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={busy || (draft.mode === "custom" && draft.baseImage.trim() === "")}
+              onClick={() => save(draftImage())}
+              className="rounded-lg border border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash px-2.5 py-1 font-sans text-xs font-medium text-foreground transition-colors disabled:opacity-50"
+            >
+              {busy ? "Saving…" : "Save override"}
+            </button>
+            {project.workspaceImage !== null && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => save(null)}
+                className="rounded-lg border border-border bg-card px-2.5 py-1 font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+              >
+                Use default
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => setDraft(null)}
+              className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function ReviewAutomationSection({ project }: { readonly project: ProjectDto }) {
   const [busy, setBusy] = useState<string | null>(null);
 

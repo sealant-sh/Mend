@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import { ProjectId, Sha } from "../ids.ts";
+import { WorkspaceImage } from "../settings.ts";
 
 /**
  * A project's stance on one review-automation switch: follow the Settings
@@ -52,6 +53,8 @@ export class Project extends Schema.Class<Project>("Project")({
   autoSuggest: AutomationChoice,
   /** How host-side git authenticates to this project's remote. */
   gitAuthMode: GitAuthMode,
+  /** Override of the Settings default workspace image; null inherits it. */
+  workspaceImage: Schema.NullOr(WorkspaceImage),
   createdAt: Schema.Date,
   updatedAt: Schema.Date,
 }) {}

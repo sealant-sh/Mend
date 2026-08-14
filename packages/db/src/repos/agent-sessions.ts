@@ -6,6 +6,7 @@ import {
   type SealantWorkspaceId,
   SessionId,
   type Sha,
+  WorkspaceImage,
 } from "@mend/domain";
 import {
   Session,
@@ -68,6 +69,8 @@ export class SessionsRepo extends Context.Service<
     ) => Effect.Effect<void>;
     /** The PTY session id — how a client reattaches to the live terminal. */
     readonly setSealantSessionId: (id: SessionId, sealantSessionId: string) => Effect.Effect<void>;
+    /** The image this session actually launched with — stamped at launch, a recorded fact. */
+    readonly setWorkspaceImage: (id: SessionId, image: WorkspaceImage) => Effect.Effect<void>;
     readonly setProviderSessionId: (id: SessionId, providerId: string) => Effect.Effect<void>;
     /** What launch actually mounted beside the worktree — recorded once, at launch. */
     readonly setReferenceMounts: (
@@ -97,7 +100,13 @@ export class SessionsRepo extends Context.Service<
   }
 >()("@mend/db/SessionsRepo") {}
 
-const toSession = (row: typeof agentSessions.$inferSelect): Session => new Session(row);
+const decodeWorkspaceImage = Schema.decodeUnknownSync(WorkspaceImage);
+
+const toSession = (row: typeof agentSessions.$inferSelect): Session =>
+  new Session({
+    ...row,
+    workspaceImage: row.workspaceImage === null ? null : decodeWorkspaceImage(row.workspaceImage),
+  });
 
 export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClient.PgClient> =
   Layer.effect(
@@ -220,6 +229,17 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         yield* db
           .update(agentSessions)
           .set({ sealantSessionId, updatedAt: new Date() })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
+      });
+
+      const setWorkspaceImage = Effect.fn("SessionsRepo.setWorkspaceImage")(function* (
+        id: SessionId,
+        image: WorkspaceImage,
+      ) {
+        yield* db
+          .update(agentSessions)
+          .set({ workspaceImage: image, updatedAt: new Date() })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
       });
@@ -374,6 +394,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         listRecentlySettled,
         setSealantIds,
         setSealantSessionId,
+        setWorkspaceImage,
         setProviderSessionId,
         setReferenceMounts,
         setExtraMounts,

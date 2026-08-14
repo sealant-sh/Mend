@@ -8,6 +8,7 @@ import {
   SessionId,
   Sha,
 } from "../ids.ts";
+import { WorkspaceImage } from "../settings.ts";
 import { SessionExtraMount } from "./mount.ts";
 import { SessionReferenceMount } from "./reference.ts";
 
@@ -58,6 +59,8 @@ export class Session extends Schema.Class<Session>("Session")({
   sealantWorkspaceId: Schema.NullOr(SealantWorkspaceId),
   /** Latest platform interactive PTY session id — the live reattach handle. */
   sealantSessionId: Schema.NullOr(Schema.String),
+  /** The image this session actually launched with; null before launch (or pre-column rows). */
+  workspaceImage: Schema.NullOr(WorkspaceImage),
   status: SessionStatus,
   /** What the harness reported at settle, when anything. */
   summary: Schema.NullOr(Schema.String),

@@ -44,6 +44,7 @@ import {
   MendApi,
   NotFound,
   ProjectDetail,
+  ProjectWorkspaceImageSaveResult,
   RemovalReport,
   SessionActive,
   SessionAnnotation,
@@ -53,9 +54,13 @@ import {
   StoreFailure,
   SessionTranscript,
   TranscriptEvent,
+  WorkspacePackageResolutionView,
 } from "./contract.ts";
 import { HostEnvironment } from "./host-environment.ts";
-import { saveResolvedWorkspaceEnvironment } from "./workspace-environment.ts";
+import {
+  resolveWorkspaceEnvironment,
+  saveResolvedWorkspaceEnvironment,
+} from "./workspace-environment.ts";
 
 /**
  * The workbench handlers (plan §6): projects, sessions, and the session
@@ -168,8 +173,12 @@ export const SettingsGroupLive = HttpApiBuilder.group(MendApi, "settings", (hand
                 ? `${resolution.requested} (unsupported)`
                 : `${resolution.requested} (${resolution.status})`,
             );
+          const target =
+            payload.workspaceImage.mode === "custom"
+              ? payload.workspaceImage.baseImage
+              : payload.workspaceImage.os;
           return yield* new SettingsFailure({
-            message: `Workspace packages did not resolve for ${payload.workspaceImage.os}: ${rejected.join(", ")}.`,
+            message: `Workspace packages did not resolve for ${target}: ${rejected.join(", ")}.`,
           });
         }
         return result.settings;
@@ -285,6 +294,36 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         return yield* projects
           .setGitAuthMode(params.id, payload.gitAuthMode)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+      }),
+    )
+    .handle("workspaceImage", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        if (payload.workspaceImage === null) {
+          const project = yield* projects
+            .setWorkspaceImage(params.id, null)
+            .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+          return new ProjectWorkspaceImageSaveResult({ saved: true, project, resolutions: [] });
+        }
+        const sealant = yield* SealantClient;
+        const resolved = yield* resolveWorkspaceEnvironment(
+          payload.workspaceImage,
+          sealant.resolveWorkspacePackage,
+        ).pipe(
+          Effect.catchTag("SealantPlatformError", (error) =>
+            Effect.fail(new SettingsFailure({ message: error.message })),
+          ),
+        );
+        const resolutions = resolved.resolutions.map(
+          (resolution) => new WorkspacePackageResolutionView(resolution),
+        );
+        if (resolved.workspaceImage === null) {
+          return new ProjectWorkspaceImageSaveResult({ saved: false, project: null, resolutions });
+        }
+        const project = yield* projects
+          .setWorkspaceImage(params.id, resolved.workspaceImage)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        return new ProjectWorkspaceImageSaveResult({ saved: true, project, resolutions });
       }),
     ),
 );
@@ -864,6 +903,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
               Effect.fail(new StoreFailure({ message: error.message })),
             HarnessStateCommandError: (error) =>
               Effect.fail(new StoreFailure({ message: error.message })),
+            SessionLaunchSetupError: (error) =>
+              Effect.fail(new StoreFailure({ message: error.message })),
           }),
         );
       }),
@@ -889,6 +930,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             HarnessStateInvalidError: (error) =>
               Effect.fail(new StoreFailure({ message: error.message })),
             HarnessStateCommandError: (error) =>
+              Effect.fail(new StoreFailure({ message: error.message })),
+            SessionLaunchSetupError: (error) =>
               Effect.fail(new StoreFailure({ message: error.message })),
           }),
         );

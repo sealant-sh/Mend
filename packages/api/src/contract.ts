@@ -320,6 +320,13 @@ export class ProjectGitAuthRequest extends Schema.Class<ProjectGitAuthRequest>(
   gitAuthMode: GitAuthMode,
 }) {}
 
+/** The project's workspace-image override; null returns it to the Settings default. */
+export class ProjectWorkspaceImageRequest extends Schema.Class<ProjectWorkspaceImageRequest>(
+  "ProjectWorkspaceImageRequest",
+)({
+  workspaceImage: Schema.NullOr(WorkspaceImage),
+}) {}
+
 /**
  * The machine's Mend deploy key — public half only; the private key never
  * leaves the host and never crosses this API. `exists: false` is status, not
@@ -369,6 +376,19 @@ export class WorkspacePackageResolutionView extends Schema.Class<WorkspacePackag
   supported: Schema.Boolean,
   packageName: Schema.NullOr(Schema.String),
   alternatives: Schema.Array(Schema.String),
+}) {}
+
+/**
+ * Saving a project override resolves family-mode packages exactly like the settings save;
+ * `saved: false` reports the rejections and persists nothing. Custom-mode packages pass through
+ * verbatim (the base's own package manager owns them), so they carry no resolutions.
+ */
+export class ProjectWorkspaceImageSaveResult extends Schema.Class<ProjectWorkspaceImageSaveResult>(
+  "ProjectWorkspaceImageSaveResult",
+)({
+  saved: Schema.Boolean,
+  project: Schema.NullOr(Project),
+  resolutions: Schema.Array(WorkspacePackageResolutionView),
 }) {}
 
 export class WorkspaceEnvironmentSaveResult extends Schema.Class<WorkspaceEnvironmentSaveResult>(
@@ -449,6 +469,14 @@ const projectsGroup = HttpApiGroup.make("projects")
       payload: ProjectGitAuthRequest,
       success: Project,
       error: Schema.Union([NotFound, StoreFailure]),
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put("workspaceImage", "/projects/:id/workspace-image", {
+      params: { id: ProjectId },
+      payload: ProjectWorkspaceImageRequest,
+      success: ProjectWorkspaceImageSaveResult,
+      error: Schema.Union([NotFound, SettingsFailure]),
     }),
   )
   .middleware(AuthMiddleware);

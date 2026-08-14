@@ -36,6 +36,12 @@ export const resolveWorkspaceEnvironment = <E>(
   ) => Effect.Effect<WorkspacePackageResolution, E>,
 ): Effect.Effect<ResolvedWorkspaceEnvironment, E> =>
   Effect.gen(function* () {
+    // Custom bases have no managed package catalog: names pass through verbatim to whatever
+    // package manager the base itself carries (the platform fails the build readable when it
+    // has none). There is nothing to resolve, so the draft saves as-is.
+    if (workspaceImage.mode === "custom") {
+      return { workspaceImage, resolutions: [] };
+    }
     const resolutions = yield* Effect.forEach(
       workspaceImage.packages,
       (packageName) => resolvePackage(packageName, workspaceImage.os),

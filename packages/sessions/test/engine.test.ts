@@ -377,6 +377,7 @@ const projectsLayer = (world: World) =>
   Layer.succeed(ProjectsRepo, {
     create: () => Effect.die("not in test"),
     setGitAuthMode: () => Effect.die("not in test"),
+    setWorkspaceImage: () => Effect.die("not in test"),
     byId: (id) => {
       const found = world.projects.get(id);
       return found === undefined
@@ -414,6 +415,7 @@ const sessionsLayer = (world: World) => {
           sealantRunId: null,
           sealantWorkspaceId: null,
           sealantSessionId: null,
+          workspaceImage: null,
           status: "starting",
           summary: null,
           lastSeenSequence: 0n,
@@ -446,6 +448,7 @@ const sessionsLayer = (world: World) => {
       Effect.sync(() => update(id, { sealantRunId, sealantWorkspaceId, lastSeenSequence: 0n })),
     setSealantSessionId: (id, sealantSessionId) =>
       Effect.sync(() => update(id, { sealantSessionId })),
+    setWorkspaceImage: (id, image) => Effect.sync(() => update(id, { workspaceImage: image })),
     setReferenceMounts: (id: string, mounts: ReadonlyArray<SessionReferenceMount>) =>
       Effect.sync(() => update(id, { referenceMounts: mounts })),
     setExtraMounts: (id: string, mounts: ReadonlyArray<SessionExtraMount>) =>
@@ -597,6 +600,7 @@ const setup = (tmp: string, world: World) => {
       autoTour: "inherit",
       autoSuggest: "inherit",
       gitAuthMode: "ambient",
+      workspaceImage: null,
       createdAt: now(),
       updatedAt: now(),
     });
@@ -669,6 +673,7 @@ describe("SessionEngine", () => {
       {
         sealantLayer: sealantLaunchLayer(created),
         workspaceImage: {
+          mode: "family",
           os: "nix",
           packages: ["bat", "lazygit"],
           services: { docker: true },
@@ -1145,6 +1150,7 @@ describe("SessionEngine", () => {
       sealantRunId: null,
       sealantWorkspaceId: null,
       sealantSessionId: null,
+      workspaceImage: null,
       status: "running",
       summary: null,
       lastSeenSequence: 0n,

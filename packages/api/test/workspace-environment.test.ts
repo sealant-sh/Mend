@@ -10,6 +10,7 @@ import {
 } from "../src/workspace-environment.ts";
 
 const workspaceImage = (packages: ReadonlyArray<string>): WorkspaceImage => ({
+  mode: "family",
   os: "arch",
   packages,
   services: { docker: true },
@@ -46,6 +47,7 @@ describe("resolveWorkspaceEnvironment", () => {
       { packageName: "github-cli", os: "arch" },
     ]);
     expect(result.workspaceImage).toEqual({
+      mode: "family",
       os: "arch",
       packages: ["github-cli"],
       services: { docker: true },

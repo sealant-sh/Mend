@@ -34,6 +34,7 @@ import {
   type SessionId,
   type SessionProcessId,
   type Sha,
+  WorkspaceImage,
 } from "@mend/domain";
 import type {
   AutomationChoice,
@@ -212,6 +213,8 @@ export const projects = pgTable("projects", {
   autoTour: text().$type<AutomationChoice>().notNull().default("inherit"),
   autoSuggest: text().$type<AutomationChoice>().notNull().default("inherit"),
   gitAuthMode: text().$type<GitAuthMode>().notNull().default("ambient"),
+  // NULL inherits the global settings.workspaceImage default.
+  workspaceImage: jsonb().$type<typeof WorkspaceImage.Encoded>(),
   createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
@@ -324,6 +327,9 @@ export const agentSessions = pgTable(
     sealantRunId: text().$type<SealantRunId>(),
     sealantWorkspaceId: text().$type<SealantWorkspaceId>(),
     sealantSessionId: text(),
+    // The image this session actually launched with — stamped at launch, never rewritten by a
+    // later project-setting change. NULL for sessions from before the column (or not launched).
+    workspaceImage: jsonb().$type<typeof WorkspaceImage.Encoded>(),
     status: text().$type<SessionStatus>().notNull().default("starting"),
     summary: text(),
     lastSeenSequence: bigint({ mode: "bigint" }).notNull().default(0n),

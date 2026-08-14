@@ -10,7 +10,7 @@ export type PrMode = typeof PrMode.Type;
 /** Rows written before a switch existed decode to its default — never a failed read. */
 const onByDefault = Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true)));
 
-export const WorkspaceImageOs = Schema.Literals(["arch", "nix"]);
+export const WorkspaceImageOs = Schema.Literals(["fedora", "arch", "nix", "ubuntu"]);
 export type WorkspaceImageOs = typeof WorkspaceImageOs.Type;
 
 const DEFAULT_WORKSPACE_PACKAGES: ReadonlyArray<string> = [
@@ -28,26 +28,70 @@ const DEFAULT_WORKSPACE_PACKAGES: ReadonlyArray<string> = [
   "fzf",
 ];
 
-export const WorkspaceImage = Schema.Struct({
+const workspaceImageServices = Schema.Struct({
+  docker: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
+}).pipe(Schema.withDecodingDefaultKey(Effect.succeed({ docker: true })));
+
+/**
+ * A managed OS family image: distro base, portable package names resolved by the platform
+ * against that distro's archive. Rows written before custom mode existed decode here — a
+ * missing `mode` key defaults to `"family"`.
+ */
+export const FamilyWorkspaceImage = Schema.Struct({
+  mode: Schema.Literals(["family"]).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed("family" as const)),
+  ),
   os: WorkspaceImageOs,
   packages: Schema.Array(Schema.String),
-  services: Schema.Struct({
-    docker: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
-  }).pipe(Schema.withDecodingDefaultKey(Effect.succeed({ docker: true }))),
+  services: workspaceImageServices,
 });
+export type FamilyWorkspaceImage = typeof FamilyWorkspaceImage.Type;
+
+/**
+ * A custom base image: any OCI reference the user already trusts. Deliberately exactly three
+ * knobs — base image ref, extra packages (passed verbatim to the base's own package manager),
+ * and setup commands (run in the workspace before the harness launches). NOT a compose editor:
+ * the workspace is one container; compose already lives inside it (the dind sidecar).
+ */
+export const CustomWorkspaceImage = Schema.Struct({
+  mode: Schema.Literals(["custom"]),
+  baseImage: Schema.String,
+  packages: Schema.Array(Schema.String),
+  setupCommands: Schema.Array(Schema.String),
+  services: workspaceImageServices,
+});
+export type CustomWorkspaceImage = typeof CustomWorkspaceImage.Type;
+
+export const WorkspaceImage = Schema.Union([FamilyWorkspaceImage, CustomWorkspaceImage]);
 export type WorkspaceImage = typeof WorkspaceImage.Type;
 
 export const defaultWorkspaceImage: WorkspaceImage = {
+  mode: "family",
   os: "arch",
   packages: [...DEFAULT_WORKSPACE_PACKAGES],
   services: { docker: true },
 };
 
-export const workspaceImagesEqual = (left: WorkspaceImage, right: WorkspaceImage): boolean =>
-  left.os === right.os &&
-  left.services.docker === right.services.docker &&
-  left.packages.length === right.packages.length &&
-  left.packages.every((value, index) => value === right.packages[index]);
+const listsEqual = (left: ReadonlyArray<string>, right: ReadonlyArray<string>): boolean =>
+  left.length === right.length && left.every((value, index) => value === right[index]);
+
+export const workspaceImagesEqual = (left: WorkspaceImage, right: WorkspaceImage): boolean => {
+  if (
+    left.services.docker !== right.services.docker ||
+    !listsEqual(left.packages, right.packages)
+  ) {
+    return false;
+  }
+  if (left.mode === "family" && right.mode === "family") {
+    return left.os === right.os;
+  }
+  if (left.mode === "custom" && right.mode === "custom") {
+    return (
+      left.baseImage === right.baseImage && listsEqual(left.setupCommands, right.setupCommands)
+    );
+  }
+  return false;
+};
 
 const workspaceImageWithDefault = WorkspaceImage.pipe(
   Schema.withDecodingDefaultKey(Effect.succeed(defaultWorkspaceImage)),
