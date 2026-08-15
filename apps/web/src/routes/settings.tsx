@@ -541,6 +541,7 @@ function DotfilesPanel() {
           ...current.filter((entry) => entry.path !== file.name),
           { path: file.name, contentsBase64, bytes: buffer.byteLength },
         ]);
+        return undefined;
       });
     }
   };

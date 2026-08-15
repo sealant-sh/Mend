@@ -1220,10 +1220,10 @@ const dotfilesShow = async (config: CliConfig) => {
  */
 const dotfilesSync = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const all = args.includes("--all");
-  const paths_ = args.filter((arg) => !arg.startsWith("--"));
+  const requestedPaths = args.filter((arg) => !arg.startsWith("--"));
   const home = os.homedir();
 
-  if (!all && paths_.length === 0) {
+  if (!all && requestedPaths.length === 0) {
     const found = scanDotfileCandidates(home);
     if (found.length === 0) {
       say(dim("no known config files found under ~"));
@@ -1244,7 +1244,7 @@ const dotfilesSync = async (config: CliConfig, args: ReadonlyArray<string>) => {
     return;
   }
 
-  const selected = all ? scanDotfileCandidates(home).map((entry) => entry.path) : paths_;
+  const selected = all ? scanDotfileCandidates(home).map((entry) => entry.path) : requestedPaths;
   if (selected.length === 0) return fail("nothing to sync — no known config files found under ~");
   const read = readSyncFiles(home, selected);
   if ("error" in read) return fail(read.error);

@@ -10,8 +10,9 @@ is just the mechanics.
   Node and pnpm versions from `flake.nix`)
 - Or, when not using direnv: Node 26.7.0 and pnpm 10.32.1
 - Docker (dev Postgres, and the Sealant stack if you run one locally)
-- A running Sealant control plane (self-host stack lives in `~/.sealant` on a machine installed via
-  Sealant's installer; version pinned by `SEALANT_VERSION` in `~/.sealant/.env`)
+- A running Sealant control plane (self-host stack lives in `~/.config/sealant` on a machine
+  installed via Sealant's installer — `~/.sealant` on pre-XDG installs; version pinned by
+  `SEALANT_VERSION` in its `.env`)
 
 ## Setup
 
@@ -41,7 +42,7 @@ All optional in dev — the defaults match `compose.dev.yaml` and a localhost Se
 | Variable                        | Default                                    | What                                                                                                                                                                                                                                                                 |
 | ------------------------------- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `DATABASE_URL`                  | `postgres://mend:mend@localhost:5434/mend` | Product Postgres                                                                                                                                                                                                                                                     |
-| `SEALANT_BASE_URL`              | `http://localhost:8080`                    | Sealant control plane (a `~/.sealant` stack serves **4000**)                                                                                                                                                                                                         |
+| `SEALANT_BASE_URL`              | `http://localhost:8080`                    | Sealant control plane (a self-host stack serves **4000**)                                                                                                                                                                                                            |
 | `SEALANT_API_KEY`               | unset                                      | Bearer for authenticated deployments                                                                                                                                                                                                                                 |
 | `SEALANT_OWNER_USER_ID`         | SDK default (`usr_local`)                  | **Must be the user id your Sealant web UI writes connected accounts under**, or inference/workspaces see nothing. Find it: `SELECT owner_user_id FROM connected_accounts` in Sealant's `sealant_control_plane` DB. Pre-auth wart; goes away when Sealant auth lands. |
 | `MEND_MODE`                     | `all`                                      | `all` · `web` · `worker`                                                                                                                                                                                                                                             |
@@ -51,7 +52,7 @@ All optional in dev — the defaults match `compose.dev.yaml` and a localhost Se
 | `MEND_INFERENCE_CLAUDE_ACCOUNT` | the account named `default`                | Which connected claude account inference uses                                                                                                                                                                                                                        |
 | `MEND_DISPATCH_INTERVAL`        | `5 seconds`                                | Dispatcher poll                                                                                                                                                                                                                                                      |
 
-Against a local `~/.sealant` stack, put these in the root `.env` (loaded by `pnpm dev`; see
+Against a local self-host stack, put these in the root `.env` (loaded by `pnpm dev`; see
 `.env.example`):
 
 ```sh
