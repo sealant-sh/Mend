@@ -7,6 +7,7 @@ import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { git, GitError } from "./git.ts";
+import { mendHome } from "./paths.ts";
 
 /** Where the store lives on disk. One root, one directory per project. */
 export class StoreConfig extends Context.Service<
@@ -18,7 +19,7 @@ export class StoreConfig extends Context.Service<
   static readonly layer = Layer.effect(
     StoreConfig,
     Effect.sync(() => ({
-      root: process.env["MEND_STORE_ROOT"] ?? path.join(os.homedir(), ".mend", "store"),
+      root: process.env["MEND_STORE_ROOT"] ?? path.join(mendHome(), "store"),
     })),
   );
   static readonly layerFor = (root: string) => Layer.succeed(StoreConfig, { root });

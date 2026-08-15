@@ -7,6 +7,8 @@ import type { GitAuthMode } from "@mend/domain/workbench";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
+import { mendHome } from "./paths.ts";
+
 /**
  * Host-side git authentication (docs/GIT-ACCESS.md): the one seam every
  * remote git operation resolves its credential through. Two modes today —
@@ -43,7 +45,7 @@ export class MendKeysConfig extends Context.Service<
 export const MendKeysConfigLive: Layer.Layer<MendKeysConfig> = Layer.effect(
   MendKeysConfig,
   Effect.sync(() => ({
-    root: process.env["MEND_KEYS_ROOT"] ?? path.join(os.homedir(), ".mend", "keys"),
+    root: process.env["MEND_KEYS_ROOT"] ?? path.join(mendHome(), "keys"),
   })),
 );
 

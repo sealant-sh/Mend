@@ -17,7 +17,7 @@ export const resolveAutomation = (choice: AutomationChoice, settingsDefault: boo
 /**
  * How host-side git reaches this project's remote (docs/GIT-ACCESS.md):
  * `ambient` uses the login user's git/ssh setup unchanged; `mend-key` uses the
- * machine's Mend-generated deploy key (`~/.mend/keys/`), whose private half
+ * machine's Mend-generated deploy key (`~/.config/mend/keys/`), whose private half
  * never leaves the host; `bridge` signs through an ssh-agent shared from
  * another machine via `mend keys share` — the key (often hardware) physically
  * stays there, and ops fail readably when no signer is connected. All modes

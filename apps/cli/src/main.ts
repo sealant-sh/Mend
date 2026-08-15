@@ -105,7 +105,19 @@ interface SessionAnnotationDto {
   readonly pendingFollowUp: boolean;
 }
 
-const CONFIG_PATH = path.join(os.homedir(), ".mend", "cli.json");
+// `$XDG_CONFIG_HOME/mend`, default `~/.config/mend`; a pre-XDG `~/.mend` stays authoritative
+// when it is the only one present (mirrors @mend/store's resolver — the CLI stays dependency-light).
+const mendCliHome = (): string => {
+  const xdg = process.env["XDG_CONFIG_HOME"];
+  const preferred = path.join(
+    xdg === undefined || xdg === "" ? path.join(os.homedir(), ".config") : xdg,
+    "mend",
+  );
+  const legacy = path.join(os.homedir(), ".mend");
+  return !fs.existsSync(preferred) && fs.existsSync(legacy) ? legacy : preferred;
+};
+
+const CONFIG_PATH = path.join(mendCliHome(), "cli.json");
 
 const loadConfig = (): CliConfig => {
   let fileConfig: Partial<CliConfig> = {};
@@ -1905,7 +1917,7 @@ const HELP = `mend — the agent workbench
 
   server: MEND_URL (default http://localhost:3105) · auth: MEND_TOKEN
   detach key: Ctrl+] (set MEND_DETACH_KEY=none when an outer multiplexer owns detaching)
-  config file: ~/.mend/cli.json { "url": ..., "token": ... }
+  config file: ~/.config/mend/cli.json { "url": ..., "token": ... }
 `;
 
 const main = async () => {
