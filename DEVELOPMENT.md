@@ -6,8 +6,9 @@ is just the mechanics.
 
 ## Prerequisites
 
-- Node ≥ 24 (the server runs the TypeScript sources directly — no build step outside `apps/web`)
-- pnpm 10 (`corepack enable`)
+- [direnv](https://direnv.net/) with Nix (recommended; entering the repository provides the pinned
+  Node and pnpm versions from `flake.nix`)
+- Or, when not using direnv: Node 26.7.0 and pnpm 10.32.1
 - Docker (dev Postgres, and the Sealant stack if you run one locally)
 - A running Sealant control plane (self-host stack lives in `~/.sealant` on a machine installed via
   Sealant's installer; version pinned by `SEALANT_VERSION` in `~/.sealant/.env`)
@@ -15,7 +16,8 @@ is just the mechanics.
 ## Setup
 
 ```sh
-pnpm install
+direnv allow                               # first checkout only
+pnpm install --lockfile=false              # pnpm-lock.yaml is intentionally not updated
 cp .env.example .env                       # then fill in SEALANT_OWNER_USER_ID
 pnpm --filter @mend/web dev                # Postgres (docker, 5434) + vite (3101) + the Effect server (3105)
 ```
