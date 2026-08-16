@@ -6,6 +6,7 @@ export { workspaceImagesEqual };
 
 type WorkspaceImage = SettingsDto["workspaceImage"];
 type WorkspaceImageOs = Extract<WorkspaceImage, { mode: "family" }>["os"];
+type WorkspaceImageShell = Extract<WorkspaceImage, { mode: "family" }>["shell"];
 
 export const OS_LABELS: Record<WorkspaceImageOs, string> = {
   fedora: "Fedora",
@@ -38,6 +39,7 @@ export interface WorkspaceEnvironmentFormState {
   readonly savedImage: WorkspaceImage;
   readonly mode: WorkspaceImage["mode"];
   readonly os: WorkspaceImageOs;
+  readonly shell: WorkspaceImageShell;
   readonly baseImage: string;
   readonly setupDraft: string;
   readonly docker: boolean;
@@ -50,6 +52,7 @@ export interface WorkspaceEnvironmentFormState {
 export type WorkspaceEnvironmentFormAction =
   | { readonly type: "mode-changed"; readonly mode: WorkspaceImage["mode"] }
   | { readonly type: "os-changed"; readonly os: WorkspaceImageOs }
+  | { readonly type: "shell-changed"; readonly shell: WorkspaceImageShell }
   | { readonly type: "base-image-changed"; readonly baseImage: string }
   | { readonly type: "setup-changed"; readonly setupDraft: string }
   | { readonly type: "docker-toggled" }
@@ -77,6 +80,7 @@ export const createWorkspaceEnvironmentForm = (
   savedImage: workspaceImage,
   mode: workspaceImage.mode,
   os: workspaceImage.mode === "family" ? workspaceImage.os : "arch",
+  shell: workspaceImage.mode === "family" ? workspaceImage.shell : "bash",
   baseImage: workspaceImage.mode === "custom" ? workspaceImage.baseImage : "",
   setupDraft: workspaceImage.mode === "custom" ? workspaceImage.setupCommands.join("\n") : "",
   docker: workspaceImage.services.docker,
@@ -102,6 +106,8 @@ export const workspaceEnvironmentFormReducer = (
       return edited({ ...state, mode: action.mode });
     case "os-changed":
       return edited({ ...state, os: action.os });
+    case "shell-changed":
+      return edited({ ...state, shell: action.shell });
     case "base-image-changed":
       return edited({ ...state, baseImage: action.baseImage });
     case "setup-changed":
@@ -147,6 +153,7 @@ export const workspaceImageFromForm = (state: WorkspaceEnvironmentFormState): Wo
         mode: "family",
         os: state.os,
         packages: parsePackageDraft(state.packageDraft).packages,
+        shell: state.shell,
         services: { docker: state.docker },
       };
 

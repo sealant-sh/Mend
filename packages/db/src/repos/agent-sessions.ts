@@ -10,6 +10,7 @@ import {
 } from "@mend/domain";
 import {
   Session,
+  SessionDotfiles,
   type SessionExtraMount,
   type SessionReferenceMount,
   type SessionStatus,
@@ -39,6 +40,8 @@ export interface NewSession {
   readonly branch: string;
   readonly baseSha: Sha;
   readonly contextSnapshotId: ContextSnapshotId | null;
+  /** Who provisioned the session — whose dotfiles apply at launch. */
+  readonly ownerUserId: string | null;
 }
 
 /** Terminal session states; `stopped` is the user's stop, not a failure. */
@@ -71,6 +74,8 @@ export class SessionsRepo extends Context.Service<
     readonly setSealantSessionId: (id: SessionId, sealantSessionId: string) => Effect.Effect<void>;
     /** The image this session actually launched with — stamped at launch, a recorded fact. */
     readonly setWorkspaceImage: (id: SessionId, image: WorkspaceImage) => Effect.Effect<void>;
+    /** The dotfiles this session actually launched with — stamped at launch, a recorded fact. */
+    readonly setDotfiles: (id: SessionId, dotfiles: SessionDotfiles) => Effect.Effect<void>;
     readonly setProviderSessionId: (id: SessionId, providerId: string) => Effect.Effect<void>;
     /** What launch actually mounted beside the worktree — recorded once, at launch. */
     readonly setReferenceMounts: (
@@ -101,11 +106,13 @@ export class SessionsRepo extends Context.Service<
 >()("@mend/db/SessionsRepo") {}
 
 const decodeWorkspaceImage = Schema.decodeUnknownSync(WorkspaceImage);
+const decodeSessionDotfiles = Schema.decodeUnknownSync(SessionDotfiles);
 
 const toSession = (row: typeof agentSessions.$inferSelect): Session =>
   new Session({
     ...row,
     workspaceImage: row.workspaceImage === null ? null : decodeWorkspaceImage(row.workspaceImage),
+    dotfiles: row.dotfiles === null ? null : decodeSessionDotfiles(row.dotfiles),
   });
 
 export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClient.PgClient> =
@@ -240,6 +247,17 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         yield* db
           .update(agentSessions)
           .set({ workspaceImage: image, updatedAt: new Date() })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
+      });
+
+      const setDotfiles = Effect.fn("SessionsRepo.setDotfiles")(function* (
+        id: SessionId,
+        dotfiles: SessionDotfiles,
+      ) {
+        yield* db
+          .update(agentSessions)
+          .set({ dotfiles, updatedAt: new Date() })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
       });
@@ -395,6 +413,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         setSealantIds,
         setSealantSessionId,
         setWorkspaceImage,
+        setDotfiles,
         setProviderSessionId,
         setReferenceMounts,
         setExtraMounts,

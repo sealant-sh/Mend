@@ -13,6 +13,23 @@ import { SessionExtraMount } from "./mount.ts";
 import { SessionReferenceMount } from "./reference.ts";
 
 /**
+ * What a launch actually applied from the owner's dotfiles — recorded facts, never rewritten by
+ * a later sync or config change. The snapshot sha names an exact commit in the user's dotfiles
+ * store; the repository is the url+ref that was cloned (its content is not pinned — the clone
+ * takes the branch tip at launch).
+ */
+export const SessionDotfiles = Schema.Struct({
+  repository: Schema.NullOr(
+    Schema.Struct({
+      url: Schema.String,
+      ref: Schema.NullOr(Schema.String),
+    }),
+  ),
+  snapshotSha: Schema.NullOr(Schema.String),
+});
+export type SessionDotfiles = typeof SessionDotfiles.Type;
+
+/**
  * Lifecycle of a supervised coding-agent process (plan §5.5). `waiting` and
  * `idle` are workbench states the queue-era RunStatus never had: waiting means
  * the harness asked for input; idle means the PTY is alive with no activity.
@@ -61,6 +78,10 @@ export class Session extends Schema.Class<Session>("Session")({
   sealantSessionId: Schema.NullOr(Schema.String),
   /** The image this session actually launched with; null before launch (or pre-column rows). */
   workspaceImage: Schema.NullOr(WorkspaceImage),
+  /** The dotfiles this session actually launched with; null before launch (or none applied). */
+  dotfiles: Schema.NullOr(SessionDotfiles),
+  /** Who provisioned the session — whose dotfiles apply. Null for pre-column rows. */
+  ownerUserId: Schema.NullOr(Schema.String),
   status: SessionStatus,
   /** What the harness reported at settle, when anything. */
   summary: Schema.NullOr(Schema.String),

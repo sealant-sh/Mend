@@ -208,6 +208,8 @@ export interface ProvisionInput {
   readonly label: string | null;
   /** Branch or sha to base the worktree on; null = the project's default branch. */
   readonly base: string | null;
+  /** Who is provisioning — whose dotfiles apply at launch. Null when the caller is unknown. */
+  readonly ownerUserId: string | null;
 }
 
 /** A shell needs a live workspace; a settled session has none to enter. */
@@ -563,6 +565,7 @@ export class SessionEngine extends Context.Service<
           projectId: project.id,
           harness: input.harness,
           label: input.label,
+          ownerUserId: input.ownerUserId,
           worktree: worktree.name,
           branch: worktree.branch,
           baseSha: worktree.baseSha,

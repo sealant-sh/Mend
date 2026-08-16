@@ -126,6 +126,8 @@ describe("Mend Drizzle schema", () => {
       "sealant_workspace_id",
       "sealant_session_id",
       "workspace_image",
+      "dotfiles",
+      "owner_user_id",
       "status",
       "summary",
       "last_seen_sequence",

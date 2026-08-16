@@ -13,6 +13,7 @@ const workspaceImage = (packages: ReadonlyArray<string>): WorkspaceImage => ({
   mode: "family",
   os: "arch",
   packages,
+  shell: "bash",
   services: { docker: true },
 });
 
@@ -50,6 +51,7 @@ describe("resolveWorkspaceEnvironment", () => {
       mode: "family",
       os: "arch",
       packages: ["github-cli"],
+      shell: "bash",
       services: { docker: true },
     });
   });

@@ -378,6 +378,7 @@ const projectsLayer = (world: World) =>
     create: () => Effect.die("not in test"),
     setGitAuthMode: () => Effect.die("not in test"),
     setWorkspaceImage: () => Effect.die("not in test"),
+    setApplyDotfiles: () => Effect.die("not in test"),
     byId: (id) => {
       const found = world.projects.get(id);
       return found === undefined
@@ -416,6 +417,8 @@ const sessionsLayer = (world: World) => {
           sealantWorkspaceId: null,
           sealantSessionId: null,
           workspaceImage: null,
+          dotfiles: null,
+          ownerUserId: null,
           status: "starting",
           summary: null,
           lastSeenSequence: 0n,
@@ -449,6 +452,7 @@ const sessionsLayer = (world: World) => {
     setSealantSessionId: (id, sealantSessionId) =>
       Effect.sync(() => update(id, { sealantSessionId })),
     setWorkspaceImage: (id, image) => Effect.sync(() => update(id, { workspaceImage: image })),
+    setDotfiles: (id, dotfiles) => Effect.sync(() => update(id, { dotfiles })),
     setReferenceMounts: (id: string, mounts: ReadonlyArray<SessionReferenceMount>) =>
       Effect.sync(() => update(id, { referenceMounts: mounts })),
     setExtraMounts: (id: string, mounts: ReadonlyArray<SessionExtraMount>) =>
@@ -601,6 +605,7 @@ const setup = (tmp: string, world: World) => {
       autoSuggest: "inherit",
       gitAuthMode: "ambient",
       workspaceImage: null,
+      applyDotfiles: true,
       createdAt: now(),
       updatedAt: now(),
     });
@@ -659,6 +664,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            ownerUserId: null,
             base: null,
           });
 
@@ -676,6 +682,7 @@ describe("SessionEngine", () => {
           mode: "family",
           os: "nix",
           packages: ["bat", "lazygit"],
+          shell: "bash",
           services: { docker: true },
         },
       },
@@ -693,6 +700,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            ownerUserId: null,
             base: null,
           });
 
@@ -722,6 +730,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            ownerUserId: null,
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -778,6 +787,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            ownerUserId: null,
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -806,6 +816,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            ownerUserId: null,
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -827,6 +838,7 @@ describe("SessionEngine", () => {
         const project = yield* setup(tmp, world);
         const engine = yield* SessionEngine;
         const session = yield* engine.provision({
+          ownerUserId: null,
           projectId: project.id,
           harness: "codex",
           label: null,
@@ -851,6 +863,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            ownerUserId: null,
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -898,6 +911,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            ownerUserId: null,
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -932,6 +946,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            ownerUserId: null,
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -960,6 +975,7 @@ describe("SessionEngine", () => {
         const engine = yield* SessionEngine;
 
         const session = yield* engine.provision({
+          ownerUserId: null,
           projectId: project.id,
           harness: "codex",
           label: "fix the answer",
@@ -990,6 +1006,7 @@ describe("SessionEngine", () => {
         const project = yield* setup(tmp, world);
         const engine = yield* SessionEngine;
         const session = yield* engine.provision({
+          ownerUserId: null,
           projectId: project.id,
           harness: "codex",
           label: null,
@@ -1052,6 +1069,7 @@ describe("SessionEngine", () => {
         const project = yield* setup(tmp, world);
         const engine = yield* SessionEngine;
         const session = yield* engine.provision({
+          ownerUserId: null,
           projectId: project.id,
           harness: "codex",
           label: null,
@@ -1083,6 +1101,7 @@ describe("SessionEngine", () => {
         const project = yield* setup(tmp, world);
         const engine = yield* SessionEngine;
         const session = yield* engine.provision({
+          ownerUserId: null,
           projectId: project.id,
           harness: "custom",
           label: null,
@@ -1108,6 +1127,7 @@ describe("SessionEngine", () => {
         const project = yield* setup(tmp, world);
         const engine = yield* SessionEngine;
         const session = yield* engine.provision({
+          ownerUserId: null,
           projectId: project.id,
           harness: "codex",
           label: null,
@@ -1151,6 +1171,8 @@ describe("SessionEngine", () => {
       sealantWorkspaceId: null,
       sealantSessionId: null,
       workspaceImage: null,
+      dotfiles: null,
+      ownerUserId: null,
       status: "running",
       summary: null,
       lastSeenSequence: 0n,

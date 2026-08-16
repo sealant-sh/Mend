@@ -489,6 +489,7 @@ export type WorkspaceImageDto =
       readonly mode: "family";
       readonly os: "fedora" | "arch" | "nix" | "ubuntu";
       readonly packages: ReadonlyArray<string>;
+      readonly shell: "bash" | "zsh" | "fish";
       readonly services: { readonly docker: boolean };
     }
   | {

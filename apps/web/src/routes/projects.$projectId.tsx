@@ -356,6 +356,7 @@ function WorkspaceImageSection({ project }: { readonly project: ProjectDto }) {
   const [draft, setDraft] = useState<{
     readonly mode: "family" | "custom";
     readonly os: (typeof WORKSPACE_OS_CHOICES)[number];
+    readonly shell: "bash" | "zsh" | "fish";
     readonly baseImage: string;
     readonly packagesDraft: string;
     readonly setupDraft: string;
@@ -374,6 +375,7 @@ function WorkspaceImageSection({ project }: { readonly project: ProjectDto }) {
         ? {
             mode: "family",
             os: from === null ? "arch" : from.os,
+            shell: from === null ? "bash" : from.shell,
             baseImage: "",
             packagesDraft: (from?.packages ?? []).join("\n"),
             setupDraft: "",
@@ -382,6 +384,7 @@ function WorkspaceImageSection({ project }: { readonly project: ProjectDto }) {
         : {
             mode: "custom",
             os: "arch",
+            shell: "bash",
             baseImage: from.baseImage,
             packagesDraft: from.packages.join("\n"),
             setupDraft: from.setupCommands.join("\n"),
@@ -423,7 +426,13 @@ function WorkspaceImageSection({ project }: { readonly project: ProjectDto }) {
             .filter((line) => line !== ""),
           services: { docker: draft.docker },
         }
-      : { mode: "family", os: draft.os, packages, services: { docker: draft.docker } };
+      : {
+          mode: "family",
+          os: draft.os,
+          packages,
+          shell: draft.shell,
+          services: { docker: draft.docker },
+        };
   };
 
   return (
