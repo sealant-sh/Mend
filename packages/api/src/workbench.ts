@@ -909,6 +909,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
               Effect.fail(new StoreFailure({ message: error.message })),
             SessionLaunchSetupError: (error) =>
               Effect.fail(new StoreFailure({ message: error.message })),
+            DotfilesResolveError: (error) =>
+              Effect.fail(new StoreFailure({ message: error.message })),
           }),
         );
       }),
@@ -936,6 +938,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             HarnessStateCommandError: (error) =>
               Effect.fail(new StoreFailure({ message: error.message })),
             SessionLaunchSetupError: (error) =>
+              Effect.fail(new StoreFailure({ message: error.message })),
+            DotfilesResolveError: (error) =>
               Effect.fail(new StoreFailure({ message: error.message })),
           }),
         );

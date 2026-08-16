@@ -1,3 +1,4 @@
+export * from "./dotfiles.ts";
 export * from "./engine.ts";
 export * from "./git-transport.ts";
 export * from "./harness-state.ts";

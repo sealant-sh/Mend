@@ -20,6 +20,7 @@ import {
   SessionRunsRepo,
   SessionsRepo,
   SettingsRepo,
+  UserDotfilesRepo,
   type NewCheckpoint,
   type NewSession,
   type NewSessionProcess,
@@ -37,6 +38,7 @@ import {
   Sha,
   MendSettings,
   defaultSettings,
+  type DotfilesRepository,
 } from "@mend/domain";
 import {
   Change,
@@ -56,7 +58,7 @@ import {
   SessionNotLiveError,
   SessionSocketHost,
 } from "@mend/sessions";
-import { AgentBridge, MendKeys, Store, StoreConfig } from "@mend/store";
+import { AgentBridge, DotfilesStore, MendKeys, Store, StoreConfig } from "@mend/store";
 import type { CreateOptions, InteractiveSession, Workspace } from "@sealant/sdk";
 import { Duration, Effect, Layer, Stream } from "effect";
 
@@ -202,6 +204,20 @@ const sessionSocketStubLayer = Layer.succeed(SessionSocketHost, {
 });
 
 /** No machine key and no transport log in these worlds. */
+// Dotfiles resolve per owner; the engine fixtures run without any configured, so launches
+// carry no archives and stamp an empty record.
+const userDotfilesStubLayer = Layer.succeed(UserDotfilesRepo, {
+  repository: () => Effect.succeed(null),
+  setRepository: (_userId: string, value: DotfilesRepository | null) => Effect.succeed(value),
+  firstUserId: () => Effect.succeed<string | null>("user-fixture"),
+});
+const dotfilesStoreStubLayer = Layer.succeed(DotfilesStore, {
+  snapshot: () => Effect.die("not in test"),
+  current: () => Effect.succeed(null),
+  archive: () => Effect.succeed(null),
+  clear: () => Effect.void,
+});
+
 const mendKeysStubLayer = Layer.succeed(MendKeys, {
   ensure: () =>
     Effect.succeed({
@@ -642,6 +658,8 @@ const withEngine = <A, E>(
     Layer.provide(referencesEmptyLayer),
     Layer.provide(projectMountsEmptyLayer),
     Layer.provide(projectRecipesEmptyLayer),
+    Layer.provide(userDotfilesStubLayer),
+    Layer.provide(dotfilesStoreStubLayer),
   );
   return Effect.runPromise(
     work(world, tmp).pipe(
@@ -1206,6 +1224,8 @@ describe("SessionEngine", () => {
       Layer.provide(projectRecipesEmptyLayer),
       Layer.provide(projectRecipesEmptyLayer),
       Layer.provide(settingsLayer()),
+      Layer.provide(userDotfilesStubLayer),
+      Layer.provide(dotfilesStoreStubLayer),
     );
     // Constructing the engine runs resume().
     await Effect.runPromise(

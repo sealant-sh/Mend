@@ -15,6 +15,7 @@ import {
   SessionRunsRepo,
   SessionsRepo,
   SettingsRepo,
+  UserDotfilesRepo,
 } from "@mend/db";
 import {
   SealantRunId,
@@ -35,6 +36,7 @@ import { SessionExtraMount, SessionReferenceMount } from "@mend/domain/workbench
 import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import {
   AgentBridge,
+  DotfilesStore,
   GitError,
   MendKeys,
   NO_SIGNER_MESSAGE,
@@ -48,6 +50,7 @@ import { claudeCode, codex, opencode } from "@sealant/sdk";
 import { Duration, Effect, Layer, Schedule, Schema, Stream } from "effect";
 import * as Context from "effect/Context";
 
+import { DotfilesResolveError, resolveDotfilesArchives } from "./dotfiles.ts";
 import { parseGitRemoteCommand } from "./git-transport.ts";
 import {
   HARNESS_STATE,
@@ -290,6 +293,7 @@ export class SessionEngine extends Context.Service<
       | SealantPlatformError
       | HarnessStateError
       | SessionLaunchSetupError
+      | DotfilesResolveError
     >;
     /** Snapshot the worktree now — review-open and user-mark come through here. */
     readonly checkpointNow: (
@@ -377,6 +381,7 @@ export class SessionEngine extends Context.Service<
       | SealantPlatformError
       | HarnessStateError
       | SessionLaunchSetupError
+      | DotfilesResolveError
     >;
     /**
      * The session's conversation as the canonical record — read LIVE from the
@@ -397,6 +402,8 @@ export class SessionEngine extends Context.Service<
     Effect.gen(function* () {
       const sealant = yield* SealantClient;
       const sessions = yield* SessionsRepo;
+      const userDotfilesRepo = yield* UserDotfilesRepo;
+      const dotfilesStore = yield* DotfilesStore;
       const sessionRuns = yield* SessionRunsRepo;
       const processes = yield* SessionProcessesRepo;
       const serviceHost = yield* ServiceHost;
@@ -1052,6 +1059,35 @@ export class SessionEngine extends Context.Service<
         // session records whichever one it ACTUALLY launched with, so a later settings change
         // never rewrites what a past session ran on.
         const workspaceImage = project.workspaceImage ?? settings.workspaceImage;
+        // Dotfiles are the OWNER's: the account stamped at provision; sessions from before
+        // ownership existed fall back to the instance's first account (the static-token
+        // semantics). Both sources resolve server-side — the repo clone at launch, the store
+        // snapshot as the exact commit the owner last synced — and the workspace only ever
+        // sees file trees, never a URL or credential. Custom images skip dotfiles entirely:
+        // the platform rejects them there (POSIX-shell-only contract), and a project that
+        // brings its own base brings its own environment.
+        const ownerUserId = session.ownerUserId ?? (yield* userDotfilesRepo.firstUserId());
+        const dotfilesEnabled =
+          project.applyDotfiles && workspaceImage.mode !== "custom" && ownerUserId !== null;
+        const settleDotfilesFailure = (error: { readonly message: string }) =>
+          sessions
+            .settle(sessionId, "failed", `launch failed: ${error.message}`)
+            .pipe(Effect.ignore);
+        const dotfilesRepository =
+          dotfilesEnabled && ownerUserId !== null
+            ? yield* userDotfilesRepo.repository(ownerUserId)
+            : null;
+        const dotfilesSnapshot =
+          dotfilesEnabled && ownerUserId !== null
+            ? yield* dotfilesStore.archive(ownerUserId).pipe(
+                Effect.mapError((error) => new DotfilesResolveError({ message: error.message })),
+                Effect.tapError(settleDotfilesFailure),
+              )
+            : null;
+        const dotfilesArchives = yield* resolveDotfilesArchives({
+          repository: dotfilesRepository,
+          snapshot: dotfilesSnapshot,
+        }).pipe(Effect.tapError(settleDotfilesFailure));
         const createWorkspace = (credentials: WorkspaceCredentialsOptions | undefined) =>
           sealant.createWorkspace({
             source: { kind: "mount", path: worktree },
@@ -1061,6 +1097,20 @@ export class SessionEngine extends Context.Service<
             ...(workspaceImage.mode === "custom"
               ? { baseImage: workspaceImage.baseImage }
               : { os: workspaceImage.os }),
+            ...(workspaceImage.mode === "family" && workspaceImage.shell !== "bash"
+              ? { shell: workspaceImage.shell }
+              : {}),
+            ...(dotfilesArchives.length === 0
+              ? {}
+              : {
+                  dotfiles: {
+                    archives: dotfilesArchives.map((archive) => ({
+                      data: archive.data,
+                      manager: archive.manager,
+                      bootstrap: archive.bootstrap,
+                    })),
+                  },
+                }),
             packages: workspaceImage.packages,
             services: workspaceImage.services,
             // Belt for every path that forgets to stop: the platform reaper.
@@ -1091,6 +1141,15 @@ export class SessionEngine extends Context.Service<
           settleOnFailure,
         );
         yield* sessions.setWorkspaceImage(sessionId, workspaceImage);
+        // Stamped alongside the image: what this session ACTUALLY launched with — the repo
+        // url+ref that was cloned and the exact snapshot sha the store packed.
+        yield* sessions.setDotfiles(sessionId, {
+          repository:
+            dotfilesRepository === null
+              ? null
+              : { url: dotfilesRepository.url, ref: dotfilesRepository.ref },
+          snapshotSha: dotfilesSnapshot?.sha ?? null,
+        });
 
         // Custom-image setup commands run in the fresh workspace BEFORE anything else (state
         // restore, harness launch). They are part of the image contract, so a failing one fails
