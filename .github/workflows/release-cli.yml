@@ -45,3 +45,31 @@ jobs:
       # `prepack` builds dist/ from src/main.ts; publish runs it.
       - name: Publish to npm
         run: pnpm --filter "@sealant/mend" publish --access public --no-git-checks --provenance
+
+  # A tag is not a release until the repo says so: publish a GitHub Release whose notes are the
+  # version's CHANGELOG section, so every cli-v* tag leaves a durable, linkable release object.
+  github-release:
+    name: GitHub release
+    needs: npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract this version's changelog section
+        run: |
+          VERSION="${GITHUB_REF_NAME#cli-v}"
+          awk -v version="$VERSION" '
+            $0 ~ "^## " version "$" { grab = 1; next }
+            grab && /^## / { exit }
+            grab { print }
+          ' apps/cli/CHANGELOG.md > release-notes.md
+          if ! [ -s release-notes.md ]; then
+            echo "No CHANGELOG section found for $VERSION — using a pointer instead." >&2
+            echo "See apps/cli/CHANGELOG.md." > release-notes.md
+          fi
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME"             --title "mend CLI ${GITHUB_REF_NAME#cli-v}"             --notes-file release-notes.md             --verify-tag
