@@ -2,10 +2,10 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import type * as net from "node:net";
-import * as os from "node:os";
 import * as path from "node:path";
 
 import type { SessionId } from "@mend/domain";
+import { mendHome } from "@mend/store";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
@@ -30,7 +30,7 @@ import {
  * script beside it, route tiny JSON requests to the closures the engine
  * provides. The engine owns the semantics; this file owns the plumbing.
  *
- * Socket dirs live under the store (`~/.mend/store/_run/sessions/<id>`) —
+ * Socket dirs live under the store (`~/.config/mend/store/_run/sessions/<id>`) —
  * already inside the platform's mount allowlist, `_`-prefixed like
  * `_references`. Paths are deterministic per session, so a Mend restart
  * re-binds the same path and the running workspace's mount comes back to
@@ -80,7 +80,7 @@ export class SessionSocketHost extends Context.Service<
 >()("@mend/sessions/SessionSocketHost") {}
 
 const runRoot = (): string =>
-  process.env["MEND_RUN_DIR"] ?? path.join(os.homedir(), ".mend", "store", "_run", "sessions");
+  process.env["MEND_RUN_DIR"] ?? path.join(mendHome(), "store", "_run", "sessions");
 
 /** In-container path of the mount — the helper hardcodes it. */
 export const SESSION_SOCKET_MOUNT_PATH = "/run/mend";

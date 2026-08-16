@@ -6,7 +6,7 @@
  * relaunch, and the transcript adapters below are the harness-agnostic seam
  * (text is the interchange format — native state never crosses harnesses).
  *
- * Layout under `~/.mend/store/<project>/sessions/<session-id>/`:
+ * Layout under `~/.config/mend/store/<project>/sessions/<session-id>/`:
  *   harness-state.tar.gz   the raw `$HOME` state dirs, exactly as the harness wrote them
  *   transcript.native      the primary conversation file (claude/codex: JSONL)
  *   manifest.json          { harness, providerSessionId, capturedAt }

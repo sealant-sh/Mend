@@ -33,12 +33,12 @@ mend status                           active sessions (alias of mend sessions)
 
 ## Configuration
 
-| Source             | What                                              |
-| ------------------ | ------------------------------------------------- |
-| `MEND_URL`         | The Mend server (default `http://localhost:3105`) |
-| `MEND_TOKEN`       | Bearer token for that server                      |
-| `MEND_DETACH_KEY`  | Set to `none` when an outer multiplexer detaches  |
-| `~/.mend/cli.json` | `{ "url": ..., "token": ... }` — env vars win     |
+| Source                    | What                                                                                      |
+| ------------------------- | ----------------------------------------------------------------------------------------- |
+| `MEND_URL`                | The Mend server (default `http://localhost:3105`)                                         |
+| `MEND_TOKEN`              | Bearer token for that server                                                              |
+| `MEND_DETACH_KEY`         | Set to `none` when an outer multiplexer detaches                                          |
+| `~/.config/mend/cli.json` | `{ "url": ..., "token": ... }` — env vars win; a pre-XDG `~/.mend/cli.json` keeps working |
 
 ## Herdr
 

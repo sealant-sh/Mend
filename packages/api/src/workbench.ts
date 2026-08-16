@@ -345,34 +345,34 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
  * The current user's dotfiles — repository knob + store snapshot. Contents arrive from the
  * machine that HAS them (CLI sync, web upload); the server's own home is never scanned.
  */
-export const DotfilesGroupLive = HttpApiBuilder.group(MendApi, "dotfiles", (handlers) => {
-  const view = (userId: string) =>
-    Effect.gen(function* () {
-      const userDotfiles = yield* UserDotfilesRepo;
-      const store = yield* DotfilesStore;
-      const repository = yield* userDotfiles.repository(userId);
-      const snapshot = yield* store
-        .current(userId)
-        .pipe(Effect.mapError((error) => new SettingsFailure({ message: error.message })));
-      return new DotfilesView({
-        repository,
-        snapshot:
-          snapshot === null
-            ? null
-            : new DotfilesSnapshotView({
-                sha: snapshot.sha,
-                source: snapshot.source,
-                committedAt: snapshot.committedAt,
-                files: snapshot.files.map((file) => new DotfilesSnapshotFileView(file)),
-              }),
-      });
+const dotfilesView = (userId: string) =>
+  Effect.gen(function* () {
+    const userDotfiles = yield* UserDotfilesRepo;
+    const store = yield* DotfilesStore;
+    const repository = yield* userDotfiles.repository(userId);
+    const snapshot = yield* store
+      .current(userId)
+      .pipe(Effect.mapError((error) => new SettingsFailure({ message: error.message })));
+    return new DotfilesView({
+      repository,
+      snapshot:
+        snapshot === null
+          ? null
+          : new DotfilesSnapshotView({
+              sha: snapshot.sha,
+              source: snapshot.source,
+              committedAt: snapshot.committedAt,
+              files: snapshot.files.map((file) => new DotfilesSnapshotFileView(file)),
+            }),
     });
+  });
 
-  return handlers
+export const DotfilesGroupLive = HttpApiBuilder.group(MendApi, "dotfiles", (handlers) =>
+  handlers
     .handle("get", () =>
       Effect.gen(function* () {
         const caller = yield* CurrentUser;
-        return yield* view(caller.user.id).pipe(
+        return yield* dotfilesView(caller.user.id).pipe(
           Effect.catchTag("SettingsFailure", (error) => Effect.die(error)),
         );
       }),
@@ -382,7 +382,7 @@ export const DotfilesGroupLive = HttpApiBuilder.group(MendApi, "dotfiles", (hand
         const caller = yield* CurrentUser;
         const userDotfiles = yield* UserDotfilesRepo;
         yield* userDotfiles.setRepository(caller.user.id, payload.repository);
-        return yield* view(caller.user.id);
+        return yield* dotfilesView(caller.user.id);
       }),
     )
     .handle("snapshot", ({ payload }) =>
@@ -395,7 +395,7 @@ export const DotfilesGroupLive = HttpApiBuilder.group(MendApi, "dotfiles", (hand
             merge: payload.merge,
           })
           .pipe(Effect.mapError((error) => new SettingsFailure({ message: error.message })));
-        return yield* view(caller.user.id);
+        return yield* dotfilesView(caller.user.id);
       }),
     )
     .handle("clearSnapshot", () =>
@@ -405,10 +405,10 @@ export const DotfilesGroupLive = HttpApiBuilder.group(MendApi, "dotfiles", (hand
         yield* store
           .clear(caller.user.id)
           .pipe(Effect.mapError((error) => new SettingsFailure({ message: error.message })));
-        return yield* view(caller.user.id);
+        return yield* dotfilesView(caller.user.id);
       }),
-    );
-});
+    ),
+);
 
 /** The machine's Mend git key — public half only, ever (docs/GIT-ACCESS.md). */
 export const GitKeysGroupLive = HttpApiBuilder.group(MendApi, "gitKeys", (handlers) =>

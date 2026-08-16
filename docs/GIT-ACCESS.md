@@ -22,10 +22,11 @@ delivery prompt lives with the session that builds it.
    - _Ambient_ (default): the login user's git/ssh setup, unchanged. Fix the failure story only: run
      ssh with `BatchMode=yes`, surface "permission denied / host key unknown" as readable errors
      instead of dead clones.
-   - _Mend key_: Mend generates an ed25519 keypair on the server machine (`~/.mend/keys/`, 0600;
-     private key never leaves the host, never enters a workspace). The UI/CLI shows the public key
-     with a copy button — "add this as a deploy key" on GitHub/GitLab/Gitea/anything. Git ops run
-     with
+   - _Mend key_: Mend generates an ed25519 keypair on the server machine (`~/.config/mend/keys/` —
+     `$XDG_CONFIG_HOME/mend`; a pre-XDG `~/.mend` stays authoritative when it is the only one
+     present — 0600; private key never leaves the host, never enters a workspace). The UI/CLI shows
+     the public key with a copy button — "add this as a deploy key" on GitHub/GitLab/Gitea/anything.
+     Git ops run with
      `GIT_SSH_COMMAND="ssh -i <key> -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"`.
      This is the recommended mode for a served Mend (homelab): the key is born on the machine that
      fetches, and hardware-key users get a scoped, revocable identity instead of an impossible copy.
@@ -36,9 +37,9 @@ delivery prompt lives with the session that builds it.
    laptop reverse-forwards the local `SSH_AUTH_SOCK` to the Mend server over the private network
    (one outbound WebSocket, agent-protocol frames relayed verbatim inside; nothing secret ever
    transits — challenges and signatures only, serialized one at a time). While connected, the server
-   exposes a real agent socket under `~/.mend/keys/_bridge/` and projects in the third auth mode,
-   `bridge`, sign through it — host-side ops and the workspace shim alike; the key blinks on the
-   laptop, and the share CLI prints what each signature is for ("signature requested by mend
+   exposes a real agent socket under `~/.config/mend/keys/_bridge/` and projects in the third auth
+   mode, `bridge`, sign through it — host-side ops and the workspace shim alike; the key blinks on
+   the laptop, and the share CLI prints what each signature is for ("signature requested by mend
    (project shimtest → localhost)") with an honest waiting line and a 60s touch window. Disconnected
    → those ops fail fast with "no signer connected — run `mend keys share` on the machine that holds
    your key", and the deploy key still covers everything routine. The web card reports presence as
