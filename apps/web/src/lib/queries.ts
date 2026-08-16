@@ -8,6 +8,7 @@ import {
   changePasses,
   changeStats,
   changeTour,
+  getDotfiles,
   getSettings,
   gitBridgeStatus,
   gitKey,
@@ -150,6 +151,11 @@ export const changePassesQuery = (changeId: string) =>
     queryKey: ["change", changeId, "passes"],
     queryFn: () => changePasses(changeId),
   });
+
+export const dotfilesQuery = queryOptions({
+  queryKey: ["dotfiles"],
+  queryFn: getDotfiles,
+});
 
 export const settingsQuery = queryOptions({
   queryKey: ["settings"],

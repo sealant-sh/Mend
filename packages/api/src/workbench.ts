@@ -14,6 +14,7 @@ import {
   SessionProcessesRepo,
   SessionsRepo,
   SettingsRepo,
+  UserDotfilesRepo,
 } from "@mend/db";
 import { MendSettings, workspaceImagesEqual } from "@mend/domain";
 import { FollowUp, type GitAuthMode } from "@mend/domain/workbench";
@@ -25,6 +26,7 @@ import {
   MendKeys,
   NO_SIGNER_MESSAGE,
   Store,
+  DotfilesStore,
   describeGitRemoteFailure,
   remoteGitEnv,
   sshCommandFor,
@@ -45,6 +47,9 @@ import {
   NotFound,
   ProjectDetail,
   ProjectWorkspaceImageSaveResult,
+  DotfilesSnapshotFileView,
+  DotfilesSnapshotView,
+  DotfilesView,
   RemovalReport,
   SessionActive,
   SessionAnnotation,
@@ -325,8 +330,85 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         return new ProjectWorkspaceImageSaveResult({ saved: true, project, resolutions });
       }),
+    )
+    .handle("applyDotfiles", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        return yield* projects
+          .setApplyDotfiles(params.id, payload.applyDotfiles)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+      }),
     ),
 );
+
+/**
+ * The current user's dotfiles — repository knob + store snapshot. Contents arrive from the
+ * machine that HAS them (CLI sync, web upload); the server's own home is never scanned.
+ */
+export const DotfilesGroupLive = HttpApiBuilder.group(MendApi, "dotfiles", (handlers) => {
+  const view = (userId: string) =>
+    Effect.gen(function* () {
+      const userDotfiles = yield* UserDotfilesRepo;
+      const store = yield* DotfilesStore;
+      const repository = yield* userDotfiles.repository(userId);
+      const snapshot = yield* store
+        .current(userId)
+        .pipe(Effect.mapError((error) => new SettingsFailure({ message: error.message })));
+      return new DotfilesView({
+        repository,
+        snapshot:
+          snapshot === null
+            ? null
+            : new DotfilesSnapshotView({
+                sha: snapshot.sha,
+                source: snapshot.source,
+                committedAt: snapshot.committedAt,
+                files: snapshot.files.map((file) => new DotfilesSnapshotFileView(file)),
+              }),
+      });
+    });
+
+  return handlers
+    .handle("get", () =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        return yield* view(caller.user.id).pipe(
+          Effect.catchTag("SettingsFailure", (error) => Effect.die(error)),
+        );
+      }),
+    )
+    .handle("repository", ({ payload }) =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        const userDotfiles = yield* UserDotfilesRepo;
+        yield* userDotfiles.setRepository(caller.user.id, payload.repository);
+        return yield* view(caller.user.id);
+      }),
+    )
+    .handle("snapshot", ({ payload }) =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        const store = yield* DotfilesStore;
+        yield* store
+          .snapshot(caller.user.id, payload.files, {
+            source: payload.source,
+            merge: payload.merge,
+          })
+          .pipe(Effect.mapError((error) => new SettingsFailure({ message: error.message })));
+        return yield* view(caller.user.id);
+      }),
+    )
+    .handle("clearSnapshot", () =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        const store = yield* DotfilesStore;
+        yield* store
+          .clear(caller.user.id)
+          .pipe(Effect.mapError((error) => new SettingsFailure({ message: error.message })));
+        return yield* view(caller.user.id);
+      }),
+    );
+});
 
 /** The machine's Mend git key — public half only, ever (docs/GIT-ACCESS.md). */
 export const GitKeysGroupLive = HttpApiBuilder.group(MendApi, "gitKeys", (handlers) =>

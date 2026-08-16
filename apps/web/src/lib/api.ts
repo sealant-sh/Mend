@@ -305,6 +305,7 @@ export interface ProjectDto {
   readonly autoSuggest: AutomationChoiceDto;
   readonly gitAuthMode: GitAuthModeDto;
   readonly workspaceImage: WorkspaceImageDto | null;
+  readonly applyDotfiles: boolean;
   readonly createdAt: string;
 }
 
@@ -500,6 +501,28 @@ export type WorkspaceImageDto =
       readonly services: { readonly docker: boolean };
     };
 
+/** The user's dotfiles repository knob — cloned by the server at every launch. */
+export interface DotfilesRepositoryDto {
+  readonly url: string;
+  readonly ref: string | null;
+  readonly manager: "auto" | "chezmoi" | "stow" | "copy";
+  readonly bootstrap: boolean;
+}
+
+/** The current snapshot in the user's dotfiles store — an exact commit, source machine recorded. */
+export interface DotfilesSnapshotDto {
+  readonly sha: string;
+  readonly source: string;
+  readonly committedAt: string;
+  readonly files: ReadonlyArray<{ readonly path: string; readonly bytes: number }>;
+}
+
+/** The current user's dotfiles. Per-account: dotfiles are identity, not instance settings. */
+export interface DotfilesDto {
+  readonly repository: DotfilesRepositoryDto | null;
+  readonly snapshot: DotfilesSnapshotDto | null;
+}
+
 /** Product settings, one document; PUT replaces it (edit what GET returned). */
 export interface SettingsDto {
   readonly prMode: "draft-immediately" | "pr-on-approval";
@@ -553,6 +576,32 @@ export const saveWorkspaceEnvironment = (workspaceImage: SettingsDto["workspaceI
 export const scanHostEnvironment = () =>
   request<HostEnvironmentSuggestionsDto>("/api/settings/environment-suggestions");
 
+export const getDotfiles = () => request<DotfilesDto>("/api/dotfiles");
+
+export const putDotfilesRepository = (repository: DotfilesRepositoryDto | null) =>
+  request<DotfilesDto>("/api/dotfiles/repository", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ repository }),
+  });
+
+export const postDotfilesSnapshot = (payload: {
+  readonly files: ReadonlyArray<{
+    readonly path: string;
+    readonly contentsBase64: string;
+  }>;
+  readonly source: string;
+  readonly merge: boolean;
+}) =>
+  request<DotfilesDto>("/api/dotfiles/snapshot", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+export const deleteDotfilesSnapshot = () =>
+  request<DotfilesDto>("/api/dotfiles/snapshot", { method: "DELETE" });
+
 /** The project's automation overrides, replaced together. */
 export const setProjectAutomation = (
   projectId: string,
@@ -579,6 +628,14 @@ export const setProjectWorkspaceImage = (
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ workspaceImage }),
+  });
+
+/** Whether sessions in this project receive the launching user's dotfiles. */
+export const setProjectApplyDotfiles = (projectId: string, applyDotfiles: boolean) =>
+  request<ProjectDto>(`/api/projects/${projectId}/apply-dotfiles`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ applyDotfiles }),
   });
 
 /** A workbench SSE event — pointers only; clients re-read through the API. */

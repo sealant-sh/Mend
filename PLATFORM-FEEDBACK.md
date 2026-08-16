@@ -7,6 +7,32 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-08-14 · 0.17.0 · Dotfiles were SDK-unreachable; archives added as the transport
+
+**Implemented at the source** — sealant-sh/core stack #167 (PRs #163–#166) + sealantd stack #52 (PRs
+#50–#51), pending review/release as 0.18.0.
+
+- **Needed:** the user's own environment (shell, dotfiles) in every session workspace, with private
+  repos reachable through the host's own ssh identity (agent, hardware keys) — never a credential in
+  the container.
+- **Today (0.17.0):** the platform implements dotfiles end to end (web UI → blueprint → build/boot),
+  but `CreateOptions` exposes neither dotfiles nor `customization.defaultShell`, while the SDK docs
+  claim "credentials and dotfiles options compose". The wire shape is GitHub-App-only.
+- **Shipped at the source:** `dotfiles: { repository?, archives? }` and `shell` on
+  `workspaces.create`. Archives are the per-user transport: Mend keeps a dotfiles store (a bare git
+  repo per account under the store root) whose snapshots are captured on the machine that HAS the
+  files (`mend dotfiles sync`, web upload — the server's own home is never read; it may be a VPS
+  service account), packs the owner's repo + snapshot as gzipped tars at launch, and `sealantd boot`
+  applies them before the control socket binds. Also fixed on the way: client-supplied `authRef`
+  validation (unauthorized-token + host-file-read holes), chezmoi provisioning on ubuntu (not in the
+  24.04 archive), dotfiles ref no longer assumes `main`, no token minting for a disabled apply, and
+  boot's control socket now binds only after dotfiles so credential file injection can't be
+  clobbered.
+- **Still open (noted, not urgent):** in-container ssh clone for standalone (non-Mend) private
+  dotfiles repos remains GitHub-App/https-token only; URL-based build-apply dotfiles go stale under
+  plan-hash reuse (runtime/archive paths are immune); `dotfilesTarget: "config"` is honored only by
+  the copy manager while the web UI offers it for all.
+
 ## 2026-08-12 · 0.13.1 · One workspace image with every baked harness
 
 **Implemented at the source** — [sealant#148](https://github.com/sealant-sh/sealant/pull/148)

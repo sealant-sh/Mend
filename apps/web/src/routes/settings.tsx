@@ -1,18 +1,24 @@
+import { dotfilesRepositoriesEqual } from "@mend/domain";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { useReducer, useState } from "react";
 
 import { AppShell } from "#/components/shell";
 import {
+  deleteDotfilesSnapshot,
+  postDotfilesSnapshot,
+  putDotfilesRepository,
   putSettings,
   saveWorkspaceEnvironment,
   scanHostEnvironment,
   sealantConnection,
+  type DotfilesDto,
+  type DotfilesRepositoryDto,
   type HostEnvironmentSuggestionsDto,
   type SealantConnectionDto,
   type SettingsDto,
 } from "#/lib/api";
-import { queryClient, settingsQuery } from "#/lib/queries";
+import { dotfilesQuery, queryClient, settingsQuery } from "#/lib/queries";
 import { setThemePreference, useThemePreference, type ThemePreference } from "#/lib/theme";
 import {
   createWorkspaceEnvironmentForm,
@@ -27,7 +33,10 @@ import {
 export const Route = createFileRoute("/settings")({
   ssr: false,
   loader: async () => {
-    await queryClient.ensureQueryData(settingsQuery);
+    await Promise.all([
+      queryClient.ensureQueryData(settingsQuery),
+      queryClient.ensureQueryData(dotfilesQuery),
+    ]);
     return sealantConnection();
   },
   component: SettingsPage,
@@ -49,6 +58,7 @@ function SettingsPage() {
       <div className="max-w-2xl space-y-6">
         <ThemePanel />
         <WorkspaceEnvironmentPanel />
+        <DotfilesPanel />
         <ReviewAutomationPanel />
         <SealantConnectionPanel connection={connection} />
       </div>
@@ -230,6 +240,37 @@ function WorkspaceEnvironmentPanel() {
           </div>
         )}
       </div>
+
+      {form.mode === "family" ? (
+        <div className="mt-6 border-t border-[var(--sw-faint-rule)] pt-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="font-sans text-sm font-medium text-foreground">Login shell</p>
+              <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+                Installed and set as the session’s login shell, so your shell config actually
+                applies.
+              </p>
+            </div>
+            <div className="flex shrink-0 gap-2">
+              {(["bash", "zsh", "fish"] as const).map((shell) => (
+                <button
+                  key={shell}
+                  type="button"
+                  disabled={pending}
+                  onClick={() => dispatch({ type: "shell-changed", shell })}
+                  className={`rounded-xl border px-3.5 py-1.5 font-mono text-xs shadow-xs transition-colors disabled:opacity-60 ${
+                    form.shell === shell
+                      ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
+                      : "border-border bg-card text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {shell}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <div className="mt-6 border-t border-[var(--sw-faint-rule)] pt-5">
         <div className="flex items-start justify-between gap-4">
@@ -417,6 +458,333 @@ function WorkspaceEnvironmentPanel() {
         <p className="mt-4 border-l-2 border-danger pl-3 text-[13px] text-danger">
           {form.error ?? scanError}
         </p>
+      )}
+    </section>
+  );
+}
+
+/** Bytes as a terse mono fact: 812 B, 4.1 KB. Dotfiles are small; MB is already suspicious. */
+const formatBytes = (bytes: number): string =>
+  bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
+
+const shortSha = (sha: string) => sha.slice(0, 7);
+
+const syncedAgo = (iso: string): string => {
+  const ms = Date.now() - new Date(iso).getTime();
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+};
+
+/** A picked file staged for upload; the target path is editable before it is committed. */
+interface StagedDotfile {
+  readonly path: string;
+  readonly contentsBase64: string;
+  readonly bytes: number;
+}
+
+function DotfilesPanel() {
+  const dotfiles = useSuspenseQuery(dotfilesQuery).data;
+  const savedRepo = dotfiles.repository;
+  const [repoUrl, setRepoUrl] = useState(savedRepo?.url ?? "");
+  const [repoRef, setRepoRef] = useState(savedRepo?.ref ?? "");
+  const [bootstrap, setBootstrap] = useState(savedRepo?.bootstrap ?? true);
+  const [staged, setStaged] = useState<ReadonlyArray<StagedDotfile>>([]);
+  const [busy, setBusy] = useState<"repo" | "snapshot" | null>(null);
+  const [saved, setSaved] = useState<"repo" | "snapshot" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const repoDraft: DotfilesRepositoryDto | null =
+    repoUrl.trim() === ""
+      ? null
+      : {
+          url: repoUrl.trim(),
+          ref: repoRef.trim() === "" ? null : repoRef.trim(),
+          manager: savedRepo?.manager ?? "auto",
+          bootstrap,
+        };
+  const repoDirty = !dotfilesRepositoriesEqual(savedRepo, repoDraft);
+
+  const applyResult = (next: DotfilesDto, which: "repo" | "snapshot") => {
+    queryClient.setQueryData<DotfilesDto>(dotfilesQuery.queryKey, next);
+    setRepoUrl(next.repository?.url ?? "");
+    setRepoRef(next.repository?.ref ?? "");
+    setBootstrap(next.repository?.bootstrap ?? true);
+    setSaved(which);
+  };
+
+  const saveRepository = async () => {
+    setBusy("repo");
+    setSaved(null);
+    setError(null);
+    try {
+      applyResult(await putDotfilesRepository(repoDraft), "repo");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not save the repository.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const stageFiles = (list: FileList | null) => {
+    if (list === null) return;
+    setSaved(null);
+    for (const file of list) {
+      void file.arrayBuffer().then((buffer) => {
+        const contentsBase64 = btoa(
+          Array.from(new Uint8Array(buffer), (byte) => String.fromCharCode(byte)).join(""),
+        );
+        setStaged((current) => [
+          ...current.filter((entry) => entry.path !== file.name),
+          { path: file.name, contentsBase64, bytes: buffer.byteLength },
+        ]);
+      });
+    }
+  };
+
+  const commitStaged = async () => {
+    setBusy("snapshot");
+    setSaved(null);
+    setError(null);
+    try {
+      const next = await postDotfilesSnapshot({
+        files: staged.map(({ path, contentsBase64 }) => ({ path, contentsBase64 })),
+        source: "web",
+        merge: true,
+      });
+      setStaged([]);
+      applyResult(next, "snapshot");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not add the files.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const removeSnapshot = async () => {
+    setBusy("snapshot");
+    setSaved(null);
+    setError(null);
+    try {
+      applyResult(await deleteDotfilesSnapshot(), "snapshot");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not remove the snapshot.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const snapshot = dotfiles.snapshot;
+  const pending = busy !== null;
+
+  return (
+    <section className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
+      <h2 className="font-sans text-sm font-semibold">Dotfiles</h2>
+      <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+        Your own environment, applied before the agent starts — yours, per account. File contents
+        are captured on the machine that has them and stored here; the workspace only ever receives
+        file trees, never a URL or a credential. This server’s home directory is never read.
+      </p>
+
+      <div className="mt-5 border-t border-[var(--sw-faint-rule)] pt-5">
+        <label
+          htmlFor="dotfiles-repo-url"
+          className="font-sans text-sm font-medium text-foreground"
+        >
+          Dotfiles repository
+        </label>
+        <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+          Cloned by this server at every launch — chezmoi and stow layouts are detected, anything
+          else is copied into the home directory. Leave empty for none.
+        </p>
+        <input
+          id="dotfiles-repo-url"
+          type="text"
+          value={repoUrl}
+          disabled={pending}
+          placeholder="https://github.com/you/dotfiles.git"
+          spellCheck={false}
+          onChange={(event) => {
+            setSaved(null);
+            setRepoUrl(event.target.value);
+          }}
+          className="mt-2 w-full rounded-xl border border-input bg-card px-3.5 py-2.5 font-mono text-[12.5px] text-foreground outline-none transition-colors focus:border-[var(--sw-accent)] focus:ring-2 focus:ring-[color-mix(in_oklab,var(--sw-accent)_18%,transparent)] disabled:opacity-60"
+        />
+        <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-3">
+          {repoUrl.trim() === "" ? null : (
+            <>
+              <label className="flex items-center gap-2 text-[13px] text-muted-foreground">
+                <span>Branch</span>
+                <input
+                  type="text"
+                  value={repoRef}
+                  disabled={pending}
+                  placeholder="default"
+                  spellCheck={false}
+                  onChange={(event) => {
+                    setSaved(null);
+                    setRepoRef(event.target.value);
+                  }}
+                  className="w-36 rounded-lg border border-input bg-card px-2.5 py-1.5 font-mono text-xs text-foreground outline-none transition-colors focus:border-[var(--sw-accent)] disabled:opacity-60"
+                />
+              </label>
+              <label className="flex items-center gap-2 text-[13px] text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={bootstrap}
+                  disabled={pending}
+                  onChange={() => {
+                    setSaved(null);
+                    setBootstrap((current) => !current);
+                  }}
+                  className="size-3.5 accent-[var(--sw-accent)]"
+                />
+                <span>
+                  Run <span className="font-mono text-xs text-ink-2">./install.sh</span> when
+                  present
+                </span>
+              </label>
+            </>
+          )}
+          <button
+            type="button"
+            disabled={pending || !repoDirty}
+            onClick={() => void saveRepository()}
+            className="ml-auto inline-flex min-h-8 shrink-0 items-center justify-center rounded-xl border border-border bg-panel px-3.5 font-sans text-[13px] font-medium text-foreground shadow-[var(--shadow-xs)] transition-[transform,border-color] hover:-translate-y-0.5 hover:border-input disabled:pointer-events-none disabled:opacity-60"
+          >
+            {busy === "repo" ? "Saving…" : "Save repository"}
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-6 border-t border-[var(--sw-faint-rule)] pt-5">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="font-sans text-sm font-medium text-foreground">Home files</p>
+            <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+              Synced from your own machine with{" "}
+              <span className="font-mono text-xs text-ink-2">mend dotfiles sync</span>, or added
+              here. Files land relative to the workspace home and overwrite same-named repo files.
+            </p>
+          </div>
+          <label className="inline-flex min-h-9 shrink-0 cursor-pointer items-center justify-center rounded-xl border border-border bg-panel px-3.5 font-sans text-[13px] font-medium text-foreground shadow-[var(--shadow-xs)] transition-[transform,border-color] hover:-translate-y-0.5 hover:border-input">
+            Add files…
+            <input
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(event) => {
+                stageFiles(event.target.files);
+                event.target.value = "";
+              }}
+            />
+          </label>
+        </div>
+
+        {snapshot === null && staged.length === 0 ? (
+          <p className="mt-4 font-mono text-xs text-faint">no snapshot · nothing rides along yet</p>
+        ) : null}
+
+        {snapshot === null ? null : (
+          <div className="mt-4">
+            <p className="font-mono text-xs text-ink-2">
+              {snapshot.files.length} file{snapshot.files.length === 1 ? "" : "s"} · synced{" "}
+              {syncedAgo(snapshot.committedAt)} from {snapshot.source} ·{" "}
+              <span className="text-faint">{shortSha(snapshot.sha)}</span>
+            </p>
+            <div className="mt-2 divide-y divide-[var(--sw-faint-rule)] border-y border-[var(--sw-faint-rule)]">
+              {snapshot.files.map((file) => (
+                <div key={file.path} className="flex items-baseline justify-between gap-4 py-2">
+                  <span className="min-w-0 flex-1 truncate font-mono text-[12.5px] text-ink-2">
+                    {file.path}
+                  </span>
+                  <span className="shrink-0 font-mono text-xs text-faint">
+                    {formatBytes(file.bytes)}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              disabled={pending}
+              onClick={() => void removeSnapshot()}
+              className="mt-2 font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-60"
+            >
+              Remove snapshot
+            </button>
+          </div>
+        )}
+
+        {staged.length === 0 ? null : (
+          <div className="mt-4">
+            <p className="font-sans text-xs font-medium text-muted-foreground">
+              staged · edit the target path before adding
+            </p>
+            <div className="mt-1 divide-y divide-[var(--sw-faint-rule)]">
+              {staged.map((entry, index) => (
+                <div key={entry.path} className="flex items-center gap-3 py-2">
+                  <input
+                    type="text"
+                    value={entry.path}
+                    disabled={pending}
+                    spellCheck={false}
+                    aria-label="Target path, relative to the home directory"
+                    onChange={(event) =>
+                      setStaged((current) =>
+                        current.map((candidate, i) =>
+                          i === index ? { ...candidate, path: event.target.value } : candidate,
+                        ),
+                      )
+                    }
+                    className="min-w-0 flex-1 rounded-lg border border-input bg-card px-2.5 py-1.5 font-mono text-xs text-foreground outline-none transition-colors focus:border-[var(--sw-accent)] disabled:opacity-60"
+                  />
+                  <span className="shrink-0 font-mono text-xs text-faint">
+                    {formatBytes(entry.bytes)}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={pending}
+                    onClick={() => setStaged((current) => current.filter((_, i) => i !== index))}
+                    className="shrink-0 text-xs text-muted-foreground transition-colors hover:text-foreground disabled:opacity-60"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              disabled={pending || staged.some((entry) => entry.path.trim() === "")}
+              onClick={() => void commitStaged()}
+              className="mt-3 inline-flex min-h-9 items-center justify-center rounded-xl bg-primary px-4 font-sans text-[13px] font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-transform hover:-translate-y-0.5 disabled:pointer-events-none disabled:opacity-60"
+            >
+              {busy === "snapshot" ? "Adding…" : "Add to snapshot"}
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-6 flex items-center justify-between gap-4 border-t border-[var(--sw-faint-rule)] pt-5">
+        {saved !== null ? (
+          <span className="flex items-center gap-2.5 text-[13px]">
+            <span className="size-2 shrink-0 rounded-full bg-success-dot" aria-hidden />
+            <span className="text-success">Saved · applies from the next launch</span>
+          </span>
+        ) : (
+          <span className="font-mono text-xs text-faint">
+            repo · {savedRepo === null ? "none" : "set"} — snapshot ·{" "}
+            {snapshot === null
+              ? "none"
+              : `${snapshot.files.length} files @ ${shortSha(snapshot.sha)}`}
+          </span>
+        )}
+      </div>
+
+      {error === null ? null : (
+        <p className="mt-4 border-l-2 border-danger pl-3 text-[13px] text-danger">{error}</p>
       )}
     </section>
   );

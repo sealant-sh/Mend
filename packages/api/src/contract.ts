@@ -17,6 +17,7 @@ import {
   RunId,
   SessionId,
   SessionProcessId,
+  DotfilesRepository,
   WorkspaceImage,
 } from "@mend/domain";
 import {
@@ -327,6 +328,62 @@ export class ProjectWorkspaceImageRequest extends Schema.Class<ProjectWorkspaceI
   workspaceImage: Schema.NullOr(WorkspaceImage),
 }) {}
 
+/** Whether sessions in this project receive the launching user's dotfiles. */
+export class ProjectApplyDotfilesRequest extends Schema.Class<ProjectApplyDotfilesRequest>(
+  "ProjectApplyDotfilesRequest",
+)({
+  applyDotfiles: Schema.Boolean,
+}) {}
+
+/** One file in the user's dotfiles snapshot — path relative to `~`, size as a fact. */
+export class DotfilesSnapshotFileView extends Schema.Class<DotfilesSnapshotFileView>(
+  "DotfilesSnapshotFileView",
+)({
+  path: Schema.String,
+  bytes: Schema.Int,
+}) {}
+
+/** The user's current snapshot in the dotfiles store: an exact commit, source machine recorded. */
+export class DotfilesSnapshotView extends Schema.Class<DotfilesSnapshotView>(
+  "DotfilesSnapshotView",
+)({
+  sha: Schema.String,
+  source: Schema.String,
+  committedAt: Schema.Date,
+  files: Schema.Array(DotfilesSnapshotFileView),
+}) {}
+
+/** The current user's dotfiles: repository config + store snapshot. Dotfiles are per-account. */
+export class DotfilesView extends Schema.Class<DotfilesView>("DotfilesView")({
+  repository: Schema.NullOr(DotfilesRepository),
+  snapshot: Schema.NullOr(DotfilesSnapshotView),
+}) {}
+
+/**
+ * Files streamed into the user's dotfiles store — contents captured on the machine that HAS
+ * them (`mend dotfiles sync`, a web upload), never scanned off the server's own home. `merge`
+ * overlays the current snapshot (web add-a-file); replace supersedes it (CLI sync).
+ */
+export class DotfilesSnapshotRequest extends Schema.Class<DotfilesSnapshotRequest>(
+  "DotfilesSnapshotRequest",
+)({
+  files: Schema.Array(
+    Schema.Struct({
+      path: Schema.String,
+      contentsBase64: Schema.String,
+      mode: Schema.optional(Schema.String),
+    }),
+  ),
+  source: Schema.String,
+  merge: Schema.Boolean,
+}) {}
+
+export class DotfilesRepositoryRequest extends Schema.Class<DotfilesRepositoryRequest>(
+  "DotfilesRepositoryRequest",
+)({
+  repository: Schema.NullOr(DotfilesRepository),
+}) {}
+
 /**
  * The machine's Mend deploy key — public half only; the private key never
  * leaves the host and never crosses this API. `exists: false` is status, not
@@ -427,6 +484,35 @@ const settingsGroup = HttpApiGroup.make("settings")
   )
   .middleware(AuthMiddleware);
 
+/**
+ * The current user's dotfiles (plan: dotfiles are identity, not instance settings): the store
+ * snapshot synced from their own machine, and the repository knob. Every route acts as the
+ * authenticated account.
+ */
+const dotfilesGroup = HttpApiGroup.make("dotfiles")
+  .add(HttpApiEndpoint.get("get", "/dotfiles", { success: DotfilesView }))
+  .add(
+    HttpApiEndpoint.put("repository", "/dotfiles/repository", {
+      payload: DotfilesRepositoryRequest,
+      success: DotfilesView,
+      error: SettingsFailure,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("snapshot", "/dotfiles/snapshot", {
+      payload: DotfilesSnapshotRequest,
+      success: DotfilesView,
+      error: SettingsFailure,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.delete("clearSnapshot", "/dotfiles/snapshot", {
+      success: DotfilesView,
+      error: SettingsFailure,
+    }),
+  )
+  .middleware(AuthMiddleware);
+
 const projectsGroup = HttpApiGroup.make("projects")
   .add(HttpApiEndpoint.get("list", "/projects", { success: Schema.Array(Project) }))
   .add(
@@ -477,6 +563,14 @@ const projectsGroup = HttpApiGroup.make("projects")
       payload: ProjectWorkspaceImageRequest,
       success: ProjectWorkspaceImageSaveResult,
       error: Schema.Union([NotFound, SettingsFailure]),
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put("applyDotfiles", "/projects/:id/apply-dotfiles", {
+      params: { id: ProjectId },
+      payload: ProjectApplyDotfilesRequest,
+      success: Project,
+      error: NotFound,
     }),
   )
   .middleware(AuthMiddleware);
@@ -1066,6 +1160,7 @@ export const MendApi = HttpApi.make("mend")
   .add(healthGroup)
   .add(sealantGroup)
   .add(settingsGroup)
+  .add(dotfilesGroup)
   .add(issuesGroup)
   .add(briefsGroup)
   .add(runsGroup)
