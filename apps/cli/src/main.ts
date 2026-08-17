@@ -7,6 +7,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { readSyncFiles, scanDotfileCandidates } from "./dotfiles.ts";
+import { formatLoadReport, parseDotenv, type EnvironmentLoadReportDto } from "./env.ts";
 import {
   isComposeFile,
   proposeFromCompose,
@@ -1261,6 +1262,127 @@ const dotfilesSync = async (config: CliConfig, args: ReadonlyArray<string>) => {
   );
 };
 
+// ─── env: the project env store ─────────────────────────────────────────────
+
+interface ProjectEnvironmentDto {
+  readonly revision: number;
+  readonly variables: ReadonlyArray<{ readonly name: string; readonly updatedAt: string }>;
+}
+interface ProjectSecretsDto {
+  readonly revision: number;
+  readonly secrets: ReadonlyArray<{ readonly name: string; readonly updatedAt: string }>;
+}
+
+const takeFlagValue = (args: ReadonlyArray<string>, flag: string): string | null => {
+  const at = args.indexOf(flag);
+  return at !== -1 && args[at + 1] !== undefined ? String(args[at + 1]) : null;
+};
+
+const envLoad = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const explicitProject = takeFlagValue(args, "--project");
+  // `--secret` alone sends everything to Secrets; `--secret A,B` only those names (for the
+  // ordinary-looking ones that embed credentials, like DATABASE_URL). Routing is by NAME.
+  const secretFlag = args.indexOf("--secret");
+  const secretArg = secretFlag !== -1 ? args[secretFlag + 1] : undefined;
+  const secretNames =
+    secretArg !== undefined &&
+    !secretArg.startsWith("--") &&
+    !secretArg.includes("/") &&
+    !secretArg.includes(".")
+      ? secretArg
+          .split(",")
+          .map((s) => s.trim())
+          .filter((s) => s !== "")
+      : [];
+  const allSecret = secretFlag !== -1 && secretNames.length === 0;
+  const consumed = new Set<number>();
+  if (secretFlag !== -1 && secretNames.length > 0) consumed.add(secretFlag + 1);
+  const positional = args.filter(
+    (arg, i) => !arg.startsWith("--") && args[i - 1] !== "--project" && !consumed.has(i),
+  );
+  const file = path.resolve(positional[0] ?? ".env");
+  let contents: string;
+  try {
+    contents = fs.readFileSync(file, "utf8");
+  } catch {
+    return fail(`cannot read ${file} — pass a path: mend env load path/to/.env`);
+  }
+  const parsed = parseDotenv(contents);
+  if (parsed.entries.length === 0 && parsed.malformed.length === 0) {
+    say(dim(`${file} has no variables`));
+    return;
+  }
+  const project = await findProject(config, explicitProject);
+  const report = await api<EnvironmentLoadReportDto>(
+    config,
+    "POST",
+    `/projects/${project.id}/environment/load`,
+    { entries: parsed.entries.map(({ name, value }) => ({ name, value })), allSecret, secretNames },
+  );
+  say(`${green("✓")} loaded ${path.basename(file)} into ${project.name}`);
+  for (const line of formatLoadReport(report, { dim, warn: amber })) say(line);
+  const plaintextUrls = report.loaded.filter(
+    (entry) => entry.lane === "configuration" && /_(URL|URI|DSN)$/.test(entry.name),
+  );
+  if (plaintextUrls.length > 0) {
+    say(
+      amber(
+        `  ${plaintextUrls.map((entry) => entry.name).join(", ")} stored as plaintext configuration — if a value embeds a password, store it as a secret: mend env load --secret ${plaintextUrls.map((entry) => entry.name).join(",")}`,
+      ),
+    );
+  }
+  if (parsed.malformed.length > 0) {
+    say(
+      amber(
+        `  skipped ${parsed.malformed.length} malformed line${parsed.malformed.length === 1 ? "" : "s"}: ${parsed.malformed.join(", ")}`,
+      ),
+    );
+  }
+  say(
+    dim(
+      `  configuration r${report.environmentRevision} · secrets r${report.secretRevision} — applies from the next workspace launch, including resume; running workspaces keep what they started with`,
+    ),
+  );
+};
+
+const envShow = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const project = await findProject(config, takeFlagValue(args, "--project"));
+  const [environment, secrets] = await Promise.all([
+    api<ProjectEnvironmentDto>(config, "GET", `/projects/${project.id}/environment`),
+    api<ProjectSecretsDto>(config, "GET", `/projects/${project.id}/secrets`),
+  ]);
+  say(
+    `${project.name} ${dim(`· configuration r${environment.revision} · secrets r${secrets.revision}`)}`,
+  );
+  if (environment.variables.length === 0 && secrets.secrets.length === 0) {
+    say(dim(`  nothing stored — load a file: ${cobalt("mend env load")}`));
+    return;
+  }
+  const width = Math.max(
+    ...environment.variables.map((v) => v.name.length),
+    ...secrets.secrets.map((s) => s.name.length),
+  );
+  for (const variable of environment.variables) {
+    say(`  ${variable.name.padEnd(width)}  configuration ${dim("· plaintext")}`);
+  }
+  for (const secret of secrets.secrets) {
+    say(`  ${secret.name.padEnd(width)}  secret ${dim("· value set, never shown")}`);
+  }
+};
+
+const envCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const [verb, ...rest] = args;
+  switch (verb) {
+    case "load":
+      return envLoad(config, rest);
+    case "show":
+    case undefined:
+      return envShow(config, rest);
+    default:
+      return fail(`unknown env command "${verb}" — try: mend env load | show`);
+  }
+};
+
 const dotfilesCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const [verb, ...rest] = args;
   switch (verb) {
@@ -1887,6 +2009,10 @@ const HELP = `mend — the agent workbench
                                         URL — GitHub, GitLab, self-hosted, ssh://, a local path)
   mend keys init                        generate the machine's Mend deploy key (ed25519)
   mend keys show                        print the public key — add it as a deploy key on your git host
+  mend env load [file] [--secret [A,B]] load a .env into the project: ordinary names → configuration,
+                                        secret-shaped names → secrets; --secret sends all (or the
+                                        named ones, e.g. DATABASE_URL) to secrets
+  mend env show                         what the project store holds — names only, never values
   mend dotfiles                         your dotfiles on the server: repo + synced home files
   mend dotfiles sync [--all | paths…]   capture config files from THIS machine into your store
   mend keys share                       relay THIS machine's ssh-agent to the server (bridge mode:
@@ -1941,6 +2067,8 @@ const main = async () => {
       return keysCommand(config, rest);
     case "dotfiles":
       return dotfilesCommand(config, rest);
+    case "env":
+      return envCommand(config, rest);
     case "completions":
       return completionsCommand(rest);
     case "__complete":

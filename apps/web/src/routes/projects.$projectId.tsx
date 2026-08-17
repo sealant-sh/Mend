@@ -29,6 +29,7 @@ import {
   gitKeyQuery,
   projectDetailQuery,
   projectEnvironmentQuery,
+  projectSecretsQuery,
   projectMountsQuery,
   projectRecipesQuery,
   projectReferencesQuery,
@@ -337,9 +338,11 @@ function GitAccessSection({ project }: { readonly project: ProjectDto }) {
 function EnvironmentSection({ project }: { readonly project: ProjectDto }) {
   const settings = useQuery(settingsQuery);
   const environment = useQuery(projectEnvironmentQuery(project.id));
+  const secrets = useQuery(projectSecretsQuery(project.id));
   const inherited = settings.data?.workspaceImage ?? null;
   const effective = project.workspaceImage ?? inherited;
   const count = environment.data?.variables.length;
+  const secretCount = secrets.data?.secrets.length;
 
   return (
     <section>
@@ -358,6 +361,13 @@ function EnvironmentSection({ project }: { readonly project: ProjectDto }) {
           : count === 0
             ? "variables · none"
             : `variables · ${count}`}
+        <span className="text-faint">
+          {secretCount === undefined
+            ? " · secrets · …"
+            : secretCount === 0
+              ? " · secrets · none"
+              : ` · secrets · ${secretCount}`}
+        </span>
       </p>
       <Link
         to="/projects/$projectId/environment"

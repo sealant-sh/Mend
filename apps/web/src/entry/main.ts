@@ -29,6 +29,7 @@ import {
   PgLive,
   ProjectEnvironmentRepoLive,
   ProjectMountsRepoLive,
+  ProjectSecretsRepoLive,
   ProjectServiceRecipesRepoLive,
   ProjectsRepoLive,
   PushDevicesRepoLive,
@@ -80,6 +81,8 @@ import {
   MendKeys,
   MendKeysConfigLive,
   MendKeysLive,
+  SecretCipher,
+  SecretCipherLive,
   Store,
   StoreConfig,
 } from "@mend/store";
@@ -110,6 +113,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   ProjectsRepoLive,
   ProjectEnvironmentRepoLive,
   ProjectMountsRepoLive,
+  ProjectSecretsRepoLive,
   ProjectServiceRecipesRepoLive,
   SettingsRepoLive,
   InferenceCallsRepoLive,
@@ -141,6 +145,10 @@ const DotfilesStoreLayer: Layer.Layer<DotfilesStore> = DotfilesStoreLive.pipe(
   Layer.provide(StoreConfig.layer),
 );
 const KeysLive: Layer.Layer<MendKeys> = MendKeysLive.pipe(Layer.provide(MendKeysConfigLive));
+// Project secrets are sealed at rest with a key beside the deploy key (secrets.key, 0600).
+const SecretCipherLayer: Layer.Layer<SecretCipher> = SecretCipherLive.pipe(
+  Layer.provide(MendKeysConfigLive),
+);
 // One bridge instance: the WS route attaches signers, the API and engine ask it.
 const BridgeLive: Layer.Layer<AgentBridge> = AgentBridgeLive.pipe(
   Layer.provide(MendKeysConfigLive),
@@ -348,6 +356,7 @@ const MainLive = Layer.unwrap(
       Layer.provide(DotfilesStoreLayer),
       // The machine's Mend git key (docs/GIT-ACCESS.md — the mend-key auth mode).
       Layer.provide(KeysLive),
+      Layer.provide(SecretCipherLayer),
       // The ssh-agent bridge (decision 2) — signer presence + bridged git ops.
       Layer.provide(BridgeLive),
       // The host's GitHub CLI, behind the api's Gh service (adoption discovery).

@@ -11,13 +11,19 @@ import {
 } from "#/lib/api";
 import {
   createProjectEnvironmentVariable,
+  createProjectSecret,
   removeProjectEnvironmentVariable,
+  removeProjectSecret,
   updateProjectEnvironmentVariable,
+  updateProjectSecret,
   type ProjectEnvironmentVariableView,
   type ProjectEnvironmentWriteResult,
+  type ProjectSecretView,
+  type ProjectSecretWriteResult,
 } from "#/lib/project-environment";
 import {
   clientIssues,
+  clientSecretIssues,
   initialProjectEnvironmentForm,
   issuesFor,
   projectEnvironmentFormReducer,
@@ -25,6 +31,7 @@ import {
 import {
   projectDetailQuery,
   projectEnvironmentQuery,
+  projectSecretsQuery,
   queryClient,
   settingsQuery,
 } from "#/lib/queries";
@@ -47,6 +54,7 @@ export const Route = createFileRoute("/projects/$projectId_/environment")({
     await Promise.all([
       queryClient.ensureQueryData(projectDetailQuery(params.projectId)),
       queryClient.ensureQueryData(projectEnvironmentQuery(params.projectId)),
+      queryClient.ensureQueryData(projectSecretsQuery(params.projectId)),
       queryClient.ensureQueryData(settingsQuery),
     ]);
   },
@@ -81,6 +89,7 @@ function ProjectEnvironmentPage() {
         <div className="mt-8 space-y-6">
           <WorkspaceImagePanel project={project} />
           <ConfigurationPanel projectId={projectId} />
+          <SecretsPanel projectId={projectId} />
         </div>
       </div>
     </AppShell>
@@ -448,8 +457,8 @@ function ConfigurationPanel({ projectId }: { readonly projectId: string }) {
       </div>
 
       <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
-        Passwords, tokens, and private keys are not supported here. Use a connected account where
-        available.
+        Passwords, tokens, and API keys belong in Secrets below — encrypted here, never persisted by
+        the platform. Claude, Codex, and GitHub credentials use a connected account.
       </p>
 
       <p aria-live="polite" role="status" className="mt-2 text-xs text-success">
@@ -716,6 +725,385 @@ function VariableRow({
           className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
         >
           Edit
+        </button>
+        <button
+          type="button"
+          disabled={disabled || removing === "working"}
+          onClick={remove}
+          className={`font-sans text-xs font-medium transition-colors disabled:opacity-50 ${
+            removing === "armed" ? "text-danger" : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          {removing === "armed"
+            ? "Remove? Running workspaces keep it"
+            : removing === "working"
+              ? "Removing…"
+              : "Remove"}
+        </button>
+      </div>
+    </li>
+  );
+}
+
+// ── Secrets: encrypted at rest, write-only, delivered through the transient secret channel ─────
+
+/**
+ * The half of a real `.env` that Configuration refuses. Values are sealed with this machine's key
+ * before they touch the database and are never returned by any response — the row shows a name,
+ * that a value is set, and when. At launch the set is unsealed once and handed to the platform's
+ * transient secret channel: never persisted there, never in container env or `docker inspect`,
+ * masked in captured output.
+ */
+function SecretsPanel({ projectId }: { readonly projectId: string }) {
+  const snapshot = useSuspenseQuery(projectSecretsQuery(projectId)).data;
+  const [form, dispatch] = useReducer(projectEnvironmentFormReducer, initialProjectEnvironmentForm);
+
+  const refresh = () =>
+    queryClient.invalidateQueries({ queryKey: ["project", projectId, "secrets"] });
+
+  const settle = async (
+    write: Promise<ProjectSecretWriteResult>,
+    notice: string,
+  ): Promise<void> => {
+    try {
+      const outcome = await write;
+      if (outcome.ok) {
+        dispatch({ type: "save-succeeded", notice });
+        await refresh();
+        return;
+      }
+      if (outcome.kind === "rejected") {
+        dispatch({ type: "save-rejected", issues: outcome.issues });
+      } else if (outcome.kind === "stale") {
+        dispatch({ type: "save-conflicted" });
+      } else {
+        dispatch({ type: "save-failed", message: `The save failed (${outcome.status}).` });
+      }
+    } catch (cause) {
+      dispatch({
+        type: "save-failed",
+        message: cause instanceof Error ? cause.message : "The save failed.",
+      });
+    }
+  };
+
+  const submit = () => {
+    if (form.editing === null || form.phase === "saving") return;
+    const editing = form.editing;
+    // On edit, an empty value means "keep the stored value" (it cannot be shown to be re-entered).
+    const replacing = editing.kind === "create" || form.value !== "";
+    const found = clientSecretIssues({ name: form.name, value: replacing ? form.value : null });
+    if (found.length > 0) {
+      dispatch({ type: "save-rejected", issues: found });
+      return;
+    }
+    dispatch({ type: "save-started" });
+    if (editing.kind === "create") {
+      void settle(
+        createProjectSecret(projectId, { name: form.name, value: form.value }),
+        `Saved secret ${form.name}.`,
+      );
+    } else {
+      void settle(
+        updateProjectSecret(projectId, editing.variableId, {
+          name: form.name,
+          value: replacing ? form.value : null,
+          expectedRevision: editing.expectedRevision,
+        }),
+        replacing
+          ? `Replaced secret ${form.name}.`
+          : editing.originalName === form.name
+            ? `Saved secret ${form.name}.`
+            : `Renamed secret ${editing.originalName} to ${form.name}.`,
+      );
+    }
+  };
+
+  const nameIssues = issuesFor(form.issues, "name");
+  const valueIssues = issuesFor(form.issues, "value");
+  const aggregateIssues = issuesFor(form.issues, null);
+  const editorOpen = form.editing !== null;
+  const editingId = form.editing?.kind === "edit" ? form.editing.variableId : null;
+
+  return (
+    <section className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="font-sans text-sm font-semibold">Secrets</h2>
+          <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+            API keys, database URLs, anything a dev server needs that must not be stored in the
+            clear. Encrypted on this machine; the platform never persists them and masks them in
+            recorded output. Set once — a value cannot be read back, only replaced.
+          </p>
+        </div>
+        {editorOpen ? null : (
+          <button
+            type="button"
+            onClick={() => dispatch({ type: "create-opened" })}
+            className="shrink-0 rounded-xl border border-border bg-card px-3 py-1.5 font-sans text-xs font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5"
+          >
+            Add secret
+          </button>
+        )}
+      </div>
+
+      <p aria-live="polite" role="status" className="mt-2 text-xs text-success">
+        {form.notice}
+      </p>
+
+      {form.editing?.kind === "create" ? (
+        <SecretEditor
+          heading="New secret"
+          form={form}
+          nameIssues={nameIssues}
+          valueIssues={valueIssues}
+          aggregateIssues={aggregateIssues}
+          dispatch={dispatch}
+          submit={submit}
+        />
+      ) : null}
+
+      <div className="mt-4 border-t border-[var(--sw-faint-rule)]">
+        {snapshot.secrets.length === 0 && !editorOpen ? (
+          <p className="pt-4 text-sm text-muted-foreground">
+            No secrets yet. Or load a whole file from the repository:{" "}
+            <span className="font-mono">mend env load</span>.
+          </p>
+        ) : (
+          <ul>
+            {snapshot.secrets.map((secret) =>
+              editingId === secret.id ? (
+                <li key={secret.id} className="border-b border-[var(--sw-faint-rule)]">
+                  <SecretEditor
+                    heading={`Edit ${secret.name}`}
+                    form={form}
+                    nameIssues={nameIssues}
+                    valueIssues={valueIssues}
+                    aggregateIssues={aggregateIssues}
+                    dispatch={dispatch}
+                    submit={submit}
+                  />
+                </li>
+              ) : (
+                <SecretRow
+                  key={secret.id}
+                  projectId={projectId}
+                  secret={secret}
+                  disabled={editorOpen}
+                  onEdit={() =>
+                    dispatch({
+                      type: "edit-opened",
+                      // The reducer pre-fills `value` from the row; a secret row has none to give.
+                      variable: {
+                        id: secret.id,
+                        projectId: secret.projectId,
+                        name: secret.name,
+                        value: "",
+                        revision: secret.revision,
+                        createdAt: secret.createdAt,
+                        updatedAt: secret.updatedAt,
+                      },
+                    })
+                  }
+                  onRemoved={async () => {
+                    dispatch({ type: "save-succeeded", notice: `Removed secret ${secret.name}.` });
+                    await refresh();
+                  }}
+                />
+              ),
+            )}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function SecretEditor({
+  heading,
+  form,
+  nameIssues,
+  valueIssues,
+  aggregateIssues,
+  dispatch,
+  submit,
+}: {
+  readonly heading: string;
+  readonly form: ReturnType<typeof projectEnvironmentFormReducer>;
+  readonly nameIssues: ReadonlyArray<{ readonly message: string }>;
+  readonly valueIssues: ReadonlyArray<{ readonly message: string }>;
+  readonly aggregateIssues: ReadonlyArray<{ readonly message: string }>;
+  readonly dispatch: (action: Parameters<typeof projectEnvironmentFormReducer>[1]) => void;
+  readonly submit: () => void;
+}) {
+  const saving = form.phase === "saving";
+  const editing = form.editing?.kind === "edit";
+  return (
+    <form
+      className="mt-4 rounded-xl border border-border bg-card p-4"
+      onSubmit={(event) => {
+        event.preventDefault();
+        submit();
+      }}
+    >
+      <p className="font-sans text-[13px] font-medium text-foreground">{heading}</p>
+      <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,240px)_minmax(0,1fr)]">
+        <div>
+          <label htmlFor="secret-name" className="font-sans text-xs font-medium text-foreground">
+            Name
+          </label>
+          <input
+            id="secret-name"
+            type="text"
+            value={form.name}
+            disabled={saving}
+            spellCheck={false}
+            autoComplete="off"
+            placeholder="STRIPE_API_KEY"
+            aria-invalid={nameIssues.length > 0}
+            aria-describedby={nameIssues.length > 0 ? "secret-name-issues" : undefined}
+            onChange={(event) => dispatch({ type: "name-changed", name: event.target.value })}
+            className={inputClass}
+          />
+          {nameIssues.length === 0 ? null : (
+            <div id="secret-name-issues">
+              {nameIssues.map((issue) => (
+                <p key={issue.message} className="mt-1.5 text-xs leading-relaxed text-danger">
+                  {issue.message}
+                </p>
+              ))}
+            </div>
+          )}
+        </div>
+        <div>
+          <label htmlFor="secret-value" className="font-sans text-xs font-medium text-foreground">
+            {editing ? "New value" : "Value"}
+          </label>
+          <input
+            id="secret-value"
+            type="password"
+            value={form.value}
+            disabled={saving}
+            spellCheck={false}
+            autoComplete="off"
+            placeholder={editing ? "leave empty to keep the stored value" : ""}
+            aria-invalid={valueIssues.length > 0}
+            aria-describedby={valueIssues.length > 0 ? "secret-value-issues" : undefined}
+            onChange={(event) => dispatch({ type: "value-changed", value: event.target.value })}
+            className={inputClass}
+          />
+          {valueIssues.length === 0 ? null : (
+            <div id="secret-value-issues">
+              {valueIssues.map((issue) => (
+                <p key={issue.message} className="mt-1.5 text-xs leading-relaxed text-danger">
+                  {issue.message}
+                </p>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+      {aggregateIssues.map((issue) => (
+        <p key={issue.message} className="mt-2 text-xs leading-relaxed text-danger">
+          {issue.message}
+        </p>
+      ))}
+      {form.conflict ? (
+        <p className="mt-2 text-xs leading-relaxed text-warning" aria-live="polite">
+          This secret changed elsewhere since you opened it. Your draft is kept — cancel to reload,
+          then reapply what you want.
+        </p>
+      ) : null}
+      {form.error === null ? null : (
+        <p className="mt-2 text-xs leading-relaxed text-danger" aria-live="polite">
+          {form.error}
+        </p>
+      )}
+      <div className="mt-3 flex items-center gap-2">
+        <button
+          type="submit"
+          disabled={saving}
+          className="rounded-lg border border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash px-2.5 py-1 font-sans text-xs font-medium text-foreground transition-colors disabled:opacity-50"
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+        <button
+          type="button"
+          disabled={saving}
+          onClick={() => dispatch({ type: "closed" })}
+          className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function SecretRow({
+  projectId,
+  secret,
+  disabled,
+  onEdit,
+  onRemoved,
+}: {
+  readonly projectId: string;
+  readonly secret: ProjectSecretView;
+  readonly disabled: boolean;
+  readonly onEdit: () => void;
+  readonly onRemoved: () => Promise<void>;
+}) {
+  const [removing, setRemoving] = useState<"idle" | "armed" | "working">("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  const remove = () => {
+    if (removing === "idle") {
+      setRemoving("armed");
+      return;
+    }
+    if (removing !== "armed") return;
+    setRemoving("working");
+    setError(null);
+    void removeProjectSecret(projectId, secret.id, secret.revision)
+      .then(async (outcome) => {
+        if (outcome.ok) {
+          await onRemoved();
+          return undefined;
+        }
+        setError(
+          outcome.kind === "stale"
+            ? "This secret changed elsewhere — reload before removing it."
+            : "The remove failed.",
+        );
+        return undefined;
+      })
+      .catch((cause: unknown) =>
+        setError(cause instanceof Error ? cause.message : "The remove failed."),
+      )
+      .finally(() => setRemoving("idle"));
+  };
+
+  return (
+    <li className="flex items-start justify-between gap-4 border-b border-[var(--sw-faint-rule)] py-3">
+      <div className="min-w-0">
+        <p className="font-mono text-[12.5px] font-medium text-foreground">{secret.name}</p>
+        <p className="mt-0.5 font-mono text-[12px] text-faint">
+          value set · updated {new Date(secret.updatedAt).toLocaleString()}
+        </p>
+        {error === null ? null : (
+          <p className="mt-1 text-xs leading-relaxed text-danger" aria-live="polite">
+            {error}
+          </p>
+        )}
+      </div>
+      <div className="flex shrink-0 items-center gap-2 pt-0.5">
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={onEdit}
+          className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+        >
+          Replace
         </button>
         <button
           type="button"

@@ -142,3 +142,120 @@ export const removeProjectEnvironmentVariable = async (
       body: JSON.stringify({ expectedRevision }),
     }),
   );
+
+// ── Secrets: the encrypted, write-only half of the store ───────────────────────────────────────
+
+export const ProjectSecretView = Schema.Struct({
+  id: Schema.String,
+  projectId: Schema.String,
+  name: Schema.String,
+  revision: Schema.Int,
+  createdAt: Schema.String,
+  updatedAt: Schema.String,
+});
+export type ProjectSecretView = typeof ProjectSecretView.Type;
+
+export const ProjectSecretsSnapshotView = Schema.Struct({
+  revision: Schema.Int,
+  secrets: Schema.Array(ProjectSecretView),
+});
+export type ProjectSecretsSnapshotView = typeof ProjectSecretsSnapshotView.Type;
+
+const ProjectSecretMutationView = Schema.Struct({
+  secret: Schema.NullOr(ProjectSecretView),
+  revision: Schema.Int,
+});
+export type ProjectSecretMutationView = typeof ProjectSecretMutationView.Type;
+
+export type ProjectSecretWriteResult =
+  | { readonly ok: true; readonly result: ProjectSecretMutationView }
+  | {
+      readonly ok: false;
+      readonly kind: "rejected";
+      readonly issues: ReadonlyArray<EnvironmentIssueView>;
+    }
+  | { readonly ok: false; readonly kind: "stale"; readonly currentRevision: number }
+  | { readonly ok: false; readonly kind: "http"; readonly status: number };
+
+const decodeSecrets = Schema.decodeUnknownSync(ProjectSecretsSnapshotView);
+const decodeSecretMutation = Schema.decodeUnknownSync(ProjectSecretMutationView);
+
+export const fetchProjectSecrets = async (
+  projectId: string,
+): Promise<ProjectSecretsSnapshotView> => {
+  const response = await fetch(`/api/projects/${projectId}/secrets`, { credentials: "include" });
+  if (response.status === 401) throw redirect({ to: "/login" });
+  if (!response.ok) {
+    throw new Error(`GET /api/projects/${projectId}/secrets responded ${response.status}`);
+  }
+  return decodeSecrets(await response.json());
+};
+
+const secretWriteResult = async (response: Response): Promise<ProjectSecretWriteResult> => {
+  if (response.status === 401) throw redirect({ to: "/login" });
+  if (response.ok) {
+    return { ok: true, result: decodeSecretMutation(await response.json()) };
+  }
+  const body: unknown = await response.json().catch(() => null);
+  if (response.status === 422) {
+    try {
+      return { ok: false, kind: "rejected", issues: decodeRejected(body).issues };
+    } catch {
+      return { ok: false, kind: "http", status: response.status };
+    }
+  }
+  if (response.status === 409) {
+    try {
+      return { ok: false, kind: "stale", currentRevision: decodeStale(body).currentRevision };
+    } catch {
+      return { ok: false, kind: "http", status: response.status };
+    }
+  }
+  return { ok: false, kind: "http", status: response.status };
+};
+
+export const createProjectSecret = async (
+  projectId: string,
+  input: { readonly name: string; readonly value: string },
+): Promise<ProjectSecretWriteResult> =>
+  secretWriteResult(
+    await fetch(`/api/projects/${projectId}/secrets`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+  );
+
+/** `value: null` keeps the stored value (pure rename); a string replaces it. */
+export const updateProjectSecret = async (
+  projectId: string,
+  secretId: string,
+  input: {
+    readonly name: string;
+    readonly value: string | null;
+    readonly expectedRevision: number;
+  },
+): Promise<ProjectSecretWriteResult> =>
+  secretWriteResult(
+    await fetch(`/api/projects/${projectId}/secrets/${secretId}`, {
+      method: "PUT",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+  );
+
+export const removeProjectSecret = async (
+  projectId: string,
+  secretId: string,
+  expectedRevision: number,
+): Promise<ProjectSecretWriteResult> =>
+  secretWriteResult(
+    await fetch(`/api/projects/${projectId}/secrets/${secretId}`, {
+      method: "DELETE",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedRevision }),
+    }),
+  );

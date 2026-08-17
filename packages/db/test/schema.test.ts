@@ -16,6 +16,7 @@ import {
   issues,
   projectEnvironmentVariables,
   projectMounts,
+  projectSecrets,
   projectReferences,
   projects,
   pushDevices,
@@ -180,6 +181,30 @@ describe("Mend Drizzle schema", () => {
     expect(
       runColumns.find((column) => column.name === "environment_variable_names")?.getSQLType(),
     ).toBe("jsonb");
+  });
+
+  it("maps project secrets as sealed rows with the same ownership/revision discipline", () => {
+    const config = getTableConfig(projectSecrets);
+    expect(config.name).toBe("project_secrets");
+    expect(config.columns.map((column) => column.name)).toEqual([
+      "id",
+      "project_id",
+      "name",
+      "sealed_value",
+      "revision",
+      "created_at",
+      "updated_at",
+    ]);
+    // No plaintext column exists to leak into: the only value column is the sealed one.
+    expect(config.columns.some((column) => column.name === "value")).toBe(false);
+    expect(config.foreignKeys[0]?.onDelete).toBe("cascade");
+    expect(config.uniqueConstraints.map((constraint) => constraint.name)).toEqual([
+      "project_secrets_project_id_name_key",
+    ]);
+    const projectColumns = getTableConfig(projects).columns;
+    expect(projectColumns.find((column) => column.name === "secret_revision")?.notNull).toBe(true);
+    const runColumns = getTableConfig(sessionRuns).columns;
+    expect(runColumns.find((column) => column.name === "secret_names")?.getSQLType()).toBe("jsonb");
   });
 
   it("matches project mount ownership and uniqueness constraints", () => {

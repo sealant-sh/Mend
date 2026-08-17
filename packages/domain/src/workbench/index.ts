@@ -24,6 +24,7 @@ export * from "./mount.ts";
 export * from "./pass.ts";
 export * from "./project.ts";
 export * from "./project-environment.ts";
+export * from "./project-secret.ts";
 export * from "./reference.ts";
 export * from "./review-comment.ts";
 export * from "./service-recipe.ts";

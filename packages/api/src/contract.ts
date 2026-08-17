@@ -12,6 +12,7 @@ import {
   ProjectEnvironmentVariableId,
   ProjectId,
   ProjectMountId,
+  ProjectSecretId,
   ReferenceId,
   ReviewCommentId,
   Run,
@@ -33,6 +34,8 @@ import {
   ProjectEnvironmentSnapshot,
   ProjectEnvironmentVariable,
   ProjectMount,
+  ProjectSecret,
+  ProjectSecretsSnapshot,
   Reference,
   ReviewComment,
   ServiceRecipe,
@@ -745,6 +748,55 @@ export class EnvironmentStaleWrite extends Schema.TaggedErrorClass<EnvironmentSt
   { httpApiStatus: 409 },
 ) {}
 
+/** One dotenv entry to load. Values cross this request only; the response never carries them. */
+export class EnvironmentLoadEntry extends Schema.Class<EnvironmentLoadEntry>(
+  "EnvironmentLoadEntry",
+)({
+  name: Schema.String,
+  value: Schema.String,
+}) {}
+
+/**
+ * Load a parsed `.env` into the project store (`mend env load`). Each entry is routed by NAME:
+ * ordinary names to Configuration, secret-shaped names to Secrets, or everything acceptable to
+ * Secrets with `forceSecret`. Create-or-replace by name — the file is the intent.
+ */
+export class EnvironmentLoadRequest extends Schema.Class<EnvironmentLoadRequest>(
+  "EnvironmentLoadRequest",
+)({
+  entries: Schema.Array(EnvironmentLoadEntry),
+  /** Every acceptable entry goes to Secrets. */
+  allSecret: Schema.Boolean,
+  /** These names go to Secrets even when their name looks ordinary (`DATABASE_URL`). */
+  secretNames: Schema.Array(Schema.String),
+}) {}
+
+export class EnvironmentLoadedEntry extends Schema.Class<EnvironmentLoadedEntry>(
+  "EnvironmentLoadedEntry",
+)({
+  name: Schema.String,
+  lane: Schema.Literals(["configuration", "secret"]),
+  /** `moved` = it also left the other lane (a name lives in exactly one). */
+  action: Schema.Literals(["created", "updated", "moved"]),
+}) {}
+
+export class EnvironmentRejectedEntry extends Schema.Class<EnvironmentRejectedEntry>(
+  "EnvironmentRejectedEntry",
+)({
+  name: Schema.String,
+  reason: Schema.String,
+}) {}
+
+/** The per-name report: what landed where, and what was refused and why. Never a value. */
+export class EnvironmentLoadReport extends Schema.Class<EnvironmentLoadReport>(
+  "EnvironmentLoadReport",
+)({
+  loaded: Schema.Array(EnvironmentLoadedEntry),
+  rejected: Schema.Array(EnvironmentRejectedEntry),
+  environmentRevision: Schema.Int,
+  secretRevision: Schema.Int,
+}) {}
+
 /**
  * Project environment variables (`.plans/project-environment-variables.md`): project-owned,
  * explicitly NON-SECRET configuration inherited by every process in the project's future
@@ -782,6 +834,89 @@ const projectEnvironmentGroup = HttpApiGroup.make("projectEnvironment")
       params: { id: ProjectId, variableId: ProjectEnvironmentVariableId },
       payload: ProjectEnvironmentVariableRemoveRequest,
       success: ProjectEnvironmentMutationResult,
+      error: [NotFound, EnvironmentStaleWrite],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("load", "/projects/:id/environment/load", {
+      params: { id: ProjectId },
+      payload: EnvironmentLoadRequest,
+      success: EnvironmentLoadReport,
+      error: NotFound,
+    }),
+  )
+  .middleware(AuthMiddleware);
+
+/** Create a secret: the value is sealed at rest and never returned by any response. */
+export class ProjectSecretRequest extends Schema.Class<ProjectSecretRequest>(
+  "ProjectSecretRequest",
+)({
+  name: Schema.String,
+  value: Schema.String,
+}) {}
+
+/**
+ * Replace a secret's value and/or rename it. `value: null` keeps the stored value (pure rename);
+ * a string replaces it. Requires the last-seen row revision.
+ */
+export class ProjectSecretUpdateRequest extends Schema.Class<ProjectSecretUpdateRequest>(
+  "ProjectSecretUpdateRequest",
+)({
+  name: Schema.String,
+  value: Schema.NullOr(Schema.String),
+  expectedRevision: Schema.Int,
+}) {}
+
+export class ProjectSecretRemoveRequest extends Schema.Class<ProjectSecretRemoveRequest>(
+  "ProjectSecretRemoveRequest",
+)({
+  expectedRevision: Schema.Int,
+}) {}
+
+/** A secret mutation's result: the touched row (name/revision only) + new aggregate revision. */
+export class ProjectSecretMutationResult extends Schema.Class<ProjectSecretMutationResult>(
+  "ProjectSecretMutationResult",
+)({
+  secret: Schema.NullOr(ProjectSecret),
+  revision: Schema.Int,
+}) {}
+
+/**
+ * Project SECRETS (`.plans/project-environment-variables.md`, "Scope expansion"): the encrypted,
+ * write-only half of the project env store. Responses carry names and revisions only — a value
+ * that has been written can never be read back through this API. At launch the current set goes
+ * to Sealant's transient secret channel, which keeps it out of the blueprint, container env, and
+ * captured output. Same lifecycle as Configuration: new workspace launches only.
+ */
+const projectSecretsGroup = HttpApiGroup.make("projectSecrets")
+  .add(
+    HttpApiEndpoint.get("get", "/projects/:id/secrets", {
+      params: { id: ProjectId },
+      success: ProjectSecretsSnapshot,
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("create", "/projects/:id/secrets", {
+      params: { id: ProjectId },
+      payload: ProjectSecretRequest,
+      success: ProjectSecretMutationResult,
+      error: [NotFound, EnvironmentRejected],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put("update", "/projects/:id/secrets/:secretId", {
+      params: { id: ProjectId, secretId: ProjectSecretId },
+      payload: ProjectSecretUpdateRequest,
+      success: ProjectSecretMutationResult,
+      error: [NotFound, EnvironmentRejected, EnvironmentStaleWrite],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.delete("remove", "/projects/:id/secrets/:secretId", {
+      params: { id: ProjectId, secretId: ProjectSecretId },
+      payload: ProjectSecretRemoveRequest,
+      success: ProjectSecretMutationResult,
       error: [NotFound, EnvironmentStaleWrite],
     }),
   )
@@ -1273,6 +1408,7 @@ export const MendApi = HttpApi.make("mend")
   .add(projectsGroup)
   .add(gitKeysGroup)
   .add(projectEnvironmentGroup)
+  .add(projectSecretsGroup)
   .add(projectMountsGroup)
   .add(projectRecipesGroup)
   .add(referencesGroup)

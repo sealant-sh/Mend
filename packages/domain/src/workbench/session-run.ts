@@ -31,6 +31,9 @@ export class SessionRun extends Schema.Class<SessionRun>("SessionRun")({
    */
   environmentRevision: Schema.NullOr(Schema.Int),
   environmentVariableNames: Schema.NullOr(Schema.Array(Schema.String)),
+  /** Same manifest for the project's Secrets set — names only, by construction. */
+  secretRevision: Schema.NullOr(Schema.Int),
+  secretNames: Schema.NullOr(Schema.Array(Schema.String)),
   startedAt: Schema.Date,
   settledAt: Schema.NullOr(Schema.Date),
   createdAt: Schema.Date,

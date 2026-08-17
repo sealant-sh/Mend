@@ -8,6 +8,7 @@ import {
   validateProjectEnvironmentName,
   validateProjectEnvironmentValue,
 } from "../src/workbench/project-environment.ts";
+import { routeDotenvName, validateProjectSecretName } from "../src/workbench/project-secret.ts";
 
 describe("validateProjectEnvironmentName", () => {
   it.each(["APP_MODE", "_LEADING_UNDERSCORE", "lower_case", "MIXED_case_9"])(
@@ -96,5 +97,55 @@ describe("projectEnvironmentBytes", () => {
         { name: "C", value: "💥" },
       ]),
     ).toBe(2 + 3 + 1 + 4);
+  });
+});
+
+describe("validateProjectSecretName (the secret lane)", () => {
+  it.each(["STRIPE_API_KEY", "DB_PASSWORD", "TOKENIZER_PATH", "KEY", "DATABASE_URL", "PORT"])(
+    "accepts %s — secret-shaped or not, any ordinary name may be a secret",
+    (name) => {
+      expect(validateProjectSecretName(name)).toBeNull();
+    },
+  );
+
+  it.each([
+    ["GITHUB_TOKEN", "account-lookup"],
+    ["CLAUDE_CODE_OAUTH_TOKEN", "account-lookup"],
+    ["SEALANT_X", "platform-prefix"],
+    ["PATH", "process-identity"],
+    ["NODE_OPTIONS", "runtime-injection"],
+  ])("still reserves platform/account name %s (%s)", (name, reservedRule) => {
+    const issue = validateProjectSecretName(name);
+    expect(issue?.rule).toBe("name-reserved");
+    expect(issue?.rule === "name-reserved" && issue.reservedRule).toBe(reservedRule);
+  });
+
+  it("keeps the MEND_ reservation and grammar", () => {
+    expect(validateProjectSecretName("MEND_SECRET")?.rule).toBe("name-mend-prefix");
+    expect(validateProjectSecretName("BAD NAME")?.rule).toBe("name-grammar");
+  });
+});
+
+describe("routeDotenvName", () => {
+  it("routes ordinary names to configuration and secret-shaped names to secrets", () => {
+    expect(routeDotenvName("PORT")).toEqual({ lane: "configuration" });
+    expect(routeDotenvName("APP_MODE")).toEqual({ lane: "configuration" });
+    expect(routeDotenvName("STRIPE_API_KEY")).toEqual({ lane: "secret" });
+    expect(routeDotenvName("DB_PASSWORD")).toEqual({ lane: "secret" });
+    expect(routeDotenvName("KEY")).toEqual({ lane: "secret" });
+  });
+
+  it("rejects platform/account names outright, naming the rule", () => {
+    const github = routeDotenvName("GITHUB_TOKEN");
+    expect(github.lane).toBe("rejected");
+    expect(github.lane === "rejected" && github.issue.rule).toBe("name-reserved");
+    expect(routeDotenvName("PATH").lane).toBe("rejected");
+    expect(routeDotenvName("MEND_ANYTHING").lane).toBe("rejected");
+    expect(routeDotenvName("1BAD").lane).toBe("rejected");
+  });
+
+  it("never looks at a value", () => {
+    // Same name, any value: routing is a function of the name alone.
+    expect(routeDotenvName("DATABASE_URL")).toEqual({ lane: "configuration" });
   });
 });
