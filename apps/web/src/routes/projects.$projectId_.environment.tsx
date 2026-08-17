@@ -1,6 +1,6 @@
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useReducer, useState } from "react";
+import { useReducer, useRef, useState } from "react";
 
 import { AppShell } from "#/components/shell";
 import {
@@ -9,6 +9,14 @@ import {
   type WorkspaceImageDto,
   type WorkspacePackageResolutionDto,
 } from "#/lib/api";
+import {
+  composerReducer,
+  initialComposer,
+  looksLikeDotenv,
+  rowLane,
+  savableRows,
+  serializeRows,
+} from "#/lib/env-composer";
 import {
   createProjectEnvironmentVariable,
   createProjectSecret,
@@ -89,7 +97,7 @@ function ProjectEnvironmentPage() {
         </p>
 
         <div className="mt-8 space-y-6">
-          <LoadEnvPanel projectId={projectId} />
+          <VariablesComposer projectId={projectId} />
           <WorkspaceImagePanel project={project} />
           <ConfigurationPanel projectId={projectId} />
           <SecretsPanel projectId={projectId} />
@@ -448,15 +456,6 @@ function ConfigurationPanel({ projectId }: { readonly projectId: string }) {
             shells, Services, setup, and checks. Stored and sent as plaintext.
           </p>
         </div>
-        {editorOpen ? null : (
-          <button
-            type="button"
-            onClick={() => dispatch({ type: "create-opened" })}
-            className="shrink-0 rounded-xl border border-border bg-card px-3 py-1.5 font-sans text-xs font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5"
-          >
-            Add variable
-          </button>
-        )}
       </div>
 
       <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
@@ -468,23 +467,11 @@ function ConfigurationPanel({ projectId }: { readonly projectId: string }) {
         {form.notice}
       </p>
 
-      {form.editing?.kind === "create" ? (
-        <EnvironmentEditor
-          heading="New variable"
-          form={form}
-          nameIssues={nameIssues}
-          valueIssues={valueIssues}
-          aggregateIssues={aggregateIssues}
-          dispatch={dispatch}
-          submit={submit}
-        />
-      ) : null}
-
       <div className="mt-4 border-t border-[var(--sw-faint-rule)]">
         {environment.variables.length === 0 && !editorOpen ? (
           <p className="pt-4 text-sm text-muted-foreground">
-            No variables yet. Each one is set on the workspace container at launch and inherited by
-            everything Mend starts inside it.
+            No variables yet. Add them above — each one is set on the workspace container at launch
+            and inherited by everything Mend starts inside it.
           </p>
         ) : (
           <ul>
@@ -839,38 +826,17 @@ function SecretsPanel({ projectId }: { readonly projectId: string }) {
             recorded output. Set once — a value cannot be read back, only replaced.
           </p>
         </div>
-        {editorOpen ? null : (
-          <button
-            type="button"
-            onClick={() => dispatch({ type: "create-opened" })}
-            className="shrink-0 rounded-xl border border-border bg-card px-3 py-1.5 font-sans text-xs font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5"
-          >
-            Add secret
-          </button>
-        )}
       </div>
 
       <p aria-live="polite" role="status" className="mt-2 text-xs text-success">
         {form.notice}
       </p>
 
-      {form.editing?.kind === "create" ? (
-        <SecretEditor
-          heading="New secret"
-          form={form}
-          nameIssues={nameIssues}
-          valueIssues={valueIssues}
-          aggregateIssues={aggregateIssues}
-          dispatch={dispatch}
-          submit={submit}
-        />
-      ) : null}
-
       <div className="mt-4 border-t border-[var(--sw-faint-rule)]">
         {snapshot.secrets.length === 0 && !editorOpen ? (
           <p className="pt-4 text-sm text-muted-foreground">
-            No secrets yet. Or load a whole file from the repository:{" "}
-            <span className="font-mono">mend env load</span>.
+            No secrets yet. Add them above (secret-shaped names land here on their own), or from a
+            terminal: <span className="font-mono">mend env load</span>.
           </p>
         ) : (
           <ul>
@@ -1127,29 +1093,65 @@ function SecretRow({
   );
 }
 
-// ── Load a .env: paste the whole file, one entry per key ────────────────────────────────────────
+// ── Add variables: Key/Value rows; paste a whole .env into any field to expand it ───────────────
+
+const rowInputClass =
+  "w-full rounded-lg border border-input bg-card px-2.5 py-1.5 font-mono text-[12px] text-foreground outline-none transition-colors focus:border-[var(--sw-accent)] focus:ring-2 focus:ring-[color-mix(in_oklab,var(--sw-accent)_18%,transparent)] disabled:opacity-60";
 
 /**
- * Paste a `.env` verbatim; the server parses it and routes every key by NAME — ordinary names to
- * Configuration, secret-shaped names to Secrets (or everything to Secrets on request). Same
- * endpoint and report as `mend env load`, so the CLI and this panel can never disagree. The pasted
- * text is sent once and cleared on success; the report names keys, lanes, and reasons — no value.
+ * The one way to add entries: Key/Value rows with "Add another", a Sensitive toggle, and paste
+ * detection — dropping a whole `.env` (comments and all) into ANY field turns it into rows, one
+ * per key. Each row shows live where it will land (Configuration, Secrets, or why it is refused).
+ * Save posts every row through the same endpoint `mend env load` uses; existing names are
+ * replaced; the report renders under the composer and both panels refresh.
  */
-function LoadEnvPanel({ projectId }: { readonly projectId: string }) {
-  const [contents, setContents] = useState("");
-  const [allSecret, setAllSecret] = useState(false);
-  const [phase, setPhase] = useState<"idle" | "loading">("idle");
+function VariablesComposer({ projectId }: { readonly projectId: string }) {
+  const [state, dispatch] = useReducer(composerReducer, initialComposer);
+  const [phase, setPhase] = useState<"idle" | "saving">("idle");
   const [report, setReport] = useState<EnvironmentLoadReportView | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const fileInput = useRef<HTMLInputElement | null>(null);
 
-  const submit = () => {
-    if (phase === "loading" || contents.trim() === "") return;
-    setPhase("loading");
+  const rows = savableRows(state);
+  const lanes = state.rows.map((row) => rowLane(row, state.allSecret));
+  const rejectedCount = lanes.filter((lane) => lane.kind === "rejected").length;
+  const canSave = phase === "idle" && rows.length > 0 && rejectedCount === 0;
+
+  const expandFrom = (intoId: number, text: string) =>
+    dispatch({ type: "text-expanded", intoId, text });
+
+  const onPaste = (rowId: number) => (event: React.ClipboardEvent<HTMLInputElement>) => {
+    const text = event.clipboardData.getData("text");
+    if (!looksLikeDotenv(text)) return; // an ordinary paste of a key or a value
+    event.preventDefault();
+    expandFrom(rowId, text);
+  };
+
+  const importFile = (file: File | undefined) => {
+    if (file === undefined) return;
+    void file.text().then((text) => {
+      const last = state.rows.at(-1);
+      dispatch({ type: "text-expanded", intoId: last?.id ?? null, text });
+      return undefined;
+    });
+  };
+
+  const save = () => {
+    if (!canSave) return;
+    setPhase("saving");
     setError(null);
-    void loadProjectEnvironment(projectId, { contents, allSecret, secretNames: [] })
+    void loadProjectEnvironment(projectId, {
+      contents: serializeRows(rows),
+      allSecret: state.allSecret,
+      secretNames: [],
+    })
       .then(async (result) => {
         setReport(result);
-        setContents("");
+        const loadedNames = new Set(result.loaded.map((entry) => entry.name));
+        dispatch({
+          type: "rows-cleared",
+          ids: rows.filter((row) => loadedNames.has(row.key)).map((row) => row.id),
+        });
         await Promise.all([
           queryClient.invalidateQueries({ queryKey: ["project", projectId, "environment"] }),
           queryClient.invalidateQueries({ queryKey: ["project", projectId, "secrets"] }),
@@ -1157,78 +1159,172 @@ function LoadEnvPanel({ projectId }: { readonly projectId: string }) {
         return undefined;
       })
       .catch((cause: unknown) =>
-        setError(cause instanceof Error ? cause.message : "The load failed."),
+        setError(cause instanceof Error ? cause.message : "The save failed."),
       )
       .finally(() => setPhase("idle"));
   };
 
-  const plaintextUrls = (report?.loaded ?? []).filter(
-    (entry) => entry.lane === "configuration" && /_(URL|URI|DSN)$/.test(entry.name),
-  );
-
   return (
     <section className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
-      <h2 className="font-sans text-sm font-semibold">Load a .env</h2>
+      <h2 className="font-sans text-sm font-semibold">Add variables</h2>
       <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
-        Paste the whole file. Each key becomes one entry: ordinary names go to Configuration,
-        secret-shaped names (tokens, passwords, keys) go to Secrets. Existing entries with the same
-        name are replaced. Nothing is stored from lines that don’t parse.
+        One key per row. Paste a whole <span className="font-mono">.env</span> into any field and it
+        becomes one row per key — comments are dropped. Names that look secret land in Secrets on
+        their own; everything else is plaintext Configuration.
       </p>
-      <form
-        className="mt-4"
-        onSubmit={(event) => {
-          event.preventDefault();
-          submit();
-        }}
-      >
-        <label htmlFor="env-paste" className="sr-only">
-          .env contents
-        </label>
-        <textarea
-          id="env-paste"
-          value={contents}
-          disabled={phase === "loading"}
-          rows={6}
-          spellCheck={false}
-          autoComplete="off"
-          placeholder={"PORT=3000\nDATABASE_URL=postgres://…\nSTRIPE_API_KEY=sk_live_…"}
-          onChange={(event) => setContents(event.target.value)}
-          className="w-full resize-y rounded-xl border border-input bg-card px-3.5 py-2.5 font-mono text-[12.5px] leading-relaxed text-foreground outline-none transition-colors focus:border-[var(--sw-accent)] focus:ring-2 focus:ring-[color-mix(in_oklab,var(--sw-accent)_18%,transparent)] disabled:opacity-60"
-        />
-        <div className="mt-3 flex flex-wrap items-center gap-4">
-          <button
-            type="submit"
-            disabled={phase === "loading" || contents.trim() === ""}
-            className="rounded-xl border border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash px-3.5 py-1.5 font-sans text-xs font-medium text-foreground shadow-xs transition-colors disabled:opacity-50"
-          >
-            {phase === "loading" ? "Loading…" : "Load"}
-          </button>
-          <label className="flex items-center gap-2 font-sans text-xs text-muted-foreground">
-            <input
-              type="checkbox"
-              checked={allSecret}
-              disabled={phase === "loading"}
-              onChange={(event) => setAllSecret(event.target.checked)}
-              className="accent-[var(--sw-accent)]"
-            />
-            Store every entry as a secret
-          </label>
+
+      <div className="mt-4 flex items-start justify-between gap-4 rounded-xl border border-border bg-card p-3">
+        <div>
+          <p className="font-sans text-[13px] font-medium text-foreground">Sensitive</p>
+          <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+            Store every row as a secret: encrypted here, never persisted by the platform, and not
+            readable after saving — only replaceable.
+          </p>
         </div>
-      </form>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={state.allSecret}
+          disabled={phase === "saving"}
+          onClick={() => dispatch({ type: "all-secret-toggled" })}
+          className={`shrink-0 rounded-xl border px-3 py-1.5 font-sans text-xs font-medium shadow-xs transition-colors disabled:opacity-60 ${
+            state.allSecret
+              ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
+              : "border-border bg-card text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          {state.allSecret ? "Enabled" : "Disabled"}
+        </button>
+      </div>
+
+      <div className="mt-4 grid grid-cols-[minmax(0,240px)_minmax(0,1fr)_auto] gap-x-3 gap-y-1">
+        <p className="font-sans text-xs font-medium text-muted-foreground">Key</p>
+        <p className="font-sans text-xs font-medium text-muted-foreground">Value</p>
+        <span />
+        {state.rows.map((row, index) => {
+          const lane = lanes[index] ?? { kind: "empty" as const };
+          return (
+            <div key={row.id} className="contents">
+              <div>
+                <input
+                  type="text"
+                  value={row.key}
+                  disabled={phase === "saving"}
+                  spellCheck={false}
+                  autoComplete="off"
+                  placeholder="e.g. CLIENT_ID"
+                  aria-label={`Key ${index + 1}`}
+                  aria-invalid={lane.kind === "rejected"}
+                  onChange={(event) =>
+                    dispatch({ type: "key-changed", id: row.id, key: event.target.value })
+                  }
+                  onPaste={onPaste(row.id)}
+                  className={rowInputClass}
+                />
+                <p className="mt-0.5 min-h-4 font-mono text-[11px] leading-4">
+                  {lane.kind === "configuration" ? (
+                    <span className="text-faint">→ configuration · plaintext</span>
+                  ) : lane.kind === "secret" ? (
+                    <span className="text-faint">→ secret</span>
+                  ) : lane.kind === "rejected" ? (
+                    <span className="font-sans text-danger">{lane.reason}</span>
+                  ) : null}
+                </p>
+              </div>
+              <div>
+                <input
+                  type="text"
+                  value={row.value}
+                  disabled={phase === "saving"}
+                  spellCheck={false}
+                  autoComplete="off"
+                  aria-label={`Value ${index + 1}`}
+                  onChange={(event) =>
+                    dispatch({ type: "value-changed", id: row.id, value: event.target.value })
+                  }
+                  onPaste={onPaste(row.id)}
+                  className={rowInputClass}
+                />
+              </div>
+              <button
+                type="button"
+                disabled={phase === "saving"}
+                onClick={() => dispatch({ type: "row-removed", id: row.id })}
+                aria-label={`Remove row ${index + 1}`}
+                className="h-[30px] rounded-lg border border-border bg-card px-2.5 font-sans text-xs text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+              >
+                −
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      <button
+        type="button"
+        disabled={phase === "saving"}
+        onClick={() => dispatch({ type: "row-added" })}
+        className="mt-1 rounded-lg border border-border bg-card px-2.5 py-1 font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+      >
+        + Add another
+      </button>
+
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--sw-faint-rule)] pt-4">
+        <div className="flex items-center gap-3">
+          <input
+            ref={fileInput}
+            type="file"
+            accept=".env,text/plain,.txt"
+            className="hidden"
+            onChange={(event) => {
+              importFile(event.target.files?.[0]);
+              event.target.value = "";
+            }}
+          />
+          <button
+            type="button"
+            disabled={phase === "saving"}
+            onClick={() => fileInput.current?.click()}
+            className="rounded-xl border border-border bg-card px-3 py-1.5 font-sans text-xs font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-50"
+          >
+            Import .env
+          </button>
+          <span className="text-xs text-muted-foreground">
+            or paste the .env contents into any field above
+          </span>
+        </div>
+        <button
+          type="button"
+          disabled={!canSave}
+          onClick={save}
+          className="rounded-xl border border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash px-3.5 py-1.5 font-sans text-xs font-medium text-foreground shadow-xs transition-colors disabled:opacity-50"
+        >
+          {phase === "saving" ? "Saving…" : rows.length > 1 ? `Save ${rows.length}` : "Save"}
+        </button>
+      </div>
+      {state.skippedLines === 0 ? null : (
+        <p className="mt-2 text-xs text-muted-foreground" aria-live="polite">
+          Skipped {state.skippedLines} line{state.skippedLines === 1 ? "" : "s"} that were not{" "}
+          <span className="font-mono">KEY=value</span>.
+        </p>
+      )}
+      {rejectedCount === 0 ? null : (
+        <p className="mt-2 text-xs text-danger" aria-live="polite">
+          Fix or remove the {rejectedCount === 1 ? "row" : `${rejectedCount} rows`} marked above to
+          save.
+        </p>
+      )}
       {error === null ? null : (
-        <p className="mt-3 text-xs leading-relaxed text-danger" aria-live="polite">
+        <p className="mt-2 text-xs text-danger" aria-live="polite">
           {error}
         </p>
       )}
       {report === null ? null : (
-        <div className="mt-4 border-t border-[var(--sw-faint-rule)] pt-3" aria-live="polite">
+        <div className="mt-3 border-t border-[var(--sw-faint-rule)] pt-3" aria-live="polite">
           <p className="font-sans text-xs font-medium text-foreground">
-            Loaded {report.loaded.length} · rejected {report.rejected.length}
-            {report.malformedLines.length === 0
-              ? ""
-              : ` · skipped ${report.malformedLines.length} malformed line${report.malformedLines.length === 1 ? "" : "s"} (${report.malformedLines.join(", ")})`}
+            Saved {report.loaded.length}
+            {report.rejected.length === 0 ? "" : ` · rejected ${report.rejected.length}`}
           </p>
-          <ul className="mt-2 space-y-1">
+          <ul className="mt-1 space-y-0.5">
             {report.loaded.map((entry) => (
               <li key={`loaded-${entry.name}`} className="font-mono text-[12px] text-ink-2">
                 {entry.name}{" "}
@@ -1245,13 +1341,6 @@ function LoadEnvPanel({ projectId }: { readonly projectId: string }) {
               </li>
             ))}
           </ul>
-          {plaintextUrls.length === 0 ? null : (
-            <p className="mt-2 text-xs leading-relaxed text-warning">
-              {plaintextUrls.map((entry) => entry.name).join(", ")} landed in plaintext
-              Configuration by name. If a value embeds a password, replace it with a secret of the
-              same name below — the plaintext copy is removed automatically.
-            </p>
-          )}
         </div>
       )}
     </section>
