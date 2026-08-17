@@ -86,6 +86,26 @@ describe("composerReducer", () => {
   });
 });
 
+describe("value censoring", () => {
+  it("pastes arrive censored and stay so until revealed per row or all at once", () => {
+    const pasted = reduce(initialComposer, {
+      type: "text-expanded",
+      intoId: 1,
+      text: "A=1\nB=2",
+    });
+    expect(pasted.rows.every((row) => !row.revealed)).toBe(true);
+    const first = pasted.rows[0]?.id ?? 0;
+    const one = reduce(pasted, { type: "reveal-toggled", id: first });
+    expect(one.rows.map((row) => row.revealed)).toEqual([true, false]);
+    const all = reduce(one, { type: "reveal-all-set", revealed: true });
+    expect(all.rows.every((row) => row.revealed)).toBe(true);
+    const none = reduce(all, { type: "reveal-all-set", revealed: false });
+    expect(none.rows.every((row) => !row.revealed)).toBe(true);
+    // A fresh row is censored too.
+    expect(reduce(none, { type: "row-added" }).rows.at(-1)?.revealed).toBe(false);
+  });
+});
+
 describe("looksLikeDotenv", () => {
   it("recognizes single and multi-line assignments, not plain values", () => {
     expect(looksLikeDotenv("KEY=value")).toBe(true);
@@ -95,24 +115,27 @@ describe("looksLikeDotenv", () => {
   });
 });
 
+const keyOnly = (key: string) => ({ id: 1, key, value: "", revealed: false });
+
 describe("rowLane", () => {
-  it("routes by key, honors the Sensitive toggle, and names rejections", () => {
-    expect(rowLane({ id: 1, key: "", value: "" }, false)).toEqual({ kind: "empty" });
-    expect(rowLane({ id: 1, key: "PORT", value: "" }, false)).toEqual({ kind: "configuration" });
-    expect(rowLane({ id: 1, key: "PORT", value: "" }, true)).toEqual({ kind: "secret" });
-    expect(rowLane({ id: 1, key: "STRIPE_API_KEY", value: "" }, false)).toEqual({ kind: "secret" });
-    expect(rowLane({ id: 1, key: "GITHUB_TOKEN", value: "" }, false).kind).toBe("rejected");
+  it("routes by key, honors the Sensitive toggle (on by default), and names rejections", () => {
+    expect(initialComposer.allSecret).toBe(true);
+    expect(rowLane(keyOnly(""), false)).toEqual({ kind: "empty" });
+    expect(rowLane(keyOnly("PORT"), false)).toEqual({ kind: "configuration" });
+    expect(rowLane(keyOnly("PORT"), true)).toEqual({ kind: "secret" });
+    expect(rowLane(keyOnly("STRIPE_API_KEY"), false)).toEqual({ kind: "secret" });
+    expect(rowLane(keyOnly("GITHUB_TOKEN"), false).kind).toBe("rejected");
   });
 });
 
 describe("serializeRows", () => {
   it("round-trips any value through the server parser", () => {
     const rows = [
-      { id: 1, key: "PLAIN", value: "hello" },
-      { id: 2, key: "QUOTES", value: 'say "hi" # not a comment' },
-      { id: 3, key: "MULTI", value: "line1\nline2\ttab" },
-      { id: 4, key: "BACKSLASH", value: "C:\\path" },
-      { id: 5, key: "EMPTY", value: "" },
+      { id: 1, key: "PLAIN", value: "hello", revealed: false },
+      { id: 2, key: "QUOTES", value: 'say "hi" # not a comment', revealed: false },
+      { id: 3, key: "MULTI", value: "line1\nline2\ttab", revealed: false },
+      { id: 4, key: "BACKSLASH", value: "C:\\path", revealed: false },
+      { id: 5, key: "EMPTY", value: "", revealed: false },
     ];
     const parsed = parseDotenv(serializeRows(rows));
     expect(parsed.malformed).toEqual([]);
@@ -120,7 +143,10 @@ describe("serializeRows", () => {
       rows.map((row) => [row.key, row.value]),
     );
     expect(
-      savableRows({ ...initialComposer, rows: [...rows, { id: 6, key: "", value: "x" }] }),
+      savableRows({
+        ...initialComposer,
+        rows: [...rows, { id: 6, key: "", value: "x", revealed: false }],
+      }),
     ).toHaveLength(5);
   });
 });

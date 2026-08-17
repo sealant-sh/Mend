@@ -1114,6 +1114,8 @@ function VariablesComposer({ projectId }: { readonly projectId: string }) {
 
   const rows = savableRows(state);
   const lanes = state.rows.map((row) => rowLane(row, state.allSecret));
+  const anyValue = state.rows.some((row) => row.value !== "");
+  const allRevealed = state.rows.filter((row) => row.value !== "").every((row) => row.revealed);
   const rejectedCount = lanes.filter((lane) => lane.kind === "rejected").length;
   const canSave = phase === "idle" && rows.length > 0 && rejectedCount === 0;
 
@@ -1169,16 +1171,17 @@ function VariablesComposer({ projectId }: { readonly projectId: string }) {
       <h2 className="font-sans text-sm font-semibold">Add variables</h2>
       <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
         One key per row. Paste a whole <span className="font-mono">.env</span> into any field and it
-        becomes one row per key — comments are dropped. Names that look secret land in Secrets on
-        their own; everything else is plaintext Configuration.
+        becomes one row per key — comments are dropped. Values stay hidden until you choose to show
+        them, and everything is stored as a secret unless you turn Sensitive off.
       </p>
 
       <div className="mt-4 flex items-start justify-between gap-4 rounded-xl border border-border bg-card p-3">
         <div>
           <p className="font-sans text-[13px] font-medium text-foreground">Sensitive</p>
           <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
-            Store every row as a secret: encrypted here, never persisted by the platform, and not
-            readable after saving — only replaceable.
+            On: every row is stored as a secret — encrypted here, never persisted by the platform,
+            not readable after saving, only replaceable. Off: ordinary names become plaintext
+            Configuration you can read back; secret-looking names still go to Secrets.
           </p>
         </div>
         <button
@@ -1197,9 +1200,22 @@ function VariablesComposer({ projectId }: { readonly projectId: string }) {
         </button>
       </div>
 
-      <div className="mt-4 grid grid-cols-[minmax(0,240px)_minmax(0,1fr)_auto] gap-x-3 gap-y-1">
+      <div className="mt-4 grid grid-cols-[minmax(0,240px)_minmax(0,1fr)_auto_auto] gap-x-2 gap-y-1">
         <p className="font-sans text-xs font-medium text-muted-foreground">Key</p>
-        <p className="font-sans text-xs font-medium text-muted-foreground">Value</p>
+        <p className="flex items-baseline justify-between font-sans text-xs font-medium text-muted-foreground">
+          <span>Value</span>
+          {anyValue ? (
+            <button
+              type="button"
+              disabled={phase === "saving"}
+              onClick={() => dispatch({ type: "reveal-all-set", revealed: !allRevealed })}
+              className="font-sans text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+            >
+              {allRevealed ? "Hide all" : "Show all"}
+            </button>
+          ) : null}
+        </p>
+        <span />
         <span />
         {state.rows.map((row, index) => {
           const lane = lanes[index] ?? { kind: "empty" as const };
@@ -1233,7 +1249,9 @@ function VariablesComposer({ projectId }: { readonly projectId: string }) {
               </div>
               <div>
                 <input
-                  type="text"
+                  // Censored by default — typed or pasted — until this row is revealed. A whole
+                  // pasted .env is exactly the content that should not sit on screen.
+                  type={row.revealed ? "text" : "password"}
                   value={row.value}
                   disabled={phase === "saving"}
                   spellCheck={false}
@@ -1246,6 +1264,16 @@ function VariablesComposer({ projectId }: { readonly projectId: string }) {
                   className={rowInputClass}
                 />
               </div>
+              <button
+                type="button"
+                disabled={phase === "saving" || row.value === ""}
+                onClick={() => dispatch({ type: "reveal-toggled", id: row.id })}
+                aria-label={`${row.revealed ? "Hide" : "Show"} value ${index + 1}`}
+                aria-pressed={row.revealed}
+                className="h-[30px] rounded-lg border border-border bg-card px-2.5 font-sans text-xs text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40"
+              >
+                {row.revealed ? "Hide" : "Show"}
+              </button>
               <button
                 type="button"
                 disabled={phase === "saving"}

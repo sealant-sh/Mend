@@ -14,6 +14,8 @@ export interface ComposerRow {
   readonly id: number;
   readonly key: string;
   readonly value: string;
+  /** Values are censored by default — typed or pasted — until the user reveals this row. */
+  readonly revealed: boolean;
 }
 
 export interface ComposerState {
@@ -31,14 +33,17 @@ export type ComposerAction =
   | { readonly type: "row-added" }
   | { readonly type: "row-removed"; readonly id: number }
   | { readonly type: "all-secret-toggled" }
+  | { readonly type: "reveal-toggled"; readonly id: number }
+  | { readonly type: "reveal-all-set"; readonly revealed: boolean }
   /** Text arrived by paste or file import; `intoId` is the row whose field received it. */
   | { readonly type: "text-expanded"; readonly intoId: number | null; readonly text: string }
   | { readonly type: "rows-cleared"; readonly ids: ReadonlyArray<number> }
   | { readonly type: "reset" };
 
 export const initialComposer: ComposerState = {
-  rows: [{ id: 1, key: "", value: "" }],
-  allSecret: false,
+  rows: [{ id: 1, key: "", value: "", revealed: false }],
+  // Sensitive ON by default: a pasted .env is presumed secret; opting into plaintext is deliberate.
+  allSecret: true,
   nextId: 2,
   skippedLines: 0,
 };
@@ -67,26 +72,41 @@ export const composerReducer = (state: ComposerState, action: ComposerAction): C
     case "row-added":
       return {
         ...state,
-        rows: [...state.rows, { id: state.nextId, key: "", value: "" }],
+        rows: [...state.rows, { id: state.nextId, key: "", value: "", revealed: false }],
         nextId: state.nextId + 1,
       };
     case "row-removed": {
       const rows = state.rows.filter((row) => row.id !== action.id);
       // Never an empty composer: removing the last row leaves one blank row.
       return rows.length === 0
-        ? { ...state, rows: [{ id: state.nextId, key: "", value: "" }], nextId: state.nextId + 1 }
+        ? {
+            ...state,
+            rows: [{ id: state.nextId, key: "", value: "", revealed: false }],
+            nextId: state.nextId + 1,
+          }
         : { ...state, rows };
     }
     case "all-secret-toggled":
       return { ...state, allSecret: !state.allSecret };
+    case "reveal-toggled":
+      return {
+        ...state,
+        rows: state.rows.map((row) =>
+          row.id === action.id ? { ...row, revealed: !row.revealed } : row,
+        ),
+      };
+    case "reveal-all-set":
+      return { ...state, rows: state.rows.map((row) => ({ ...row, revealed: action.revealed })) };
     case "text-expanded": {
       const parsed = parseDotenv(action.text);
       if (parsed.entries.length === 0) return state;
       let nextId = state.nextId;
+      // Pasted values arrive CENSORED: a whole .env is exactly the content you don't want on screen.
       const incoming: Array<ComposerRow> = parsed.entries.map((entry) => ({
         id: nextId++,
         key: entry.name,
         value: entry.value,
+        revealed: false,
       }));
       // The receiving row is replaced when it was blank; otherwise the rows append after it. Then
       // later duplicates win over earlier keys already in the composer (the file is the intent).
@@ -115,7 +135,11 @@ export const composerReducer = (state: ComposerState, action: ComposerAction): C
     case "rows-cleared": {
       const rows = state.rows.filter((row) => !action.ids.includes(row.id));
       return rows.length === 0
-        ? { ...state, rows: [{ id: state.nextId, key: "", value: "" }], nextId: state.nextId + 1 }
+        ? {
+            ...state,
+            rows: [{ id: state.nextId, key: "", value: "", revealed: false }],
+            nextId: state.nextId + 1,
+          }
         : { ...state, rows };
     }
     case "reset":
