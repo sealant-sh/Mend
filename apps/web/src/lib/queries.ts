@@ -23,6 +23,7 @@ import {
   sessionDetail,
   sessionTranscript,
 } from "#/lib/api";
+import { fetchProjectEnvironment } from "#/lib/project-environment";
 
 /**
  * One QueryClient for the workbench pages (module singleton — every workbench
@@ -77,6 +78,12 @@ export const projectMountsQuery = (id: string) =>
   queryOptions({
     queryKey: ["project", id, "mounts"],
     queryFn: () => projectMounts(id),
+  });
+
+export const projectEnvironmentQuery = (id: string) =>
+  queryOptions({
+    queryKey: ["project", id, "environment"],
+    queryFn: () => fetchProjectEnvironment(id),
   });
 
 export const projectRecipesQuery = (id: string) =>
