@@ -540,6 +540,8 @@ const sessionRunsLayer = (world: World) => {
           status: "running",
           summary: null,
           lastSeenSequence: 0n,
+          environmentRevision: input.environmentRevision ?? null,
+          environmentVariableNames: input.environmentVariableNames ?? null,
           startedAt: now(),
           settledAt: null,
           createdAt: now(),

@@ -12,6 +12,7 @@ export * from "./repos/checkpoints.ts";
 export * from "./repos/follow-ups.ts";
 export * from "./repos/inference-calls.ts";
 export * from "./repos/issues.ts";
+export * from "./repos/project-environment.ts";
 export * from "./repos/project-mounts.ts";
 export * from "./repos/project-service-recipes.ts";
 export * from "./repos/user-dotfiles.ts";

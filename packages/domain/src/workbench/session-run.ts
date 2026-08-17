@@ -22,6 +22,15 @@ export class SessionRun extends Schema.Class<SessionRun>("SessionRun")({
   summary: Schema.NullOr(Schema.String),
   /** Crash-resume cursor for this Sealant run alone. */
   lastSeenSequence: Schema.BigInt,
+  /**
+   * SAFE launch manifest of the project environment this run's workspace was created with:
+   * aggregate revision plus name-sorted variable NAMES — never values, never hashes. Lives here,
+   * not on Session, because one logical session can resume into several workspaces with different
+   * project settings. Null on both fields = explicit legacy/unknown (attached externally or
+   * created before the feature); never inferred.
+   */
+  environmentRevision: Schema.NullOr(Schema.Int),
+  environmentVariableNames: Schema.NullOr(Schema.Array(Schema.String)),
   startedAt: Schema.Date,
   settledAt: Schema.NullOr(Schema.Date),
   createdAt: Schema.Date,

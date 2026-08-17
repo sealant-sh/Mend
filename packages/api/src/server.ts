@@ -36,6 +36,7 @@ import { GithubGroupLive } from "./github.ts";
 import {
   DotfilesGroupLive,
   GitKeysGroupLive,
+  ProjectEnvironmentGroupLive,
   ProjectMountsGroupLive,
   ProjectRecipesGroupLive,
   ProjectsGroupLive,
@@ -398,6 +399,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
   Layer.provide(RunsGroupLive),
   Layer.provide(ProjectsGroupLive),
   Layer.provide(GitKeysGroupLive),
+  Layer.provide(ProjectEnvironmentGroupLive),
   Layer.provide(ProjectMountsGroupLive),
   Layer.provide(ProjectRecipesGroupLive),
   Layer.provide(ReferencesGroupLive),

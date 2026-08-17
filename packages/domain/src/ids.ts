@@ -62,3 +62,8 @@ export type SessionProcessId = typeof SessionProcessId.Type;
 
 export const SessionGitOpId = Schema.String.pipe(Schema.brand("SessionGitOpId"));
 export type SessionGitOpId = typeof SessionGitOpId.Type;
+
+export const ProjectEnvironmentVariableId = Schema.String.pipe(
+  Schema.brand("ProjectEnvironmentVariableId"),
+);
+export type ProjectEnvironmentVariableId = typeof ProjectEnvironmentVariableId.Type;

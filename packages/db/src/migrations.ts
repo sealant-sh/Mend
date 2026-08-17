@@ -686,6 +686,34 @@ const dotfilesStore = Effect.gen(function* () {
     ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS owner_user_id text`;
 });
 
+/**
+ * Project environment variables (`.plans/project-environment-variables.md`): project-owned,
+ * explicitly non-secret name/value rows plus an aggregate revision on the project. Session runs
+ * stamp the SAFE manifest they launched with — revision and name list, never values; NULL on both
+ * marks the explicit legacy/unknown state for runs created before the feature or attached
+ * externally.
+ */
+const projectEnvironment = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE projects ADD COLUMN IF NOT EXISTS environment_revision integer NOT NULL DEFAULT 0`;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS project_environment_variables (
+      id text PRIMARY KEY,
+      project_id text NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+      name text NOT NULL,
+      value text NOT NULL,
+      revision integer NOT NULL DEFAULT 1,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT project_environment_variables_project_id_name_key UNIQUE (project_id, name)
+    )`;
+  yield* sql`
+    ALTER TABLE session_runs ADD COLUMN IF NOT EXISTS environment_revision integer`;
+  yield* sql`
+    ALTER TABLE session_runs ADD COLUMN IF NOT EXISTS environment_variable_names jsonb`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -712,4 +740,5 @@ export const migrations = {
   "0022_session_git_ops": sessionGitOps,
   "0023_project_workspace_image": projectWorkspaceImage,
   "0024_dotfiles_store": dotfilesStore,
+  "0025_project_environment": projectEnvironment,
 };

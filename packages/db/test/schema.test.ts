@@ -14,6 +14,7 @@ import {
   followUps,
   inferenceCalls,
   issues,
+  projectEnvironmentVariables,
   projectMounts,
   projectReferences,
   projects,
@@ -148,6 +149,37 @@ describe("Mend Drizzle schema", () => {
     );
     expect(activeRunIndex?.config.unique).toBe(true);
     expect(activeRunIndex?.config.where).toBeDefined();
+  });
+
+  it("maps project environment variables with ownership, uniqueness, and revisions", () => {
+    const config = getTableConfig(projectEnvironmentVariables);
+    expect(config.name).toBe("project_environment_variables");
+    expect(config.columns.map((column) => column.name)).toEqual([
+      "id",
+      "project_id",
+      "name",
+      "value",
+      "revision",
+      "created_at",
+      "updated_at",
+    ]);
+    expect(config.foreignKeys[0]?.onDelete).toBe("cascade");
+    expect(config.uniqueConstraints.map((constraint) => constraint.name)).toEqual([
+      "project_environment_variables_project_id_name_key",
+    ]);
+    // The aggregate revision rides the project row; mutations bump it under the row lock.
+    const projectColumns = getTableConfig(projects).columns;
+    expect(projectColumns.find((column) => column.name === "environment_revision")?.notNull).toBe(
+      true,
+    );
+    // Session runs stamp the SAFE manifest — revision + names, both nullable (legacy/unknown).
+    const runColumns = getTableConfig(sessionRuns).columns;
+    expect(runColumns.find((column) => column.name === "environment_revision")?.notNull).toBe(
+      false,
+    );
+    expect(
+      runColumns.find((column) => column.name === "environment_variable_names")?.getSQLType(),
+    ).toBe("jsonb");
   });
 
   it("matches project mount ownership and uniqueness constraints", () => {
