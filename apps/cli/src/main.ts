@@ -7,7 +7,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { readSyncFiles, scanDotfileCandidates } from "./dotfiles.ts";
-import { formatLoadReport, parseDotenv, type EnvironmentLoadReportDto } from "./env.ts";
+import { formatLoadReport, type EnvironmentLoadReportDto } from "./env.ts";
 import {
   isComposeFile,
   proposeFromCompose,
@@ -1307,9 +1307,8 @@ const envLoad = async (config: CliConfig, args: ReadonlyArray<string>) => {
   } catch {
     return fail(`cannot read ${file} — pass a path: mend env load path/to/.env`);
   }
-  const parsed = parseDotenv(contents);
-  if (parsed.entries.length === 0 && parsed.malformed.length === 0) {
-    say(dim(`${file} has no variables`));
+  if (contents.trim() === "") {
+    say(dim(`${file} is empty`));
     return;
   }
   const project = await findProject(config, explicitProject);
@@ -1317,8 +1316,16 @@ const envLoad = async (config: CliConfig, args: ReadonlyArray<string>) => {
     config,
     "POST",
     `/projects/${project.id}/environment/load`,
-    { entries: parsed.entries.map(({ name, value }) => ({ name, value })), allSecret, secretNames },
+    { contents, allSecret, secretNames },
   );
+  if (
+    report.loaded.length === 0 &&
+    report.rejected.length === 0 &&
+    report.malformedLines.length === 0
+  ) {
+    say(dim(`${path.basename(file)} has no variables`));
+    return;
+  }
   say(`${green("✓")} loaded ${path.basename(file)} into ${project.name}`);
   for (const line of formatLoadReport(report, { dim, warn: amber })) say(line);
   const plaintextUrls = report.loaded.filter(
@@ -1331,10 +1338,10 @@ const envLoad = async (config: CliConfig, args: ReadonlyArray<string>) => {
       ),
     );
   }
-  if (parsed.malformed.length > 0) {
+  if (report.malformedLines.length > 0) {
     say(
       amber(
-        `  skipped ${parsed.malformed.length} malformed line${parsed.malformed.length === 1 ? "" : "s"}: ${parsed.malformed.join(", ")}`,
+        `  skipped ${report.malformedLines.length} malformed line${report.malformedLines.length === 1 ? "" : "s"}: ${report.malformedLines.join(", ")}`,
       ),
     );
   }

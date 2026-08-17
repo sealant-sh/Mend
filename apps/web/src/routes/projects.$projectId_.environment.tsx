@@ -12,12 +12,14 @@ import {
 import {
   createProjectEnvironmentVariable,
   createProjectSecret,
+  loadProjectEnvironment,
   removeProjectEnvironmentVariable,
   removeProjectSecret,
   updateProjectEnvironmentVariable,
   updateProjectSecret,
   type ProjectEnvironmentVariableView,
   type ProjectEnvironmentWriteResult,
+  type EnvironmentLoadReportView,
   type ProjectSecretView,
   type ProjectSecretWriteResult,
 } from "#/lib/project-environment";
@@ -87,6 +89,7 @@ function ProjectEnvironmentPage() {
         </p>
 
         <div className="mt-8 space-y-6">
+          <LoadEnvPanel projectId={projectId} />
           <WorkspaceImagePanel project={project} />
           <ConfigurationPanel projectId={projectId} />
           <SecretsPanel projectId={projectId} />
@@ -1121,5 +1124,136 @@ function SecretRow({
         </button>
       </div>
     </li>
+  );
+}
+
+// ── Load a .env: paste the whole file, one entry per key ────────────────────────────────────────
+
+/**
+ * Paste a `.env` verbatim; the server parses it and routes every key by NAME — ordinary names to
+ * Configuration, secret-shaped names to Secrets (or everything to Secrets on request). Same
+ * endpoint and report as `mend env load`, so the CLI and this panel can never disagree. The pasted
+ * text is sent once and cleared on success; the report names keys, lanes, and reasons — no value.
+ */
+function LoadEnvPanel({ projectId }: { readonly projectId: string }) {
+  const [contents, setContents] = useState("");
+  const [allSecret, setAllSecret] = useState(false);
+  const [phase, setPhase] = useState<"idle" | "loading">("idle");
+  const [report, setReport] = useState<EnvironmentLoadReportView | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = () => {
+    if (phase === "loading" || contents.trim() === "") return;
+    setPhase("loading");
+    setError(null);
+    void loadProjectEnvironment(projectId, { contents, allSecret, secretNames: [] })
+      .then(async (result) => {
+        setReport(result);
+        setContents("");
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ["project", projectId, "environment"] }),
+          queryClient.invalidateQueries({ queryKey: ["project", projectId, "secrets"] }),
+        ]);
+        return undefined;
+      })
+      .catch((cause: unknown) =>
+        setError(cause instanceof Error ? cause.message : "The load failed."),
+      )
+      .finally(() => setPhase("idle"));
+  };
+
+  const plaintextUrls = (report?.loaded ?? []).filter(
+    (entry) => entry.lane === "configuration" && /_(URL|URI|DSN)$/.test(entry.name),
+  );
+
+  return (
+    <section className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
+      <h2 className="font-sans text-sm font-semibold">Load a .env</h2>
+      <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+        Paste the whole file. Each key becomes one entry: ordinary names go to Configuration,
+        secret-shaped names (tokens, passwords, keys) go to Secrets. Existing entries with the same
+        name are replaced. Nothing is stored from lines that don’t parse.
+      </p>
+      <form
+        className="mt-4"
+        onSubmit={(event) => {
+          event.preventDefault();
+          submit();
+        }}
+      >
+        <label htmlFor="env-paste" className="sr-only">
+          .env contents
+        </label>
+        <textarea
+          id="env-paste"
+          value={contents}
+          disabled={phase === "loading"}
+          rows={6}
+          spellCheck={false}
+          autoComplete="off"
+          placeholder={"PORT=3000\nDATABASE_URL=postgres://…\nSTRIPE_API_KEY=sk_live_…"}
+          onChange={(event) => setContents(event.target.value)}
+          className="w-full resize-y rounded-xl border border-input bg-card px-3.5 py-2.5 font-mono text-[12.5px] leading-relaxed text-foreground outline-none transition-colors focus:border-[var(--sw-accent)] focus:ring-2 focus:ring-[color-mix(in_oklab,var(--sw-accent)_18%,transparent)] disabled:opacity-60"
+        />
+        <div className="mt-3 flex flex-wrap items-center gap-4">
+          <button
+            type="submit"
+            disabled={phase === "loading" || contents.trim() === ""}
+            className="rounded-xl border border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash px-3.5 py-1.5 font-sans text-xs font-medium text-foreground shadow-xs transition-colors disabled:opacity-50"
+          >
+            {phase === "loading" ? "Loading…" : "Load"}
+          </button>
+          <label className="flex items-center gap-2 font-sans text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={allSecret}
+              disabled={phase === "loading"}
+              onChange={(event) => setAllSecret(event.target.checked)}
+              className="accent-[var(--sw-accent)]"
+            />
+            Store every entry as a secret
+          </label>
+        </div>
+      </form>
+      {error === null ? null : (
+        <p className="mt-3 text-xs leading-relaxed text-danger" aria-live="polite">
+          {error}
+        </p>
+      )}
+      {report === null ? null : (
+        <div className="mt-4 border-t border-[var(--sw-faint-rule)] pt-3" aria-live="polite">
+          <p className="font-sans text-xs font-medium text-foreground">
+            Loaded {report.loaded.length} · rejected {report.rejected.length}
+            {report.malformedLines.length === 0
+              ? ""
+              : ` · skipped ${report.malformedLines.length} malformed line${report.malformedLines.length === 1 ? "" : "s"} (${report.malformedLines.join(", ")})`}
+          </p>
+          <ul className="mt-2 space-y-1">
+            {report.loaded.map((entry) => (
+              <li key={`loaded-${entry.name}`} className="font-mono text-[12px] text-ink-2">
+                {entry.name}{" "}
+                <span className="text-faint">
+                  · {entry.lane}
+                  {entry.lane === "configuration" ? " · plaintext" : ""} · {entry.action}
+                </span>
+              </li>
+            ))}
+            {report.rejected.map((entry) => (
+              <li key={`rejected-${entry.name}`} className="font-mono text-[12px] text-ink-2">
+                {entry.name} <span className="text-danger">· rejected</span>{" "}
+                <span className="font-sans text-xs text-muted-foreground">{entry.reason}</span>
+              </li>
+            ))}
+          </ul>
+          {plaintextUrls.length === 0 ? null : (
+            <p className="mt-2 text-xs leading-relaxed text-warning">
+              {plaintextUrls.map((entry) => entry.name).join(", ")} landed in plaintext
+              Configuration by name. If a value embeds a password, replace it with a secret of the
+              same name below — the plaintext copy is removed automatically.
+            </p>
+          )}
+        </div>
+      )}
+    </section>
   );
 }

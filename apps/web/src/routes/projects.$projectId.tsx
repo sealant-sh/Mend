@@ -372,10 +372,13 @@ function EnvironmentSection({ project }: { readonly project: ProjectDto }) {
       <Link
         to="/projects/$projectId/environment"
         params={{ projectId: project.id }}
-        className="mt-2 inline-block font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+        className="mt-3 inline-block rounded-xl border border-border bg-card px-3 py-1.5 font-sans text-xs font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5"
       >
-        Open environment…
+        Manage environment & secrets
       </Link>
+      <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+        Variables and secrets every session in this project starts with; paste a whole .env there.
+      </p>
     </section>
   );
 }

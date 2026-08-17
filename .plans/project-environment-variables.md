@@ -1,9 +1,9 @@
 # Mend project environment variables — implementation plan
 
-> Status: implemented across all three repos on 2026-08-17; every PR open, none merged.
-> sealantd#55 (secret env file) → sealant#174 (env) → sealant#175 (secretEnv, pins sealantd 0.10.0)
-> → mend#64 (domain/db/api) → mend#65 (UX) → mend#66 (secrets + launch wiring + `mend env load`).
-> Mend pins @sealant/sdk + api-contracts 0.19.0. Remaining after releases: the Mend-side live matrix.
+> Status: implemented across all three repos on 2026-08-17; every PR open, none merged. sealantd#55
+> (secret env file) → sealant#174 (env) → sealant#175 (secretEnv, pins sealantd 0.10.0) → mend#64
+> (domain/db/api) → mend#65 (UX) → mend#66 (secrets + launch wiring + `mend env load`). Mend pins
+> @sealant/sdk + api-contracts 0.19.0. Remaining after releases: the Mend-side live matrix.
 
 ## Audit addendum (2026-08-17)
 

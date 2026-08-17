@@ -748,26 +748,18 @@ export class EnvironmentStaleWrite extends Schema.TaggedErrorClass<EnvironmentSt
   { httpApiStatus: 409 },
 ) {}
 
-/** One dotenv entry to load. Values cross this request only; the response never carries them. */
-export class EnvironmentLoadEntry extends Schema.Class<EnvironmentLoadEntry>(
-  "EnvironmentLoadEntry",
-)({
-  name: Schema.String,
-  value: Schema.String,
-}) {}
-
 /**
- * Load a parsed `.env` into the project store (`mend env load`). Each entry is routed by NAME:
- * ordinary names to Configuration, secret-shaped names to Secrets, or everything acceptable to
- * Secrets with `forceSecret`. Create-or-replace by name — the file is the intent.
+ * Load a `.env` into the project store (`mend env load`, the "Load a .env" panel): the raw file
+ * text, parsed and routed SERVER-SIDE. Each entry goes by NAME to Configuration or Secrets — or
+ * everything acceptable to Secrets with `allSecret`, or the listed `secretNames` — create-or-
+ * replace by name; the file is the intent. Values cross this request only; the response never
+ * carries one.
  */
 export class EnvironmentLoadRequest extends Schema.Class<EnvironmentLoadRequest>(
   "EnvironmentLoadRequest",
 )({
-  entries: Schema.Array(EnvironmentLoadEntry),
-  /** Every acceptable entry goes to Secrets. */
+  contents: Schema.String,
   allSecret: Schema.Boolean,
-  /** These names go to Secrets even when their name looks ordinary (`DATABASE_URL`). */
   secretNames: Schema.Array(Schema.String),
 }) {}
 
@@ -793,6 +785,8 @@ export class EnvironmentLoadReport extends Schema.Class<EnvironmentLoadReport>(
 )({
   loaded: Schema.Array(EnvironmentLoadedEntry),
   rejected: Schema.Array(EnvironmentRejectedEntry),
+  /** Line numbers the parser could not read as `NAME=value`; nothing on them was stored. */
+  malformedLines: Schema.Array(Schema.Int),
   environmentRevision: Schema.Int,
   secretRevision: Schema.Int,
 }) {}

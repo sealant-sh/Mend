@@ -259,3 +259,49 @@ export const removeProjectSecret = async (
       body: JSON.stringify({ expectedRevision }),
     }),
   );
+
+// ── Load a whole .env ────────────────────────────────────────────────────────────────────────────
+
+export const EnvironmentLoadReportView = Schema.Struct({
+  loaded: Schema.Array(
+    Schema.Struct({
+      name: Schema.String,
+      lane: Schema.Literals(["configuration", "secret"]),
+      action: Schema.Literals(["created", "updated", "moved"]),
+    }),
+  ),
+  rejected: Schema.Array(Schema.Struct({ name: Schema.String, reason: Schema.String })),
+  malformedLines: Schema.Array(Schema.Int),
+  environmentRevision: Schema.Int,
+  secretRevision: Schema.Int,
+});
+export type EnvironmentLoadReportView = typeof EnvironmentLoadReportView.Type;
+
+const decodeLoadReport = Schema.decodeUnknownSync(EnvironmentLoadReportView);
+
+/**
+ * Post raw dotenv text; the server parses, routes each name (Configuration or Secrets), upserts,
+ * and reports per name. The text crosses this request only — nothing in the response is a value.
+ */
+export const loadProjectEnvironment = async (
+  projectId: string,
+  input: {
+    readonly contents: string;
+    readonly allSecret: boolean;
+    readonly secretNames: ReadonlyArray<string>;
+  },
+): Promise<EnvironmentLoadReportView> => {
+  const response = await fetch(`/api/projects/${projectId}/environment/load`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (response.status === 401) throw redirect({ to: "/login" });
+  if (!response.ok) {
+    throw new Error(
+      `POST /api/projects/${projectId}/environment/load responded ${response.status}`,
+    );
+  }
+  return decodeLoadReport(await response.json());
+};

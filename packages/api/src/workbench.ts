@@ -22,10 +22,11 @@ import {
   SettingsRepo,
   UserDotfilesRepo,
 } from "@mend/db";
-import { MendSettings, workspaceImagesEqual } from "@mend/domain";
+import { MendSettings, workspaceImagesEqual, type ProjectId } from "@mend/domain";
 import {
   FollowUp,
   formatProjectEnvironmentIssue,
+  parseDotenv,
   routeDotenvName,
   validateProjectSecretValue,
   type GitAuthMode,
@@ -46,7 +47,7 @@ import {
   worktreePathOf,
   type GitError,
 } from "@mend/store";
-import { Effect, Result, Stream } from "effect";
+import { Effect, Option, Result, Stream } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import {
@@ -608,6 +609,7 @@ export const ProjectEnvironmentGroupLive = HttpApiBuilder.group(
       .handle("create", ({ params, payload }) =>
         Effect.gen(function* () {
           const environment = yield* ProjectEnvironmentRepo;
+          yield* refusePlaintextOfSecret(params.id, payload.name);
           const result = yield* environment
             .create(params.id, { name: payload.name, value: payload.value })
             .pipe(
@@ -627,6 +629,7 @@ export const ProjectEnvironmentGroupLive = HttpApiBuilder.group(
       .handle("update", ({ params, payload }) =>
         Effect.gen(function* () {
           const environment = yield* ProjectEnvironmentRepo;
+          yield* refusePlaintextOfSecret(params.id, payload.name);
           const result = yield* environment
             .update(params.id, params.variableId, {
               name: payload.name,
@@ -709,7 +712,8 @@ export const ProjectEnvironmentGroupLive = HttpApiBuilder.group(
           // A repo-level rejection (limits, a name the lane refuses) becomes a per-name report
           // line, never a failed request: the rest of the file still lands.
           const reasonOf = (error: unknown): string => rejectEnvironmentAny(error);
-          for (const entry of payload.entries) {
+          const parsed = parseDotenv(payload.contents);
+          for (const entry of parsed.entries) {
             const route = routeDotenvName(entry.name);
             if (route.lane === "rejected") {
               rejected.push(
@@ -809,6 +813,7 @@ export const ProjectEnvironmentGroupLive = HttpApiBuilder.group(
           return new EnvironmentLoadReport({
             loaded,
             rejected,
+            malformedLines: parsed.malformed,
             environmentRevision: environmentSnapshot.revision,
             secretRevision: secretSnapshot.revision,
           });
@@ -851,6 +856,39 @@ const sealSecret = (value: string) =>
     return yield* cipher.encrypt(value).pipe(Effect.catchTag("SecretCipherError", Effect.die));
   });
 
+/**
+ * A name lives in exactly one lane. When a SECRET takes a name, any plaintext Configuration copy is
+ * evicted (the secret wins); best-effort, since the secret write already succeeded.
+ */
+const evictPlaintextCopy = (projectId: ProjectId, name: string) =>
+  Effect.gen(function* () {
+    const environment = yield* ProjectEnvironmentRepo;
+    const snapshot = yield* environment.snapshot(projectId).pipe(Effect.option);
+    if (Option.isNone(snapshot)) return;
+    const copy = snapshot.value.variables.find((variable) => variable.name === name);
+    if (copy === undefined) return;
+    yield* environment.remove(projectId, copy.id, copy.revision).pipe(Effect.ignore);
+  });
+
+/** …and a plaintext write may not take a name that is currently a secret (never a silent downgrade). */
+const refusePlaintextOfSecret = (projectId: ProjectId, name: string) =>
+  Effect.gen(function* () {
+    const secrets = yield* ProjectSecretsRepo;
+    const snapshot = yield* secrets.snapshot(projectId).pipe(Effect.option);
+    if (Option.isSome(snapshot) && snapshot.value.secrets.some((secret) => secret.name === name)) {
+      return yield* new EnvironmentRejected({
+        issues: [
+          {
+            field: "name",
+            rule: "name-is-secret",
+            message:
+              "This name is stored as a secret. Replace the secret, or remove it first to store the value as plaintext configuration.",
+          },
+        ],
+      });
+    }
+  });
+
 export const ProjectSecretsGroupLive = HttpApiBuilder.group(MendApi, "projectSecrets", (handlers) =>
   handlers
     .handle("get", ({ params }) =>
@@ -874,6 +912,8 @@ export const ProjectSecretsGroupLive = HttpApiBuilder.group(MendApi, "projectSec
             ProjectEnvironmentLimitError: (error) => rejectEnvironment(error),
           }),
         );
+        // A name lives in exactly one lane: the secret now owns it.
+        yield* evictPlaintextCopy(params.id, payload.name);
         return new ProjectSecretMutationResult({
           secret: result.secret,
           revision: result.revision,
@@ -905,6 +945,8 @@ export const ProjectSecretsGroupLive = HttpApiBuilder.group(MendApi, "projectSec
               ProjectEnvironmentLimitError: (error) => rejectEnvironment(error),
             }),
           );
+        // A name lives in exactly one lane: the secret now owns it.
+        yield* evictPlaintextCopy(params.id, payload.name);
         return new ProjectSecretMutationResult({
           secret: result.secret,
           revision: result.revision,
