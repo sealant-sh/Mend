@@ -28,6 +28,12 @@ export const parsePackageDraft = (draft: string) => {
   return invalid === undefined ? { packages, invalid: null } : { packages, invalid };
 };
 
+/** The image summarized the way a status line would say it — terse mono facts. */
+export const workspaceImageSummary = (image: WorkspaceImage): string =>
+  image.mode === "custom"
+    ? `custom · ${image.baseImage}`
+    : `${OS_LABELS[image.os].toLowerCase()} · ${image.packages.length} packages`;
+
 /** One setup command per line, verbatim — commands are not package names, no normalization. */
 export const parseSetupDraft = (draft: string): ReadonlyArray<string> =>
   draft
