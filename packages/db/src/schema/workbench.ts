@@ -20,6 +20,7 @@ import {
   type InferenceToolName,
   type IssueSource,
   type IssueStage,
+  type ProjectEnvironmentVariableId,
   type ProjectId,
   type ProjectMountId,
   type ReferenceId,
@@ -219,6 +220,9 @@ export const projects = pgTable("projects", {
   workspaceImage: jsonb().$type<typeof WorkspaceImage.Encoded>(),
   // Whether sessions here receive the launching user's dotfiles.
   applyDotfiles: boolean().notNull().default(true),
+  // Aggregate revision of the project's environment variables; bumped by every mutation under the
+  // project row lock, so a launch snapshot can prove it read one coherent state.
+  environmentRevision: integer().notNull().default(0),
   createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
@@ -250,6 +254,31 @@ export const projectMounts = pgTable(
   (table) => [
     unique("project_mounts_project_id_name_key").on(table.projectId, table.name),
     unique("project_mounts_project_id_host_path_key").on(table.projectId, table.hostPath),
+  ],
+);
+
+/**
+ * Project-owned, explicitly NON-SECRET environment variables
+ * (`.plans/project-environment-variables.md`): plaintext by design, read as one snapshot at each
+ * fresh workspace launch, inherited by every process the platform starts in that workspace. Stable
+ * IDs make rename an atomic update; the integer row revision drives stale-write checks.
+ */
+export const projectEnvironmentVariables = pgTable(
+  "project_environment_variables",
+  {
+    id: text().$type<ProjectEnvironmentVariableId>().primaryKey(),
+    projectId: text()
+      .$type<ProjectId>()
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text().notNull(),
+    value: text().notNull(),
+    revision: integer().notNull().default(1),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("project_environment_variables_project_id_name_key").on(table.projectId, table.name),
   ],
 );
 
@@ -379,6 +408,10 @@ export const sessionRuns = pgTable(
     status: text().$type<SessionStatus>().notNull(),
     summary: text(),
     lastSeenSequence: bigint({ mode: "bigint" }).notNull().default(0n),
+    // Safe project-environment launch manifest: aggregate revision + name-sorted variable NAMES
+    // (never values, never hashes). Both NULL = explicit legacy/unknown, never inferred.
+    environmentRevision: integer(),
+    environmentVariableNames: jsonb().$type<ReadonlyArray<string>>(),
     startedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     settledAt: timestamp({ mode: "date", withTimezone: true }),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),

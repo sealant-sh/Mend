@@ -5,9 +5,13 @@ import {
   ChangeToursRepo,
   CheckpointsRepo,
   FollowUpsRepo,
+  ProjectEnvironmentRepo,
   ProjectMountsRepo,
   ProjectServiceRecipesRepo,
   ProjectsRepo,
+  type ProjectEnvironmentDuplicateNameError,
+  type ProjectEnvironmentInvalidInputError,
+  type ProjectEnvironmentLimitError,
   ReferencesRepo,
   ReviewCommentsRepo,
   SessionChangesRepo,
@@ -43,9 +47,12 @@ import {
   CurrentUser,
   GitBridgeStatusView,
   GitKeyView,
+  EnvironmentRejected,
+  EnvironmentStaleWrite,
   MendApi,
   NotFound,
   ProjectDetail,
+  ProjectEnvironmentMutationResult,
   ProjectWorkspaceImageSaveResult,
   DotfilesSnapshotFileView,
   DotfilesSnapshotView,
@@ -531,6 +538,133 @@ export const ProjectMountsGroupLive = HttpApiBuilder.group(MendApi, "projectMoun
         yield* mounts.remove(params.mountId);
       }),
     ),
+);
+
+/** Repo write rejections → one 422 shape whose wording the settings UI shows verbatim. */
+export const rejectEnvironment = (
+  error:
+    | ProjectEnvironmentInvalidInputError
+    | ProjectEnvironmentDuplicateNameError
+    | ProjectEnvironmentLimitError,
+): EnvironmentRejected => {
+  switch (error._tag) {
+    case "ProjectEnvironmentInvalidInputError":
+      return new EnvironmentRejected({ issues: error.issues });
+    case "ProjectEnvironmentDuplicateNameError":
+      return new EnvironmentRejected({
+        issues: [
+          {
+            field: "name",
+            rule: "duplicate-name",
+            message: `A variable named ${error.name} already exists on this project.`,
+          },
+        ],
+      });
+    case "ProjectEnvironmentLimitError":
+      return new EnvironmentRejected({
+        issues: [
+          {
+            field: null,
+            rule: error.kind === "entries" ? "entry-count" : "total-size",
+            message:
+              error.kind === "entries"
+                ? `A project can have at most ${error.limit} environment variables.`
+                : `A project's environment variables can total at most ${error.limit} bytes.`,
+          },
+        ],
+      });
+  }
+};
+
+export const ProjectEnvironmentGroupLive = HttpApiBuilder.group(
+  MendApi,
+  "projectEnvironment",
+  (handlers) =>
+    handlers
+      .handle("get", ({ params }) =>
+        Effect.gen(function* () {
+          const environment = yield* ProjectEnvironmentRepo;
+          return yield* environment.snapshot(params.id).pipe(
+            Effect.mapError((error) =>
+              error._tag === "ProjectNotFoundError" ? new NotFound({ id: params.id }) : error,
+            ),
+            // A row that no longer parses is data corruption, not a client condition.
+            Effect.catchTag("ProjectEnvironmentCorruptRecordError", (error) => Effect.die(error)),
+          );
+        }),
+      )
+      .handle("create", ({ params, payload }) =>
+        Effect.gen(function* () {
+          const environment = yield* ProjectEnvironmentRepo;
+          const result = yield* environment
+            .create(params.id, { name: payload.name, value: payload.value })
+            .pipe(
+              Effect.catchTags({
+                ProjectNotFoundError: () => new NotFound({ id: params.id }),
+                ProjectEnvironmentInvalidInputError: (error) => rejectEnvironment(error),
+                ProjectEnvironmentDuplicateNameError: (error) => rejectEnvironment(error),
+                ProjectEnvironmentLimitError: (error) => rejectEnvironment(error),
+              }),
+            );
+          return new ProjectEnvironmentMutationResult({
+            variable: result.variable,
+            revision: result.revision,
+          });
+        }),
+      )
+      .handle("update", ({ params, payload }) =>
+        Effect.gen(function* () {
+          const environment = yield* ProjectEnvironmentRepo;
+          const result = yield* environment
+            .update(params.id, params.variableId, {
+              name: payload.name,
+              value: payload.value,
+              expectedRevision: payload.expectedRevision,
+            })
+            .pipe(
+              Effect.catchTags({
+                ProjectNotFoundError: () => new NotFound({ id: params.id }),
+                ProjectEnvironmentVariableNotFoundError: () =>
+                  new NotFound({ id: params.variableId }),
+                ProjectEnvironmentStaleWriteError: (error) =>
+                  new EnvironmentStaleWrite({
+                    variableId: error.variableId,
+                    currentRevision: error.currentRevision,
+                  }),
+                ProjectEnvironmentInvalidInputError: (error) => rejectEnvironment(error),
+                ProjectEnvironmentDuplicateNameError: (error) => rejectEnvironment(error),
+                ProjectEnvironmentLimitError: (error) => rejectEnvironment(error),
+              }),
+            );
+          return new ProjectEnvironmentMutationResult({
+            variable: result.variable,
+            revision: result.revision,
+          });
+        }),
+      )
+      .handle("remove", ({ params, payload }) =>
+        Effect.gen(function* () {
+          const environment = yield* ProjectEnvironmentRepo;
+          const result = yield* environment
+            .remove(params.id, params.variableId, payload.expectedRevision)
+            .pipe(
+              Effect.catchTags({
+                ProjectNotFoundError: () => new NotFound({ id: params.id }),
+                ProjectEnvironmentVariableNotFoundError: () =>
+                  new NotFound({ id: params.variableId }),
+                ProjectEnvironmentStaleWriteError: (error) =>
+                  new EnvironmentStaleWrite({
+                    variableId: error.variableId,
+                    currentRevision: error.currentRevision,
+                  }),
+              }),
+            );
+          return new ProjectEnvironmentMutationResult({
+            variable: null,
+            revision: result.revision,
+          });
+        }),
+      ),
 );
 
 export const ProjectRecipesGroupLive = HttpApiBuilder.group(MendApi, "projectRecipes", (handlers) =>

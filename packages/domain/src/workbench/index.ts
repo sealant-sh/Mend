@@ -23,6 +23,7 @@ export * from "./follow-up.ts";
 export * from "./mount.ts";
 export * from "./pass.ts";
 export * from "./project.ts";
+export * from "./project-environment.ts";
 export * from "./reference.ts";
 export * from "./review-comment.ts";
 export * from "./service-recipe.ts";

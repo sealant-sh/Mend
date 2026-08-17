@@ -13,6 +13,13 @@ export interface NewSessionRun {
   readonly sealantRunId: SealantRunId;
   readonly sealantWorkspaceId: SealantWorkspaceId;
   readonly sealantSessionId: string | null;
+  /**
+   * SAFE project-environment launch manifest: aggregate revision + name-sorted variable NAMES,
+   * never values. Omitted/null = explicit legacy/unknown (e.g. `attachRun`, which never owned
+   * workspace creation) — callers must not fabricate one.
+   */
+  readonly environmentRevision?: number | null;
+  readonly environmentVariableNames?: ReadonlyArray<string> | null;
 }
 
 export type SessionRunOutcome = "completed" | "failed" | "stopped";

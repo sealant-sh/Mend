@@ -9,6 +9,7 @@ import {
   Issue,
   IssueId,
   MendSettings,
+  ProjectEnvironmentVariableId,
   ProjectId,
   ProjectMountId,
   ReferenceId,
@@ -29,6 +30,8 @@ import {
   FollowUp,
   GitAuthMode,
   Project,
+  ProjectEnvironmentSnapshot,
+  ProjectEnvironmentVariable,
   ProjectMount,
   Reference,
   ReviewComment,
@@ -681,6 +684,108 @@ const projectMountsGroup = HttpApiGroup.make("projectMounts")
   )
   .middleware(AuthMiddleware);
 
+/** One name/value to create; ordinary configuration only — stored and returned as plaintext. */
+export class ProjectEnvironmentVariableRequest extends Schema.Class<ProjectEnvironmentVariableRequest>(
+  "ProjectEnvironmentVariableRequest",
+)({
+  name: Schema.String,
+  /** Empty string is a valid value ("set to empty"). */
+  value: Schema.String,
+}) {}
+
+/** Atomic edit/rename of one stable ID; requires the last-seen integer row revision. */
+export class ProjectEnvironmentVariableUpdateRequest extends Schema.Class<ProjectEnvironmentVariableUpdateRequest>(
+  "ProjectEnvironmentVariableUpdateRequest",
+)({
+  name: Schema.String,
+  value: Schema.String,
+  expectedRevision: Schema.Int,
+}) {}
+
+export class ProjectEnvironmentVariableRemoveRequest extends Schema.Class<ProjectEnvironmentVariableRemoveRequest>(
+  "ProjectEnvironmentVariableRemoveRequest",
+)({
+  expectedRevision: Schema.Int,
+}) {}
+
+/** A mutation's result: the touched variable (absent after delete) + new aggregate revision. */
+export class ProjectEnvironmentMutationResult extends Schema.Class<ProjectEnvironmentMutationResult>(
+  "ProjectEnvironmentMutationResult",
+)({
+  variable: Schema.NullOr(ProjectEnvironmentVariable),
+  revision: Schema.Int,
+}) {}
+
+/**
+ * A refused environment write: which field broke which rule, with the same wording the UI shows.
+ * Duplicates and per-project limits arrive as issues too (`duplicate-name`, `entry-count`,
+ * `total-size`, with `field: null` for the aggregate ones). Values never appear.
+ */
+export class EnvironmentRejected extends Schema.TaggedErrorClass<EnvironmentRejected>()(
+  "EnvironmentRejected",
+  {
+    issues: Schema.Array(
+      Schema.Struct({
+        field: Schema.NullOr(Schema.Literals(["name", "value"])),
+        rule: Schema.String,
+        message: Schema.String,
+      }),
+    ),
+  },
+  { httpApiStatus: 422 },
+) {}
+
+/** The row moved since the caller read it. The browser keeps its draft; nothing was written. */
+export class EnvironmentStaleWrite extends Schema.TaggedErrorClass<EnvironmentStaleWrite>()(
+  "EnvironmentStaleWrite",
+  {
+    variableId: Schema.String,
+    currentRevision: Schema.Int,
+  },
+  { httpApiStatus: 409 },
+) {}
+
+/**
+ * Project environment variables (`.plans/project-environment-variables.md`): project-owned,
+ * explicitly NON-SECRET configuration inherited by every process in the project's future
+ * workspaces. Values ride only this group — project detail, session detail, and events carry
+ * pointers or names, never values. Changes apply to new workspace launches (including
+ * settled-session resume); a running workspace keeps what it started with.
+ */
+const projectEnvironmentGroup = HttpApiGroup.make("projectEnvironment")
+  .add(
+    HttpApiEndpoint.get("get", "/projects/:id/environment", {
+      params: { id: ProjectId },
+      success: ProjectEnvironmentSnapshot,
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("create", "/projects/:id/environment/variables", {
+      params: { id: ProjectId },
+      payload: ProjectEnvironmentVariableRequest,
+      success: ProjectEnvironmentMutationResult,
+      error: Schema.Union([NotFound, EnvironmentRejected]),
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put("update", "/projects/:id/environment/variables/:variableId", {
+      params: { id: ProjectId, variableId: ProjectEnvironmentVariableId },
+      payload: ProjectEnvironmentVariableUpdateRequest,
+      success: ProjectEnvironmentMutationResult,
+      error: Schema.Union([NotFound, EnvironmentRejected, EnvironmentStaleWrite]),
+    }),
+  )
+  .add(
+    HttpApiEndpoint.delete("remove", "/projects/:id/environment/variables/:variableId", {
+      params: { id: ProjectId, variableId: ProjectEnvironmentVariableId },
+      payload: ProjectEnvironmentVariableRemoveRequest,
+      success: ProjectEnvironmentMutationResult,
+      error: Schema.Union([NotFound, EnvironmentStaleWrite]),
+    }),
+  )
+  .middleware(AuthMiddleware);
+
 /** Declare a Service on the project itself; command-less = adopt-only. */
 export class AddProjectServiceRecipe extends Schema.Class<AddProjectServiceRecipe>(
   "AddProjectServiceRecipe",
@@ -1166,6 +1271,7 @@ export const MendApi = HttpApi.make("mend")
   .add(runsGroup)
   .add(projectsGroup)
   .add(gitKeysGroup)
+  .add(projectEnvironmentGroup)
   .add(projectMountsGroup)
   .add(projectRecipesGroup)
   .add(referencesGroup)
