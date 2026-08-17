@@ -714,6 +714,32 @@ const projectEnvironment = Effect.gen(function* () {
     ALTER TABLE session_runs ADD COLUMN IF NOT EXISTS environment_variable_names jsonb`;
 });
 
+/**
+ * Project secrets: sealed-at-rest name/value rows (the value column holds ciphertext from the
+ * machine's secrets key, never plaintext), an aggregate revision on the project, and the safe
+ * name-only launch manifest on session runs — the secret half of the project env store.
+ */
+const projectSecretsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE projects ADD COLUMN IF NOT EXISTS secret_revision integer NOT NULL DEFAULT 0`;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS project_secrets (
+      id text PRIMARY KEY,
+      project_id text NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+      name text NOT NULL,
+      sealed_value text NOT NULL,
+      revision integer NOT NULL DEFAULT 1,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT project_secrets_project_id_name_key UNIQUE (project_id, name)
+    )`;
+  yield* sql`
+    ALTER TABLE session_runs ADD COLUMN IF NOT EXISTS secret_revision integer`;
+  yield* sql`
+    ALTER TABLE session_runs ADD COLUMN IF NOT EXISTS secret_names jsonb`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -741,4 +767,5 @@ export const migrations = {
   "0023_project_workspace_image": projectWorkspaceImage,
   "0024_dotfiles_store": dotfilesStore,
   "0025_project_environment": projectEnvironment,
+  "0026_project_secrets": projectSecretsMigration,
 };

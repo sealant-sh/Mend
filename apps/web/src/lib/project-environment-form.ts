@@ -2,6 +2,8 @@ import {
   formatProjectEnvironmentIssue,
   validateProjectEnvironmentName,
   validateProjectEnvironmentValue,
+  validateProjectSecretName,
+  validateProjectSecretValue,
 } from "@mend/domain/workbench";
 
 import type { EnvironmentIssueView, ProjectEnvironmentVariableView } from "./project-environment";
@@ -131,3 +133,33 @@ export const issuesFor = (
   issues: ReadonlyArray<EnvironmentIssueView>,
   field: "name" | "value" | null,
 ): ReadonlyArray<EnvironmentIssueView> => issues.filter((issue) => issue.field === field);
+
+/**
+ * The secret lane's pre-check: secret-shaped names are welcome, platform/account names are not;
+ * `value: null` means "keep the stored value" on an edit and skips the value check.
+ */
+export const clientSecretIssues = (input: {
+  readonly name: string;
+  readonly value: string | null;
+}): ReadonlyArray<EnvironmentIssueView> => {
+  const issues: Array<EnvironmentIssueView> = [];
+  const nameIssue = validateProjectSecretName(input.name);
+  if (nameIssue !== null) {
+    issues.push({
+      field: "name",
+      rule: nameIssue.rule,
+      message: formatProjectEnvironmentIssue(nameIssue),
+    });
+  }
+  if (input.value !== null) {
+    const valueIssue = validateProjectSecretValue(input.value);
+    if (valueIssue !== null) {
+      issues.push({
+        field: "value",
+        rule: valueIssue.rule,
+        message: formatProjectEnvironmentIssue(valueIssue),
+      });
+    }
+  }
+  return issues;
+};

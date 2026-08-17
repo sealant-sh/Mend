@@ -129,6 +129,14 @@ export class ProjectEnvironmentRepo extends Context.Service<
       | ProjectEnvironmentVariableNotFoundError
       | ProjectEnvironmentStaleWriteError
     >;
+    /** Create-or-replace by NAME (the `.env` load path); no revision check — the file is the intent. */
+    readonly upsertByName: (
+      projectId: ProjectId,
+      input: ProjectEnvironmentVariableInput,
+    ) => Effect.Effect<
+      ProjectEnvironmentMutation & { readonly action: "created" | "updated" },
+      ProjectEnvironmentWriteError
+    >;
   }
 >()("@mend/db/ProjectEnvironmentRepo") {}
 
@@ -390,6 +398,57 @@ export const ProjectEnvironmentRepoLive: Layer.Layer<
       return result;
     });
 
-    return { snapshot, create, update, remove };
+    const upsertByName = Effect.fn("ProjectEnvironmentRepo.upsertByName")(function* (
+      projectId: ProjectId,
+      input: ProjectEnvironmentVariableInput,
+    ) {
+      yield* validateInput(input);
+      const result = yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            yield* lockProject(tx, projectId);
+            const existing = yield* readAggregate(tx, projectId);
+            const current = existing.find((row) => row.name === input.name);
+            yield* checkLimits([...existing.filter((row) => row.name !== input.name), input]);
+            if (current === undefined) {
+              const [created] = yield* tx
+                .insert(projectEnvironmentVariables)
+                .values({
+                  id: ProjectEnvironmentVariableId.make(crypto.randomUUID()),
+                  projectId,
+                  name: input.name,
+                  value: input.value,
+                })
+                .returning()
+                .pipe(Effect.orDie);
+              if (created === undefined) return yield* Effect.die("env insert returned no row");
+              const revision = yield* bumpAggregate(tx, projectId);
+              return {
+                variable: new ProjectEnvironmentVariable(created),
+                revision,
+                action: "created" as const,
+              };
+            }
+            const [updated] = yield* tx
+              .update(projectEnvironmentVariables)
+              .set({ value: input.value, revision: current.revision + 1, updatedAt: new Date() })
+              .where(eq(projectEnvironmentVariables.id, current.id))
+              .returning()
+              .pipe(Effect.orDie);
+            if (updated === undefined) return yield* Effect.die("env update lost the row");
+            const revision = yield* bumpAggregate(tx, projectId);
+            return {
+              variable: new ProjectEnvironmentVariable(updated),
+              revision,
+              action: "updated" as const,
+            };
+          }),
+        )
+        .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
+      yield* notifyEvent(sqlClient, { type: "project", projectId });
+      return result;
+    });
+
+    return { snapshot, create, update, remove, upsertByName };
   }),
 );

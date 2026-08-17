@@ -3,8 +3,10 @@ import * as path from "node:path";
 
 import {
   CheckpointsRepo,
+  ProjectEnvironmentRepo,
   ProjectMountsRepo,
   ProjectNotFoundError,
+  ProjectSecretsRepo,
   ProjectsRepo,
   ReferencesRepo,
   SessionChangesRepo,
@@ -40,6 +42,7 @@ import {
   GitError,
   MendKeys,
   NO_SIGNER_MESSAGE,
+  SecretCipher,
   Store,
   sessionStatePathOf,
   sshTransportArgs,
@@ -413,6 +416,9 @@ export class SessionEngine extends Context.Service<
       const checkpoints = yield* CheckpointsRepo;
       const references = yield* ReferencesRepo;
       const projectMounts = yield* ProjectMountsRepo;
+      const projectEnvironment = yield* ProjectEnvironmentRepo;
+      const projectSecrets = yield* ProjectSecretsRepo;
+      const secretCipher = yield* SecretCipher;
       const projectRecipes = yield* ProjectServiceRecipesRepo;
       const settingsRepo = yield* SettingsRepo;
       const store = yield* Store;
@@ -1088,6 +1094,55 @@ export class SessionEngine extends Context.Service<
           repository: dotfilesRepository,
           snapshot: dotfilesSnapshot,
         }).pipe(Effect.tapError(settleDotfilesFailure));
+        // The project env store, read ONCE per fresh workspace (plan: one snapshot per launch, a
+        // live workspace is never mutated). Configuration rides `env` (plaintext by contract);
+        // Secrets are unsealed here — the only place Mend ever holds their plaintext — and ride
+        // Sealant's transient secret channel. Only revision + NAMES are stamped on the run.
+        const environment = yield* projectEnvironment.snapshot(project.id).pipe(
+          Effect.mapError(
+            (error) =>
+              new DotfilesResolveError({
+                message: `project environment could not be read: ${String(error)}`,
+              }),
+          ),
+          Effect.tapError(settleDotfilesFailure),
+        );
+        const sealedSecrets = yield* projectSecrets.sealedForLaunch(project.id).pipe(
+          Effect.mapError(
+            (error) =>
+              new DotfilesResolveError({
+                message: `project secrets could not be read: ${String(error)}`,
+              }),
+          ),
+          Effect.tapError(settleDotfilesFailure),
+        );
+        const secretEnv = yield* Effect.forEach(
+          sealedSecrets.secrets,
+          (secret) =>
+            secretCipher.decrypt(secret.sealedValue).pipe(
+              Effect.map((value) => [secret.name, value] as const),
+              // Named by KEY only: a broken/rotated machine key must never print a value.
+              Effect.mapError(
+                () =>
+                  new DotfilesResolveError({
+                    message: `secret ${secret.name} could not be unsealed with this machine's key`,
+                  }),
+              ),
+            ),
+          { concurrency: 1 },
+        ).pipe(
+          Effect.map((pairs) => Object.fromEntries(pairs)),
+          Effect.tapError(settleDotfilesFailure),
+        );
+        const env = Object.fromEntries(
+          environment.variables.map((variable) => [variable.name, variable.value] as const),
+        );
+        const environmentManifest = {
+          environmentRevision: environment.revision,
+          environmentVariableNames: environment.variables.map((variable) => variable.name),
+          secretRevision: sealedSecrets.revision,
+          secretNames: sealedSecrets.secrets.map((secret) => secret.name),
+        };
         const createWorkspace = (credentials: WorkspaceCredentialsOptions | undefined) =>
           sealant.createWorkspace({
             source: { kind: "mount", path: worktree },
@@ -1113,6 +1168,8 @@ export class SessionEngine extends Context.Service<
                 }),
             packages: workspaceImage.packages,
             services: workspaceImage.services,
+            ...(Object.keys(env).length === 0 ? {} : { env }),
+            ...(Object.keys(secretEnv).length === 0 ? {} : { secretEnv }),
             // Belt for every path that forgets to stop: the platform reaper.
             ttl: "12h",
             // Requires the platform at 0.7.1+ (sealant#114): 0.7.0 dropped every
@@ -1465,6 +1522,7 @@ export class SessionEngine extends Context.Service<
           sealantRunId,
           sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
           sealantSessionId: pty.id,
+          ...environmentManifest,
         });
         yield* sessions.setSealantIds(
           sessionId,

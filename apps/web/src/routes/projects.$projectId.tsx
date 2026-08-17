@@ -29,6 +29,7 @@ import {
   gitKeyQuery,
   projectDetailQuery,
   projectEnvironmentQuery,
+  projectSecretsQuery,
   projectMountsQuery,
   projectRecipesQuery,
   projectReferencesQuery,
@@ -337,9 +338,11 @@ function GitAccessSection({ project }: { readonly project: ProjectDto }) {
 function EnvironmentSection({ project }: { readonly project: ProjectDto }) {
   const settings = useQuery(settingsQuery);
   const environment = useQuery(projectEnvironmentQuery(project.id));
+  const secrets = useQuery(projectSecretsQuery(project.id));
   const inherited = settings.data?.workspaceImage ?? null;
   const effective = project.workspaceImage ?? inherited;
   const count = environment.data?.variables.length;
+  const secretCount = secrets.data?.secrets.length;
 
   return (
     <section>
@@ -358,14 +361,24 @@ function EnvironmentSection({ project }: { readonly project: ProjectDto }) {
           : count === 0
             ? "variables · none"
             : `variables · ${count}`}
+        <span className="text-faint">
+          {secretCount === undefined
+            ? " · secrets · …"
+            : secretCount === 0
+              ? " · secrets · none"
+              : ` · secrets · ${secretCount}`}
+        </span>
       </p>
       <Link
         to="/projects/$projectId/environment"
         params={{ projectId: project.id }}
-        className="mt-2 inline-block font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+        className="mt-3 inline-block rounded-xl border border-border bg-card px-3 py-1.5 font-sans text-xs font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5"
       >
-        Open environment…
+        Manage environment & secrets
       </Link>
+      <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+        Variables and secrets every session in this project starts with; paste a whole .env there.
+      </p>
     </section>
   );
 }

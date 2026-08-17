@@ -67,3 +67,6 @@ export const ProjectEnvironmentVariableId = Schema.String.pipe(
   Schema.brand("ProjectEnvironmentVariableId"),
 );
 export type ProjectEnvironmentVariableId = typeof ProjectEnvironmentVariableId.Type;
+
+export const ProjectSecretId = Schema.String.pipe(Schema.brand("ProjectSecretId"));
+export type ProjectSecretId = typeof ProjectSecretId.Type;

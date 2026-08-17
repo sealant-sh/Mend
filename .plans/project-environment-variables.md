@@ -1,7 +1,9 @@
 # Mend project environment variables — implementation plan
 
-> Status: audited against all three repos on 2026-08-17; implementation started (PR 1 first, then PR
-> 2 in parallel while PR 1 awaits release).
+> Status: implemented across all three repos on 2026-08-17; every PR open, none merged. sealantd#55
+> (secret env file) → sealant#174 (env) → sealant#175 (secretEnv, pins sealantd 0.10.0) → mend#64
+> (domain/db/api) → mend#65 (UX) → mend#66 (secrets + launch wiring + `mend env load`). Mend pins
+> @sealant/sdk + api-contracts 0.19.0. Remaining after releases: the Mend-side live matrix.
 
 ## Audit addendum (2026-08-17)
 
@@ -41,6 +43,44 @@ All core claims verified; line numbers cited below have drifted after the dotfil
   index enforcing one unsettled run per session.
 - **Release state**: `@sealant/sdk`/`@sealant/api-contracts` 0.18.1 published, no pending
   changesets; `sealantd:0.9.0` pin is the latest daemon release (HEAD = v0.9.0).
+
+## Scope expansion (2026-08-17, decided): the transient secret channel
+
+The non-secret stack (PRs 1/2/4) is the substrate, but the product goal is a **project env store
+teams use to start dev servers**, and a real `.env` is majority secret-shaped. Yiannis chose the
+**transient secret channel** over "honest plaintext" and "non-secret only". Design, all three repos:
+
+- **Sealantd** — new consumed key `SEALANT_SECRET_ENV_FILE`: a JSON object (`name → value`) the
+  daemon reads once at boot. Names are grammar-checked and must not be `SEALANT_`-prefixed; the set
+  merges into `child_env` **after** the passthrough env and **before** the forced identity vars
+  (`HOME`/`USER`/`LOGNAME`/`PATH`), bypassing `is_secret_key` (these are explicitly injected). Every
+  value seeds the redactor regardless of name. `config_hash` switches to hashing the sanitized
+  summary so a fingerprint in logs never covers env values. Malformed/missing file = loud boot
+  failure (parity with dotfiles archives). The daemon documents that the launcher removes the file
+  after readiness; values then live only in daemon memory and child environments.
+- **Core** — `CreateOptions.secretEnv`, validated by `parseWorkspaceSecretEnv` (same grammar/bounds
+  as `env`; reserved = every platform class **except** secret-marker; account-lookup names such as
+  `GITHUB_TOKEN` stay reserved — connected accounts own them). Never enters the blueprint, the
+  attempt/user spec snapshot, `WorkspaceDetails`, or `WorkspaceAttemptSummary`. Transport to the
+  worker: encrypted at rest with the existing credential cipher in a column on the build job,
+  decrypted just before launch, written as a `0600` JSON file into the staging root (the dotfiles
+  archive staging pattern), bind-mounted read-only at `/run/sealant/secrets`, passed as
+  `SEALANT_SECRET_ENV_FILE`; the staging file is removed once the control socket is ready and the
+  ciphertext column is cleared after the launch phase (success or failure). Platform-side restarts
+  therefore run **without** secret env (Mend always launches fresh; documented). Requires a sealantd
+  release + Core image-pin bump; e2e proves inheritance + redaction against the new image.
+- **Mend** — a separate **Secrets** set per project: `project_secrets` (name, ciphertext, integer
+  revision, unique `(project_id, name)`), encrypted at rest with a machine-local key file under
+  `~/.config/mend/keys/` (0600, generated on first use, private half never leaves the host); the API
+  is **write-only for values** (list = names + updated-at; create/replace never returns the value;
+  rename keeps the ID; delete revokes); UI = Secrets panel beside Configuration with a write-only
+  input and "value set · updated <when>"; launch passes both maps; `SessionRun` stamps names for
+  both sets. **CLI**: `mend env load [file] [--project <name>] [--secret]` parses a dotenv file,
+  routes each entry by name (ordinary → Configuration, secret-shaped → Secrets, or all → Secrets
+  with `--secret`), upserts, and prints a per-name summary + rejections with reasons — never values.
+
+Precedence with secrets: `env` (plaintext, container env, weakest) < daemon boot filter <
+`secretEnv` (daemon merge) < forced identity vars < connected-account credentials/`extra_env`.
 
 ## Context
 

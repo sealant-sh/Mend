@@ -20,6 +20,8 @@ export interface NewSessionRun {
    */
   readonly environmentRevision?: number | null;
   readonly environmentVariableNames?: ReadonlyArray<string> | null;
+  readonly secretRevision?: number | null;
+  readonly secretNames?: ReadonlyArray<string> | null;
 }
 
 export type SessionRunOutcome = "completed" | "failed" | "stopped";

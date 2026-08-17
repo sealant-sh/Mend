@@ -22,6 +22,7 @@ import {
   type IssueStage,
   type ProjectEnvironmentVariableId,
   type ProjectId,
+  type ProjectSecretId,
   type ProjectMountId,
   type ReferenceId,
   type RoutedAction,
@@ -223,6 +224,8 @@ export const projects = pgTable("projects", {
   // Aggregate revision of the project's environment variables; bumped by every mutation under the
   // project row lock, so a launch snapshot can prove it read one coherent state.
   environmentRevision: integer().notNull().default(0),
+  // Same discipline for the Secrets set.
+  secretRevision: integer().notNull().default(0),
   createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
@@ -280,6 +283,29 @@ export const projectEnvironmentVariables = pgTable(
   (table) => [
     unique("project_environment_variables_project_id_name_key").on(table.projectId, table.name),
   ],
+);
+
+/**
+ * Project-owned SECRET environment variables (`.plans/project-environment-variables.md`, "Scope
+ * expansion"): the value is sealed at rest with the machine's secrets key (`@mend/store`
+ * SecretCipher) and never returned by any API; launch decrypts once and hands the set to Sealant's
+ * transient secret channel. Same stable-ID / integer-revision discipline as the plaintext set.
+ */
+export const projectSecrets = pgTable(
+  "project_secrets",
+  {
+    id: text().$type<ProjectSecretId>().primaryKey(),
+    projectId: text()
+      .$type<ProjectId>()
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text().notNull(),
+    sealedValue: text().notNull(),
+    revision: integer().notNull().default(1),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [unique("project_secrets_project_id_name_key").on(table.projectId, table.name)],
 );
 
 export const referenceRepos = pgTable("reference_repos", {
@@ -412,6 +438,8 @@ export const sessionRuns = pgTable(
     // (never values, never hashes). Both NULL = explicit legacy/unknown, never inferred.
     environmentRevision: integer(),
     environmentVariableNames: jsonb().$type<ReadonlyArray<string>>(),
+    secretRevision: integer(),
+    secretNames: jsonb().$type<ReadonlyArray<string>>(),
     startedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     settledAt: timestamp({ mode: "date", withTimezone: true }),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),

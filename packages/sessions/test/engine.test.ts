@@ -7,8 +7,10 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   CheckpointsRepo,
   ProjectNotFoundError,
+  ProjectEnvironmentRepo,
   ProjectMountNotFoundError,
   ProjectMountsRepo,
+  ProjectSecretsRepo,
   ProjectServiceRecipesRepo,
   ProjectsRepo,
   ReferenceNotFoundError,
@@ -29,6 +31,7 @@ import {
 import {
   ChangeId,
   CheckpointId,
+  ProjectEnvironmentVariableId,
   ProjectId,
   SealantRunId,
   SealantWorkspaceId,
@@ -44,6 +47,9 @@ import {
   Change,
   Checkpoint,
   Project,
+  ProjectEnvironmentSnapshot,
+  ProjectEnvironmentVariable,
+  ProjectSecretsSnapshot,
   Session,
   SessionProcess,
   SessionRun,
@@ -58,7 +64,14 @@ import {
   SessionNotLiveError,
   SessionSocketHost,
 } from "@mend/sessions";
-import { AgentBridge, DotfilesStore, MendKeys, Store, StoreConfig } from "@mend/store";
+import {
+  AgentBridge,
+  DotfilesStore,
+  MendKeys,
+  SecretCipher,
+  Store,
+  StoreConfig,
+} from "@mend/store";
 import type { CreateOptions, InteractiveSession, Workspace } from "@sealant/sdk";
 import { Duration, Effect, Layer, Stream } from "effect";
 
@@ -377,6 +390,71 @@ const projectRecipesEmptyLayer = Layer.succeed(ProjectServiceRecipesRepo, {
   remove: () => Effect.void,
 });
 
+/**
+ * The project env store as the engine reads it at launch: Configuration rows and sealed
+ * secrets, both configurable per test so lifecycle assertions can flip them mid-world. The
+ * "cipher" is a reversible marker so a test can prove which plaintext reached createWorkspace.
+ */
+const projectEnvironmentLayer = (
+  read: () => { readonly revision: number; readonly variables: Record<string, string> },
+) =>
+  Layer.succeed(ProjectEnvironmentRepo, {
+    snapshot: (projectId) =>
+      Effect.sync(() => {
+        const current = read();
+        return new ProjectEnvironmentSnapshot({
+          revision: current.revision,
+          variables: Object.entries(current.variables)
+            .toSorted(([a], [b]) => a.localeCompare(b))
+            .map(
+              ([name, value]) =>
+                new ProjectEnvironmentVariable({
+                  id: ProjectEnvironmentVariableId.make(`env-${name}`),
+                  projectId,
+                  name,
+                  value,
+                  revision: 1,
+                  createdAt: now(),
+                  updatedAt: now(),
+                }),
+            ),
+        });
+      }),
+    create: () => Effect.die("not in test"),
+    update: () => Effect.die("not in test"),
+    remove: () => Effect.die("not in test"),
+    upsertByName: () => Effect.die("not in test"),
+  });
+const projectSecretsLayer = (
+  read: () => { readonly revision: number; readonly secrets: Record<string, string> },
+) =>
+  Layer.succeed(ProjectSecretsRepo, {
+    snapshot: () =>
+      Effect.sync(() => new ProjectSecretsSnapshot({ revision: read().revision, secrets: [] })),
+    sealedForLaunch: () =>
+      Effect.sync(() => {
+        const current = read();
+        return {
+          revision: current.revision,
+          secrets: Object.entries(current.secrets)
+            .toSorted(([a], [b]) => a.localeCompare(b))
+            .map(([name, value]) => ({ name, sealedValue: `sealed:${value}` })),
+        };
+      }),
+    create: () => Effect.die("not in test"),
+    update: () => Effect.die("not in test"),
+    remove: () => Effect.die("not in test"),
+    upsertByName: () => Effect.die("not in test"),
+  });
+const secretCipherStubLayer = Layer.succeed(SecretCipher, {
+  encrypt: (plaintext) => Effect.succeed(`sealed:${plaintext}`),
+  decrypt: (sealed) => Effect.succeed(sealed.replace(/^sealed:/, "")),
+});
+const emptyEnvironment = () => ({ revision: 0, variables: {} });
+const bigintSafe = (_key: string, value: unknown) =>
+  typeof value === "bigint" ? value.toString() : value;
+const emptySecrets = () => ({ revision: 0, secrets: {} });
+
 /** No references in these worlds — launches mount nothing extra. */
 const referencesEmptyLayer = Layer.succeed(ReferencesRepo, {
   create: () => Effect.die("not in test"),
@@ -542,6 +620,8 @@ const sessionRunsLayer = (world: World) => {
           lastSeenSequence: 0n,
           environmentRevision: input.environmentRevision ?? null,
           environmentVariableNames: input.environmentVariableNames ?? null,
+          secretRevision: input.secretRevision ?? null,
+          secretNames: input.secretNames ?? null,
           startedAt: now(),
           settledAt: null,
           createdAt: now(),
@@ -637,6 +717,14 @@ const withEngine = <A, E>(
   options: {
     readonly sealantLayer?: Layer.Layer<SealantClient>;
     readonly workspaceImage?: typeof defaultSettings.workspaceImage;
+    readonly environment?: () => {
+      readonly revision: number;
+      readonly variables: Record<string, string>;
+    };
+    readonly secrets?: () => {
+      readonly revision: number;
+      readonly secrets: Record<string, string>;
+    };
   } = {},
 ): Promise<A> => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mend-engine-test-"));
@@ -660,8 +748,15 @@ const withEngine = <A, E>(
     Layer.provide(referencesEmptyLayer),
     Layer.provide(projectMountsEmptyLayer),
     Layer.provide(projectRecipesEmptyLayer),
-    Layer.provide(userDotfilesStubLayer),
-    Layer.provide(dotfilesStoreStubLayer),
+    Layer.provide(
+      Layer.mergeAll(
+        projectEnvironmentLayer(options.environment ?? emptyEnvironment),
+        projectSecretsLayer(options.secrets ?? emptySecrets),
+        secretCipherStubLayer,
+        userDotfilesStubLayer,
+        dotfilesStoreStubLayer,
+      ),
+    ),
   );
   return Effect.runPromise(
     work(world, tmp).pipe(
@@ -988,6 +1083,164 @@ describe("SessionEngine", () => {
     );
   });
 
+  it("passes the project env store to createWorkspace ONCE and stamps only names on the run", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            ownerUserId: null,
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+
+          // Configuration rides `env`, secrets are unsealed into `secretEnv` — exactly once.
+          expect(created).toHaveLength(1);
+          expect(created[0]?.env).toEqual({ APP_MODE: "review", PORT: "3000" });
+          expect(created[0]?.secretEnv).toEqual({
+            DATABASE_URL: "postgres://u:hunter2@h/db",
+            STRIPE_API_KEY: "sk_live_x",
+          });
+          // The run's manifest carries revisions + NAMES; no value or sealed value anywhere.
+          const [run] = [...world.sessionRuns.values()];
+          expect(run?.environmentRevision).toBe(4);
+          expect(run?.environmentVariableNames).toEqual(["APP_MODE", "PORT"]);
+          expect(run?.secretRevision).toBe(2);
+          expect(run?.secretNames).toEqual(["DATABASE_URL", "STRIPE_API_KEY"]);
+          expect(JSON.stringify([...world.sessionRuns.values()], bigintSafe)).not.toContain(
+            "hunter2",
+          );
+          expect(JSON.stringify([...world.sessions.values()], bigintSafe)).not.toContain("hunter2");
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        environment: () => ({ revision: 4, variables: { PORT: "3000", APP_MODE: "review" } }),
+        secrets: () => ({
+          revision: 2,
+          secrets: { STRIPE_API_KEY: "sk_live_x", DATABASE_URL: "postgres://u:hunter2@h/db" },
+        }),
+      },
+    );
+  });
+
+  it("omits env/secretEnv from createWorkspace when the project store is empty", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            ownerUserId: null,
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          expect(created[0]?.env).toBeUndefined();
+          expect(created[0]?.secretEnv).toBeUndefined();
+          const [run] = [...world.sessionRuns.values()];
+          // An empty store is still a REAL manifest (revision 0, no names) — not legacy/unknown.
+          expect(run?.environmentRevision).toBe(0);
+          expect(run?.environmentVariableNames).toEqual([]);
+          expect(run?.secretRevision).toBe(0);
+          expect(run?.secretNames).toEqual([]);
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
+  it("a live edit never touches the running workspace; resume reads the current store", async () => {
+    const created: CreateOptions[] = [];
+    const store = { revision: 1, variables: { APP_MODE: "review" } as Record<string, string> };
+    const secrets = { revision: 1, secrets: { API_KEY: "old" } as Record<string, string> };
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            ownerUserId: null,
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          expect(created).toHaveLength(1);
+          expect(created[0]?.env).toEqual({ APP_MODE: "review" });
+          expect(created[0]?.secretEnv).toEqual({ API_KEY: "old" });
+
+          // Edit while live: a shell in the running workspace triggers no create and no re-read.
+          store.revision = 2;
+          store.variables = { APP_MODE: "prod", NEW_VAR: "1" };
+          secrets.revision = 2;
+          secrets.secrets = { API_KEY: "new" };
+          yield* engine.openShell(session.id);
+          expect(created).toHaveLength(1);
+
+          // Settle, then resume: a FRESH workspace with the CURRENT store, distinct manifest.
+          yield* engine.stop(session.id);
+          const agentExited = () =>
+            [...world.processes.values()].every((process) => process.exitedAt !== null);
+          for (let i = 0; i < 200 && !agentExited(); i++) {
+            yield* Effect.sleep(Duration.millis(10));
+          }
+          yield* engine.resumeSession(session.id, "shell");
+          expect(created).toHaveLength(2);
+          expect(created[1]?.env).toEqual({ APP_MODE: "prod", NEW_VAR: "1" });
+          expect(created[1]?.secretEnv).toEqual({ API_KEY: "new" });
+          // The fake PTY reuses one run id, so the world holds the LATEST run only — enough to
+          // prove the resumed launch stamped the current store's manifest, not the original.
+          const latest = [...world.sessionRuns.values()].at(-1);
+          expect(latest?.environmentRevision).toBe(2);
+          expect(latest?.environmentVariableNames).toEqual(["APP_MODE", "NEW_VAR"]);
+          expect(latest?.secretRevision).toBe(2);
+          expect(latest?.secretNames).toEqual(["API_KEY"]);
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        environment: () => store,
+        secrets: () => secrets,
+      },
+    );
+  });
+
+  it("attachRun records the explicit legacy/unknown manifest — never an inferred one", async () => {
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            ownerUserId: null,
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            base: null,
+          });
+          const runId = SealantRunId.make("sealant-run-attached");
+          yield* engine.attachRun(session.id, runId, SealantWorkspaceId.make("workspace-x"));
+          const run = world.sessionRuns.get(runId);
+          expect(run?.environmentRevision).toBeNull();
+          expect(run?.environmentVariableNames).toBeNull();
+          expect(run?.secretRevision).toBeNull();
+          expect(run?.secretNames).toBeNull();
+        }),
+      // The store is NOT empty here — attach must still not read it.
+      {
+        environment: () => ({ revision: 9, variables: { SHOULD_NOT_BE_READ: "x" } }),
+        secrets: () => ({ revision: 9, secrets: { SHOULD_NOT_BE_READ_EITHER: "y" } }),
+      },
+    );
+  });
+
   it("provisions: worktree, session row, checkpoint 0, change row", async () => {
     await withEngine((world, tmp) =>
       Effect.gen(function* () {
@@ -1224,10 +1477,16 @@ describe("SessionEngine", () => {
       Layer.provide(referencesEmptyLayer),
       Layer.provide(projectMountsEmptyLayer),
       Layer.provide(projectRecipesEmptyLayer),
-      Layer.provide(projectRecipesEmptyLayer),
-      Layer.provide(settingsLayer()),
-      Layer.provide(userDotfilesStubLayer),
-      Layer.provide(dotfilesStoreStubLayer),
+      Layer.provide(
+        Layer.mergeAll(
+          projectEnvironmentLayer(emptyEnvironment),
+          projectSecretsLayer(emptySecrets),
+          secretCipherStubLayer,
+          settingsLayer(),
+          userDotfilesStubLayer,
+          dotfilesStoreStubLayer,
+        ),
+      ),
     );
     // Constructing the engine runs resume().
     await Effect.runPromise(

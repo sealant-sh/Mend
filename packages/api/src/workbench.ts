@@ -7,6 +7,8 @@ import {
   FollowUpsRepo,
   ProjectEnvironmentRepo,
   ProjectMountsRepo,
+  ProjectNotFoundError,
+  ProjectSecretsRepo,
   ProjectServiceRecipesRepo,
   ProjectsRepo,
   ProjectEnvironmentDuplicateNameError,
@@ -20,8 +22,15 @@ import {
   SettingsRepo,
   UserDotfilesRepo,
 } from "@mend/db";
-import { MendSettings, workspaceImagesEqual } from "@mend/domain";
-import { FollowUp, type GitAuthMode } from "@mend/domain/workbench";
+import { MendSettings, workspaceImagesEqual, type ProjectId } from "@mend/domain";
+import {
+  FollowUp,
+  formatProjectEnvironmentIssue,
+  parseDotenv,
+  routeDotenvName,
+  validateProjectSecretValue,
+  type GitAuthMode,
+} from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
 import { SealantClient } from "@mend/sealant";
 import { RECIPE_NAME, SessionEngine, mergeRecipes, readServiceRecipes } from "@mend/sessions";
@@ -29,6 +38,7 @@ import {
   AgentBridge,
   MendKeys,
   NO_SIGNER_MESSAGE,
+  SecretCipher,
   Store,
   DotfilesStore,
   describeGitRemoteFailure,
@@ -37,7 +47,7 @@ import {
   worktreePathOf,
   type GitError,
 } from "@mend/store";
-import { Effect, Stream } from "effect";
+import { Effect, Option, Result, Stream } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import {
@@ -47,12 +57,16 @@ import {
   CurrentUser,
   GitBridgeStatusView,
   GitKeyView,
+  EnvironmentLoadedEntry,
+  EnvironmentLoadReport,
   EnvironmentRejected,
+  EnvironmentRejectedEntry,
   EnvironmentStaleWrite,
   MendApi,
   NotFound,
   ProjectDetail,
   ProjectEnvironmentMutationResult,
+  ProjectSecretMutationResult,
   ProjectWorkspaceImageSaveResult,
   DotfilesSnapshotFileView,
   DotfilesSnapshotView,
@@ -595,6 +609,7 @@ export const ProjectEnvironmentGroupLive = HttpApiBuilder.group(
       .handle("create", ({ params, payload }) =>
         Effect.gen(function* () {
           const environment = yield* ProjectEnvironmentRepo;
+          yield* refusePlaintextOfSecret(params.id, payload.name);
           const result = yield* environment
             .create(params.id, { name: payload.name, value: payload.value })
             .pipe(
@@ -614,6 +629,7 @@ export const ProjectEnvironmentGroupLive = HttpApiBuilder.group(
       .handle("update", ({ params, payload }) =>
         Effect.gen(function* () {
           const environment = yield* ProjectEnvironmentRepo;
+          yield* refusePlaintextOfSecret(params.id, payload.name);
           const result = yield* environment
             .update(params.id, params.variableId, {
               name: payload.name,
@@ -663,7 +679,299 @@ export const ProjectEnvironmentGroupLive = HttpApiBuilder.group(
             revision: result.revision,
           });
         }),
+      )
+      .handle("load", ({ params, payload }) =>
+        Effect.gen(function* () {
+          const environment = yield* ProjectEnvironmentRepo;
+          const secrets = yield* ProjectSecretsRepo;
+          const projects = yield* ProjectsRepo;
+          yield* projects
+            .byId(params.id)
+            .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+          const loaded: Array<EnvironmentLoadedEntry> = [];
+          const rejected: Array<EnvironmentRejectedEntry> = [];
+          // A name lives in exactly one lane. Loading into Secrets evicts a plaintext copy;
+          // loading a plaintext name that is already a secret is refused — never a silent
+          // downgrade from encrypted to plaintext.
+          const [existingEnvironment, existingSecrets] = yield* Effect.all([
+            environment.snapshot(params.id).pipe(
+              Effect.catchTags({
+                ProjectNotFoundError: () => new NotFound({ id: params.id }),
+                ProjectEnvironmentCorruptRecordError: (error) => Effect.die(error),
+              }),
+            ),
+            secrets
+              .snapshot(params.id)
+              .pipe(Effect.catchTag("ProjectNotFoundError", () => new NotFound({ id: params.id }))),
+          ]);
+          const secretNamesStored = new Set(existingSecrets.secrets.map((secret) => secret.name));
+          const plaintextByName = new Map(
+            existingEnvironment.variables.map((variable) => [variable.name, variable] as const),
+          );
+          const forcedSecret = new Set(payload.secretNames);
+          // A repo-level rejection (limits, a name the lane refuses) becomes a per-name report
+          // line, never a failed request: the rest of the file still lands.
+          const reasonOf = (error: unknown): string => rejectEnvironmentAny(error);
+          const parsed = parseDotenv(payload.contents);
+          for (const entry of parsed.entries) {
+            const route = routeDotenvName(entry.name);
+            if (route.lane === "rejected") {
+              rejected.push(
+                new EnvironmentRejectedEntry({
+                  name: entry.name,
+                  reason: formatProjectEnvironmentIssue(route.issue),
+                }),
+              );
+              continue;
+            }
+            const lane =
+              payload.allSecret || forcedSecret.has(entry.name) || route.lane === "secret"
+                ? "secret"
+                : "configuration";
+            if (lane === "configuration") {
+              if (secretNamesStored.has(entry.name)) {
+                rejected.push(
+                  new EnvironmentRejectedEntry({
+                    name: entry.name,
+                    reason:
+                      "Already stored as a secret. Load it with --secret to replace the secret, or remove the secret first to store it as plaintext configuration.",
+                  }),
+                );
+                continue;
+              }
+              const outcome = yield* environment
+                .upsertByName(params.id, { name: entry.name, value: entry.value })
+                .pipe(Effect.result);
+              if (Result.isSuccess(outcome)) {
+                loaded.push(
+                  new EnvironmentLoadedEntry({
+                    name: entry.name,
+                    lane,
+                    action: outcome.success.action,
+                  }),
+                );
+              } else if (outcome.failure instanceof ProjectNotFoundError) {
+                return yield* new NotFound({ id: params.id });
+              } else {
+                rejected.push(
+                  new EnvironmentRejectedEntry({
+                    name: entry.name,
+                    reason: reasonOf(outcome.failure),
+                  }),
+                );
+              }
+              continue;
+            }
+            const valueIssue = validateProjectSecretValue(entry.value);
+            if (valueIssue !== null) {
+              rejected.push(
+                new EnvironmentRejectedEntry({
+                  name: entry.name,
+                  reason: formatProjectEnvironmentIssue(valueIssue),
+                }),
+              );
+              continue;
+            }
+            const sealedValue = yield* sealSecret(entry.value);
+            const outcome = yield* secrets
+              .upsertByName(params.id, { name: entry.name, sealedValue })
+              .pipe(Effect.result);
+            if (Result.isSuccess(outcome)) {
+              // Evict a plaintext copy of the same name: the secret now owns it.
+              const plaintext = plaintextByName.get(entry.name);
+              let action: "created" | "updated" | "moved" = outcome.success.action;
+              if (plaintext !== undefined) {
+                yield* environment
+                  .remove(params.id, plaintext.id, plaintext.revision)
+                  .pipe(Effect.ignore);
+                plaintextByName.delete(entry.name);
+                action = "moved";
+              }
+              loaded.push(new EnvironmentLoadedEntry({ name: entry.name, lane, action }));
+            } else if (outcome.failure instanceof ProjectNotFoundError) {
+              return yield* new NotFound({ id: params.id });
+            } else {
+              rejected.push(
+                new EnvironmentRejectedEntry({
+                  name: entry.name,
+                  reason: reasonOf(outcome.failure),
+                }),
+              );
+            }
+          }
+          const [environmentSnapshot, secretSnapshot] = yield* Effect.all([
+            environment.snapshot(params.id).pipe(
+              Effect.catchTags({
+                ProjectNotFoundError: () => new NotFound({ id: params.id }),
+                ProjectEnvironmentCorruptRecordError: (error) => Effect.die(error),
+              }),
+            ),
+            secrets
+              .snapshot(params.id)
+              .pipe(Effect.catchTag("ProjectNotFoundError", () => new NotFound({ id: params.id }))),
+          ]);
+          return new EnvironmentLoadReport({
+            loaded,
+            rejected,
+            malformedLines: parsed.malformed,
+            environmentRevision: environmentSnapshot.revision,
+            secretRevision: secretSnapshot.revision,
+          });
+        }),
       ),
+);
+
+/** Wording for a lane-level rejection, whichever typed shape the repo raised. */
+const rejectEnvironmentAny = (error: unknown): string => {
+  if (
+    error instanceof ProjectEnvironmentDuplicateNameError ||
+    error instanceof ProjectEnvironmentLimitError ||
+    error instanceof ProjectEnvironmentInvalidInputError
+  ) {
+    return rejectEnvironment(error)
+      .issues.map((issue) => issue.message)
+      .join(" ");
+  }
+  return "The entry could not be stored.";
+};
+
+/** Value bounds for a secret, checked on the plaintext BEFORE sealing; wording shared with the UI. */
+const rejectSecretValue = (value: string) => {
+  const issue = validateProjectSecretValue(value);
+  return issue === null
+    ? Effect.void
+    : Effect.fail(
+        new EnvironmentRejected({
+          issues: [
+            { field: "value", rule: issue.rule, message: formatProjectEnvironmentIssue(issue) },
+          ],
+        }),
+      );
+};
+
+/** Seal a secret value with the machine key; a cipher failure is a server fault, not a 4xx. */
+const sealSecret = (value: string) =>
+  Effect.gen(function* () {
+    const cipher = yield* SecretCipher;
+    return yield* cipher.encrypt(value).pipe(Effect.catchTag("SecretCipherError", Effect.die));
+  });
+
+/**
+ * A name lives in exactly one lane. When a SECRET takes a name, any plaintext Configuration copy is
+ * evicted (the secret wins); best-effort, since the secret write already succeeded.
+ */
+const evictPlaintextCopy = (projectId: ProjectId, name: string) =>
+  Effect.gen(function* () {
+    const environment = yield* ProjectEnvironmentRepo;
+    const snapshot = yield* environment.snapshot(projectId).pipe(Effect.option);
+    if (Option.isNone(snapshot)) return;
+    const copy = snapshot.value.variables.find((variable) => variable.name === name);
+    if (copy === undefined) return;
+    yield* environment.remove(projectId, copy.id, copy.revision).pipe(Effect.ignore);
+  });
+
+/** …and a plaintext write may not take a name that is currently a secret (never a silent downgrade). */
+const refusePlaintextOfSecret = (projectId: ProjectId, name: string) =>
+  Effect.gen(function* () {
+    const secrets = yield* ProjectSecretsRepo;
+    const snapshot = yield* secrets.snapshot(projectId).pipe(Effect.option);
+    if (Option.isSome(snapshot) && snapshot.value.secrets.some((secret) => secret.name === name)) {
+      return yield* new EnvironmentRejected({
+        issues: [
+          {
+            field: "name",
+            rule: "name-is-secret",
+            message:
+              "This name is stored as a secret. Replace the secret, or remove it first to store the value as plaintext configuration.",
+          },
+        ],
+      });
+    }
+  });
+
+export const ProjectSecretsGroupLive = HttpApiBuilder.group(MendApi, "projectSecrets", (handlers) =>
+  handlers
+    .handle("get", ({ params }) =>
+      Effect.gen(function* () {
+        const secrets = yield* ProjectSecretsRepo;
+        return yield* secrets
+          .snapshot(params.id)
+          .pipe(Effect.catchTag("ProjectNotFoundError", () => new NotFound({ id: params.id })));
+      }),
+    )
+    .handle("create", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const secrets = yield* ProjectSecretsRepo;
+        yield* rejectSecretValue(payload.value);
+        const sealedValue = yield* sealSecret(payload.value);
+        const result = yield* secrets.create(params.id, { name: payload.name, sealedValue }).pipe(
+          Effect.catchTags({
+            ProjectNotFoundError: () => new NotFound({ id: params.id }),
+            ProjectEnvironmentInvalidInputError: (error) => rejectEnvironment(error),
+            ProjectEnvironmentDuplicateNameError: (error) => rejectEnvironment(error),
+            ProjectEnvironmentLimitError: (error) => rejectEnvironment(error),
+          }),
+        );
+        // A name lives in exactly one lane: the secret now owns it.
+        yield* evictPlaintextCopy(params.id, payload.name);
+        return new ProjectSecretMutationResult({
+          secret: result.secret,
+          revision: result.revision,
+        });
+      }),
+    )
+    .handle("update", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const secrets = yield* ProjectSecretsRepo;
+        if (payload.value !== null) yield* rejectSecretValue(payload.value);
+        const sealedValue = payload.value === null ? null : yield* sealSecret(payload.value);
+        const result = yield* secrets
+          .update(params.id, params.secretId, {
+            name: payload.name,
+            sealedValue,
+            expectedRevision: payload.expectedRevision,
+          })
+          .pipe(
+            Effect.catchTags({
+              ProjectNotFoundError: () => new NotFound({ id: params.id }),
+              ProjectSecretNotFoundError: () => new NotFound({ id: params.secretId }),
+              ProjectEnvironmentStaleWriteError: (error) =>
+                new EnvironmentStaleWrite({
+                  variableId: error.variableId,
+                  currentRevision: error.currentRevision,
+                }),
+              ProjectEnvironmentInvalidInputError: (error) => rejectEnvironment(error),
+              ProjectEnvironmentDuplicateNameError: (error) => rejectEnvironment(error),
+              ProjectEnvironmentLimitError: (error) => rejectEnvironment(error),
+            }),
+          );
+        // A name lives in exactly one lane: the secret now owns it.
+        yield* evictPlaintextCopy(params.id, payload.name);
+        return new ProjectSecretMutationResult({
+          secret: result.secret,
+          revision: result.revision,
+        });
+      }),
+    )
+    .handle("remove", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const secrets = yield* ProjectSecretsRepo;
+        const result = yield* secrets
+          .remove(params.id, params.secretId, payload.expectedRevision)
+          .pipe(
+            Effect.catchTags({
+              ProjectNotFoundError: () => new NotFound({ id: params.id }),
+              ProjectSecretNotFoundError: () => new NotFound({ id: params.secretId }),
+              ProjectEnvironmentStaleWriteError: (error) =>
+                new EnvironmentStaleWrite({
+                  variableId: error.variableId,
+                  currentRevision: error.currentRevision,
+                }),
+            }),
+          );
+        return new ProjectSecretMutationResult({ secret: null, revision: result.revision });
+      }),
+    ),
 );
 
 export const ProjectRecipesGroupLive = HttpApiBuilder.group(MendApi, "projectRecipes", (handlers) =>
