@@ -765,7 +765,8 @@ const projectEnvironmentGroup = HttpApiGroup.make("projectEnvironment")
       params: { id: ProjectId },
       payload: ProjectEnvironmentVariableRequest,
       success: ProjectEnvironmentMutationResult,
-      error: Schema.Union([NotFound, EnvironmentRejected]),
+      // An ARRAY, not Schema.Union: the union collapses per-member httpApiStatus to 500.
+      error: [NotFound, EnvironmentRejected],
     }),
   )
   .add(
@@ -773,7 +774,7 @@ const projectEnvironmentGroup = HttpApiGroup.make("projectEnvironment")
       params: { id: ProjectId, variableId: ProjectEnvironmentVariableId },
       payload: ProjectEnvironmentVariableUpdateRequest,
       success: ProjectEnvironmentMutationResult,
-      error: Schema.Union([NotFound, EnvironmentRejected, EnvironmentStaleWrite]),
+      error: [NotFound, EnvironmentRejected, EnvironmentStaleWrite],
     }),
   )
   .add(
@@ -781,7 +782,7 @@ const projectEnvironmentGroup = HttpApiGroup.make("projectEnvironment")
       params: { id: ProjectId, variableId: ProjectEnvironmentVariableId },
       payload: ProjectEnvironmentVariableRemoveRequest,
       success: ProjectEnvironmentMutationResult,
-      error: Schema.Union([NotFound, EnvironmentStaleWrite]),
+      error: [NotFound, EnvironmentStaleWrite],
     }),
   )
   .middleware(AuthMiddleware);
