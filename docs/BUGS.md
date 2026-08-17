@@ -17,7 +17,7 @@ Root cause is a config mismatch, but the UX is the bug: nothing tells the user. 
 (all three, in this order):
 
 1. **Make the harness-account fallback loud.** A missing GitHub account may stay quiet; a missing
-   *harness* account (codex/claude — the identity the agent runs as) must be surfaced: stamp on the
+   _harness_ account (codex/claude — the identity the agent runs as) must be surfaced: stamp on the
    session what actually attached, show `launched without codex account · owner <id> has none` in
    the session status line, and print the same at `mend codex`/`mend claude`.
 2. **Show connected accounts in Settings → Sealant connection** for the configured owner (the API
