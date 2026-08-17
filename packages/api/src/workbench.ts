@@ -9,9 +9,9 @@ import {
   ProjectMountsRepo,
   ProjectServiceRecipesRepo,
   ProjectsRepo,
-  type ProjectEnvironmentDuplicateNameError,
-  type ProjectEnvironmentInvalidInputError,
-  type ProjectEnvironmentLimitError,
+  ProjectEnvironmentDuplicateNameError,
+  ProjectEnvironmentInvalidInputError,
+  ProjectEnvironmentLimitError,
   ReferencesRepo,
   ReviewCommentsRepo,
   SessionChangesRepo,
@@ -547,33 +547,32 @@ export const rejectEnvironment = (
     | ProjectEnvironmentDuplicateNameError
     | ProjectEnvironmentLimitError,
 ): EnvironmentRejected => {
-  switch (error._tag) {
-    case "ProjectEnvironmentInvalidInputError":
-      return new EnvironmentRejected({ issues: error.issues });
-    case "ProjectEnvironmentDuplicateNameError":
-      return new EnvironmentRejected({
-        issues: [
-          {
-            field: "name",
-            rule: "duplicate-name",
-            message: `A variable named ${error.name} already exists on this project.`,
-          },
-        ],
-      });
-    case "ProjectEnvironmentLimitError":
-      return new EnvironmentRejected({
-        issues: [
-          {
-            field: null,
-            rule: error.kind === "entries" ? "entry-count" : "total-size",
-            message:
-              error.kind === "entries"
-                ? `A project can have at most ${error.limit} environment variables.`
-                : `A project's environment variables can total at most ${error.limit} bytes.`,
-          },
-        ],
-      });
+  if (error instanceof ProjectEnvironmentInvalidInputError) {
+    return new EnvironmentRejected({ issues: error.issues });
   }
+  if (error instanceof ProjectEnvironmentDuplicateNameError) {
+    return new EnvironmentRejected({
+      issues: [
+        {
+          field: "name",
+          rule: "duplicate-name",
+          message: `A variable named ${error.name} already exists on this project.`,
+        },
+      ],
+    });
+  }
+  return new EnvironmentRejected({
+    issues: [
+      {
+        field: null,
+        rule: error.kind === "entries" ? "entry-count" : "total-size",
+        message:
+          error.kind === "entries"
+            ? `A project can have at most ${error.limit} environment variables.`
+            : `A project's environment variables can total at most ${error.limit} bytes.`,
+      },
+    ],
+  });
 };
 
 export const ProjectEnvironmentGroupLive = HttpApiBuilder.group(
@@ -585,11 +584,11 @@ export const ProjectEnvironmentGroupLive = HttpApiBuilder.group(
         Effect.gen(function* () {
           const environment = yield* ProjectEnvironmentRepo;
           return yield* environment.snapshot(params.id).pipe(
-            Effect.mapError((error) =>
-              error._tag === "ProjectNotFoundError" ? new NotFound({ id: params.id }) : error,
-            ),
-            // A row that no longer parses is data corruption, not a client condition.
-            Effect.catchTag("ProjectEnvironmentCorruptRecordError", (error) => Effect.die(error)),
+            Effect.catchTags({
+              ProjectNotFoundError: () => new NotFound({ id: params.id }),
+              // A row that no longer parses is data corruption, not a client condition.
+              ProjectEnvironmentCorruptRecordError: (error) => Effect.die(error),
+            }),
           );
         }),
       )

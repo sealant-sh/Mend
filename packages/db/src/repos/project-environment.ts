@@ -184,6 +184,58 @@ const validateInput = (
     : Effect.fail(new ProjectEnvironmentInvalidInputError({ issues }));
 };
 
+/** Lock the owning project row; the aggregate revision rides back with the lock. */
+const lockProject = (tx: Tx, projectId: ProjectId) =>
+  Effect.gen(function* () {
+    const [row] = yield* tx
+      .select({ environmentRevision: projects.environmentRevision })
+      .from(projects)
+      .where(eq(projects.id, projectId))
+      .for("update")
+      .pipe(Effect.orDie);
+    if (row === undefined) return yield* new ProjectNotFoundError({ projectId });
+    return row.environmentRevision;
+  });
+
+const readAggregate = (tx: Tx, projectId: ProjectId) =>
+  tx
+    .select()
+    .from(projectEnvironmentVariables)
+    .where(eq(projectEnvironmentVariables.projectId, projectId))
+    .orderBy(asc(projectEnvironmentVariables.name))
+    .pipe(Effect.orDie);
+
+const checkLimits = (entries: ReadonlyArray<{ readonly name: string; readonly value: string }>) =>
+  Effect.gen(function* () {
+    if (entries.length > PROJECT_ENV_MAX_ENTRIES) {
+      return yield* new ProjectEnvironmentLimitError({
+        kind: "entries",
+        limit: PROJECT_ENV_MAX_ENTRIES,
+      });
+    }
+    if (projectEnvironmentBytes(entries) > PROJECT_ENV_MAX_TOTAL_BYTES) {
+      return yield* new ProjectEnvironmentLimitError({
+        kind: "bytes",
+        limit: PROJECT_ENV_MAX_TOTAL_BYTES,
+      });
+    }
+  });
+
+const bumpAggregate = (tx: Tx, projectId: ProjectId) =>
+  Effect.gen(function* () {
+    const [row] = yield* tx
+      .update(projects)
+      .set({
+        environmentRevision: drizzleSql`${projects.environmentRevision} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(eq(projects.id, projectId))
+      .returning({ environmentRevision: projects.environmentRevision })
+      .pipe(Effect.orDie);
+    if (row === undefined) return yield* Effect.die("aggregate bump lost the project row");
+    return row.environmentRevision;
+  });
+
 export const ProjectEnvironmentRepoLive: Layer.Layer<
   ProjectEnvironmentRepo,
   never,
@@ -193,60 +245,6 @@ export const ProjectEnvironmentRepoLive: Layer.Layer<
   Effect.gen(function* () {
     const db = yield* MendDB;
     const sqlClient = yield* PgClient.PgClient;
-
-    /** Lock the owning project row; the aggregate revision rides back with the lock. */
-    const lockProject = (tx: Tx, projectId: ProjectId) =>
-      Effect.gen(function* () {
-        const [row] = yield* tx
-          .select({ environmentRevision: projects.environmentRevision })
-          .from(projects)
-          .where(eq(projects.id, projectId))
-          .for("update")
-          .pipe(Effect.orDie);
-        if (row === undefined) return yield* new ProjectNotFoundError({ projectId });
-        return row.environmentRevision;
-      });
-
-    const readAggregate = (tx: Tx, projectId: ProjectId) =>
-      tx
-        .select()
-        .from(projectEnvironmentVariables)
-        .where(eq(projectEnvironmentVariables.projectId, projectId))
-        .orderBy(asc(projectEnvironmentVariables.name))
-        .pipe(Effect.orDie);
-
-    const checkLimits = (
-      entries: ReadonlyArray<{ readonly name: string; readonly value: string }>,
-    ) =>
-      Effect.gen(function* () {
-        if (entries.length > PROJECT_ENV_MAX_ENTRIES) {
-          return yield* new ProjectEnvironmentLimitError({
-            kind: "entries",
-            limit: PROJECT_ENV_MAX_ENTRIES,
-          });
-        }
-        if (projectEnvironmentBytes(entries) > PROJECT_ENV_MAX_TOTAL_BYTES) {
-          return yield* new ProjectEnvironmentLimitError({
-            kind: "bytes",
-            limit: PROJECT_ENV_MAX_TOTAL_BYTES,
-          });
-        }
-      });
-
-    const bumpAggregate = (tx: Tx, projectId: ProjectId) =>
-      Effect.gen(function* () {
-        const [row] = yield* tx
-          .update(projects)
-          .set({
-            environmentRevision: drizzleSql`${projects.environmentRevision} + 1`,
-            updatedAt: new Date(),
-          })
-          .where(eq(projects.id, projectId))
-          .returning({ environmentRevision: projects.environmentRevision })
-          .pipe(Effect.orDie);
-        if (row === undefined) return yield* Effect.die("aggregate bump lost the project row");
-        return row.environmentRevision;
-      });
 
     const snapshot = Effect.fn("ProjectEnvironmentRepo.snapshot")(function* (projectId: ProjectId) {
       // One statement — a LEFT JOIN sees the aggregate revision and its rows at the same MVCC
