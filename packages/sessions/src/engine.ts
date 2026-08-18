@@ -123,11 +123,19 @@ const platformShape = (
       // A shell is an open workbench: the unified image carries EVERY baked
       // agent CLI, so a shell session gets every harness's credentials — the
       // user may open either agent from inside (docs/BUGS.md 2026-08-13).
+      // The ladder degrades PER PROVIDER, never per bundle: a create that
+      // names an account the user has not connected fails whole, so a
+      // codex-only user must still reach `{ codex }` — the SDK offers no way
+      // to ask which accounts exist, so Mend probes from most to least.
       return {
         harness: codex(),
         credentialAttempts: [
           { claude: true, codex: true, github: true },
+          { codex: true, github: true },
+          { claude: true, github: true },
           { claude: true, codex: true },
+          { codex: true },
+          { claude: true },
           { github: true },
           undefined,
         ],

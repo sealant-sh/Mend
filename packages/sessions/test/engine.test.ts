@@ -833,6 +833,46 @@ describe("SessionEngine", () => {
     );
   });
 
+  it("gives a shell session the codex account when only codex is connected", async () => {
+    // The shell ladder must degrade per provider: a create naming an
+    // unconnected account fails whole, so a codex-only user used to fall all
+    // the way to `undefined` and open a shell with no agent auth at all.
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "shell",
+            label: null,
+            ownerUserId: null,
+            base: null,
+          });
+
+          yield* engine.launch(session.id, ["bash", "-i"]);
+
+          const attempts = created.map((options) => options.credentials);
+          expect(attempts.at(-1)).toEqual({ codex: true });
+          expect(attempts).toEqual([
+            { claude: true, codex: true, github: true },
+            { codex: true, github: true },
+            { claude: true, github: true },
+            { claude: true, codex: true },
+            { codex: true },
+          ]);
+        }),
+      {
+        // Only codex is connected: any bundle naming claude or github is refused.
+        sealantLayer: sealantLaunchLayer(
+          created,
+          (credentials) => credentials?.claude === true || credentials?.github === true,
+        ),
+      },
+    );
+  });
+
   it("defers the workspace stop while a shell lease is live", async () => {
     const created: CreateOptions[] = [];
     const stopped: string[] = [];
