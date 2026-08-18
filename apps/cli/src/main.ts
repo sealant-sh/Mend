@@ -1388,11 +1388,6 @@ interface ProjectSecretsDto {
   readonly secrets: ReadonlyArray<{ readonly name: string; readonly updatedAt: string }>;
 }
 
-const takeFlagValue = (args: ReadonlyArray<string>, flag: string): string | null => {
-  const at = args.indexOf(flag);
-  return at !== -1 && args[at + 1] !== undefined ? String(args[at + 1]) : null;
-};
-
 const envLoad = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const explicitProject = takeFlagValue(args, "--project");
   // `--secret` alone sends everything to Secrets; `--secret A,B` only those names (for the
