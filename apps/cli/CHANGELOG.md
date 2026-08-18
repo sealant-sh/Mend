@@ -4,6 +4,15 @@
 
 ### Minor Changes
 
+- 12f71f2: `mend env load [path]` — load a `.env` file into the project's environment store: every
+  `KEY=VALUE` line becomes an entry (comments and blank lines dropped; `export` prefixes, quoted and
+  multi-line values honoured), routed by name into Configuration or Secrets. Secret-shaped names
+  (`*_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, …) land in Secrets, as does everything when you
+  pass `--secret` (or only the names in `--secret A,B`). Secrets are encrypted at rest and never
+  printed back; the rest are plain Configuration. `mend env [show]` prints the current sets as terse
+  facts — names, revisions, byte counts, never secret values. New workspace launches receive both
+  sets (secrets through the platform's transient secret channel, redacted from the record); running
+  sessions are unaffected.
 - e7fa8de: `mend login [--url <server>]` signs the CLI in: it prompts for the email and password of
   your Mend account, exchanges them for a bearer token, and stores it (0600) in the CLI config next
   to the server url, so every other command is authenticated without setting `MEND_TOKEN`.
