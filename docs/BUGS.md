@@ -2,6 +2,27 @@
 
 Observed, reproducible, not yet fixed. Newest first; delete entries when they ship.
 
+## 2026-08-18 · Codex warns "could not find bubblewrap on PATH" in every workspace
+
+Every `mend codex` session (and `codex` from a `mend shell`) opens with the amber banner:
+
+> Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. See the
+> sandbox prerequisites: https://developers.openai.com/codex/concepts/sandboxing#prerequisites.
+> Codex will use the bundled bubblewrap in the meantime.
+
+Codex's Linux sandbox wants a system `bwrap`; the platform bakes the Codex CLI into the workspace
+image but not its prerequisite, on any family. Not blocking — the bundled bwrap works — but it is
+the first thing every new user reads, it looks like Mend is misconfigured, and it is noise on every
+record.
+
+Fix belongs in Sealant, not here: add `bubblewrap` to the baked package set next to the agent CLIs
+in `packages/workspaces/src/buildkit/buildkit-builder.ts` (`internalPackages` per family — fedora,
+arch, ubuntu `bubblewrap`; nix `bubblewrap`), or make it part of the Codex harness's install step so
+it travels with the CLI. Until that ships, a project's workspace image cannot add it either:
+`bubblewrap` is not in the portable package catalog (`package-standardization.ts`), so
+`tooling.packages` cannot name it. Filed here so onboarding remembers; the platform side is one line
+per family plus a release.
+
 ## 2026-08-18 · connected accounts silently ignored when Mend's owner id is not the web-login user
 
 **Onboarding blocker.** Sealant stores connected accounts under the user who connected them in the
