@@ -209,7 +209,9 @@ const request = async <T>(
   }
   if (response.status === 401) {
     throw new Error(
-      `unauthorized — set MEND_TOKEN (or "token" in ${CONFIG_PATH}) to a bearer token for ${config.url}`,
+      config.token === null
+        ? `not signed in to ${config.url} — run: mend login`
+        : `unauthorized at ${config.url} — the saved token was rejected; run: mend login`,
     );
   }
   const text = await response.text();
@@ -1020,6 +1022,119 @@ const serviceCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
   }
 };
 
+// ─── login: obtain and save the bearer token ────────────────────────────────
+
+const takeFlagValue = (args: ReadonlyArray<string>, flag: string): string | null => {
+  const at = args.indexOf(flag);
+  return at !== -1 && args[at + 1] !== undefined ? String(args[at + 1]) : null;
+};
+
+/**
+ * Read a password: raw-mode without echo on a TTY; on a pipe, one line through the SAME readline
+ * that read the email (a second reader would find the buffered pipe already drained).
+ */
+const readSecretLine = async (
+  prompt: string,
+  rl: { readonly question: (query: string) => Promise<string> },
+): Promise<string> => {
+  if (process.stdin.isTTY !== true) {
+    return (await rl.question(prompt)).trim();
+  }
+  process.stdout.write(prompt);
+  return new Promise((resolve) => {
+    const stdin = process.stdin;
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding("utf8");
+    let buffer = "";
+    const onData = (chunk: string) => {
+      for (const char of chunk) {
+        if (char === "\r" || char === "\n") {
+          stdin.setRawMode(false);
+          stdin.pause();
+          stdin.off("data", onData);
+          process.stdout.write("\n");
+          resolve(buffer);
+          return;
+        }
+        if (char === "\u0003") {
+          stdin.setRawMode(false);
+          process.stdout.write("\n");
+          process.exit(130);
+        }
+        if (char === "\u007f" || char === "\b") {
+          buffer = buffer.slice(0, -1);
+          continue;
+        }
+        buffer += char;
+      }
+    };
+    stdin.on("data", onData);
+  });
+};
+
+const saveCliConfig = (next: CliConfig) => {
+  fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(
+    CONFIG_PATH,
+    `${JSON.stringify({ url: next.url, token: next.token }, null, 2)}\n`,
+    { mode: 0o600 },
+  );
+  fs.chmodSync(CONFIG_PATH, 0o600);
+};
+
+/**
+ * `mend login [--url <server>] [--email <address>]`: sign in with email + password against the
+ * server's auth endpoint (the bearer plugin answers with a `set-auth-token` header) and save the
+ * token 0600 in the CLI config. Nothing else asks for a password again.
+ */
+const login = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const url = takeFlagValue(args, "--url") ?? process.env["MEND_URL"] ?? config.url;
+  const emailFlag = takeFlagValue(args, "--email");
+  const readline = await import("node:readline/promises");
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const email = emailFlag ?? (await rl.question(`email for ${url}: `)).trim();
+  if (email === "") {
+    rl.close();
+    return fail("an email is required");
+  }
+  const password = await readSecretLine("password: ", rl);
+  rl.close();
+  if (password === "") return fail("a password is required");
+
+  let response: Response;
+  try {
+    response = await fetch(`${url}/api/auth/sign-in/email`, {
+      method: "POST",
+      // better-auth's CSRF check rejects the `Origin: null` a non-browser fetch sends; the
+      // server's own URL is always a trusted origin, so present that.
+      headers: { "content-type": "application/json", origin: url },
+      body: JSON.stringify({ email, password }),
+    });
+  } catch {
+    return fail(`cannot reach the Mend server at ${url} — is it running?`);
+  }
+  if (response.status === 401 || response.status === 403 || response.status === 400) {
+    return fail(`sign-in refused for ${email} at ${url}`);
+  }
+  if (!response.ok) return fail(`sign-in failed: ${url} responded ${response.status}`);
+  const token = response.headers.get("set-auth-token");
+  if (token === null || token === "") {
+    return fail("the server signed you in but returned no bearer token (bearer plugin missing?)");
+  }
+  saveCliConfig({ ...config, url, token });
+  say(`${green("✓")} signed in as ${email} · ${dim(`token saved to ${CONFIG_PATH}`)}`);
+};
+
+const logout = (config: CliConfig) => {
+  if (!fs.existsSync(CONFIG_PATH)) {
+    say(dim("nothing saved — already signed out"));
+    return;
+  }
+  saveCliConfig({ ...config, token: null });
+  say(`${green("✓")} signed out · ${dim(`token removed from ${CONFIG_PATH}`)}`);
+};
+
 // ─── keys: the machine's Mend deploy key (docs/GIT-ACCESS.md) ───────────────
 
 /** Print the public key with the one instruction that makes it useful. */
@@ -1272,11 +1387,6 @@ interface ProjectSecretsDto {
   readonly revision: number;
   readonly secrets: ReadonlyArray<{ readonly name: string; readonly updatedAt: string }>;
 }
-
-const takeFlagValue = (args: ReadonlyArray<string>, flag: string): string | null => {
-  const at = args.indexOf(flag);
-  return at !== -1 && args[at + 1] !== undefined ? String(args[at + 1]) : null;
-};
 
 const envLoad = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const explicitProject = takeFlagValue(args, "--project");
@@ -2014,6 +2124,8 @@ const HELP = `mend — the agent workbench
   mend adopt [source] [--name <name>] [--auth ambient|mend-key|bridge]
                                         adopt a repository into the store (default: cwd; any git
                                         URL — GitHub, GitLab, self-hosted, ssh://, a local path)
+  mend login [--url <server>]           sign in with email + password; saves the token (0600)
+  mend logout                           forget the saved token
   mend keys init                        generate the machine's Mend deploy key (ed25519)
   mend keys show                        print the public key — add it as a deploy key on your git host
   mend env load [file] [--secret [A,B]] load a .env into the project: ordinary names → configuration,
@@ -2070,6 +2182,10 @@ const main = async () => {
       return shellCommand(config, rest);
     case "service":
       return serviceCommand(config, rest);
+    case "login":
+      return login(config, rest);
+    case "logout":
+      return logout(config);
     case "keys":
       return keysCommand(config, rest);
     case "dotfiles":

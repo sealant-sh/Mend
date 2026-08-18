@@ -31,12 +31,23 @@ mend sessions [--all] [--project p] [--json]
 mend status                           active sessions (alias of mend sessions)
 ```
 
+## Signing in
+
+```
+mend login                 # asks for the email + password of your Mend account, saves a token
+mend login --url https://mend.example.com --email you@example.com
+mend logout
+```
+
+The token is stored 0600 in the CLI config below; every command uses it until `mend logout`. On a
+dev instance with `MEND_STATIC_TOKEN` set, `MEND_TOKEN=<that value>` also works.
+
 ## Configuration
 
 | Source                    | What                                                                                      |
 | ------------------------- | ----------------------------------------------------------------------------------------- |
 | `MEND_URL`                | The Mend server (default `http://localhost:3105`)                                         |
-| `MEND_TOKEN`              | Bearer token for that server                                                              |
+| `MEND_TOKEN`              | Bearer token for that server (normally written by `mend login`)                           |
 | `MEND_DETACH_KEY`         | Set to `none` when an outer multiplexer detaches                                          |
 | `~/.config/mend/cli.json` | `{ "url": ..., "token": ... }` — env vars win; a pre-XDG `~/.mend/cli.json` keeps working |
 
