@@ -505,6 +505,8 @@ export type WorkspaceImageDto =
 export interface DotfilesRepositoryDto {
   readonly url: string;
   readonly ref: string | null;
+  /** Null archives the repo root; otherwise the archive is re-rooted at this directory. */
+  readonly subdirectory: string | null;
   readonly manager: "auto" | "chezmoi" | "stow" | "copy";
   readonly bootstrap: boolean;
 }

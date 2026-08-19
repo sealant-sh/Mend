@@ -108,7 +108,11 @@ const buildRepositoryArchive = (
             }),
         ),
       );
-      const archive = yield* run("git", ["archive", "--format=tar.gz", "HEAD"], {
+      // `HEAD:<subdirectory>` re-roots the archive: the subtree's CONTENTS land at ~, so a repo
+      // whose home mirror lives in a subfolder (`dots/`) applies without restructuring. A wrong
+      // directory fails here with git's own message (readable, launch fails loudly).
+      const treeish = repository.subdirectory === null ? "HEAD" : `HEAD:${repository.subdirectory}`;
+      const archive = yield* run("git", ["archive", "--format=tar.gz", treeish], {
         cwd: checkout,
       });
       const capped = yield* capArchive(archive, `the dotfiles repo ${repository.url}`);

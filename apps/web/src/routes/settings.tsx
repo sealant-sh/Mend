@@ -491,6 +491,7 @@ function DotfilesPanel() {
   const savedRepo = dotfiles.repository;
   const [repoUrl, setRepoUrl] = useState(savedRepo?.url ?? "");
   const [repoRef, setRepoRef] = useState(savedRepo?.ref ?? "");
+  const [repoSubdir, setRepoSubdir] = useState(savedRepo?.subdirectory ?? "");
   const [bootstrap, setBootstrap] = useState(savedRepo?.bootstrap ?? true);
   const [staged, setStaged] = useState<ReadonlyArray<StagedDotfile>>([]);
   const [busy, setBusy] = useState<"repo" | "snapshot" | null>(null);
@@ -503,6 +504,7 @@ function DotfilesPanel() {
       : {
           url: repoUrl.trim(),
           ref: repoRef.trim() === "" ? null : repoRef.trim(),
+          subdirectory: repoSubdir.trim() === "" ? null : repoSubdir.trim(),
           manager: savedRepo?.manager ?? "auto",
           bootstrap,
         };
@@ -512,6 +514,7 @@ function DotfilesPanel() {
     queryClient.setQueryData<DotfilesDto>(dotfilesQuery.queryKey, next);
     setRepoUrl(next.repository?.url ?? "");
     setRepoRef(next.repository?.ref ?? "");
+    setRepoSubdir(next.repository?.subdirectory ?? "");
     setBootstrap(next.repository?.bootstrap ?? true);
     setSaved(which);
   };
@@ -599,7 +602,9 @@ function DotfilesPanel() {
         </label>
         <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
           Cloned by this server at every launch — chezmoi and stow layouts are detected, anything
-          else is copied into the home directory. Leave empty for none.
+          else is copied into the home directory. If the home tree lives in a subfolder (a{" "}
+          <span className="font-mono text-xs text-ink-2">dots/</span> directory, a stow package),
+          name it and only that subtree applies. Leave empty for none.
         </p>
         <input
           id="dotfiles-repo-url"
@@ -628,6 +633,21 @@ function DotfilesPanel() {
                   onChange={(event) => {
                     setSaved(null);
                     setRepoRef(event.target.value);
+                  }}
+                  className="w-36 rounded-lg border border-input bg-card px-2.5 py-1.5 font-mono text-xs text-foreground outline-none transition-colors focus:border-[var(--sw-accent)] disabled:opacity-60"
+                />
+              </label>
+              <label className="flex items-center gap-2 text-[13px] text-muted-foreground">
+                <span>Subdirectory</span>
+                <input
+                  type="text"
+                  value={repoSubdir}
+                  disabled={pending}
+                  placeholder="repo root"
+                  spellCheck={false}
+                  onChange={(event) => {
+                    setSaved(null);
+                    setRepoSubdir(event.target.value);
                   }}
                   className="w-36 rounded-lg border border-input bg-card px-2.5 py-1.5 font-mono text-xs text-foreground outline-none transition-colors focus:border-[var(--sw-accent)] disabled:opacity-60"
                 />

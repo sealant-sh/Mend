@@ -86,8 +86,20 @@ describe("MendSettings workspace image profile", () => {
     expect(decoded).toEqual({
       url: "git@github.com:acme/dotfiles.git",
       ref: null,
+      subdirectory: null,
       manager: "auto",
       bootstrap: true,
     });
+  });
+
+  it("accepts a repo-relative subdirectory and rejects escapes", () => {
+    const decode = Schema.decodeUnknownSync(DotfilesRepository);
+    const base = { url: "git@github.com:acme/dotfiles.git" };
+    expect(decode({ ...base, subdirectory: "dots" }).subdirectory).toBe("dots");
+    expect(decode({ ...base, subdirectory: "home/dots" }).subdirectory).toBe("home/dots");
+    // The value lands in `git archive HEAD:<subdirectory>` — nothing that escapes the repo.
+    for (const bad of ["", "/dots", "dots/", "../dots", "dots/../..", "a//b", ".", "d:o"]) {
+      expect(() => decode({ ...base, subdirectory: bad })).toThrow();
+    }
   });
 });

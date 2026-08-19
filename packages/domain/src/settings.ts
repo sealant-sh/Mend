@@ -122,10 +122,42 @@ export type DotfilesManager = typeof DotfilesManager.Type;
  * Dotfiles are identity, not instance configuration — this rides per-user (see the dotfiles
  * store), never in the global settings document.
  */
+/**
+ * A repo-relative directory: the archive is re-rooted there, so a repo whose home tree lives in
+ * a subfolder (`dots/`, a stow package, a `.chezmoiroot`-style layout) applies correctly. The
+ * grammar stays deliberately narrow — path segments only, since the value lands in
+ * `git archive HEAD:<subdirectory>`.
+ */
+export const DotfilesSubdirectory = Schema.String.pipe(
+  Schema.check(
+    Schema.makeFilter((value: string) => {
+      const wellFormed =
+        value.length > 0 &&
+        !value.startsWith("/") &&
+        !value.endsWith("/") &&
+        !value.includes("\\") &&
+        !value.includes(":") &&
+        value
+          .split("/")
+          .every((segment) => segment.length > 0 && segment !== ".." && segment !== ".");
+      return wellFormed
+        ? undefined
+        : "a repo-relative directory like `dots` or `home/dots` — no leading slash, no `..`";
+    }),
+  ),
+);
+
 export const DotfilesRepository = Schema.Struct({
   url: Schema.String,
   /** Null clones the remote's default branch — never assumed to be `main`. */
   ref: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  /**
+   * Null archives the repo root. Otherwise the archive is re-rooted at this directory, so its
+   * contents — not the directory itself — land in `~`.
+   */
+  subdirectory: Schema.NullOr(DotfilesSubdirectory).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
   /** How the tree applies in the workspace; auto detects chezmoi/stow layouts, else copies. */
   manager: DotfilesManager.pipe(Schema.withDecodingDefaultKey(Effect.succeed("auto" as const))),
   /** Run the repo's `./install.sh` (when present) after applying. */
@@ -141,6 +173,7 @@ export const dotfilesRepositoriesEqual = (
   return (
     left.url === right.url &&
     left.ref === right.ref &&
+    left.subdirectory === right.subdirectory &&
     left.manager === right.manager &&
     left.bootstrap === right.bootstrap
   );

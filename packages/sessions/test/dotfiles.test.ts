@@ -47,7 +47,13 @@ describe("resolveDotfilesArchives", () => {
     const archives = await Effect.runPromise(
       resolveDotfilesArchives({
         // A non-"main" default branch: the ref-less clone must take the remote's default.
-        repository: { url: origin, ref: null, manager: "auto", bootstrap: true },
+        repository: {
+          url: origin,
+          ref: null,
+          subdirectory: null,
+          manager: "auto",
+          bootstrap: true,
+        },
         snapshot: { sha: "abc123", data: snapshotData },
       }),
     );
@@ -61,12 +67,93 @@ describe("resolveDotfilesArchives", () => {
     expect(archives[1]).toEqual({ data: snapshotData, manager: "copy", bootstrap: false });
   });
 
+  it("re-roots the archive at the configured subdirectory", async () => {
+    const origin = tmp("mend-dotfiles-subdir-origin-");
+    execFileSync("git", ["init", "--initial-branch", "trunk"], { cwd: origin });
+    // The common shape: a home mirror in a subfolder, surrounded by repo clutter.
+    fs.mkdirSync(path.join(origin, "dots", ".config", "zsh"), { recursive: true });
+    fs.writeFileSync(path.join(origin, "dots", ".zshenv"), "export ZDOTDIR=~/.config/zsh\n");
+    fs.writeFileSync(path.join(origin, "dots", ".config", "zsh", ".zshrc"), "setopt AUTOCD\n");
+    fs.writeFileSync(path.join(origin, "README.md"), "not a dotfile\n");
+    fs.writeFileSync(path.join(origin, "install.sh"), "#!/bin/sh\n");
+    execFileSync("git", ["add", "."], { cwd: origin });
+    execFileSync("git", ["commit", "-m", "init"], {
+      cwd: origin,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "t",
+        GIT_AUTHOR_EMAIL: "t@t",
+        GIT_COMMITTER_NAME: "t",
+        GIT_COMMITTER_EMAIL: "t@t",
+      },
+    });
+
+    const archives = await Effect.runPromise(
+      resolveDotfilesArchives({
+        repository: {
+          url: origin,
+          ref: null,
+          subdirectory: "dots",
+          manager: "auto",
+          bootstrap: true,
+        },
+        snapshot: null,
+      }),
+    );
+    const out = extract(archives[0]?.data ?? "");
+    // The subtree's CONTENTS are the archive root — ready to land at ~.
+    expect(fs.readFileSync(path.join(out, ".zshenv"), "utf8")).toBe(
+      "export ZDOTDIR=~/.config/zsh\n",
+    );
+    expect(fs.readFileSync(path.join(out, ".config", "zsh", ".zshrc"), "utf8")).toBe(
+      "setopt AUTOCD\n",
+    );
+    // Root clutter stays behind — including the desktop-oriented bootstrap.
+    expect(fs.existsSync(path.join(out, "README.md"))).toBe(false);
+    expect(fs.existsSync(path.join(out, "install.sh"))).toBe(false);
+    expect(fs.existsSync(path.join(out, "dots"))).toBe(false);
+  });
+
+  it("fails readable when the subdirectory does not exist in the repo", async () => {
+    const origin = tmp("mend-dotfiles-badsubdir-origin-");
+    execFileSync("git", ["init", "--initial-branch", "trunk"], { cwd: origin });
+    fs.writeFileSync(path.join(origin, ".vimrc"), "set nocompatible\n");
+    execFileSync("git", ["add", "."], { cwd: origin });
+    execFileSync("git", ["commit", "-m", "init"], {
+      cwd: origin,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "t",
+        GIT_AUTHOR_EMAIL: "t@t",
+        GIT_COMMITTER_NAME: "t",
+        GIT_COMMITTER_EMAIL: "t@t",
+      },
+    });
+
+    const result = await Effect.runPromise(
+      resolveDotfilesArchives({
+        repository: {
+          url: origin,
+          ref: null,
+          subdirectory: "does-not-exist",
+          manager: "auto",
+          bootstrap: true,
+        },
+        snapshot: null,
+      }).pipe(Effect.result),
+    );
+    expect(Result.isFailure(result)).toBe(true);
+    expect(String(result)).toMatch(/git archive/);
+    expect(String(result)).toMatch(/does-not-exist/);
+  });
+
   it("fails readable when the repo cannot be cloned", async () => {
     const result = await Effect.runPromise(
       resolveDotfilesArchives({
         repository: {
           url: path.join(os.tmpdir(), "mend-dotfiles-does-not-exist"),
           ref: null,
+          subdirectory: null,
           manager: "auto",
           bootstrap: true,
         },
