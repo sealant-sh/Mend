@@ -11,13 +11,13 @@ export class NameSessionJob extends Schema.Class<NameSessionJob>("NameSessionJob
 
 /**
  * Cheap models per subscription arm. The naming pass is mechanical, so it runs
- * on the cheapest model the user's connected account offers; overridable per
+ * on the cheapest model the user's connected account offers (haiku · GPT-5.6 Luna); overridable per
  * arm via env. Note the codex arm resolves only once the platform serves codex
  * inference (sealant#181) — until then the fallback fails like any other
  * account-less attempt and the session simply stays unnamed.
  */
 const CLAUDE_NAMING_MODEL = "claude-haiku-4-5";
-const CODEX_NAMING_MODEL = "lunar";
+const CODEX_NAMING_MODEL = "gpt-5.6-luna";
 
 const SYSTEM = `You name coding sessions. Given the session's first prompt, answer with a short label a developer can pick out of a list of sessions.
 

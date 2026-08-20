@@ -75,7 +75,7 @@ describe("SessionNamer", () => {
 
       expect(label).toBe("reaper retry storm");
       expect(requests).toHaveLength(2);
-      expect(requests[1]).toEqual(expect.objectContaining({ provider: "codex", model: "lunar" }));
+      expect(requests[1]).toEqual(expect.objectContaining({ provider: "codex", model: "gpt-5.6-luna" }));
     });
   });
 
