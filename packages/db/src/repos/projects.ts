@@ -36,7 +36,11 @@ export class ProjectsRepo extends Context.Service<
     /** The project's stance on the review-automation switches (cascade: settings → project). */
     readonly setAutomation: (
       id: ProjectId,
-      choices: { readonly autoTour: AutomationChoice; readonly autoSuggest: AutomationChoice },
+      choices: {
+        readonly autoTour: AutomationChoice;
+        readonly autoSuggest: AutomationChoice;
+        readonly autoName: AutomationChoice;
+      },
     ) => Effect.Effect<Project, ProjectNotFoundError>;
     /** How host-side git authenticates to this project's remote (docs/GIT-ACCESS.md). */
     readonly setGitAuthMode: (
@@ -122,7 +126,11 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
 
       const setAutomation = Effect.fn("ProjectsRepo.setAutomation")(function* (
         id: ProjectId,
-        choices: { readonly autoTour: AutomationChoice; readonly autoSuggest: AutomationChoice },
+        choices: {
+          readonly autoTour: AutomationChoice;
+          readonly autoSuggest: AutomationChoice;
+          readonly autoName: AutomationChoice;
+        },
       ) {
         const [row] = yield* db
           .update(projects)

@@ -98,6 +98,15 @@ describe("Mend Drizzle schema", () => {
     }
   });
 
+  it("maps the automation cascade columns with 'inherit' defaults", () => {
+    const projectColumns = getTableConfig(projects).columns;
+    for (const name of ["auto_tour", "auto_suggest", "auto_name"]) {
+      const column = projectColumns.find((candidate) => candidate.name === name);
+      expect(column?.notNull, name).toBe(true);
+      expect(column?.default, name).toBe("inherit");
+    }
+  });
+
   it("maps the session graph to the existing PostgreSQL table and column names", () => {
     expect(
       [projects, contextSnapshots, agentSessions, sessionRuns, sessionChanges, checkpoints].map(

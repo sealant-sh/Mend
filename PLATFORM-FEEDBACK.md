@@ -7,6 +7,25 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-08-20 · 0.19.0 · Codex inference: naming sessions on whichever sub the user has
+
+**Implemented at the source** — [sealant#181](https://github.com/sealant-sh/sealant/pull/181)
+(pending review/release): a codex inference engine (official Codex CLI against a private
+per-invocation `CODEX_HOME`, rotated auth.json persisted newest-wins), provider routing, and the
+lifted "Codex inference is not supported yet" 400. Tool-less v1: caller tools stay claude-only.
+
+- **Needed:** session auto-naming runs a cheap mechanical pass on the user's own sub — Haiku over a
+  connected claude account, the cheap OpenAI model over a connected codex account. Mend now sets
+  `model` on `inference.respond` (always plumbed, never used before) and picks the provider per
+  attempt: claude first, codex when no usable claude account exists.
+- **Today (0.19.0):** `credentials.codex` is accepted by the SDK types but rejected with a 400 at
+  the endpoint; only a claude engine exists. Mend's codex arm compiles and fails like any
+  account-less attempt — sessions of codex-only users stay unnamed until the platform release.
+- **Suggested (still open):** an account-existence probe. The SDK offers no way to ask which
+  providers have connected accounts, so Mend infers "no claude account" from error text
+  (`connected account` / `reconnect`) — a listing (or a structured error code on the inference
+  surface) would make the fallback exact.
+
 ## 2026-08-20 · 0.19.0 · Warm pools must pre-bind everything: no standby workspaces, no re-pointable mounts
 
 - **Needed:** instant session attach. Mend now keeps a per-project pool of ready workspaces ("hot

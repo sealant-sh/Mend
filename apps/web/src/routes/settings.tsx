@@ -812,7 +812,7 @@ function DotfilesPanel() {
 }
 
 const AUTOMATION_ROWS: ReadonlyArray<{
-  readonly key: "autoTour" | "autoSuggest";
+  readonly key: "autoTour" | "autoSuggest" | "autoName";
   readonly label: string;
   readonly detail: string;
 }> = [
@@ -828,6 +828,12 @@ const AUTOMATION_ROWS: ReadonlyArray<{
     detail:
       "Runs at session settle. Drafts replacement suggestions only for concrete defects; most changes produce none.",
   },
+  {
+    key: "autoName",
+    label: "Name the session",
+    detail:
+      "Runs after the first prompt. The session gets a short label in lists while it still runs; a typed label always wins.",
+  },
 ];
 
 /**
@@ -836,9 +842,9 @@ const AUTOMATION_ROWS: ReadonlyArray<{
  */
 function ReviewAutomationPanel() {
   const settings = useSuspenseQuery(settingsQuery).data;
-  const [pending, setPending] = useState<"autoTour" | "autoSuggest" | null>(null);
+  const [pending, setPending] = useState<"autoTour" | "autoSuggest" | "autoName" | null>(null);
 
-  const toggle = (key: "autoTour" | "autoSuggest", value: boolean) => {
+  const toggle = (key: "autoTour" | "autoSuggest" | "autoName", value: boolean) => {
     if (settings[key] === value) return;
     setPending(key);
     const next: SettingsDto = { ...settings, [key]: value };
@@ -851,8 +857,8 @@ function ReviewAutomationPanel() {
     <section className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
       <h2 className="font-sans text-sm font-semibold">Review automation</h2>
       <p className="mt-1 text-sm text-muted-foreground">
-        What runs when a session settles. Defaults for every project; a project can override either
-        switch on its own page.
+        The machine-side passes around a session. Defaults for every project; a project can override
+        any switch on its own page.
       </p>
       <div className="mt-5 space-y-5 border-t border-[var(--sw-faint-rule)] pt-5">
         {AUTOMATION_ROWS.map((row) => (

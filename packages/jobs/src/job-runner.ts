@@ -17,6 +17,10 @@ export interface JobSpec {
    */
   readonly idempotencyKey?: string;
   readonly retryLimit?: number;
+  /** Delay before the first attempt runs (e.g. give a fresh session time to receive a prompt). */
+  readonly startAfterSeconds?: number;
+  /** Base retry delay; with the engine's exponential backoff this spaces retries out over minutes. */
+  readonly retryDelaySeconds?: number;
 }
 
 /**
@@ -76,6 +80,8 @@ export class JobRunner extends Context.Service<
           try: () =>
             boss.send(job.name, job.payload, {
               ...(job.idempotencyKey === undefined ? {} : { singletonKey: job.idempotencyKey }),
+              ...(job.startAfterSeconds === undefined ? {} : { startAfter: job.startAfterSeconds }),
+              ...(job.retryDelaySeconds === undefined ? {} : { retryDelay: job.retryDelaySeconds }),
               retryLimit: job.retryLimit ?? 3,
               retryBackoff: true,
             }),

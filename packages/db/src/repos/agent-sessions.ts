@@ -99,6 +99,8 @@ export class SessionsRepo extends Context.Service<
     /** A delivered follow-up resumes the settled session — same row, same worktree, same change. */
     readonly reopen: (id: SessionId) => Effect.Effect<void>;
     readonly setLabel: (id: SessionId, label: string | null) => Effect.Effect<void>;
+    /** The auto-namer's write: fills the label only while null; true when the write landed. */
+    readonly setLabelIfUnset: (id: SessionId, label: string) => Effect.Effect<boolean>;
     /** Hard delete — comments, checkpoints, follow-ups, change and tour cascade. */
     readonly remove: (id: SessionId) => Effect.Effect<void>;
     readonly setHarness: (id: SessionId, harness: string) => Effect.Effect<void>;
@@ -371,6 +373,26 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         yield* notify(id);
       });
 
+      /**
+       * The auto-namer's write: fills the label ONLY while it is still null,
+       * so a user-typed label (or an earlier naming) always wins the race.
+       * Returns whether the write landed.
+       */
+      const setLabelIfUnset = Effect.fn("SessionsRepo.setLabelIfUnset")(function* (
+        id: SessionId,
+        label: string,
+      ) {
+        const rows = yield* db
+          .update(agentSessions)
+          .set({ label, updatedAt: new Date() })
+          .where(and(eq(agentSessions.id, id), isNull(agentSessions.label)))
+          .returning({ id: agentSessions.id })
+          .pipe(Effect.orDie);
+        if (rows.length === 0) return false;
+        yield* notify(id);
+        return true;
+      });
+
       const remove = Effect.fn("SessionsRepo.remove")(function* (id: SessionId) {
         const [row] = yield* db
           .delete(agentSessions)
@@ -423,6 +445,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         settle,
         reopen,
         setLabel,
+        setLabelIfUnset,
         remove,
         setHarness,
       };

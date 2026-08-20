@@ -18,6 +18,9 @@ import {
   BriefsRepoLive,
   ChangePassesRepo,
   ChangePassesRepoLive,
+  ProjectsRepo,
+  SessionsRepo,
+  SettingsRepo,
   ChangesRepoLive,
   ChangeToursRepoLive,
   CheckpointsRepoLive,
@@ -46,6 +49,7 @@ import {
   UserDotfilesRepoLive,
 } from "@mend/db";
 import type { ChangeId } from "@mend/domain";
+import { resolveAutomation } from "@mend/domain/workbench";
 import {
   BriefCompiler,
   ChangeReader,
@@ -57,9 +61,12 @@ import {
   CompileBriefJob,
   FailureSummarizer,
   liveToolsLayer,
+  NameSessionJob,
   ReadChangeJob,
   RouteCommentJob,
   sealantProviderLayer,
+  SessionNamer,
+  SessionNamerLive,
   SuggestChangeJob,
   SummarizeFailureJob,
   TourComposer,
@@ -239,6 +246,10 @@ const decodeRouteCommentJob = Schema.decodeUnknownEffect(RouteCommentJob);
 const decodeReadChangeJob = Schema.decodeUnknownEffect(ReadChangeJob);
 const decodeComposeTourJob = Schema.decodeUnknownEffect(ComposeTourJob);
 const decodeSuggestChangeJob = Schema.decodeUnknownEffect(SuggestChangeJob);
+const decodeNameSessionJob = Schema.decodeUnknownEffect(NameSessionJob);
+
+/** Harnesses whose native transcript the engine can parse for the first prompt. */
+const NAMEABLE_HARNESSES = new Set(["claude", "codex"]);
 
 /** The inference job workers: a failed handler dies into the engine's retry. */
 const InferenceWorkersLive = Layer.effectDiscard(
@@ -303,6 +314,61 @@ const InferenceWorkersLive = Layer.effectDiscard(
         Effect.orDie,
       ),
     );
+    // Session auto-naming: enqueued at launch, retried (with backoff) until
+    // the first prompt exists in the harness's native transcript. Every
+    // no-name outcome besides "no prompt yet" is a quiet success — a renamed
+    // or deleted session, a switched-off cascade, an unparseable harness.
+    const namer = yield* SessionNamer;
+    const sessions = yield* SessionsRepo;
+    const projects = yield* ProjectsRepo;
+    const settingsRepo = yield* SettingsRepo;
+    const engine = yield* SessionEngine;
+    const nameSession = Effect.fn("nameSession")(function* (job: NameSessionJob) {
+      const session = yield* sessions
+        .byId(job.sessionId)
+        .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+      if (session === null || session.label !== null) return;
+      if (!NAMEABLE_HARNESSES.has(session.harness)) return;
+      const project = yield* projects
+        .byId(session.projectId)
+        .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
+      if (project === null) return;
+      const settings = yield* settingsRepo.get();
+      if (!resolveAutomation(project.autoName, settings.autoName)) return;
+
+      const transcript = yield* engine
+        .transcript(job.sessionId)
+        .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+      const events = transcript?.events ?? [];
+      const firstUserAt = events.findIndex((event) => event.kind === "user");
+      const firstUser = firstUserAt === -1 ? undefined : events[firstUserAt];
+      if (firstUser === undefined || firstUser.kind !== "user") {
+        // Retryable by design: the user has not typed the first prompt yet.
+        return yield* Effect.die(new Error("no first prompt in the transcript yet — retrying"));
+      }
+      const reply = events
+        .slice(firstUserAt + 1)
+        .find((event): event is typeof event & { kind: "assistant" } => event.kind === "assistant");
+
+      const label = yield* namer.name({
+        harness: session.harness,
+        projectName: project.name,
+        firstUserTurn: firstUser.text,
+        ...(reply === undefined ? {} : { assistantReply: reply.text }),
+      });
+      const wrote = yield* sessions.setLabelIfUnset(job.sessionId, label);
+      yield* Effect.annotateLogs(Effect.logInfo("session named"), {
+        sessionId: job.sessionId,
+        label,
+        wrote,
+      });
+    });
+    yield* jobs.work("name-session", (payload) =>
+      decodeNameSessionJob(payload).pipe(
+        Effect.flatMap((job) => nameSession(job)),
+        Effect.orDie,
+      ),
+    );
   }),
 );
 
@@ -328,6 +394,7 @@ const WorkerLive = Layer.mergeAll(
   Layer.provide(ChangeReader.layer),
   Layer.provide(TourComposer.layer),
   Layer.provide(ChangeSuggesterLive),
+  Layer.provide(SessionNamerLive),
   Layer.provide(liveToolsLayer),
   // start_run: the one tool that reaches the run machinery.
   Layer.provide(startRunToolLayer),

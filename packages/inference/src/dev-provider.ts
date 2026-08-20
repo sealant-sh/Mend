@@ -38,7 +38,9 @@ export const devDirectProviderLayer = Layer.effect(
       Effect.tryPromise({
         try: () =>
           client.messages.create({
-            model,
+            // Per-request model override wins; the dev arm has no codex path,
+            // so a codex-provider request just runs on the same Anthropic key.
+            model: request.model ?? model,
             max_tokens: 16000,
             thinking: { type: "adaptive" },
             ...(request.system === undefined ? {} : { system: request.system }),

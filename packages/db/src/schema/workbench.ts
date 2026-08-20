@@ -218,6 +218,7 @@ export const projects = pgTable("projects", {
   adoptedSha: text().$type<Sha>(),
   autoTour: text().$type<AutomationChoice>().notNull().default("inherit"),
   autoSuggest: text().$type<AutomationChoice>().notNull().default("inherit"),
+  autoName: text().$type<AutomationChoice>().notNull().default("inherit"),
   gitAuthMode: text().$type<GitAuthMode>().notNull().default("ambient"),
   // NULL inherits the global settings.workspaceImage default.
   workspaceImage: jsonb().$type<typeof WorkspaceImage.Encoded>(),

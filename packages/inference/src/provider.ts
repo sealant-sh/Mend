@@ -46,6 +46,17 @@ export interface InferenceRequest {
   readonly outputSchema?: Record<string, unknown>;
   /** Tool-loop round budget; read-heavy passes need more than the default 12. */
   readonly maxRounds?: number;
+  /**
+   * Which connected subscription runs the exchange. Unset means the default
+   * (claude — the richer surface: the codex arm is tool-less platform-side).
+   * Callers that fall back across providers pick per attempt.
+   */
+  readonly provider?: "claude" | "codex";
+  /**
+   * Model override, passed to the platform verbatim (e.g. a cheap model for a
+   * mechanical pass). Unset means the runtime's default model.
+   */
+  readonly model?: string;
 }
 
 /**

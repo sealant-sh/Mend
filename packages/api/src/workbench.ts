@@ -28,6 +28,7 @@ import {
   FollowUp,
   formatProjectEnvironmentIssue,
   parseDotenv,
+  resolveAutomation,
   routeDotenvName,
   validateProjectSecretValue,
   type GitAuthMode,
@@ -345,6 +346,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           .setAutomation(params.id, {
             autoTour: payload.autoTour,
             autoSuggest: payload.autoSuggest,
+            autoName: payload.autoName,
           })
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
       }),
@@ -1535,7 +1537,40 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     .handle("launch", ({ params, payload }) =>
       Effect.gen(function* () {
         const engine = yield* SessionEngine;
+        // Session auto-naming: queue the namer at launch so a label appears in
+        // lists while the session still runs. Delayed first attempt + spaced
+        // retries cover "the user hasn't typed the first prompt yet"; the
+        // worker re-checks label/setting and no-ops when either changed.
+        // Best-effort — a launch never fails because naming could not queue.
+        const queueAutoName = Effect.gen(function* () {
+          const sessions = yield* SessionsRepo;
+          const projects = yield* ProjectsRepo;
+          const settingsRepo = yield* SettingsRepo;
+          const jobs = yield* JobRunner;
+          const session = yield* sessions.byId(params.id);
+          if (session.label !== null) return;
+          const project = yield* projects.byId(session.projectId);
+          const settings = yield* settingsRepo.get();
+          if (!resolveAutomation(project.autoName, settings.autoName)) return;
+          yield* jobs.enqueue({
+            name: "name-session",
+            payload: { sessionId: params.id },
+            idempotencyKey: `name-session:${params.id}`,
+            startAfterSeconds: 45,
+            retryDelaySeconds: 30,
+            retryLimit: 6,
+          });
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.annotateLogs(Effect.logWarning("auto-name enqueue failed; continuing"), {
+              sessionId: params.id,
+              cause: String(cause),
+            }),
+          ),
+          Effect.asVoid,
+        );
         return yield* engine.launch(params.id, payload.argv).pipe(
+          Effect.tap(() => queueAutoName),
           Effect.catchTag("SessionNotFoundError", () =>
             Effect.fail(new NotFound({ id: params.id })),
           ),

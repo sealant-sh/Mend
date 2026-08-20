@@ -584,6 +584,12 @@ const sessionsLayer = (world: World) => {
     reopen: (id) => Effect.sync(() => update(id, { status: "running", settledAt: null })),
     setHarness: (id, harness) => Effect.sync(() => update(id, { harness })),
     setLabel: (id, label) => Effect.sync(() => update(id, { label })),
+    setLabelIfUnset: (id, label) =>
+      Effect.sync(() => {
+        if (world.sessions.get(id)?.label !== null) return false;
+        update(id, { label });
+        return true;
+      }),
     remove: () => Effect.die("not in test"),
   });
 };
@@ -722,6 +728,7 @@ const setup = (tmp: string, world: World) => {
       defaultBranch: adopted.defaultBranch,
       adoptedSha: Sha.make(adopted.headSha),
       autoTour: "inherit",
+      autoName: "inherit",
       autoSuggest: "inherit",
       gitAuthMode: "ambient",
       workspaceImage: null,

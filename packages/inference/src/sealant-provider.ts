@@ -18,18 +18,20 @@ const MAX_TOOL_ROUNDS = 12;
  * agent SDKs; the closed tool set executes HERE, and every exchange and tool
  * call lands in `inference_calls`. Mend ships no model keys.
  *
- * MEND_INFERENCE_CLAUDE_ACCOUNT names a specific connected account; unset
- * means the caller's default account.
+ * MEND_INFERENCE_CLAUDE_ACCOUNT / MEND_INFERENCE_CODEX_ACCOUNT name a specific
+ * connected account per provider; unset means the caller's default account.
  */
 export const sealantProviderLayer = Layer.effect(
   InferenceProvider,
   Effect.gen(function* () {
     const sealant = yield* SealantClient;
     const audit = yield* InferenceCallsRepo;
-    const account = yield* Config.option(Config.string("MEND_INFERENCE_CLAUDE_ACCOUNT"));
-    const credentials = {
-      claude: Option.getOrElse(account, () => true as const),
-    };
+    const claudeAccount = yield* Config.option(Config.string("MEND_INFERENCE_CLAUDE_ACCOUNT"));
+    const codexAccount = yield* Config.option(Config.string("MEND_INFERENCE_CODEX_ACCOUNT"));
+    const credentialsFor = (provider: "claude" | "codex") =>
+      provider === "codex"
+        ? { codex: Option.getOrElse(codexAccount, () => true as const) }
+        : { claude: Option.getOrElse(claudeAccount, () => true as const) };
 
     const respond = Effect.fn("InferenceProvider.respond")(function* (request: InferenceRequest) {
       const toolsByName = new Map<string, InferenceTool>(
@@ -96,7 +98,8 @@ export const sealantProviderLayer = Layer.effect(
         ...(request.outputSchema === undefined
           ? {}
           : { responseFormat: { type: "json", schema: request.outputSchema } }),
-        credentials,
+        ...(request.model === undefined ? {} : { model: request.model }),
+        credentials: credentialsFor(request.provider ?? "claude"),
       });
 
       const maxRounds = request.maxRounds ?? MAX_TOOL_ROUNDS;
