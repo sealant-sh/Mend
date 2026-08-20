@@ -382,7 +382,7 @@ export function ExpandedContext() {
           'manifestId "auth-service@12" — the immutable snapshot recorded against the execution',
           '{ kind: "file", ref: "AGENTS.md", digest: "41c9e2…" } — every item carries provenance and a digest',
           "item kinds: file · directory · doc · note · URL · issue or PR · session handoff",
-          "~/.mend/store/<project>/sessions/<id>/session.canonical.json — what promotions read",
+          "~/.config/mend/store/<project>/sessions/<id>/session.canonical.json — what promotions read",
           "status word: context snapshot stale — an observation about versions, never a verdict",
         ]}
       />
