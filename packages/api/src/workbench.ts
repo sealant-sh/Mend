@@ -62,6 +62,7 @@ import {
   remoteGitEnv,
   sshCommandFor,
   worktreePathOf,
+  type DiffFileFact,
   type GitError,
 } from "@mend/store";
 import { Effect, Option, Result, Stream } from "effect";
@@ -124,6 +125,15 @@ import {
  * `_references/` dir collision-free.
  */
 const STORE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+const reviewDiffViews = (patch: string, facts: ReadonlyArray<DiffFileFact>) =>
+  parseReviewDiff(patch, facts).map(
+    (file) =>
+      new ReviewDiffFileView({
+        ...file,
+        hunks: file.hunks.map((hunk) => new ReviewDiffHunkView(hunk)),
+      }),
+  );
 
 /** Live session states — removal refuses these; project removal stops them. */
 const LIVE_STATES = new Set(["starting", "running", "waiting", "idle"]);
@@ -1919,16 +1929,9 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
                 })
                 .pipe(Effect.mapError(toFailure))
             : canonicalFacts;
-        const toView = (source: string, sourceFacts: typeof canonicalFacts) =>
-          parseReviewDiff(source, sourceFacts).map(
-            (file) =>
-              new ReviewDiffFileView({
-                ...file,
-                hunks: file.hunks.map((hunk) => new ReviewDiffHunkView(hunk)),
-              }),
-          );
-        const anchorFiles = toView(canonicalPatch, canonicalFacts);
-        const files = patch === canonicalPatch ? anchorFiles : toView(patch, renderedFacts);
+        const anchorFiles = reviewDiffViews(canonicalPatch, canonicalFacts);
+        const files =
+          patch === canonicalPatch ? anchorFiles : reviewDiffViews(patch, renderedFacts);
         const worktreeMatches = yield* store
           .worktreeMatchesCommit(context.worktree, context.checkpointB.sha)
           .pipe(Effect.mapError(toFailure));
