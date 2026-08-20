@@ -56,8 +56,18 @@ export const parseReviewDiff = (
   const sections = patch
     .split(/(?=^diff --git )/m)
     .filter((section) => section.startsWith("diff --git "));
+  const groupedSections: Array<{ readonly header: string; patch: string }> = [];
+  for (const section of sections) {
+    const header = section.split("\n", 1)[0] ?? "";
+    const previous = groupedSections.at(-1);
+    if (previous?.header === header) {
+      previous.patch += section;
+    } else {
+      groupedSections.push({ header, patch: section });
+    }
+  }
   return facts.map((fact, index) => {
-    const filePatch = sections[index] ?? "";
+    const filePatch = groupedSections[index]?.patch ?? "";
     return { ...fact, patch: filePatch, hunks: parseHunks(filePatch) };
   });
 };

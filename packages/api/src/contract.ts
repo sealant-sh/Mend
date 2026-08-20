@@ -1130,7 +1130,7 @@ const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionProcessId },
       payload: RenameShellRequest,
       success: SessionProcess,
-      error: Schema.Union([NotFound, StoreFailure]),
+      error: [NotFound, StoreFailure],
     }),
   )
   .add(
