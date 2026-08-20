@@ -20,6 +20,7 @@ import {
   projectMenu,
   sessionMenu,
   startSession,
+  type Harness,
 } from "#/lib/workbench-menus";
 
 export const Route = createFileRoute("/")({
@@ -94,7 +95,7 @@ function HomePage() {
   );
 
   /** Fire a fresh session on a project and land in its workbench. */
-  const start = (projectId: string, harness: string) => {
+  const start = (projectId: string, harness: Harness) => {
     setBusy(`${projectId}:${harness}`);
     void startSession(navigate, projectId, harness).finally(() => setBusy(null));
   };

@@ -9,6 +9,7 @@ import {
   changeStats,
   changeTour,
   getDotfiles,
+  getMachine,
   getSettings,
   gitBridgeStatus,
   gitKey,
@@ -97,6 +98,14 @@ export const projectRecipesQuery = (id: string) =>
     queryKey: ["project", id, "service-recipes"],
     queryFn: () => projectRecipes(id),
   });
+
+/** The shell's MACHINE block — a tailnet interface can come and go, so re-observe slowly. */
+export const machineQuery = queryOptions({
+  queryKey: ["machine"],
+  queryFn: getMachine,
+  staleTime: 30_000,
+  refetchInterval: 30_000,
+});
 
 export const activeSessionsQuery = queryOptions({
   queryKey: ["sessions", "active"],

@@ -142,7 +142,7 @@ function ChangePage() {
       : null;
 
   return (
-    <AppShell>
+    <AppShell projectId={sessionDetail?.session.projectId}>
       <div className="mx-auto max-w-[1200px]">
         {sessionDetail === undefined ? (
           <p className="ev-eyebrow">review</p>
