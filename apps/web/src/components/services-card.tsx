@@ -6,6 +6,7 @@ import {
   addService,
   restartService,
   runService,
+  runServiceRecipe,
   serviceEndpoint,
   serviceUrl,
   stopService,
@@ -194,6 +195,7 @@ export function ServicesCard({
 
   const services = serviceViews.data ?? [];
   const liveServices = services.filter(serviceIsLive);
+  const canStart = sessionLive || liveServices.length > 0;
   const liveNames = new Set(liveServices.map((view) => view.service.name));
   const endedByName = new Map<string, ServiceViewDto>();
   for (const view of services.filter((item) => !serviceIsLive(item))) {
@@ -233,15 +235,7 @@ export function ServicesCard({
 
   const start = (recipe: ServiceRecipeDto) => {
     setPending(`run:${recipe.name}`);
-    const action =
-      recipe.command === null
-        ? addService(sessionId, { port: recipe.port, name: recipe.name, protocol: recipe.protocol })
-        : runService(sessionId, {
-            argv: ["sh", "-c", recipe.command],
-            port: recipe.port,
-            name: recipe.name,
-            protocol: recipe.protocol,
-          });
+    const action = runServiceRecipe(sessionId, recipe.name);
     void action.then(invalidate).finally(() => setPending(null));
   };
 
@@ -263,13 +257,13 @@ export function ServicesCard({
               <ServiceRow
                 key={service.service.id}
                 service={service}
-                actionable={sessionLive}
+                actionable={canStart}
                 pending={pending}
                 onAction={act}
                 first={index === 0}
               />
             ))}
-            {sessionLive &&
+            {canStart &&
               startable.map((recipe, index) => (
                 <div
                   key={recipe.name}
@@ -297,7 +291,7 @@ export function ServicesCard({
               ))}
           </>
         )}
-        {sessionLive && (
+        {canStart && (
           <RunServiceForm
             sessionId={sessionId}
             pending={pending}

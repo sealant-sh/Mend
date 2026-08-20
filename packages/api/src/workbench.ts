@@ -1273,10 +1273,32 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
 
 export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (handlers) =>
   handlers
-    .handle("listActive", () =>
+    .handle("listActive", ({ query }) =>
       Effect.gen(function* () {
         const sessions = yield* SessionsRepo;
-        return yield* sessions.listActive();
+        const active = yield* sessions.listActive();
+        if (query.retained === undefined) return active;
+
+        const ids = new Set(active.map((session) => session.id));
+        const processes = yield* SessionProcessesRepo;
+        for (const process of yield* processes.listLive()) {
+          if (process.kind !== "agent") ids.add(process.sessionId);
+        }
+        const services = yield* ServicesRepo;
+        const forwards = yield* ServiceForwardsRepo;
+        for (const forward of yield* forwards.listOpen()) {
+          const service = yield* services.byId(forward.serviceId);
+          if (service !== null) ids.add(service.sessionId);
+        }
+        const retained = [...active];
+        for (const id of ids) {
+          if (retained.some((session) => session.id === id)) continue;
+          const session = yield* sessions
+            .byId(id)
+            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+          if (session !== null) retained.push(session);
+        }
+        return retained;
       }),
     )
     .handle("create", ({ params, payload }) =>
@@ -1418,6 +1440,28 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
                 Effect.fail(new StoreFailure({ message: error.message })),
             }),
           );
+      }),
+    )
+    .handle("runServiceRecipe", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const engine = yield* SessionEngine;
+        return yield* engine.runServiceRecipe(params.id, payload.name).pipe(
+          Effect.catchTag("SessionNotFoundError", () =>
+            Effect.fail(new NotFound({ id: params.id })),
+          ),
+          Effect.catchTag("LegacyBenchReadOnlyError", () =>
+            Effect.fail(new StoreFailure({ message: "Legacy bench sessions are review-only." })),
+          ),
+          Effect.catchTag("SessionNotLiveError", () =>
+            Effect.fail(new SessionNotLive({ id: params.id })),
+          ),
+          Effect.catchTags({
+            SealantPlatformError: (error) =>
+              Effect.fail(new StoreFailure({ message: error.message })),
+            ServiceBindError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
+            ServiceStartError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
+          }),
+        );
       }),
     )
     .handle("listRecipes", ({ params }) =>

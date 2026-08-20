@@ -140,6 +140,14 @@ const fail = (message: string): never => {
   process.exit(1);
 };
 
+const parseMendUrl = (value: string): URL => {
+  try {
+    return new URL(value);
+  } catch {
+    return fail(`"${value}" is not a valid Mend URL`);
+  }
+};
+
 const paint = (code: string) => (text: string) =>
   process.stdout.isTTY ? `[${code}m${text}[0m` : text;
 const dim = paint("2");
@@ -402,7 +410,7 @@ const attachTty = async (
   processId?: string,
   options?: { readonly readOnly?: boolean },
 ): Promise<"detached" | "ended" | "unavailable"> => {
-  const url = new URL(`${config.url}/api/tty`);
+  const url = parseMendUrl(`${config.url}/api/tty`);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   // Process addressing reaches any PTY in the workspace (a shell); the
   // session form remains the agent's PTY.
@@ -581,10 +589,10 @@ const resolveLiveSession = async (
   config: CliConfig,
   prefix: string | undefined,
 ): Promise<SessionDto> => {
-  const sessions = await api<ReadonlyArray<SessionDto>>(config, "GET", "/sessions");
+  const sessions = await api<ReadonlyArray<SessionDto>>(config, "GET", "/sessions?retained=1");
   if (prefix !== undefined) {
     const matches = sessions.filter((s) => s.id.startsWith(prefix));
-    if (matches.length === 0) return fail(`no live session matches "${prefix}"`);
+    if (matches.length === 0) return fail(`no live or retained session matches "${prefix}"`);
     const exact = matches[0];
     if (matches.length > 1 || exact === undefined) {
       return fail(`session prefix "${prefix}" is ambiguous — use more of the id`);
@@ -597,7 +605,7 @@ const resolveLiveSession = async (
     project === undefined ? sessions : sessions.filter((s) => s.projectId === project.id);
   const only = candidates[0];
   if (only === undefined) {
-    return fail("no live session — start one with mend codex|claude|opencode");
+    return fail("no live or retained session — start one with mend codex|claude|opencode");
   }
   if (candidates.length === 1) return only;
   if (process.stdin.isTTY !== true) {
@@ -716,10 +724,11 @@ const flattenService = (view: ServiceViewDto): ServiceDto => {
   };
 };
 
+const fetchServiceViews = (config: CliConfig, all = false) =>
+  api<ReadonlyArray<ServiceViewDto>>(config, "GET", `/services${all ? "?all=1" : ""}`);
+
 const fetchServices = async (config: CliConfig, all = false): Promise<ReadonlyArray<ServiceDto>> =>
-  (await api<ReadonlyArray<ServiceViewDto>>(config, "GET", `/services${all ? "?all=1" : ""}`)).map(
-    flattenService,
-  );
+  (await fetchServiceViews(config, all)).map(flattenService);
 
 const mutateService = async (
   config: CliConfig,
@@ -730,7 +739,7 @@ const mutateService = async (
   flattenService(await api<ServiceViewDto>(config, method, endpointPath, body));
 
 const serviceUrl = (config: CliConfig, service: ServiceDto): string => {
-  const host = new URL(config.url).hostname || "localhost";
+  const host = parseMendUrl(config.url).hostname || "localhost";
   // A UDP Service has no page to open — the endpoint is the whole fact.
   return service.protocol === "udp"
     ? `${host}:${service.hostPort ?? "?"} (udp)`
@@ -853,26 +862,14 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
           : `no recipe named "${name}" — declared: ${known}`,
       );
     }
-    if (recipe.command === null) {
-      // A port-only recipe is an adopt: something else starts the listener.
-      const service = await mutateService(config, "POST", `/sessions/${session.id}/services`, {
-        port: recipe.port,
-        name: recipe.name,
-        protocol: recipe.protocol,
-      });
-      say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
-      say(`  ${cobalt(serviceUrl(config, service))}`);
-      return;
-    }
     const service = await withSpinner(
-      recipe.protocol === "udp"
-        ? `starting ${recipe.name} (udp :${recipe.port})…`
-        : `starting ${recipe.name} — waiting for :${recipe.port} to answer…`,
-      mutateService(config, "POST", `/sessions/${session.id}/services/run`, {
-        argv: ["sh", "-c", recipe.command],
-        port: recipe.port,
+      recipe.command === null
+        ? `adopting ${recipe.name} on :${recipe.port}…`
+        : recipe.protocol === "udp"
+          ? `starting ${recipe.name} (udp :${recipe.port})…`
+          : `starting ${recipe.name} — waiting for :${recipe.port} to answer…`,
+      mutateService(config, "POST", `/sessions/${session.id}/services/recipe`, {
         name: recipe.name,
-        protocol: recipe.protocol,
       }),
     );
     say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
@@ -919,39 +916,53 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
 const serviceLogs = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const needle = args.find((a) => !a.startsWith("--"));
   if (needle === undefined) return fail("usage: mend service logs <name-or-id-prefix>");
-  const everything = await fetchServices(config, true);
+  const everything = await fetchServiceViews(config, true);
   const matches = everything.filter(
-    (service) => service.label === needle || service.id.startsWith(needle),
+    (view) =>
+      view.service.name === needle ||
+      view.service.id.startsWith(needle) ||
+      view.attempts.some((attempt) => attempt.id.startsWith(needle)),
   );
   if (matches.length === 0) return fail(`no service matches "${needle}"`);
-  // Prefer the live one; otherwise the newest ended one (list is newest-first).
-  const service =
-    matches.find((m) => m.status !== "exited" && m.status !== "stopped") ?? matches[0];
-  if (service === undefined) return fail(`no service matches "${needle}"`);
-  if (service.sealantSessionId === null || service.processId === null) {
+  const view =
+    matches.find((candidate) => {
+      const current =
+        candidate.service.currentAttemptId === null
+          ? null
+          : candidate.attempts.find((attempt) => attempt.id === candidate.service.currentAttemptId);
+      return current !== null && current !== undefined && current.exitedAt === null;
+    }) ?? matches[0];
+  if (view === undefined) return fail(`no service matches "${needle}"`);
+  const currentAttempt =
+    view.service.currentAttemptId === null
+      ? null
+      : (view.attempts.find((candidate) => candidate.id === view.service.currentAttemptId) ?? null);
+  const attempt =
+    view.attempts.find((candidate) => candidate.id.startsWith(needle)) ??
+    currentAttempt ??
+    view.attempts.findLast((candidate) => candidate.sealantSessionId !== null) ??
+    null;
+  if (attempt?.sealantSessionId === null || attempt === null) {
     return fail(
       `"${needle}" is an adopted port — no process of Mend's, no logs. mend service run supervises.`,
     );
   }
-  if (service.attemptExitedAt !== null) {
-    // Post-mortem: print the selected attempt's record, don't attach.
+  const label = view.service.name;
+  if (attempt.exitedAt !== null) {
+    // Post-mortem: print the selected historical attempt's durable record.
     const output = await api<{ readonly text: string }>(
       config,
       "GET",
-      `/processes/${service.processId}/output`,
+      `/processes/${attempt.id}/output`,
     );
-    say(dim(`${service.label ?? service.id.slice(0, 8)} · ${service.status} — recorded output:`));
+    say(dim(`${label} · ${attempt.status} — recorded output:`));
     say("");
     process.stdout.write(output.text.endsWith("\n") ? output.text : `${output.text}\n`);
     process.exit(0);
   }
-  say(
-    dim(
-      `following ${service.label ?? service.id.slice(0, 8)} — Ctrl+C detaches, the service keeps running`,
-    ),
-  );
+  say(dim(`following ${label} — Ctrl+C detaches, the service keeps running`));
   say("");
-  const outcome = await attachTty(config, service.sessionId, "service", 0n, service.processId, {
+  const outcome = await attachTty(config, view.service.sessionId, "service", 0n, attempt.id, {
     readOnly: true,
   });
   if (outcome === "unavailable") {
@@ -1240,7 +1251,7 @@ const keysShare = async (config: CliConfig) => {
   if (agentSock === undefined || agentSock === "") {
     return fail("SSH_AUTH_SOCK is not set — start (or plug in) your ssh-agent first");
   }
-  const url = new URL(`${config.url}/api/keys/bridge/ws`);
+  const url = parseMendUrl(`${config.url}/api/keys/bridge/ws`);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.searchParams.set("host", os.hostname());
   if (config.token !== null) url.searchParams.set("token", config.token);

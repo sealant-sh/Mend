@@ -1085,7 +1085,12 @@ export class ResumeRequest extends Schema.Class<ResumeRequest>("ResumeRequest")(
 }) {}
 
 const sessionsGroup = HttpApiGroup.make("sessions")
-  .add(HttpApiEndpoint.get("listActive", "/sessions", { success: Schema.Array(Session) }))
+  .add(
+    HttpApiEndpoint.get("listActive", "/sessions", {
+      query: { retained: Schema.optional(Schema.String) },
+      success: Schema.Array(Session),
+    }),
+  )
   .add(
     HttpApiEndpoint.post("create", "/projects/:id/sessions", {
       params: { id: ProjectId },
@@ -1161,6 +1166,15 @@ const sessionsGroup = HttpApiGroup.make("sessions")
         name: Schema.NullOr(Schema.String),
         protocol: Schema.optional(Schema.Literals(["tcp", "udp"])),
       }),
+      success: ServiceView,
+      error: [NotFound, SessionNotLive, StoreFailure],
+    }),
+  )
+  .add(
+    // Resolve the declaration on the server so recipe provenance is a trusted fact.
+    HttpApiEndpoint.post("runServiceRecipe", "/sessions/:id/services/recipe", {
+      params: { id: SessionId },
+      payload: Schema.Struct({ name: Schema.String }),
       success: ServiceView,
       error: [NotFound, SessionNotLive, StoreFailure],
     }),

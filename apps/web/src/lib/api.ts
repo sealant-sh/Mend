@@ -1078,6 +1078,9 @@ export interface ServiceViewDto {
 export const listServices = (all = false) =>
   request<ReadonlyArray<ServiceViewDto>>(`/api/services${all ? "?all=1" : ""}`);
 
+export const runServiceRecipe = (sessionId: string, name: string) =>
+  post<ServiceViewDto>(`/api/sessions/${sessionId}/services/recipe`, { name });
+
 export const runService = (
   sessionId: string,
   input: {

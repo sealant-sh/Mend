@@ -1600,6 +1600,36 @@ describe("SessionEngine", () => {
     );
   });
 
+  it("stamps server-resolved file recipe provenance", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            ownerUserId: null,
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          const worktree = path.join(tmp, "store", "fixture", "worktrees", session.worktree);
+          fs.writeFileSync(
+            path.join(worktree, "mend.toml"),
+            '[service.web]\ncommand = "pnpm dev"\nport = 3000\n',
+          );
+
+          const service = yield* engine.runServiceRecipe(session.id, "web");
+          expect(service.service.name).toBe("web");
+          expect(service.service.declarationSource).toBe("recipe-file");
+          expect(service.attempts[0]?.argv).toEqual(["sh", "-c", "pnpm dev"]);
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
   it("does not append a restart attempt when the workspace lookup fails", async () => {
     const created: CreateOptions[] = [];
     let rejectWorkspaceLookup = false;

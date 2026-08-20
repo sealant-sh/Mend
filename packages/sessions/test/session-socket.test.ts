@@ -49,6 +49,11 @@ describe("SessionSocketHost", () => {
           const api: SessionSocketApi = {
             recipes: () => Effect.succeed([{ name: "web", command: "pnpm dev", port: 3000 }]),
             listServices: () => Effect.succeed([]),
+            runServiceRecipe: (name) =>
+              Effect.sync(() => {
+                seen.push({ recipe: name });
+                return { service: { id: "svc-recipe", name }, attempts: [] };
+              }),
             runService: (argv, port, name) =>
               Effect.sync(() => {
                 seen.push({ argv, port, name });
@@ -75,7 +80,14 @@ describe("SessionSocketHost", () => {
             }),
           );
           expect(run.status).toBe(200);
-          expect(seen).toEqual([{ argv: ["sh", "-c", "pnpm dev"], port: 3000, name: "web" }]);
+          const recipe = yield* Effect.promise(() =>
+            call(socketPath, "POST", "/services/recipe", { name: "web" }),
+          );
+          expect(recipe.status).toBe(200);
+          expect(seen).toEqual([
+            { argv: ["sh", "-c", "pnpm dev"], port: 3000, name: "web" },
+            { recipe: "web" },
+          ]);
 
           const missing = yield* Effect.promise(() => call(socketPath, "GET", "/nope"));
           expect(missing.status).toBe(404);
@@ -133,6 +145,7 @@ describe("SessionSocketHost", () => {
           const api: SessionSocketApi = {
             recipes: () => Effect.succeed([]),
             listServices: () => Effect.succeed([]),
+            runServiceRecipe: () => Effect.die("unused"),
             runService: () => Effect.die("unused"),
             addService: () => Effect.die("unused"),
             stopService: () => Effect.die("unused"),

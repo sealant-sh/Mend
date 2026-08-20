@@ -41,6 +41,7 @@ import {
 export interface SessionSocketApi {
   readonly recipes: () => Effect.Effect<unknown>;
   readonly listServices: () => Effect.Effect<unknown>;
+  readonly runServiceRecipe: (name: string) => Effect.Effect<unknown>;
   readonly runService: (
     argv: ReadonlyArray<string>,
     port: number,
@@ -124,6 +125,24 @@ const fail = (message) => {
   process.exit(1);
 };
 
+const flattenService = (view) => {
+  const service = view.service;
+  const attempt = service.currentAttemptId === null
+    ? null
+    : (view.attempts.find((candidate) => candidate.id === service.currentAttemptId) ?? null);
+  const observation = view.currentForward !== null &&
+    view.latestObservation?.forwardId === view.currentForward.id
+      ? view.latestObservation
+      : null;
+  return {
+    id: service.id,
+    label: service.name,
+    workspacePort: service.workspacePort,
+    protocol: service.transport,
+    status: observation?.state ?? view.currentForward?.state ?? attempt?.status ?? "stopped",
+  };
+};
+
 const printService = (s) =>
   console.log(
     (s.label ?? s.id.slice(0, 8)).padEnd(12) +
@@ -141,7 +160,7 @@ const main = async () => {
     switch (verb) {
       case "list":
       case undefined: {
-        const services = await request("GET", "/services");
+        const services = (await request("GET", "/services")).map(flattenService);
         if (services.length === 0) console.log("no live services");
         for (const s of services) printService(s);
         return;
@@ -154,15 +173,9 @@ const main = async () => {
           if (name === undefined) {
             fail("usage: mend service run --port <p> [--name <n>] -- <command...> | mend service run <name>");
           }
-          const recipes = await request("GET", "/recipes");
-          const recipe = recipes.find((r) => r.name === name);
-          if (recipe === undefined) {
-            fail('no recipe named "' + name + '" — declared: ' + (recipes.map((r) => r.name).join(", ") || "none"));
-          }
-          const service = recipe.command === null
-            ? await request("POST", "/services/add", { port: recipe.port, name: recipe.name, protocol: recipe.protocol })
-            : await request("POST", "/services/run", { argv: ["sh", "-c", recipe.command], port: recipe.port, name: recipe.name, protocol: recipe.protocol });
-          console.log("Service " + (service.label ?? "") + " · " + service.status + " · reachable from the user's machine");
+          const service = await request("POST", "/services/recipe", { name });
+          const shown = flattenService(service);
+          console.log("Service " + shown.label + " · " + shown.status + " · reachable from the user's machine");
           return;
         }
         const argv = rest.slice(dashdash + 1);
@@ -176,7 +189,8 @@ const main = async () => {
           fail("usage: mend service run --port <p> [--name <n>] [--udp] -- <command...>");
         }
         const service = await request("POST", "/services/run", { argv, port, name, protocol });
-        console.log("Service " + (service.label ?? "") + " · " + service.status + " · reachable from the user's machine");
+        const shown = flattenService(service);
+        console.log("Service " + shown.label + " · " + shown.status + " · reachable from the user's machine");
         return;
       }
       case "add": {
@@ -186,18 +200,19 @@ const main = async () => {
         const protocol = rest.includes("--udp") ? "udp" : "tcp";
         if (!Number.isInteger(port)) fail("usage: mend service add <port> [--name <n>] [--udp]");
         const service = await request("POST", "/services/add", { port, name, protocol });
-        console.log("Service " + (service.label ?? "") + " · " + service.status);
+        const shown = flattenService(service);
+        console.log("Service " + shown.label + " · " + shown.status);
         return;
       }
       case "stop":
       case "restart": {
         const needle = rest[0];
         if (needle === undefined) fail("usage: mend service " + verb + " <name-or-id>");
-        const services = await request("GET", "/services");
+        const services = (await request("GET", "/services")).map(flattenService);
         const match = services.find((s) => s.label === needle || s.id.startsWith(needle));
         if (match === undefined) fail('no live service matches "' + needle + '"');
-        const done = await request("POST", "/services/" + match.id + "/" + verb);
-        console.log(verb + "ped: " + (done.label ?? done.id.slice(0, 8)) + " · " + done.status);
+        const done = flattenService(await request("POST", "/services/" + match.id + "/" + verb));
+        console.log(verb + "ped: " + done.label + " · " + done.status);
         return;
       }
       default:
@@ -382,6 +397,12 @@ export const SessionSocketHostLive: Layer.Layer<SessionSocketHost> = Layer.effec
         if (route === "GET /recipes") return respond(200, await Effect.runPromise(api.recipes()));
         if (route === "GET /services")
           return respond(200, await Effect.runPromise(api.listServices()));
+        if (route === "POST /services/recipe") {
+          const body = asRecord(await readBody(request));
+          const name = typeof body["name"] === "string" ? body["name"] : "";
+          if (name === "") return respond(400, { message: "name is required" });
+          return respond(200, await Effect.runPromise(api.runServiceRecipe(name)));
+        }
         if (route === "POST /services/run") {
           const body = asRecord(await readBody(request));
           const argv = Array.isArray(body["argv"]) ? body["argv"].map(String) : [];

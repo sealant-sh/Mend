@@ -468,7 +468,7 @@ export const ServiceForwardsRepoLive: Layer.Layer<
           boundAt: new Date(),
           updatedAt: new Date(),
         })
-        .where(eq(serviceForwards.id, id))
+        .where(and(eq(serviceForwards.id, id), eq(serviceForwards.state, "binding")))
         .returning({ serviceId: serviceForwards.serviceId })
         .pipe(Effect.orDie);
       const row = rows[0];
