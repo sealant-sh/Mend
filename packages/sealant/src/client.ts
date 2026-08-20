@@ -19,6 +19,7 @@ import { Sealant, SealantApiError, SealantError } from "@sealant/sdk";
 import type { Harness } from "@sealant/sdk";
 import {
   createRunOp,
+  getSessionOutputOp,
   inferenceRespondOp,
   listWorkspacesOp,
   resolveInternalConfig,
@@ -31,6 +32,16 @@ import * as Context from "effect/Context";
 import { SealantEnv } from "./config.ts";
 import { SealantConnection } from "./connection.ts";
 import { SealantPlatformError } from "./errors.ts";
+
+export interface SessionOutputPage {
+  readonly sessionId: string;
+  readonly chunks: ReadonlyArray<{
+    readonly sequence: string;
+    readonly dataBase64: string;
+  }>;
+  readonly nextFrom: string;
+  readonly status: "exited" | "failed" | "running" | "starting";
+}
 
 export interface WorkspacePackageResolution {
   readonly requested: string;
@@ -118,6 +129,11 @@ export class SealantClient extends Context.Service<
       workspace: Workspace,
       sessionId: string,
     ) => Effect.Effect<InteractiveSession, SealantPlatformError>;
+    /** Sequence-addressed, read-only PTY output. Cursors remain decimal strings. */
+    readonly sessionOutput: (
+      sessionId: string,
+      options: { readonly from: string; readonly limit: string },
+    ) => Effect.Effect<SessionOutputPage, SealantPlatformError>;
     /**
      * Deterministic check run (0.5.0): commands executed verbatim, recorded
      * into a run record like any process. The exit code is a check datum, not
@@ -276,6 +292,14 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantEnv> = 
 
     const getSession = Effect.fn("SealantClient.getSession")(
       (workspace: Workspace, sessionId: string) => wrap(() => workspace.sessions.get(sessionId)),
+    );
+
+    const sessionOutput = Effect.fn("SealantClient.sessionOutput")(
+      (sessionId: string, options: { readonly from: string; readonly limit: string }) =>
+        getSessionOutputOp(sessionId, { ownerUserId, ...options }).pipe(
+          Effect.provideContext(apiContext),
+          Effect.mapError(toPlatformError),
+        ),
     );
 
     // No idempotency on this path: `attemptId` is a workspace-attempt FK,
@@ -469,6 +493,7 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantEnv> = 
       stopWorkspace,
       expireWorkspace,
       getSession,
+      sessionOutput,
       exec,
       diffCommits,
       inferenceRespond,

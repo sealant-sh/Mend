@@ -697,6 +697,23 @@ interface ServiceViewDto {
   readonly endpoints: ReadonlyArray<ServiceEndpointDto>;
 }
 
+interface ProcessLogPageDto {
+  readonly processId: string;
+  readonly sealantSessionId: string;
+  readonly sealantRunId: string | null;
+  readonly requestedFrom: string;
+  readonly firstSequence: string | null;
+  readonly lastSequence: string | null;
+  readonly nextFrom: string;
+  readonly status: "exited" | "failed" | "running" | "starting";
+  readonly chunks: ReadonlyArray<{
+    readonly sequence: string;
+    readonly dataBase64: string;
+  }>;
+  readonly telemetryLoss: "unknown";
+  readonly telemetryNote: string;
+}
+
 interface ServiceDto {
   readonly id: string;
   readonly processId: string | null;
@@ -957,14 +974,16 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
   say(dim(`  logs: mend service logs ${service.label ?? service.id.slice(0, 8)}`));
 };
 
-/**
- * Watch a supervised Service's output: record replay, then live tail. A DEAD
- * Service still answers — its record outlives the process — printed once
- * instead of followed.
- */
+/** Read sequence-addressed PTY output without attaching an input-capable terminal. */
 const serviceLogs = async (config: CliConfig, args: ReadonlyArray<string>) => {
-  const needle = args.find((a) => !a.startsWith("--"));
-  if (needle === undefined) return fail("usage: mend service logs <name-or-id-prefix>");
+  const fromFlag = args.indexOf("--from");
+  const from = fromFlag === -1 ? "0" : args[fromFlag + 1];
+  const needle = args.find(
+    (argument, index) => !argument.startsWith("--") && index !== fromFlag + 1,
+  );
+  if (needle === undefined || from === undefined || !/^(0|[1-9]\d*)$/.test(from)) {
+    return fail("usage: mend service logs <name-or-id-prefix> [--from <decimal-sequence>]");
+  }
   const everything = await fetchServiceViews(config, true);
   const matches = everything.filter(
     (view) =>
@@ -997,29 +1016,39 @@ const serviceLogs = async (config: CliConfig, args: ReadonlyArray<string>) => {
     );
   }
   const label = view.service.name;
-  if (attempt.exitedAt !== null) {
-    // Post-mortem: print the selected historical attempt's durable record.
-    const output = await api<{ readonly text: string }>(
+  say(
+    dim(
+      attempt.exitedAt === null
+        ? `following ${label} from sequence ${from} — Ctrl+C detaches, the Service keeps running`
+        : `${label} · ${attempt.status} — recorded output from sequence ${from}`,
+    ),
+  );
+  say("");
+
+  let cursor = from;
+  let telemetryReported = false;
+  for (;;) {
+    const page = await api<ProcessLogPageDto>(
       config,
       "GET",
-      `/processes/${attempt.id}/output`,
+      `/processes/${attempt.id}/logs?from=${encodeURIComponent(cursor)}&limit=256`,
     );
-    say(dim(`${label} · ${attempt.status} — recorded output:`));
-    say("");
-    process.stdout.write(output.text.endsWith("\n") ? output.text : `${output.text}\n`);
-    process.exit(0);
+    if (!telemetryReported) {
+      say(dim(`telemetry loss: ${page.telemetryLoss} · ${page.telemetryNote}`));
+      telemetryReported = true;
+    }
+    for (const chunk of page.chunks) {
+      process.stdout.write(Buffer.from(chunk.dataBase64, "base64"));
+    }
+    const advanced = page.nextFrom !== cursor;
+    cursor = page.nextFrom;
+    const ended = page.status === "exited" || page.status === "failed";
+    if (ended && !advanced) break;
+    if (!advanced) await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  say(dim(`following ${label} — Ctrl+C detaches, the service keeps running`));
+
   say("");
-  const outcome = await attachTty(config, view.service.sessionId, "service", 0n, attempt.id, {
-    readOnly: true,
-  });
-  if (outcome === "unavailable") {
-    return fail(`tty attach unavailable: could not connect to ${config.url}`);
-  }
-  say("");
-  say(dim("stream ended"));
-  process.exit(0);
+  say(dim(`stream ended · next sequence ${cursor}`));
 };
 
 const serviceRestart = async (config: CliConfig, args: ReadonlyArray<string>) => {

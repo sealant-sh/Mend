@@ -70,7 +70,7 @@ import {
   type DiffFileFact,
   type GitError,
 } from "@mend/store";
-import { Effect, Option, Result, Stream } from "effect";
+import { Effect, Option, Result } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import {
@@ -1547,39 +1547,43 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         );
       }),
     )
-    .handle("processOutput", ({ params }) =>
+    .handle("processLogs", ({ params, query }) =>
       Effect.gen(function* () {
         const processes = yield* SessionProcessesRepo;
         const sealant = yield* SealantClient;
         const row = yield* processes.byId(params.id);
         if (row === null) return yield* new NotFound({ id: params.id });
-        if (row.sealantRunId === null) {
+        if (row.sealantSessionId === null) {
           return yield* new StoreFailure({
-            message: "This process predates run pointers — its record exists but is unaddressed.",
+            message:
+              "This process has no interactive-session pointer, so its PTY logs are unaddressed.",
           });
         }
-        const run = yield* sealant
-          .getRun(row.sealantRunId)
-          .pipe(Effect.mapError((error) => new StoreFailure({ message: error.message })));
-        // The record's process id: the first timeline entry that carries one.
-        const entries = yield* sealant.recordTimeline(run).pipe(
-          Stream.take(200),
-          Stream.runCollect,
-          Effect.mapError((error) => new StoreFailure({ message: error.message })),
-        );
-        const processId =
-          [...entries].map((entry) => entry.processId).find((id) => id != null) ?? null;
-        if (processId === null) {
-          return yield* new StoreFailure({
-            message: "The record has no process entries to read output from.",
-          });
+        const from = query.from ?? "0";
+        const limit = query.limit ?? "256";
+        if (!/^(0|[1-9]\d*)$/.test(from)) {
+          return yield* new StoreFailure({ message: `Invalid decimal log cursor: ${from}` });
         }
-        const bytes = yield* sealant
-          .recordScrollback(run, processId, "pty")
+        if (!/^[1-9]\d*$/.test(limit) || BigInt(limit) > 1_000n) {
+          return yield* new StoreFailure({ message: `Invalid log page limit: ${limit}` });
+        }
+        const page = yield* sealant
+          .sessionOutput(row.sealantSessionId, { from, limit })
           .pipe(Effect.mapError((error) => new StoreFailure({ message: error.message })));
-        // Bounded: the tail is the useful part of a big log.
-        const text = new TextDecoder().decode(bytes);
-        return { text: text.length > 200_000 ? text.slice(-200_000) : text };
+        return {
+          processId: row.id,
+          sealantSessionId: row.sealantSessionId,
+          sealantRunId: row.sealantRunId,
+          requestedFrom: from,
+          firstSequence: page.chunks[0]?.sequence ?? null,
+          lastSequence: page.chunks.at(-1)?.sequence ?? null,
+          nextFrom: page.nextFrom,
+          status: page.status,
+          chunks: page.chunks,
+          telemetryLoss: "unknown" as const,
+          telemetryNote:
+            "Sealant does not report retained-range loss for interactive-session output.",
+        };
       }),
     )
     .handle("restartService", ({ params }) =>

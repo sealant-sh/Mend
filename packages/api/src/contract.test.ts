@@ -6,6 +6,7 @@ import { MendApi } from "./contract.ts";
 const typedEndpointNames = new Set([
   "followUpDeliver",
   "openReview",
+  "processLogs",
   "reviewDiff",
   "renameShell",
   "sliceComment",

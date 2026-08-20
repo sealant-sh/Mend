@@ -105,6 +105,7 @@ const sealantDeadLayer = Layer.succeed(SealantClient, {
   stopWorkspace: () => Effect.die("not in test"),
   expireWorkspace: () => Effect.die("not in test"),
   getSession: () => Effect.die("not in test"),
+  sessionOutput: () => Effect.die("not in test"),
   exec: () => Effect.die("not in test"),
   diffCommits: () => Effect.die("not in test"),
   inferenceRespond: () => Effect.die("not in test"),
@@ -215,6 +216,7 @@ const sealantLaunchLayer = (
           )
         : Effect.succeed(workspace),
     getRun: () => Effect.never,
+    sessionOutput: () => Effect.die("not in test"),
     recordCommands: () => Effect.die("not in test"),
     recordScrollback: () => Effect.die("not in test"),
     runHarness: () => Effect.die("not in test"),

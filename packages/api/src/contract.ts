@@ -19,6 +19,7 @@ import {
   ReviewSliceId,
   Run,
   RunId,
+  SealantRunId,
   ServiceId,
   SessionId,
   SessionProcessId,
@@ -83,6 +84,25 @@ export class AuthMiddleware extends HttpApiMiddleware.Service<
 export class HealthStatus extends Schema.Class<HealthStatus>("HealthStatus")({
   status: Schema.Literals(["ok"]),
   version: Schema.String,
+}) {}
+
+export class ProcessLogChunk extends Schema.Class<ProcessLogChunk>("ProcessLogChunk")({
+  sequence: Schema.String,
+  dataBase64: Schema.String,
+}) {}
+
+export class ProcessLogPage extends Schema.Class<ProcessLogPage>("ProcessLogPage")({
+  processId: SessionProcessId,
+  sealantSessionId: Schema.String,
+  sealantRunId: Schema.NullOr(SealantRunId),
+  requestedFrom: Schema.String,
+  firstSequence: Schema.NullOr(Schema.String),
+  lastSequence: Schema.NullOr(Schema.String),
+  nextFrom: Schema.String,
+  status: Schema.Literals(["exited", "failed", "running", "starting"]),
+  chunks: Schema.Array(ProcessLogChunk),
+  telemetryLoss: Schema.Literal("unknown"),
+  telemetryNote: Schema.String,
 }) {}
 
 const healthGroup = HttpApiGroup.make("health").add(
@@ -1202,10 +1222,14 @@ const sessionsGroup = HttpApiGroup.make("sessions")
   .add(
     // A process's recorded output — the record outlives the process AND the
     // workspace, so a dead Service's logs stay readable.
-    HttpApiEndpoint.get("processOutput", "/processes/:id/output", {
+    HttpApiEndpoint.get("processLogs", "/processes/:id/logs", {
       params: { id: SessionProcessId },
-      success: Schema.Struct({ text: Schema.String }),
-      error: Schema.Union([NotFound, StoreFailure]),
+      query: {
+        from: Schema.optional(Schema.String),
+        limit: Schema.optional(Schema.String),
+      },
+      success: ProcessLogPage,
+      error: [NotFound, StoreFailure],
     }),
   )
   .add(
