@@ -847,9 +847,9 @@ const followUpDeliveryLeases = Effect.gen(function* () {
 
 /**
  * Stable Services own declarations; session_processes becomes their append-only attempt ledger;
- * forwards and target observations retain their own identities and timestamps. Legacy Service
- * process IDs become stable Service IDs so existing links keep resolving. A supervised legacy row
- * is marked history-incomplete because earlier in-place restarts overwrote its run pointer.
+ * forwards and target observations retain their own identities and timestamps. Pre-stable Service
+ * rows are discarded: their mutable run, forward, and reachability fields cannot be reconstructed
+ * into honest histories.
  */
 const stableServices = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -931,121 +931,8 @@ const stableServices = Effect.gen(function* () {
       ON service_observations (forward_id, last_observed_at)`;
 
   yield* sql`
-    INSERT INTO services (
-      id,
-      session_id,
-      name,
-      declaration_source,
-      workspace_port,
-      transport,
-      preferred_host_port,
-      current_attempt_id,
-      current_forward_id,
-      attempt_history_complete,
-      forward_history_complete,
-      observation_history_complete,
-      created_at,
-      updated_at
-    )
-    SELECT
-      process.id,
-      process.session_id,
-      COALESCE(process.label, 'port-' || process.workspace_port::text),
-      'legacy-unknown',
-      process.workspace_port,
-      process.protocol,
-      process.host_port,
-      CASE
-        WHEN process.exited_at IS NULL
-          AND (
-            process.sealant_session_id IS NOT NULL
-            OR process.sealant_run_id IS NOT NULL
-          )
-          THEN process.id
-        ELSE NULL
-      END,
-      CASE
-        WHEN process.exited_at IS NULL AND process.host_port IS NOT NULL
-          THEN process.id || ':forward'
-        ELSE NULL
-      END,
-      CASE
-        WHEN process.sealant_session_id IS NULL AND process.sealant_run_id IS NULL THEN true
-        ELSE false
-      END,
-      false,
-      false,
-      process.created_at,
-      process.updated_at
-    FROM session_processes AS process
-    WHERE process.kind = 'service'
-      AND process.workspace_port IS NOT NULL
-    ON CONFLICT (id) DO NOTHING`;
-  yield* sql`
-    UPDATE session_processes AS process
-    SET
-      service_id = process.id,
-      attempt_ordinal = 1,
-      status = CASE
-        WHEN process.status IN ('reachable', 'unreachable') THEN 'running'
-        ELSE process.status
-      END
-    WHERE process.kind = 'service'
-      AND process.workspace_port IS NOT NULL
-      AND (process.sealant_session_id IS NOT NULL OR process.sealant_run_id IS NOT NULL)
-      AND process.service_id IS NULL`;
-  yield* sql`
-    INSERT INTO service_forwards (
-      id,
-      service_id,
-      sealant_workspace_id,
-      preferred_host_port,
-      host_port,
-      state,
-      created_at,
-      bound_at,
-      closed_at,
-      updated_at
-    )
-    SELECT
-      process.id || ':forward',
-      process.id,
-      process.sealant_workspace_id,
-      process.host_port,
-      process.host_port,
-      CASE WHEN process.exited_at IS NULL THEN 'bound' ELSE 'closed' END,
-      process.created_at,
-      process.created_at,
-      process.exited_at,
-      process.updated_at
-    FROM session_processes AS process
-    WHERE process.kind = 'service'
-      AND process.workspace_port IS NOT NULL
-      AND process.host_port IS NOT NULL
-    ON CONFLICT (id) DO NOTHING`;
-  yield* sql`
-    INSERT INTO service_observations (
-      id,
-      service_id,
-      forward_id,
-      state,
-      source,
-      first_observed_at,
-      last_observed_at
-    )
-    SELECT
-      process.id || ':observation',
-      process.id,
-      process.id || ':forward',
-      process.status,
-      'legacy',
-      process.updated_at,
-      process.updated_at
-    FROM session_processes AS process
-    WHERE process.kind = 'service'
-      AND process.host_port IS NOT NULL
-      AND process.status IN ('reachable', 'unreachable')
-    ON CONFLICT (id) DO NOTHING`;
+    DELETE FROM session_processes
+    WHERE kind = 'service'`;
 
   yield* sql`
     DO $$

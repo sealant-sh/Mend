@@ -364,7 +364,8 @@ sequences as strings. Do not convert them to JavaScript numbers.
 
 ### Service persistence
 
-Separate stable Services from attempts and forwards. Preserve legacy row IDs for migration.
+Separate stable Services from attempts and forwards. Pre-stable Service rows may be discarded rather
+than converted into invented history.
 
 A stable Service stores its session, name, declaration source, workspace port, transport, browser
 scheme, bind policy, preferred host port, and current attempt and forward IDs.
@@ -732,10 +733,9 @@ Never reparent a bench process to another session. Its worktree and change have 
 
 ### Existing Services
 
-Use an additive migration. Create stable Service, attempt, forward, and observation records from
-existing Service process rows. Preserve old row IDs as legacy mappings. Create one attempt where a
-run pointer exists and one forward where a host port exists. Mark overwritten restart history as
-incomplete.
+Add the stable Service, attempt, forward, and observation schema without fabricating history from
+pre-stable mutable process rows. Discard those legacy Service rows during migration; their
+previously overwritten run, forward, and reachability facts are not reliable enough to promote.
 
 ### Existing comments
 
