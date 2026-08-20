@@ -40,6 +40,9 @@ const annotationSide = (side: "old" | "new"): "deletions" | "additions" =>
 const reviewSide = (side: "deletions" | "additions"): "old" | "new" =>
   side === "deletions" ? "old" : "new";
 
+export const parseDesktopReviewPatch = (patch: string) =>
+  parsePatchFiles(patch).flatMap((parsed) => parsed.files);
+
 const currentSliceAnnotations = (
   file: ReviewDiffFileDto,
   comments: ReadonlyArray<ReviewCommentDto>,
@@ -84,10 +87,7 @@ export function ReviewDiff({
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const lastScrollRef = useRef<string | null>(null);
   const [anchorNotice, setAnchorNotice] = useState<string | null>(null);
-  const parsed = useMemo(
-    () => parsePatchFiles(file.patch).flatMap((patch) => patch.files)[0] ?? null,
-    [file.patch],
-  );
+  const parsedFiles = useMemo(() => parseDesktopReviewPatch(file.patch), [file.patch]);
   const annotations = useMemo(() => currentSliceAnnotations(file, comments), [comments, file]);
   const hunk = file.hunks[activeHunk];
   const scrollKey =
@@ -98,15 +98,16 @@ export function ReviewDiff({
     lastScrollRef.current = scrollKey;
     const frame = requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        const host = wrapperRef.current?.querySelector("diffs-container") ?? null;
-        const root = host?.shadowRoot ?? null;
+        const hosts = wrapperRef.current?.querySelectorAll("diffs-container") ?? [];
         const useNew = hunk.newLines > 0;
         const column = useNew ? "[data-additions]" : "[data-deletions]";
         const line = useNew ? hunk.newStart : hunk.oldStart;
-        root?.querySelector(`${column} [data-line="${line}"]`)?.scrollIntoView({
-          block: "center",
-          behavior: "smooth",
-        });
+        for (const host of hosts) {
+          const target = host.shadowRoot?.querySelector(`${column} [data-line="${line}"]`);
+          if (target === null || target === undefined) continue;
+          target.scrollIntoView({ block: "center", behavior: "smooth" });
+          break;
+        }
       });
     });
     return () => cancelAnimationFrame(frame);
@@ -125,7 +126,7 @@ export function ReviewDiff({
     );
   }
 
-  if (parsed === null) {
+  if (parsedFiles.length === 0) {
     return (
       <pre className="h-full overflow-auto bg-background p-4 font-mono text-xs whitespace-pre text-foreground">
         {file.patch}
@@ -166,46 +167,54 @@ export function ReviewDiff({
         </p>
       )}
       <div ref={wrapperRef} className="ev-diff min-h-0 min-w-0 flex-1 overflow-auto">
-        <FileDiff<DiffAnnotation>
-          fileDiff={parsed}
-          lineAnnotations={annotations}
-          options={{
-            diffStyle: style,
-            theme: { light: "mend-review", dark: "mend-review" },
-            unsafeCSS: EDGE_MARK_CSS,
-            lineHoverHighlight: "line",
-            disableFileHeader: true,
-            enableLineSelection: true,
-            onLineSelectionEnd: composeRange,
-            onLineNumberClick: (props) => {
-              const side = reviewSide(props.annotationSide);
-              const target = sliceLineTarget(anchorFile, side, props.lineNumber, props.lineNumber);
-              if (target === null) {
-                setAnchorNotice(
-                  "That context line is outside the canonical Review hunk. Choose a changed line or use Context 3.",
+        {parsedFiles.map((parsed, index) => (
+          <FileDiff<DiffAnnotation>
+            key={`${parsed.name}:${index}`}
+            fileDiff={parsed}
+            lineAnnotations={annotations}
+            options={{
+              diffStyle: style,
+              theme: { light: "mend-review", dark: "mend-review" },
+              unsafeCSS: EDGE_MARK_CSS,
+              lineHoverHighlight: "line",
+              disableFileHeader: true,
+              enableLineSelection: true,
+              onLineSelectionEnd: composeRange,
+              onLineNumberClick: (props) => {
+                const side = reviewSide(props.annotationSide);
+                const target = sliceLineTarget(
+                  anchorFile,
+                  side,
+                  props.lineNumber,
+                  props.lineNumber,
                 );
-                return;
-              }
-              setAnchorNotice(null);
-              onCompose(target, `${reviewFilePath(file)} · ${side} ${props.lineNumber}`);
-            },
-          }}
-          renderAnnotation={(annotation) => (
-            <article className="m-2 border-l-2 border-info bg-panel px-3 py-2 shadow-sm">
-              <div className="flex items-center justify-between gap-3">
-                <span className="font-sans text-xs font-medium text-foreground">
-                  {annotation.metadata.comment.authorName}
-                </span>
-                <span className="font-mono text-[10.5px] text-label">
-                  {annotation.metadata.comment.state}
-                </span>
-              </div>
-              <p className="mt-1 font-sans text-[12.5px] leading-relaxed text-ink-2">
-                {annotation.metadata.comment.body}
-              </p>
-            </article>
-          )}
-        />
+                if (target === null) {
+                  setAnchorNotice(
+                    "That context line is outside the canonical Review hunk. Choose a changed line or use Context 3.",
+                  );
+                  return;
+                }
+                setAnchorNotice(null);
+                onCompose(target, `${reviewFilePath(file)} · ${side} ${props.lineNumber}`);
+              },
+            }}
+            renderAnnotation={(annotation) => (
+              <article className="m-2 border-l-2 border-info bg-panel px-3 py-2 shadow-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-sans text-xs font-medium text-foreground">
+                    {annotation.metadata.comment.authorName}
+                  </span>
+                  <span className="font-mono text-[10.5px] text-label">
+                    {annotation.metadata.comment.state}
+                  </span>
+                </div>
+                <p className="mt-1 font-sans text-[12.5px] leading-relaxed text-ink-2">
+                  {annotation.metadata.comment.body}
+                </p>
+              </article>
+            )}
+          />
+        ))}
       </div>
     </div>
   );
