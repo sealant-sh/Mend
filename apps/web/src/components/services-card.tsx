@@ -225,6 +225,7 @@ export function ServicesCard({
     (recipe) => recipe.shadowedBy === null && !shownNames.has(recipe.name),
   );
   const shadowed = (recipes.data ?? []).filter((recipe) => recipe.shadowedBy !== null);
+  const renewalFailure = services.find((view) => view.workspaceTtlRenewalError !== null) ?? null;
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ["session", sessionId, "services"] });
@@ -262,6 +263,16 @@ export function ServicesCard({
     <section className="mt-6">
       <p className="text-xs font-medium text-label">Services</p>
       <div className="mt-3 overflow-hidden rounded-2xl bg-card shadow-sm">
+        {renewalFailure === null ? null : (
+          <div className="border-b border-rule-faint bg-warning/10 px-4 py-3 font-mono text-[11px] text-warning">
+            <p>Workspace TTL renewal failed · {renewalFailure.workspaceTtlRenewalError}</p>
+            <p className="mt-1 text-faint">
+              last renewed {renewalFailure.workspaceTtlRenewedAt ?? "unknown"} · known expiry{" "}
+              {renewalFailure.workspaceExpiresAt ?? "unknown"} · failed{" "}
+              {renewalFailure.workspaceTtlRenewalFailedAt ?? "unknown"}
+            </p>
+          </div>
+        )}
         {empty ? (
           <p className="p-4 font-mono text-xs text-faint">
             {recipes.isError

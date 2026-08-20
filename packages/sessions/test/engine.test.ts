@@ -86,7 +86,7 @@ import {
   StoreConfig,
 } from "@mend/store";
 import type { CreateOptions, InteractiveSession, Workspace } from "@sealant/sdk";
-import { Duration, Effect, Layer, Stream } from "effect";
+import { Duration, Effect, Layer, Schedule, Stream } from "effect";
 
 /** Every platform method dies — these tests exercise the platform-free paths. */
 const sealantDeadLayer = Layer.succeed(SealantClient, {
@@ -140,6 +140,11 @@ const sealantLaunchLayer = (
   stopped?: string[],
   spawned?: ReadonlyArray<string>[],
   rejectWorkspaceLookup: () => boolean = () => false,
+  renewWorkspace: (
+    workspaceId: string,
+    ttlSeconds: number,
+  ) => Effect.Effect<Date | null, SealantPlatformError> = () =>
+    Effect.succeed(new Date("2030-01-01T00:00:00.000Z")),
 ) => {
   let nextPty = 0;
   const ptys = new Map<string, InteractiveSession>();
@@ -233,7 +238,7 @@ const sealantLaunchLayer = (
       Effect.sync(() => {
         stopped?.push(target.id);
       }),
-    expireWorkspace: () => Effect.void,
+    expireWorkspace: renewWorkspace,
     getSession: (_workspace, id) => Effect.succeed(ptys.get(id) ?? initialPty),
     // Typed failure, not a defect: the settle-path harvest must degrade
     // quietly and still reach the workspace reap.
@@ -822,6 +827,10 @@ const sessionsLayer = (world: World) => {
           sealantRunId: null,
           sealantWorkspaceId: null,
           sealantSessionId: null,
+          workspaceExpiresAt: null,
+          workspaceTtlRenewedAt: null,
+          workspaceTtlRenewalFailedAt: null,
+          workspaceTtlRenewalError: null,
           workspaceImage: null,
           dotfiles: null,
           ownerUserId: null,
@@ -854,7 +863,35 @@ const sessionsLayer = (world: World) => {
         ),
       ),
     setSealantIds: (id, sealantRunId, sealantWorkspaceId) =>
-      Effect.sync(() => update(id, { sealantRunId, sealantWorkspaceId, lastSeenSequence: 0n })),
+      Effect.sync(() =>
+        update(id, {
+          sealantRunId,
+          sealantWorkspaceId,
+          workspaceExpiresAt: null,
+          workspaceTtlRenewedAt: null,
+          workspaceTtlRenewalFailedAt: null,
+          workspaceTtlRenewalError: null,
+          lastSeenSequence: 0n,
+        }),
+      ),
+    recordWorkspaceTtlRenewal: (id, workspaceId, expiresAt, renewedAt) =>
+      Effect.sync(() => {
+        if (world.sessions.get(id)?.sealantWorkspaceId !== workspaceId) return;
+        update(id, {
+          workspaceExpiresAt: expiresAt,
+          workspaceTtlRenewedAt: renewedAt,
+          workspaceTtlRenewalFailedAt: null,
+          workspaceTtlRenewalError: null,
+        });
+      }),
+    recordWorkspaceTtlRenewalFailure: (id, workspaceId, error, failedAt) =>
+      Effect.sync(() => {
+        if (world.sessions.get(id)?.sealantWorkspaceId !== workspaceId) return;
+        update(id, {
+          workspaceTtlRenewalFailedAt: failedAt,
+          workspaceTtlRenewalError: error,
+        });
+      }),
     setSealantSessionId: (id, sealantSessionId) =>
       Effect.sync(() => update(id, { sealantSessionId })),
     setWorkspaceImage: (id, image) => Effect.sync(() => update(id, { workspaceImage: image })),
@@ -1048,10 +1085,13 @@ const withEngine = <A, E>(
       readonly revision: number;
       readonly secrets: Record<string, string>;
     };
+    /** Seed crash-recovery facts before the SessionEngine layer runs its boot pass. */
+    readonly prepareWorld?: (world: World) => void;
   } = {},
 ): Promise<A> => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mend-engine-test-"));
   const world = makeWorld();
+  options.prepareWorld?.(world);
   const storeLayer = Store.layer.pipe(Layer.provide(StoreConfig.layerFor(path.join(tmp, "store"))));
   const engineLayer = SessionEngineLive.pipe(
     Layer.provide(storeLayer),
@@ -1449,6 +1489,207 @@ describe("SessionEngine", () => {
         const outcome = yield* engine.openShell(session.id).pipe(Effect.flip);
         expect(outcome).toBeInstanceOf(SessionNotLiveError);
       }),
+    );
+  });
+
+  it("records the exact platform expiry when a new agent lease renews its workspace", async () => {
+    const created: CreateOptions[] = [];
+    const renewals: Array<{ readonly workspaceId: string; readonly ttlSeconds: number }> = [];
+    const exactExpiry = new Date("2031-02-03T04:05:06.000Z");
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            ownerUserId: null,
+            base: null,
+          });
+
+          const launched = yield* engine.launch(session.id, ["codex"]);
+
+          expect(renewals).toEqual([{ workspaceId: "workspace-1", ttlSeconds: 43_200 }]);
+          expect(launched.workspaceExpiresAt).toEqual(exactExpiry);
+          expect(launched.workspaceTtlRenewedAt).not.toBeNull();
+          expect(launched.workspaceTtlRenewalFailedAt).toBeNull();
+          expect(launched.workspaceTtlRenewalError).toBeNull();
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          (workspaceId, ttlSeconds) =>
+            Effect.sync(() => {
+              renewals.push({ workspaceId, ttlSeconds });
+              return exactExpiry;
+            }),
+        ),
+      },
+    );
+  });
+
+  it("preserves known expiry on renewal failure and clears the failure after recovery", async () => {
+    const created: CreateOptions[] = [];
+    const firstExpiry = new Date("2031-02-03T04:05:06.000Z");
+    const recoveredExpiry = new Date("2031-02-03T16:05:06.000Z");
+    let renewalAttempt = 0;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            ownerUserId: null,
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          const afterSuccess = world.sessions.get(session.id);
+          const firstRenewedAt = afterSuccess?.workspaceTtlRenewedAt ?? null;
+          expect(afterSuccess?.workspaceExpiresAt).toEqual(firstExpiry);
+
+          yield* engine.openShell(session.id);
+          const afterFailure = world.sessions.get(session.id);
+          expect(afterFailure?.workspaceExpiresAt).toEqual(firstExpiry);
+          expect(afterFailure?.workspaceTtlRenewedAt).toEqual(firstRenewedAt);
+          expect(afterFailure?.workspaceTtlRenewalFailedAt).not.toBeNull();
+          expect(afterFailure?.workspaceTtlRenewalError).toBe("renewal unavailable");
+
+          yield* engine.openShell(session.id);
+          const afterRecovery = world.sessions.get(session.id);
+          expect(afterRecovery?.workspaceExpiresAt).toEqual(recoveredExpiry);
+          expect(afterRecovery?.workspaceTtlRenewalFailedAt).toBeNull();
+          expect(afterRecovery?.workspaceTtlRenewalError).toBeNull();
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          () => {
+            renewalAttempt += 1;
+            if (renewalAttempt === 2) {
+              return Effect.fail(
+                new SealantPlatformError({
+                  code: "workspace_expiry_failed",
+                  status: 503,
+                  message: "renewal unavailable",
+                  cause: null,
+                }),
+              );
+            }
+            return Effect.succeed(renewalAttempt === 1 ? firstExpiry : recoveredExpiry);
+          },
+        ),
+      },
+    );
+  });
+
+  it("renews a retained shell workspace during boot recovery", async () => {
+    const created: CreateOptions[] = [];
+    const renewals: string[] = [];
+    const sessionId = SessionId.make("session-retained-at-boot");
+    const workspaceId = SealantWorkspaceId.make("workspace-1");
+    const exactExpiry = new Date("2032-01-01T00:00:00.000Z");
+    await withEngine(
+      (world) =>
+        Effect.gen(function* () {
+          yield* Effect.suspend(() => {
+            const session = world.sessions.get(sessionId);
+            return session?.workspaceExpiresAt?.getTime() === exactExpiry.getTime()
+              ? Effect.void
+              : Effect.fail(new Error("retained workspace has not renewed yet"));
+          }).pipe(Effect.retry({ times: 20, schedule: Schedule.spaced(Duration.millis(10)) }));
+          expect(renewals).toContain(workspaceId);
+          const renewed = world.sessions.get(sessionId);
+          expect(renewed?.workspaceTtlRenewedAt).not.toBeNull();
+          expect(renewed?.workspaceTtlRenewalError).toBeNull();
+        }),
+      {
+        prepareWorld: (world) => {
+          const timestamp = now();
+          world.sessions.set(
+            sessionId,
+            new Session({
+              id: sessionId,
+              projectId: ProjectId.make("project-retained-at-boot"),
+              harness: "codex",
+              providerSessionId: null,
+              label: null,
+              worktree: "session-retained-at-boot",
+              branch: "mend/session-retained-at-boot",
+              baseSha: Sha.make("base-sha"),
+              contextSnapshotId: null,
+              referenceMounts: [],
+              extraMounts: [],
+              sealantRunId: null,
+              sealantWorkspaceId: workspaceId,
+              sealantSessionId: null,
+              workspaceExpiresAt: new Date("2030-01-01T00:00:00.000Z"),
+              workspaceTtlRenewedAt: new Date("2029-12-31T12:00:00.000Z"),
+              workspaceTtlRenewalFailedAt: null,
+              workspaceTtlRenewalError: null,
+              workspaceImage: null,
+              dotfiles: null,
+              ownerUserId: null,
+              status: "completed",
+              summary: null,
+              lastSeenSequence: 0n,
+              recordHistoryComplete: true,
+              startedAt: timestamp,
+              settledAt: timestamp,
+              createdAt: timestamp,
+              updatedAt: timestamp,
+            }),
+          );
+          world.processes.set(
+            "shell-retained-at-boot",
+            new SessionProcess({
+              id: SessionProcessId.make("shell-retained-at-boot"),
+              sessionId,
+              sealantWorkspaceId: workspaceId,
+              sealantSessionId: "pty-1",
+              sealantRunId: SealantRunId.make("run-shell-retained-at-boot"),
+              launchCorrelationId: null,
+              serviceId: null,
+              attemptOrdinal: null,
+              kind: "shell",
+              label: "shell 1",
+              argv: ["sh"],
+              status: "running",
+              exitCode: null,
+              workspacePort: null,
+              protocol: "tcp",
+              hostPort: null,
+              createdAt: timestamp,
+              exitedAt: null,
+              updatedAt: timestamp,
+            }),
+          );
+        },
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          (candidateWorkspaceId) =>
+            Effect.sync(() => {
+              renewals.push(candidateWorkspaceId);
+              return exactExpiry;
+            }),
+        ),
+      },
     );
   });
 
@@ -2107,6 +2348,10 @@ describe("SessionEngine", () => {
       sealantRunId: null,
       sealantWorkspaceId: null,
       sealantSessionId: null,
+      workspaceExpiresAt: null,
+      workspaceTtlRenewedAt: null,
+      workspaceTtlRenewalFailedAt: null,
+      workspaceTtlRenewalError: null,
       workspaceImage: null,
       dotfiles: null,
       ownerUserId: null,

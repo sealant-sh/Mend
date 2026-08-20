@@ -626,12 +626,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? null
             : yield* serviceForwards.byId(currentForward.supersedesForwardId);
         const latestObservation = yield* serviceObservations.latestForService(service.id);
+        const session = yield* sessions.byId(service.sessionId).pipe(Effect.orDie);
         return new ServiceView({
           service,
           attempts,
           currentForward,
           previousForward,
           latestObservation,
+          workspaceExpiresAt: session.workspaceExpiresAt,
+          workspaceTtlRenewedAt: session.workspaceTtlRenewedAt,
+          workspaceTtlRenewalFailedAt: session.workspaceTtlRenewalFailedAt,
+          workspaceTtlRenewalError: session.workspaceTtlRenewalError,
           endpoints: resolveServiceEndpoints(service, currentForward),
           previousEndpoints: resolveServiceEndpoints(service, previousForward),
         });
@@ -1078,6 +1083,83 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }),
         );
       });
+
+      const WORKSPACE_TTL_SECONDS = 12 * 60 * 60;
+
+      /**
+       * Renew one ordinary session workspace without confusing it with the hot pool. The
+       * workspace-id guard in SessionsRepo prevents a late result from contaminating a fresh
+       * resume. A platform failure is a durable fact, not a reason to end the lease.
+       */
+      const renewWorkspaceLease = Effect.fn("SessionEngine.renewWorkspaceLease")(function* (
+        sessionId: SessionId,
+        workspaceId: SealantWorkspaceId,
+      ) {
+        const session = yield* sessions
+          .byId(sessionId)
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        if (session === null || session.sealantWorkspaceId !== workspaceId) return;
+
+        yield* sealant.expireWorkspace(workspaceId, WORKSPACE_TTL_SECONDS).pipe(
+          Effect.matchEffect({
+            onFailure: (error) =>
+              Effect.gen(function* () {
+                const failedAt = new Date(
+                  yield* Effect.clockWith((clock) => clock.currentTimeMillis),
+                );
+                yield* sessions.recordWorkspaceTtlRenewalFailure(
+                  sessionId,
+                  workspaceId,
+                  error.message,
+                  failedAt,
+                );
+                yield* Effect.logWarning("session engine: workspace TTL renewal failed").pipe(
+                  Effect.annotateLogs({ sessionId, workspaceId, error: error.message }),
+                );
+              }),
+            onSuccess: (expiresAt) =>
+              Effect.gen(function* () {
+                const renewedAt = new Date(
+                  yield* Effect.clockWith((clock) => clock.currentTimeMillis),
+                );
+                yield* sessions.recordWorkspaceTtlRenewal(
+                  sessionId,
+                  workspaceId,
+                  expiresAt,
+                  renewedAt,
+                );
+              }),
+          }),
+        );
+      });
+
+      /** Renew each current workspace exactly once when any process or selected forward leases it. */
+      const retainedWorkspaceSweep = Effect.fn("SessionEngine.retainedWorkspaceSweep")(
+        function* () {
+          const owners = new Map<SealantWorkspaceId, SessionId>();
+          for (const process of yield* processes.listLive()) {
+            owners.set(process.sealantWorkspaceId, process.sessionId);
+          }
+
+          const allServices = yield* services.listAll();
+          const selectedForwardOwners = new Map<ServiceForwardId, SessionId>();
+          for (const service of allServices) {
+            if (service.currentForwardId !== null) {
+              selectedForwardOwners.set(service.currentForwardId, service.sessionId);
+            }
+          }
+          for (const forward of yield* serviceForwards.listOpen()) {
+            const sessionId = selectedForwardOwners.get(forward.id);
+            if (sessionId !== undefined) owners.set(forward.sealantWorkspaceId, sessionId);
+          }
+
+          yield* Effect.forEach(
+            owners,
+            ([workspaceId, sessionId]) => renewWorkspaceLease(sessionId, workspaceId),
+            { concurrency: 4, discard: true },
+          );
+        },
+      );
 
       /**
        * Stop the workspace unless a live process still leases it
@@ -2027,6 +2109,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           label: session.harness,
           argv: shapedArgv,
         });
+        yield* renewWorkspaceLease(sessionId, agentProcess.sealantWorkspaceId);
         if (launchCorrelationId !== null) yield* sessions.reopen(sessionId);
         yield* sessions.setStatus(sessionId, "running");
         yield* forkSupervision(sessionId, sealantRunId);
@@ -2165,6 +2248,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             label: session.harness,
             argv: shapedArgv,
           });
+          yield* renewWorkspaceLease(sessionId, agentProcess.sealantWorkspaceId);
           if (launchCorrelationId !== null) yield* sessions.reopen(sessionId);
           yield* sessions.setStatus(sessionId, "running");
           yield* forkSupervision(sessionId, sealantRunId);
@@ -2419,6 +2503,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           label: `shell ${shellNumber}`,
           argv: shellArgv,
         });
+        yield* renewWorkspaceLease(sessionId, shellProcess.sealantWorkspaceId);
         yield* Effect.forkIn(watchProcess(shellProcess), scope);
         return shellProcess;
       });
@@ -2552,6 +2637,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           preferredHostPort: previous?.hostPort ?? service.preferredHostPort,
           supersedesForwardId: previous?.id ?? null,
         });
+        yield* renewWorkspaceLease(service.sessionId, workspaceId);
         const binding = yield* serviceHost
           .start({
             serviceId,
@@ -2746,6 +2832,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           .openSession(workspace, argv)
           .pipe(Effect.tapError(() => processes.markExited(attempt.id, "exited", null)));
         yield* processes.setSealantSessionId(attempt.id, pty.id, SealantRunId.make(pty.runId));
+        yield* renewWorkspaceLease(sessionId, workspaceId);
         const runningAttempt = (yield* processes.byId(attempt.id)) ?? attempt;
         yield* Effect.forkIn(watchProcess(runningAttempt), scope);
 
@@ -2892,6 +2979,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           .openSession(workspace, previous.argv)
           .pipe(Effect.tapError(() => processes.markExited(attempt.id, "exited", null)));
         yield* processes.setSealantSessionId(attempt.id, pty.id, SealantRunId.make(pty.runId));
+        yield* renewWorkspaceLease(service.sessionId, previous.sealantWorkspaceId);
         const runningAttempt = (yield* processes.byId(attempt.id)) ?? attempt;
         yield* Effect.forkIn(watchProcess(runningAttempt), scope);
         let reachable = false;
@@ -3119,9 +3207,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // them; `provision` claims one so the launch skips straight to opening the PTY.
       // -----------------------------------------------------------------------------------------
 
-      /** Re-armed on every reconcile so the platform reaper leaves ready entries alone. */
-      const HOT_WORKSPACE_TTL = "12h";
-
       /** The create-time-fixed inputs as the project resolves them RIGHT NOW for `ownerUserId`. */
       const hotInputsFor = Effect.fn("SessionEngine.hotInputsFor")(function* (
         project: Project,
@@ -3309,7 +3394,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       Effect.tap((status) =>
                         workspaceIsLive(status)
                           ? sealant
-                              .expireWorkspace(workspace, HOT_WORKSPACE_TTL)
+                              .expireWorkspace(workspace.id, WORKSPACE_TTL_SECONDS)
                               .pipe(Effect.ignore)
                           : Effect.void,
                       ),
@@ -3664,6 +3749,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       yield* resume();
       yield* Effect.forkIn(sweepLeftovers(), scope);
+      // Ordinary retained workspaces have their own boot-and-heartbeat renewal. This pass runs
+      // immediately, then every ten minutes, independently of hot-pool reconciliation.
+      yield* Effect.forkIn(
+        retainedWorkspaceSweep().pipe(
+          Effect.catchDefect((defect) =>
+            Effect.logWarning("session engine: retained workspace sweep died").pipe(
+              Effect.annotateLogs({ defect: String(defect) }),
+            ),
+          ),
+          Effect.repeat(Schedule.spaced(Duration.minutes(10))),
+        ),
+        scope,
+      );
       // The pool's boot pass runs after `resume` has settled stranded sessions (so abandoned
       // claims read as settled), then repeats as the TTL-refresh heartbeat.
       yield* Effect.forkIn(

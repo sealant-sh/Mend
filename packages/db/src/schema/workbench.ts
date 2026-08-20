@@ -452,6 +452,10 @@ export const agentSessions = pgTable(
     sealantRunId: text().$type<SealantRunId>(),
     sealantWorkspaceId: text().$type<SealantWorkspaceId>(),
     sealantSessionId: text(),
+    workspaceExpiresAt: timestamp({ mode: "date", withTimezone: true }),
+    workspaceTtlRenewedAt: timestamp({ mode: "date", withTimezone: true }),
+    workspaceTtlRenewalFailedAt: timestamp({ mode: "date", withTimezone: true }),
+    workspaceTtlRenewalError: text(),
     // The image this session actually launched with — stamped at launch, never rewritten by a
     // later project-setting change. NULL for sessions from before the column (or not launched).
     workspaceImage: jsonb().$type<typeof WorkspaceImage.Encoded>(),

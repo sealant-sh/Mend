@@ -117,6 +117,10 @@ export class ServiceView extends Schema.Class<ServiceView>("ServiceView")({
   currentForward: Schema.NullOr(ServiceForward),
   previousForward: Schema.NullOr(ServiceForward),
   latestObservation: Schema.NullOr(ServiceObservation),
+  workspaceExpiresAt: Schema.NullOr(Schema.Date),
+  workspaceTtlRenewedAt: Schema.NullOr(Schema.Date),
+  workspaceTtlRenewalFailedAt: Schema.NullOr(Schema.Date),
+  workspaceTtlRenewalError: Schema.NullOr(Schema.String),
   endpoints: Schema.Array(ServiceEndpoint),
   previousEndpoints: Schema.Array(ServiceEndpoint),
 }) {}

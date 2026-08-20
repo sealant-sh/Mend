@@ -1087,6 +1087,10 @@ export interface ServiceViewDto {
   readonly currentForward: ServiceForwardDto | null;
   readonly previousForward: ServiceForwardDto | null;
   readonly latestObservation: ServiceObservationDto | null;
+  readonly workspaceExpiresAt: string | null;
+  readonly workspaceTtlRenewedAt: string | null;
+  readonly workspaceTtlRenewalFailedAt: string | null;
+  readonly workspaceTtlRenewalError: string | null;
   readonly endpoints: ReadonlyArray<ServiceEndpointDto>;
   readonly previousEndpoints: ReadonlyArray<ServiceEndpointDto>;
 }

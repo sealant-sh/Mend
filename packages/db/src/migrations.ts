@@ -963,6 +963,17 @@ const serviceAccessPolicy = Effect.gen(function* () {
       ADD COLUMN IF NOT EXISTS browser_scheme text`;
 });
 
+/** Exact, workspace-scoped TTL renewal facts survive process restarts and platform outages. */
+const workspaceTtlRenewal = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE agent_sessions
+      ADD COLUMN IF NOT EXISTS workspace_expires_at timestamptz,
+      ADD COLUMN IF NOT EXISTS workspace_ttl_renewed_at timestamptz,
+      ADD COLUMN IF NOT EXISTS workspace_ttl_renewal_failed_at timestamptz,
+      ADD COLUMN IF NOT EXISTS workspace_ttl_renewal_error text`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -998,4 +1009,5 @@ export const migrations = {
   "0031_follow_up_delivery_leases": followUpDeliveryLeases,
   "0032_stable_services": stableServices,
   "0033_service_access_policy": serviceAccessPolicy,
+  "0034_workspace_ttl_renewal": workspaceTtlRenewal,
 };

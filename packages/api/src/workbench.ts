@@ -1511,6 +1511,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     .handle("listServices", ({ query }) =>
       Effect.gen(function* () {
         const services = yield* ServicesRepo;
+        const sessions = yield* SessionsRepo;
         const processes = yield* SessionProcessesRepo;
         const forwards = yield* ServiceForwardsRepo;
         const observations = yield* ServiceObservationsRepo;
@@ -1527,12 +1528,17 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
                 ? null
                 : yield* forwards.byId(currentForward.supersedesForwardId);
             const latestObservation = yield* observations.latestForService(service.id);
+            const session = yield* sessions.byId(service.sessionId).pipe(Effect.orDie);
             return new ServiceView({
               service,
               attempts,
               currentForward,
               previousForward,
               latestObservation,
+              workspaceExpiresAt: session.workspaceExpiresAt,
+              workspaceTtlRenewedAt: session.workspaceTtlRenewedAt,
+              workspaceTtlRenewalFailedAt: session.workspaceTtlRenewalFailedAt,
+              workspaceTtlRenewalError: session.workspaceTtlRenewalError,
               endpoints: resolveServiceEndpoints(service, currentForward),
               previousEndpoints: resolveServiceEndpoints(service, previousForward),
             });

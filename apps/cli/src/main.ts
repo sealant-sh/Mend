@@ -233,7 +233,11 @@ const request = async <T>(
     }
     throw new Error(message);
   }
-  return JSON.parse(text) as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(`${method} ${route} returned invalid JSON from ${config.url}`);
+  }
 };
 
 /** The same call for one-shot commands: any failure prints and exits. */
@@ -694,6 +698,10 @@ interface ServiceViewDto {
     readonly forwardId: string;
     readonly state: "reachable" | "unreachable";
   } | null;
+  readonly workspaceExpiresAt: string | null;
+  readonly workspaceTtlRenewedAt: string | null;
+  readonly workspaceTtlRenewalFailedAt: string | null;
+  readonly workspaceTtlRenewalError: string | null;
   readonly endpoints: ReadonlyArray<ServiceEndpointDto>;
 }
 
@@ -730,6 +738,10 @@ interface ServiceDto {
   readonly sealantSessionId: string | null;
   readonly attemptExitedAt: string | null;
   readonly argv: ReadonlyArray<string>;
+  readonly workspaceExpiresAt: string | null;
+  readonly workspaceTtlRenewedAt: string | null;
+  readonly workspaceTtlRenewalFailedAt: string | null;
+  readonly workspaceTtlRenewalError: string | null;
 }
 
 const flattenService = (view: ServiceViewDto): ServiceDto => {
@@ -761,6 +773,10 @@ const flattenService = (view: ServiceViewDto): ServiceDto => {
     sealantSessionId: attempt?.sealantSessionId ?? null,
     attemptExitedAt: attempt?.exitedAt ?? null,
     argv: attempt?.argv ?? [],
+    workspaceExpiresAt: view.workspaceExpiresAt,
+    workspaceTtlRenewedAt: view.workspaceTtlRenewedAt,
+    workspaceTtlRenewalFailedAt: view.workspaceTtlRenewalFailedAt,
+    workspaceTtlRenewalError: view.workspaceTtlRenewalError,
   };
 };
 
@@ -792,9 +808,20 @@ const serviceExposure = (service: ServiceDto): string => {
   return `Loopback only · Mend auth: ${service.mendAuthentication ?? "unknown"}`;
 };
 
+const printWorkspaceTtlFailure = (service: ServiceDto): void => {
+  if (service.workspaceTtlRenewalError === null) return;
+  say(amber(`  workspace TTL renewal failed · ${service.workspaceTtlRenewalError}`));
+  say(
+    dim(
+      `  last renewed ${service.workspaceTtlRenewedAt ?? "unknown"} · known expiry ${service.workspaceExpiresAt ?? "unknown"} · failed ${service.workspaceTtlRenewalFailedAt ?? "unknown"}`,
+    ),
+  );
+};
+
 const printServiceEndpoint = (service: ServiceDto): void => {
   const exposure = serviceExposure(service);
   say(`  ${cobalt(serviceUrl(service))}${exposure === "" ? "" : `  ${dim(exposure)}`}`);
+  printWorkspaceTtlFailure(service);
 };
 
 const printService = (service: ServiceDto) => {
@@ -803,6 +830,7 @@ const printService = (service: ServiceDto) => {
   say(
     `${(service.label ?? service.id.slice(0, 8)).padEnd(12)}  ${dim(`:${service.workspacePort ?? "?"}${service.protocol === "udp" ? "/udp" : ""} →`)} ${serviceUrl(service)}  ${status}  ${dim(service.id.slice(0, 8))}${exposure === "" ? "" : `  ${dim(exposure)}`}`,
   );
+  printWorkspaceTtlFailure(service);
 };
 
 /**
