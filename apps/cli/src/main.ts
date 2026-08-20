@@ -17,7 +17,6 @@ import {
   workspaceGlobs,
 } from "./service-init.ts";
 import {
-  CONTINUE_COMMANDS,
   gitTopLevel,
   HARNESS_COMMANDS,
   LIVE_STATUSES,
@@ -242,9 +241,6 @@ const api = async <T>(
     return fail(error instanceof Error ? error.message : String(error));
   }
 };
-
-const worktreePathOf = (storePath: string, worktree: string) =>
-  path.join(path.dirname(storePath), "worktrees", worktree);
 
 /** A live elapsed-time spinner around a slow await — provisioning is not a hang. */
 const withSpinner = async <T>(label: string, work: Promise<T>): Promise<T> => {
@@ -1676,8 +1672,16 @@ const supervisedRun = async (
 interface FollowUpDto {
   readonly id: string;
   readonly sessionId: string;
+  readonly reviewSliceId: string | null;
+  readonly checkpointAId: string | null;
+  readonly checkpointBId: string | null;
+  readonly diffDigest: string | null;
+  readonly commentIds: ReadonlyArray<string>;
+  readonly idempotencyKey: string | null;
   readonly instruction: string;
-  readonly status: string;
+  readonly status: "pending" | "delivering" | "delivered" | "delivery_failed" | "superseded";
+  readonly deliverySealantRunId: string | null;
+  readonly deliveryError: string | null;
 }
 
 interface ProjectDetailDto {
@@ -1688,8 +1692,8 @@ interface ProjectDetailDto {
 
 /**
  * The second half of the review loop (plan §7.3): find the session with a
- * pending follow-up, deliver it (which reopens the session), and relaunch the
- * harness in the same worktree with the instruction as its prompt.
+ * pending follow-up and retry the one server-owned delivery operation. The
+ * server persists intent, launches, correlates membership, and finalizes.
  */
 const continueSession = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const explicitSession = args.find((a) => !a.startsWith("--")) ?? null;
@@ -1726,40 +1730,43 @@ const continueSession = async (config: CliConfig, args: ReadonlyArray<string>) =
     `/sessions/${sessionId}`,
   );
   const session = detail.session;
-  const projects = await api<ReadonlyArray<ProjectDto>>(config, "GET", "/projects");
-  const project = projects.find((p) => p.id === session.projectId);
-  if (project === undefined) return fail(`project ${session.projectId} not found`);
-  const worktree = worktreePathOf(project.storePath, session.worktree);
-
-  const build = CONTINUE_COMMANDS[session.harness];
   say(`${green("✓")} follow-up for session ${dim(session.id.slice(0, 8))} · ${session.branch}`);
   say(dim("  instruction:"));
   for (const line of followUp.instruction.split("\n").slice(0, 6)) say(dim(`  │ ${line}`));
   if (followUp.instruction.split("\n").length > 6) say(dim("  │ …"));
 
-  if (build === undefined) {
-    say("");
-    say(
-      `${amber("  cannot relaunch")} ${dim(`— harness "${session.harness}" has no known resume command.`)}`,
-    );
-    say(dim(`  run it yourself in ${worktree}; the follow-up stays pending.`));
-    process.exit(1);
+  if (
+    followUp.reviewSliceId === null ||
+    followUp.checkpointAId === null ||
+    followUp.checkpointBId === null ||
+    followUp.diffDigest === null ||
+    followUp.idempotencyKey === null
+  ) {
+    return fail("legacy follow-up — recreate it from a pinned Review before delivery");
   }
 
-  await api<FollowUpDto>(config, "POST", `/sessions/${session.id}/follow-up/deliver`);
-  say(`${green("✓")} delivered · session reopened`);
-  say(`${cobalt("  watch")} · ${config.url}/sessions/${session.id}`);
-
-  // Relaunch SUPERVISED, exactly like a fresh `mend <harness>`: a new
-  // workspace mounts the SAME worktree, the platform PTY runs the harness
-  // with the instruction as its opening prompt, and the record continues —
-  // the web session page shows the live terminal throughout.
-  const argv = build(followUp.instruction);
-  await withSpinner(
-    "provisioning workspace — the resumed run records like any other…",
-    api<SessionDto>(config, "POST", `/sessions/${session.id}/launch`, { argv }),
+  const delivered = await withSpinner(
+    "delivering persisted Review bundle — retries reconcile one process…",
+    api<FollowUpDto>(config, "POST", `/sessions/${session.id}/follow-up/deliver`, {
+      reviewSliceId: followUp.reviewSliceId,
+      checkpointAId: followUp.checkpointAId,
+      checkpointBId: followUp.checkpointBId,
+      diffDigest: followUp.diffDigest,
+      commentIds: followUp.commentIds,
+      instruction: followUp.instruction,
+      idempotencyKey: followUp.idempotencyKey,
+    }),
   );
-  say(`${green("✓ recording")} · workspace mounts the worktree${detachHint()}`);
+  if (delivered.status === "pending") {
+    return fail("the session is active — the follow-up remains pending");
+  }
+  if (delivered.status === "delivery_failed") {
+    return fail(delivered.deliveryError ?? "delivery failed before process membership finalized");
+  }
+  say(
+    `${green("✓ recording")} · delivered to run ${delivered.deliverySealantRunId ?? "unknown"}${detachHint()}`,
+  );
+  say(`${cobalt("  watch")} · ${config.url}/sessions/${session.id}`);
   say("");
   await attachOrExit(config, session.id, session.harness);
   exitAfterSessionEnd(config, session.id);

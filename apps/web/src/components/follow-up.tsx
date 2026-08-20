@@ -1,19 +1,29 @@
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
-import type { FollowUpDto } from "#/lib/api";
-import { continueArgv, deliverFollowUp, launchSession } from "#/lib/api";
+import { deliverFollowUp, type DeliverFollowUpInput, type FollowUpDto } from "#/lib/api";
 import { queryClient, sessionDetailQuery } from "#/lib/queries";
 
 const ACTIVE = new Set(["starting", "running", "waiting", "idle"]);
 
-/**
- * The second half of the review loop, in the browser — `mend continue`
- * parity over the same endpoints the CLI drives: deliver the pending
- * follow-up (which reopens the session), then relaunch the harness in the
- * same worktree with the instruction as its opening prompt. No terminal
- * required to close the loop.
- */
+const retryInput = (followUp: FollowUpDto): DeliverFollowUpInput | null =>
+  followUp.reviewSliceId === null ||
+  followUp.checkpointAId === null ||
+  followUp.checkpointBId === null ||
+  followUp.diffDigest === null ||
+  followUp.idempotencyKey === null
+    ? null
+    : {
+        reviewSliceId: followUp.reviewSliceId,
+        checkpointAId: followUp.checkpointAId,
+        checkpointBId: followUp.checkpointBId,
+        diffDigest: followUp.diffDigest,
+        commentIds: followUp.commentIds,
+        instruction: followUp.instruction,
+        idempotencyKey: followUp.idempotencyKey,
+      };
+
+/** Recoverable delivery state for the one server-owned Review operation. */
 export function FollowUpBanner({
   sessionId,
   followUp,
@@ -26,36 +36,40 @@ export function FollowUpBanner({
   const [error, setError] = useState<string | null>(null);
   if (followUp === null) return null;
 
-  const argv = continueArgv(session.harness, followUp.instruction);
+  const input = retryInput(followUp);
   const active = ACTIVE.has(session.status);
-
   const deliver = () => {
-    if (argv === null || delivering) return;
+    if (input === null || delivering || (active && followUp.status !== "delivering")) return;
     setDelivering(true);
     setError(null);
-    void deliverFollowUp(sessionId)
-      .then(() => launchSession(sessionId, argv))
+    void deliverFollowUp(sessionId, input)
       .catch((cause: unknown) => {
         setError(cause instanceof Error ? cause.message : String(cause));
       })
       .finally(() => {
-        // Prefix key: refreshes the session detail AND the follow-up query.
         void queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
+        void queryClient.invalidateQueries({ queryKey: ["change", followUp.changeId] });
         setDelivering(false);
       });
   };
 
+  const status =
+    followUp.status === "delivering"
+      ? "delivery in progress"
+      : followUp.status === "delivery_failed"
+        ? "delivery failed · retryable"
+        : "follow-up pending";
+
   return (
     <div className="mt-3 flex flex-wrap items-center gap-3">
-      <p className="font-mono text-xs text-warning">follow-up pending</p>
-      {active ? (
+      <p className="font-mono text-xs text-warning">{status}</p>
+      {input === null ? (
         <p className="font-mono text-xs text-faint">
-          the session is live — deliver once it settles
+          legacy bundle · recreate it from a pinned Review before delivery
         </p>
-      ) : argv === null ? (
+      ) : active && followUp.status !== "delivering" ? (
         <p className="font-mono text-xs text-faint">
-          harness “{session.harness}” has no known resume command — run it in the worktree; the
-          follow-up stays pending
+          the session is live — this bundle remains pending
         </p>
       ) : (
         <button
@@ -64,8 +78,17 @@ export function FollowUpBanner({
           onClick={deliver}
           className="rounded-xl bg-primary px-3 py-1.5 font-sans text-xs font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-transform hover:-translate-y-0.5 disabled:opacity-50"
         >
-          {delivering ? "Delivering — provisioning the workspace…" : "Deliver & relaunch"}
+          {delivering
+            ? "Checking…"
+            : followUp.status === "delivering"
+              ? "Check delivery"
+              : followUp.status === "delivery_failed"
+                ? "Retry delivery"
+                : "Deliver"}
         </button>
+      )}
+      {followUp.deliveryError !== null && (
+        <p className="font-mono text-xs text-warning">{followUp.deliveryError}</p>
       )}
       {error !== null && <p className="font-mono text-xs text-warning">{error}</p>}
     </div>

@@ -1,5 +1,3 @@
-import { CONTINUE_COMMANDS } from "./shared.ts";
-
 export interface ReviewSessionLike {
   readonly id: string;
   readonly harness: string;
@@ -7,6 +5,16 @@ export interface ReviewSessionLike {
 
 export interface ReviewAnnotationLike {
   readonly changeId: string | null;
+}
+
+export interface FollowUpDeliveryInput {
+  readonly reviewSliceId: string;
+  readonly checkpointAId: string;
+  readonly checkpointBId: string;
+  readonly diffDigest: string;
+  readonly commentIds: ReadonlyArray<string>;
+  readonly instruction: string;
+  readonly idempotencyKey: string;
 }
 
 export const reviewTargetForSession = <Session extends ReviewSessionLike>(
@@ -28,15 +36,9 @@ export const commentRange = (
 
 export type ReviewApi = (method: "GET" | "POST", route: string, body?: unknown) => Promise<unknown>;
 
-/** Close the review loop without changing session identity or worktree. */
-export const deliverReview = async (
+/** One server-owned operation: persist intent, launch, correlate, finalize. */
+export const deliverReview = (
   api: ReviewApi,
-  session: ReviewSessionLike,
-  instruction: string,
-): Promise<void> => {
-  const build = CONTINUE_COMMANDS[session.harness];
-  if (build === undefined)
-    throw new Error(`Harness “${session.harness}” has no known relaunch command`);
-  await api("POST", `/sessions/${session.id}/follow-up/deliver`, {});
-  await api("POST", `/sessions/${session.id}/launch`, { argv: build(instruction) });
-};
+  sessionId: string,
+  input: FollowUpDeliveryInput,
+): Promise<unknown> => api("POST", `/sessions/${sessionId}/follow-up/deliver`, input);

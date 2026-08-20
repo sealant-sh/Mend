@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import {
   RGBA,
@@ -18,7 +18,6 @@ import {
   type ReviewFile,
 } from "./review-model.ts";
 import { commentRange, deliverReview } from "./review-workflow.ts";
-import { LIVE_STATUSES } from "./shared.ts";
 import { openUrl } from "./terminal.ts";
 import {
   ADD_WASH,
@@ -74,6 +73,36 @@ interface ChangeDiffDto {
   readonly files: ReadonlyArray<ChangedFileDto>;
 }
 
+interface OpenReviewDto {
+  readonly slice: { readonly id: string };
+}
+
+interface ReviewDiffHunkDto {
+  readonly oldStart: number;
+  readonly oldLines: number;
+  readonly newStart: number;
+  readonly newLines: number;
+  readonly contextHash: string;
+}
+
+interface ReviewDiffFileDto {
+  readonly oldPath: string | null;
+  readonly newPath: string | null;
+  readonly additions: number;
+  readonly deletions: number;
+  readonly hunks: ReadonlyArray<ReviewDiffHunkDto>;
+}
+
+interface PinnedReviewDiffDto {
+  readonly change: ChangeDto;
+  readonly slice: { readonly id: string; readonly diffDigest: string };
+  readonly checkpointA: { readonly id: string };
+  readonly checkpointB: { readonly id: string };
+  readonly patch: string;
+  readonly files: ReadonlyArray<ReviewDiffFileDto>;
+  readonly anchorFiles: ReadonlyArray<ReviewDiffFileDto>;
+}
+
 interface RecordLinkDto {
   readonly sequence: string;
   readonly excerpt: string;
@@ -121,12 +150,24 @@ interface ChangePassDto {
 
 interface FollowUpDto {
   readonly id: string;
+  readonly reviewSliceId: string | null;
+  readonly checkpointAId: string | null;
+  readonly checkpointBId: string | null;
+  readonly diffDigest: string | null;
+  readonly commentIds: ReadonlyArray<string>;
+  readonly idempotencyKey: string | null;
   readonly instruction: string;
-  readonly status: "pending" | "delivered" | "superseded";
+  readonly status: "pending" | "delivering" | "delivered" | "delivery_failed" | "superseded";
+  readonly deliveryError: string | null;
 }
 
 interface ReviewData {
   readonly wire: ChangeDiffDto;
+  readonly sliceId: string;
+  readonly checkpointAId: string;
+  readonly checkpointBId: string;
+  readonly diffDigest: string;
+  readonly anchorFiles: ReadonlyArray<ReviewDiffFileDto>;
   readonly files: ReadonlyArray<ReviewFile>;
   readonly comments: ReadonlyArray<ReviewCommentDto>;
   readonly tour: ChangeTourDto | null;
@@ -144,7 +185,12 @@ type Editor =
       readonly line: number | null;
       readonly endLine: number | null;
     }
-  | { readonly kind: "send"; readonly instruction: string };
+  | {
+      readonly kind: "send";
+      readonly instruction: string;
+      readonly commentIds: ReadonlyArray<string>;
+      readonly idempotencyKey: string;
+    };
 
 const REVIEW_KEY = (changeId: string) => ["review", changeId] as const;
 const EDITOR_KEY_BINDINGS = [{ name: "return", ctrl: true, action: "submit" }] as const;
@@ -166,7 +212,22 @@ const truncate = (text: string, width: number): string => {
 };
 
 const fetchReview = async (ctx: ReviewContext, changeId: string): Promise<ReviewData> => {
-  const wire = await ctx.api<ChangeDiffDto>("GET", `/changes/${changeId}/diff`);
+  const opened = await ctx.api<OpenReviewDto>("POST", `/changes/${changeId}/reviews/open`, {
+    idempotencyKey: `cli-review:${changeId}`,
+  });
+  const pinned = await ctx.api<PinnedReviewDiffDto>(
+    "GET",
+    `/changes/${changeId}/reviews/${opened.slice.id}/diff`,
+  );
+  const wire: ChangeDiffDto = {
+    change: pinned.change,
+    diff: pinned.patch,
+    files: pinned.files.map((file) => ({
+      path: file.newPath ?? file.oldPath ?? "unknown path",
+      additions: file.additions,
+      deletions: file.deletions,
+    })),
+  };
   const [comments, tour, passes, followUp, sessionDetail] = await Promise.all([
     ctx.api<ReadonlyArray<ReviewCommentDto>>("GET", `/changes/${changeId}/comments`),
     ctx.api<ChangeTourDto | null>("GET", `/changes/${changeId}/tour`),
@@ -176,6 +237,11 @@ const fetchReview = async (ctx: ReviewContext, changeId: string): Promise<Review
   ]);
   return {
     wire,
+    sliceId: pinned.slice.id,
+    checkpointAId: pinned.checkpointA.id,
+    checkpointBId: pinned.checkpointB.id,
+    diffDigest: pinned.slice.diffDigest,
+    anchorFiles: pinned.anchorFiles,
     files: buildReviewFiles(wire.diff, wire.files),
     comments,
     tour,
@@ -537,16 +603,13 @@ export function ReviewScreen({
   const [editor, setEditor] = useState<Editor | null>(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
-  const [checkpointState, setCheckpointState] = useState<"recording" | "recorded" | "failed">(
-    "recording",
-  );
+  const checkpointState = data === undefined ? (isFetching ? "recording" : "failed") : "recorded";
   const lockRef = useRef(false);
   const editorRef = useRef<TextareaRenderable | null>(null);
   const diffRef = useRef<DiffRenderable | null>(null);
   const diffScrollRef = useRef<ScrollBoxRenderable | null>(null);
   const fileScrollRef = useRef<ScrollBoxRenderable | null>(null);
   const commentScrollRef = useRef<ScrollBoxRenderable | null>(null);
-  const checkpointedRef = useRef(false);
 
   const files = useMemo(() => {
     const order: Readonly<Record<ReviewFile["status"], number>> = {
@@ -595,22 +658,6 @@ export function ReviewScreen({
   const refresh = (): void => {
     void queryClient.invalidateQueries({ queryKey: REVIEW_KEY(changeId) });
   };
-
-  const recordReviewCheckpoint = (): void => {
-    if (checkpointedRef.current) return;
-    checkpointedRef.current = true;
-    setCheckpointState("recording");
-    void ctx
-      .api("POST", `/sessions/${session.id}/checkpoints`, { trigger: "review-open" })
-      .then(() => setCheckpointState("recorded"))
-      .catch((error: unknown) => {
-        checkpointedRef.current = false;
-        setCheckpointState("failed");
-        setStatus(`Checkpoint not recorded · ${errorMessage(error)} · K retries`);
-      });
-  };
-
-  useEffect(recordReviewCheckpoint, [ctx, session.id]);
 
   useEffect(() => {
     fileScrollRef.current?.scrollTo(Math.max(0, fileIndex * 2 - 2));
@@ -774,6 +821,8 @@ export function ReviewScreen({
     setEditor({
       kind: "send",
       instruction: assembleReviewInstruction(data.wire.change, sendable),
+      commentIds: sendable.map((comment) => comment.id),
+      idempotencyKey: `cli-follow-up:${data.sliceId}:${randomUUID()}`,
     });
   };
 
@@ -787,16 +836,58 @@ export function ReviewScreen({
     setWorking(true);
     try {
       if (editor.kind === "comment") {
-        await ctx.api("POST", `/changes/${changeId}/comments`, {
-          file: editor.file,
-          line: editor.line,
-          endLine: editor.endLine,
+        if (data === undefined) throw new Error("The pinned Review is not available.");
+        const anchorFile = data.anchorFiles.find(
+          (file) => (file.newPath ?? file.oldPath) === editor.file,
+        );
+        const endLine = editor.endLine ?? editor.line;
+        const hunk =
+          editor.line === null || endLine === null
+            ? null
+            : (anchorFile?.hunks.find(
+                (candidate) =>
+                  candidate.newLines > 0 &&
+                  editor.line !== null &&
+                  editor.line >= candidate.newStart &&
+                  endLine <= candidate.newStart + candidate.newLines - 1,
+              ) ?? null);
+        if (editor.file !== null && (anchorFile === undefined || hunk === null)) {
+          throw new Error("The selected line is outside the pinned Review anchor.");
+        }
+        await ctx.api("POST", `/changes/${changeId}/reviews/${data.sliceId}/comments`, {
+          target:
+            editor.file === null
+              ? {
+                  oldPath: null,
+                  newPath: null,
+                  side: null,
+                  startLine: null,
+                  endLine: null,
+                  hunkContextHash: null,
+                }
+              : {
+                  oldPath: anchorFile?.oldPath ?? null,
+                  newPath: anchorFile?.newPath ?? null,
+                  side: "new",
+                  startLine: editor.line,
+                  endLine,
+                  hunkContextHash: hunk?.contextHash ?? null,
+                },
           body: value,
         });
         setStatus(editor.file === null ? "Change comment saved" : "Inline comment saved");
       } else {
-        await ctx.api("POST", `/sessions/${session.id}/follow-up`, { instruction: value });
-        setStatus("Follow-up saved · y delivers it and relaunches the same session");
+        if (data === undefined) throw new Error("The pinned Review is not available.");
+        await deliverReview(ctx.api, session.id, {
+          reviewSliceId: data.sliceId,
+          checkpointAId: data.checkpointAId,
+          checkpointBId: data.checkpointBId,
+          diffDigest: data.diffDigest,
+          commentIds: editor.commentIds,
+          instruction: value,
+          idempotencyKey: editor.idempotencyKey,
+        });
+        setStatus("Follow-up delivery requested · retry keeps the same run");
       }
       setEditor(null);
       refresh();
@@ -815,19 +906,34 @@ export function ReviewScreen({
   };
 
   const deliverAndRelaunch = (): void => {
-    if (data?.followUp?.status !== "pending") {
-      setStatus("No pending follow-up — s assembles the open review comments first");
+    const followUp = data?.followUp ?? null;
+    if (followUp === null || followUp.status === "delivered" || followUp.status === "superseded") {
+      setStatus("No retryable follow-up — s assembles the open Review comments first");
       return;
     }
-    if (LIVE_STATUSES.has(data.sessionStatus)) {
-      setStatus("The session is live — deliver the pending follow-up once it settles");
+    if (
+      followUp.reviewSliceId === null ||
+      followUp.checkpointAId === null ||
+      followUp.checkpointBId === null ||
+      followUp.diffDigest === null ||
+      followUp.idempotencyKey === null
+    ) {
+      setStatus("Legacy follow-up · recreate it from a pinned Review before delivery");
       return;
     }
-    const instruction = data.followUp.instruction;
+    const input = {
+      reviewSliceId: followUp.reviewSliceId,
+      checkpointAId: followUp.checkpointAId,
+      checkpointBId: followUp.checkpointBId,
+      diffDigest: followUp.diffDigest,
+      commentIds: followUp.commentIds,
+      instruction: followUp.instruction,
+      idempotencyKey: followUp.idempotencyKey,
+    };
     void runAction(
-      "Delivering review and relaunching the same session",
-      () => deliverReview(ctx.api, session, instruction),
-      "Review delivered · the same session is running · diff updates live",
+      "Delivering the persisted Review bundle",
+      () => deliverReview(ctx.api, session.id, input),
+      "Delivery reconciled · the same idempotency key names one run",
     );
   };
 
@@ -858,11 +964,6 @@ export function ReviewScreen({
     if (key.name === "r") {
       setStatus("Refreshing live change…");
       return refresh();
-    }
-    if (key.name === "k" && key.shift) {
-      if (checkpointState !== "failed") return;
-      recordReviewCheckpoint();
-      return;
     }
     if (key.name === "o") {
       openUrl(`${ctx.config.url}/changes/${changeId}`);
@@ -966,13 +1067,13 @@ export function ReviewScreen({
       ? (selectedFile?.patch ?? "")
       : visibleWhitespace(selectedFile.patch);
   const footer =
-    editor !== null
-      ? " ctrl+enter save · esc cancel"
-      : focus === "files"
+    editor === null
+      ? focus === "files"
         ? " files · ↑↓/jk move · enter review · tab pane · esc back · q quit"
         : focus === "comments"
           ? " comments · ↑↓/jk move · enter anchor · a accept/address · x dismiss · u reopen · tab pane"
-          : ` diff · ↑↓/jk lines · n/p files · [/ ] hunks · v range${rangeStart === null ? "" : `:${rangeStart}`} · c inline · C change · d layout · w wrap · z whitespace`;
+          : ` diff · ↑↓/jk lines · n/p files · [/ ] hunks · v range${rangeStart === null ? "" : `:${rangeStart}`} · c inline · C change · d layout · w wrap · z whitespace`
+      : " ctrl+enter save · esc cancel";
 
   const sidebar: ReactNode = wide ? (
     <box width={36} flexShrink={0} flexDirection="column" backgroundColor={BG}>
@@ -1170,9 +1271,9 @@ export function ReviewScreen({
               total={tourStops.length}
               width={width}
             />
-          ) : detailComment !== null ? (
+          ) : detailComment === null ? null : (
             <EvidenceCard comment={detailComment} width={wide ? width - 38 : width} />
-          ) : null}
+          )}
         </box>
       </box>
 
