@@ -269,6 +269,29 @@ export const LIVE_PROCESS: ReadonlySet<SessionProcessStatus> = new Set<SessionPr
   "unreachable",
 ]);
 
+interface ProcessLogPageDto {
+  readonly requestedFrom: string;
+  readonly nextFrom: string;
+  readonly chunks: ReadonlyArray<{
+    readonly sequence: string;
+    readonly dataBase64: string;
+  }>;
+}
+
+const decodeProcessLogChunks = (chunks: ReadonlyArray<{ readonly dataBase64: string }>): string => {
+  const decoded = chunks.map((chunk) => atob(chunk.dataBase64));
+  const byteLength = decoded.reduce((total, chunk) => total + chunk.length, 0);
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of decoded) {
+    for (let index = 0; index < chunk.length; index += 1) {
+      bytes[offset + index] = chunk.charCodeAt(index);
+    }
+    offset += chunk.length;
+  }
+  return new TextDecoder().decode(bytes);
+};
+
 // ─── transport ──────────────────────────────────────────────────────────────
 
 /** The server answered and said no — carries its own words when it gave any. */
@@ -329,8 +352,20 @@ export const sessionDetail = (id: string) => get<SessionDetailDto>(`/api/session
 export const listSessionProcesses = (id: string) =>
   get<ReadonlyArray<SessionProcessDto>>(`/api/sessions/${id}/processes`);
 
-export const processOutput = (id: string) =>
-  get<{ readonly text: string }>(`/api/processes/${id}/output`);
+export const processOutput = async (id: string): Promise<{ readonly text: string }> => {
+  const chunks: Array<{ readonly dataBase64: string }> = [];
+  let from = "0";
+  for (let pageNumber = 0; pageNumber < 128; pageNumber += 1) {
+    const query = new URLSearchParams({ from, limit: "1000" });
+    const page = await get<ProcessLogPageDto>(`/api/processes/${id}/logs?${query}`);
+    chunks.push(...page.chunks);
+    if (page.chunks.length === 0 || page.nextFrom === from) {
+      return { text: decodeProcessLogChunks(chunks) };
+    }
+    from = page.nextFrom;
+  }
+  throw new ApiError("process log snapshot exceeded 128 pages", 0);
+};
 
 export const reviewDiff = (
   changeId: string,

@@ -92,6 +92,7 @@ import {
   ProjectHotSessionsStatus,
   ProjectSecretMutationResult,
   ProjectWorkspaceImageSaveResult,
+  ProcessLogPage,
   DotfilesSnapshotFileView,
   DotfilesSnapshotView,
   DotfilesView,
@@ -1576,7 +1577,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const page = yield* sealant
           .sessionOutput(row.sealantSessionId, { from, limit })
           .pipe(Effect.mapError((error) => new StoreFailure({ message: error.message })));
-        return {
+        return new ProcessLogPage({
           processId: row.id,
           sealantSessionId: row.sealantSessionId,
           sealantRunId: row.sealantRunId,
@@ -1589,7 +1590,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           telemetryLoss: "unknown" as const,
           telemetryNote:
             "Sealant does not report retained-range loss for interactive-session output.",
-        };
+        });
       }),
     )
     .handle("restartService", ({ params }) =>
