@@ -939,12 +939,25 @@ export const listActiveSessions = () => request<ReadonlyArray<SessionDto>>("/api
 
 export const sessionDetail = (id: string) => request<SessionDetailDto>(`/api/sessions/${id}`);
 
-export const createSession = (projectId: string, harness: string) =>
-  post<SessionDto>(`/api/projects/${projectId}/sessions`, { harness, label: null, base: null });
+export const createSession = (projectId: string, harness: string, base: string | null = null) =>
+  post<SessionDto>(`/api/projects/${projectId}/sessions`, { harness, label: null, base });
 
 /** Fire the supervised launch. Resolves when the workspace is ready (a first launch can take minutes). */
 export const launchSession = (id: string, argv: ReadonlyArray<string>) =>
   post<SessionDto>(`/api/sessions/${id}/launch`, { argv });
+
+/** A composed start — the server turns this into the harness's own argv. */
+export interface LaunchStartDto {
+  readonly prompt?: string;
+  readonly model?: string;
+  readonly effort?: string;
+  readonly permissionMode?: string;
+  readonly speed?: string;
+}
+
+/** Launch with a structured start; the typed prompt opens the harness and seeds auto-naming. */
+export const launchSessionStart = (id: string, start: LaunchStartDto) =>
+  post<SessionDto>(`/api/sessions/${id}/launch`, start);
 
 export const stopSession = (id: string) => post<SessionDto>(`/api/sessions/${id}/stop`, {});
 

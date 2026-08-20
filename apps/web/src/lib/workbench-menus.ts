@@ -3,8 +3,6 @@ import type { UseNavigateResult } from "@tanstack/react-router";
 
 import {
   checkpointSession,
-  createSession,
-  launchSession,
   removeProject,
   removeSession,
   resumeSession,
@@ -14,39 +12,16 @@ import {
   type SessionDto,
 } from "#/lib/api";
 import { queryClient } from "#/lib/queries";
-
-/** How each harness launches — mirrors the CLI's map; the server records either way. */
-/** Harnesses the web can start; opencode stays CLI-only until it is exercised end to end. */
-export const HARNESSES = ["claude", "codex", "shell"] as const;
-export type Harness = (typeof HARNESSES)[number];
-
-/** What each harness launches — shell is a plain bash in its own recorded worktree. */
-const HARNESS_COMMANDS: Record<Harness, ReadonlyArray<string>> = {
-  claude: ["claude"],
-  codex: ["codex"],
-  shell: ["bash"],
-};
+import { HARNESSES, startComposedSession, type Harness } from "#/lib/session-launch";
 
 /** Session states with a live process behind them. */
 export const LIVE_STATES: ReadonlySet<string> = new Set(["starting", "running", "waiting", "idle"]);
 
 type Navigate = UseNavigateResult<string>;
 
-/**
- * Fire a session: create the row, kick the supervised launch, land on the
- * session page — its terminal pane attaches the moment the workspace is
- * ready. The launch promise outlives the navigation (same SPA); a failure
- * settles the session server-side, so the page shows it.
- */
+/** Quick-start a bare session — the composer's path with no prompt or knobs. */
 export const startSession = (navigate: Navigate, projectId: string, harness: Harness) =>
-  createSession(projectId, harness).then((session) => {
-    void launchSession(session.id, HARNESS_COMMANDS[harness])
-      .catch(() => undefined)
-      .finally(() => {
-        void queryClient.invalidateQueries({ queryKey: ["session", session.id] });
-      });
-    return navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } });
-  });
+  startComposedSession(navigate, projectId, { harness, prompt: "" });
 
 /** Clipboard write with a fallback for non-secure origins (LAN over http). */
 export const copyText = (text: string) => {

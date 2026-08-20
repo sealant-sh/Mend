@@ -4,6 +4,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { ProjectSetupFacts } from "#/components/project-setup-facts";
+import { SessionComposer } from "#/components/session-composer";
 import { AppShell } from "#/components/shell";
 import { SessionStatusDot } from "#/components/status";
 import { removeSession } from "#/lib/api";
@@ -16,13 +17,7 @@ import {
   referencesQuery,
 } from "#/lib/queries";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
-import {
-  HARNESSES,
-  LIVE_STATES,
-  sessionMenu,
-  startSession,
-  type Harness,
-} from "#/lib/workbench-menus";
+import { LIVE_STATES, sessionMenu, startSession } from "#/lib/workbench-menus";
 
 export const Route = createFileRoute("/projects/$projectId")({
   ssr: false,
@@ -42,8 +37,7 @@ function ProjectPage() {
   const { projectId } = Route.useParams();
   const { project, sessions, annotations } = useSuspenseQuery(projectDetailQuery(projectId)).data;
   const navigate = useNavigate();
-  const [harness, setHarness] = useState<Harness>("claude");
-  const [starting, setStarting] = useState(false);
+  const [shellStarting, setShellStarting] = useState(false);
   const [clearing, setClearing] = useState<"idle" | "armed" | "working">("idle");
   const { openMenu, menuElement } = useContextMenu();
   useWorkbenchEvents();
@@ -66,23 +60,40 @@ function ProjectPage() {
     });
   };
 
-  const start = () => {
-    setStarting(true);
-    void startSession(navigate, projectId, harness).finally(() => setStarting(false));
-  };
-
   return (
     <AppShell projectId={projectId}>
       <div className="mx-auto max-w-[1100px]">
-        <p className="ev-eyebrow">project</p>
-        <h1 className="mt-2 font-display text-3xl font-medium tracking-tight text-foreground">
-          {project.name}
-        </h1>
-        <p className="mt-2 font-mono text-xs text-faint">
-          store {project.storePath} · {project.defaultBranch}
-          {project.adoptedSha === null ? "" : `@${project.adoptedSha.slice(0, 7)}`}
-          {project.originUrl === null ? "" : ` · origin ${project.originUrl}`}
-        </p>
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="ev-eyebrow">project</p>
+            <h1 className="mt-2 font-display text-3xl font-medium tracking-tight text-foreground">
+              {project.name}
+            </h1>
+            <p className="mt-2 font-mono text-xs text-faint">
+              store {project.storePath} · {project.defaultBranch}
+              {project.adoptedSha === null ? "" : `@${project.adoptedSha.slice(0, 7)}`}
+              {project.originUrl === null ? "" : ` · origin ${project.originUrl}`}
+            </p>
+          </div>
+          <button
+            type="button"
+            disabled={shellStarting}
+            onClick={() => {
+              setShellStarting(true);
+              void startSession(navigate, projectId, "shell").finally(() =>
+                setShellStarting(false),
+              );
+            }}
+            className="mt-1 shrink-0 rounded-xl border border-border bg-card px-3.5 py-2 font-sans text-[13px] font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-50"
+          >
+            {shellStarting ? "Starting…" : "Open a shell"}
+          </button>
+        </div>
+
+        <div className="mt-6">
+          <SessionComposer projects={[project]} fixedProjectId={project.id} />
+          <p className="mt-2 font-mono text-[11.5px] text-faint">new worktree · recorded</p>
+        </div>
 
         <div className="mt-8 grid gap-12 border-t border-rule pt-8 lg:grid-cols-[minmax(0,1fr)_320px]">
           <section>
@@ -90,7 +101,7 @@ function ProjectPage() {
             <div className="mt-4 overflow-hidden rounded-2xl border border-rule bg-card shadow-xs">
               {ordered.length === 0 ? (
                 <p className="p-5 text-sm text-muted-foreground">
-                  No sessions yet — start one on the right, or{" "}
+                  No sessions yet — start one above, or{" "}
                   <span className="font-mono text-xs">mend claude</span> in this repository. Either
                   way it runs in its own worktree, recorded.
                 </p>
@@ -166,43 +177,6 @@ function ProjectPage() {
           </section>
 
           <aside className="flex flex-col gap-6">
-            <section className="rounded-2xl bg-panel p-5 shadow-[var(--shadow-sm)]">
-              <p className="font-sans text-sm font-medium text-foreground">Start a session</p>
-              <div className="mt-3 flex flex-wrap gap-2" role="radiogroup" aria-label="Harness">
-                {HARNESSES.map((choice) => {
-                  const selected = choice === harness;
-                  return (
-                    <button
-                      key={choice}
-                      type="button"
-                      role="radio"
-                      aria-checked={selected}
-                      onClick={() => setHarness(choice)}
-                      className={`rounded-xl border px-3 py-1.5 font-mono text-xs transition-colors ${
-                        selected
-                          ? "border-info/50 bg-wash text-info"
-                          : "border-border bg-card text-foreground hover:bg-secondary"
-                      }`}
-                    >
-                      {choice}
-                    </button>
-                  );
-                })}
-              </div>
-              <button
-                type="button"
-                disabled={starting}
-                onClick={start}
-                className="mt-4 w-full rounded-xl bg-primary px-4 py-2.5 font-sans text-sm font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-transform hover:-translate-y-0.5 disabled:opacity-50"
-              >
-                {starting ? "Starting…" : "Start in a new worktree"}
-              </button>
-              <p className="mt-3 font-mono text-[11.5px] text-faint">
-                {harness === "shell"
-                  ? "a bash in its own worktree · recorded"
-                  : `mend ${harness} · new worktree · recorded`}
-              </p>
-            </section>
             <ProjectSetupFacts projectId={projectId} />
           </aside>
         </div>
