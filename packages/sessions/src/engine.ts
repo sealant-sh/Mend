@@ -26,6 +26,7 @@ import {
   SessionId,
   SessionProcessId,
   type ProjectId,
+  type WorkspaceImage,
 } from "@mend/domain";
 import type {
   Checkpoint,
@@ -144,6 +145,22 @@ const platformShape = (
       return { harness: opencode(), credentialAttempts: [{ github: true }, undefined] };
   }
 };
+
+/**
+ * The argv an open-workbench PTY actually runs. `["bash"]` is the request
+ * sentinel (UI, resume paths, shell tabs), but the process launched is the
+ * image's configured login shell — the user's dotfiles only load in their
+ * own shell. Custom images keep bash: their contract promises only a POSIX
+ * sh, and dotfiles are skipped there anyway.
+ */
+const interactiveShellArgv = (
+  image: WorkspaceImage | null,
+  rest: ReadonlyArray<string> = [],
+): ReadonlyArray<string> => [
+  // Flags ride along untranslated: -i/-l/-c mean the same in bash, zsh, fish.
+  image !== null && image.mode === "family" ? image.shell : "bash",
+  ...rest,
+];
 
 /**
  * Permission prompts are the harness re-asking a question Mend already
@@ -1239,7 +1256,13 @@ export class SessionEngine extends Context.Service<
         // settles the launch); for a cross-harness or shell launch it is
         // best-effort context riding beside the import. Automatic: state was
         // harvested at the previous settle, nothing was asked of the user.
-        let shapedArgv = argv;
+        // The bash sentinel means "an interactive shell", not literally bash:
+        // launch the image's login shell so the owner's dotfiles apply to the
+        // shell they actually get.
+        const interactiveShell = argv[0] === "bash";
+        let shapedArgv = interactiveShell
+          ? interactiveShellArgv(workspaceImage, argv.slice(1))
+          : argv;
         if (manifest !== null) {
           const tarName = `.mend-harness-state-${session.id.slice(0, 8)}.tgz`;
           const archivePath = path.join(stateDir, "harness-state.tar.gz");
@@ -1591,7 +1614,6 @@ export class SessionEngine extends Context.Service<
             // and nobody means "failed" by that (docs/BUGS.md 2026-08-13).
             // The observed code still lands in the summary; only the verdict
             // stops guessing.
-            const interactiveShell = shapedArgv[0] === "bash";
             const outcome =
               interactiveShell || status.exitCode === undefined || status.exitCode === 0
                 ? "completed"
@@ -1824,7 +1846,9 @@ export class SessionEngine extends Context.Service<
           return yield* new SessionNotLiveError({ sessionId });
         }
         const workspace = yield* sealant.getWorkspace(session.sealantWorkspaceId);
-        const pty = yield* sealant.openSession(workspace, ["bash"]);
+        // The image stamped at launch names the login shell this tab should run.
+        const shellArgv = interactiveShellArgv(session.workspaceImage);
+        const pty = yield* sealant.openSession(workspace, shellArgv);
         const shellProcess = yield* processes.create({
           sessionId,
           sealantWorkspaceId: session.sealantWorkspaceId,
@@ -1832,7 +1856,7 @@ export class SessionEngine extends Context.Service<
           sealantRunId: SealantRunId.make(pty.runId),
           kind: "shell",
           label: "shell",
-          argv: ["bash"],
+          argv: shellArgv,
         });
         yield* Effect.forkIn(watchProcess(shellProcess), scope);
         return shellProcess;
