@@ -17,7 +17,7 @@ import {
   type ServiceTargetState,
   type ServiceTransport,
 } from "@mend/domain/workbench";
-import { asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
@@ -65,6 +65,16 @@ export class ServicesRepo extends Context.Service<
       id: ServiceId,
       forwardId: ServiceForwardId | null,
     ) => Effect.Effect<void>;
+    readonly compareAndSetCurrentAttempt: (
+      id: ServiceId,
+      expected: SessionProcessId | null,
+      next: SessionProcessId | null,
+    ) => Effect.Effect<boolean>;
+    readonly compareAndSetCurrentForward: (
+      id: ServiceId,
+      expected: ServiceForwardId | null,
+      next: ServiceForwardId | null,
+    ) => Effect.Effect<boolean>;
   }
 >()("@mend/db/ServicesRepo") {}
 
@@ -81,6 +91,8 @@ export class ServiceForwardsRepo extends Context.Service<
   ServiceForwardsRepo,
   {
     readonly create: (input: NewServiceForward) => Effect.Effect<ServiceForward>;
+    /** Inserts a binding attempt and selects it on the Service in one transaction. */
+    readonly createAndSelect: (input: NewServiceForward) => Effect.Effect<ServiceForward>;
     readonly byId: (id: ServiceForwardId) => Effect.Effect<ServiceForward | null>;
     readonly listForService: (serviceId: ServiceId) => Effect.Effect<ReadonlyArray<ServiceForward>>;
     readonly listOpen: () => Effect.Effect<ReadonlyArray<ServiceForward>>;
@@ -256,6 +268,58 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
         if (row !== undefined) yield* notify(row.sessionId);
       });
 
+      const compareAndSetCurrentAttempt = Effect.fn("ServicesRepo.compareAndSetCurrentAttempt")(
+        function* (
+          id: ServiceId,
+          expected: SessionProcessId | null,
+          next: SessionProcessId | null,
+        ) {
+          const rows = yield* db
+            .update(services)
+            .set({ currentAttemptId: next, updatedAt: new Date() })
+            .where(
+              and(
+                eq(services.id, id),
+                expected === null
+                  ? isNull(services.currentAttemptId)
+                  : eq(services.currentAttemptId, expected),
+              ),
+            )
+            .returning({ sessionId: services.sessionId })
+            .pipe(Effect.orDie);
+          const row = rows[0];
+          if (row === undefined) return false;
+          yield* notify(row.sessionId);
+          return true;
+        },
+      );
+
+      const compareAndSetCurrentForward = Effect.fn("ServicesRepo.compareAndSetCurrentForward")(
+        function* (
+          id: ServiceId,
+          expected: ServiceForwardId | null,
+          next: ServiceForwardId | null,
+        ) {
+          const rows = yield* db
+            .update(services)
+            .set({ currentForwardId: next, updatedAt: new Date() })
+            .where(
+              and(
+                eq(services.id, id),
+                expected === null
+                  ? isNull(services.currentForwardId)
+                  : eq(services.currentForwardId, expected),
+              ),
+            )
+            .returning({ sessionId: services.sessionId })
+            .pipe(Effect.orDie);
+          const row = rows[0];
+          if (row === undefined) return false;
+          yield* notify(row.sessionId);
+          return true;
+        },
+      );
+
       return {
         create,
         byId,
@@ -265,6 +329,8 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
         listAll,
         setCurrentAttempt,
         setCurrentForward,
+        compareAndSetCurrentAttempt,
+        compareAndSetCurrentForward,
       };
     }),
   );
@@ -314,6 +380,43 @@ export const ServiceForwardsRepoLive: Layer.Layer<
         .returning()
         .pipe(Effect.orDie);
       if (row === undefined) return yield* Effect.die("service forward insert returned no row");
+      yield* notify(row.serviceId);
+      return toForward(row);
+    });
+
+    const createAndSelect = Effect.fn("ServiceForwardsRepo.createAndSelect")(function* (
+      input: NewServiceForward,
+    ) {
+      const row = yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            const [created] = yield* tx
+              .insert(serviceForwards)
+              .values({
+                id: input.id ?? ServiceForwardId.make(crypto.randomUUID()),
+                serviceId: input.serviceId,
+                sealantWorkspaceId: input.sealantWorkspaceId,
+                preferredHostPort: input.preferredHostPort ?? null,
+                hostPort: null,
+                boundAddresses: null,
+                state: "binding",
+                error: null,
+                supersedesForwardId: input.supersedesForwardId ?? null,
+                boundAt: null,
+                closedAt: null,
+              })
+              .returning();
+            if (created === undefined) {
+              return yield* Effect.die("service forward insert returned no row");
+            }
+            yield* tx
+              .update(services)
+              .set({ currentForwardId: created.id, updatedAt: new Date() })
+              .where(eq(services.id, input.serviceId));
+            return created;
+          }),
+        )
+        .pipe(Effect.orDie);
       yield* notify(row.serviceId);
       return toForward(row);
     });
@@ -401,7 +504,16 @@ export const ServiceForwardsRepoLive: Layer.Layer<
       if (row !== undefined) yield* notify(row.serviceId);
     });
 
-    return { create, byId, listForService, listOpen, markBound, markFailed, markClosed };
+    return {
+      create,
+      createAndSelect,
+      byId,
+      listForService,
+      listOpen,
+      markBound,
+      markFailed,
+      markClosed,
+    };
   }),
 );
 

@@ -42,6 +42,16 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
             void queryClient.invalidateQueries({ queryKey: ["project", event.projectId] });
           }
           break;
+        case "session-process":
+          if (event.sessionId !== undefined) {
+            void queryClient.invalidateQueries({
+              queryKey: ["session", event.sessionId, "services"],
+            });
+            void queryClient.invalidateQueries({
+              queryKey: ["session", event.sessionId, "processes"],
+            });
+          }
+          break;
         case "session-change":
         case "review-comment":
           if (event.changeId !== undefined) {

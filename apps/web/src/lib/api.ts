@@ -1061,6 +1061,7 @@ export interface ServiceForwardDto {
 
 export interface ServiceObservationDto {
   readonly id: string;
+  readonly forwardId: string;
   readonly state: "reachable" | "unreachable";
   readonly source: "probe" | "connection" | "udp-reply" | "legacy";
   readonly error: string | null;

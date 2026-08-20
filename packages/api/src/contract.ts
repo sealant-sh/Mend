@@ -591,7 +591,7 @@ const projectsGroup = HttpApiGroup.make("projects")
     HttpApiEndpoint.delete("remove", "/projects/:id", {
       params: { id: ProjectId },
       success: RemovalReport,
-      error: NotFound,
+      error: Schema.Union([NotFound, StoreFailure]),
     }),
   )
   .add(

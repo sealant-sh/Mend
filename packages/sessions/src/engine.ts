@@ -61,6 +61,7 @@ import type { Harness, Run as SdkRun, Workspace, WorkspaceCredentialsOptions } f
 import { claudeCode, codex, opencode } from "@sealant/sdk";
 import { Duration, Effect, Layer, Schedule, Schema, Stream } from "effect";
 import * as Context from "effect/Context";
+import * as Semaphore from "effect/Semaphore";
 
 import { DotfilesResolveError, resolveDotfilesArchives } from "./dotfiles.ts";
 import { parseGitRemoteCommand } from "./git-transport.ts";
@@ -582,6 +583,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /** Open bridge-op attributions, ended when the transport closes. */
       const bridgeContexts = new Map<string, () => void>();
       const scope = yield* Effect.scope;
+      // Service lifecycle calls are rare and may span platform I/O. One engine-local permit keeps
+      // Stop, Restart, Run, and watcher cleanup ordered without holding a database transaction
+      // across that I/O; compare-and-set persistence below protects stale cleanup after crashes.
+      const serviceLifecycle = Semaphore.makeUnsafe(1);
+      const withServiceLifecycle = serviceLifecycle.withPermit;
 
       const readServiceView = Effect.fn("SessionEngine.readServiceView")(function* (
         serviceId: ServiceId,
@@ -1022,6 +1028,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
       });
 
+      const closeWorkspaceServiceForwards = Effect.fn(
+        "SessionEngine.closeWorkspaceServiceForwards",
+      )(function* (workspaceId: SealantWorkspaceId) {
+        yield* withServiceLifecycle(
+          Effect.gen(function* () {
+            const openForwards = (yield* serviceForwards.listOpen()).filter(
+              (forward) => forward.sealantWorkspaceId === workspaceId,
+            );
+            for (const forward of openForwards) {
+              yield* serviceHost.stop(forward.serviceId);
+              yield* serviceForwards.markClosed(forward.id);
+              yield* services.compareAndSetCurrentForward(forward.serviceId, forward.id, null);
+            }
+          }),
+        );
+      });
+
       /**
        * Stop the workspace unless a live process still leases it
        * (docs/SESSION-SERVICES.md): the container survives the agent while a
@@ -1038,7 +1061,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const session = yield* sessions.byId(sessionId);
           if (session.sealantWorkspaceId === null) return;
           const workspaceId = session.sealantWorkspaceId;
-          if (options?.force !== true) {
+          if (options?.force === true) {
+            // A deliberate fresh resume replaces this workspace. Close the durable leases before
+            // the pointer is overwritten so no Service remains advertised against a dead target.
+            yield* closeWorkspaceServiceForwards(workspaceId);
+          } else {
             const processLeases = yield* processes.listLiveForWorkspace(workspaceId);
             const forwardLeases = (yield* serviceForwards.listOpen()).filter(
               (forward) => forward.sealantWorkspaceId === workspaceId,
@@ -1097,16 +1124,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         tryHarvest(sessionId).pipe(Effect.andThen(stopWorkspaceQuietly(sessionId)));
 
       const closeCurrentServiceForward = Effect.fn("SessionEngine.closeCurrentServiceForward")(
-        function* (process: SessionProcess) {
-          if (process.serviceId === null) return;
-          const service = yield* services.byId(process.serviceId);
-          if (service === null || service.currentAttemptId !== process.id) return;
-          yield* serviceHost.stop(service.id);
-          if (service.currentForwardId !== null) {
-            yield* serviceForwards.markClosed(service.currentForwardId);
-            yield* services.setCurrentForward(service.id, null);
-          }
-        },
+        (process: SessionProcess) =>
+          withServiceLifecycle(
+            Effect.gen(function* () {
+              if (process.serviceId === null) return;
+              const service = yield* services.byId(process.serviceId);
+              if (service === null || service.currentAttemptId !== process.id) return;
+              yield* serviceHost.stop(service.id);
+              if (service.currentForwardId !== null) {
+                yield* serviceForwards.markClosed(service.currentForwardId);
+                yield* services.compareAndSetCurrentForward(
+                  service.id,
+                  service.currentForwardId,
+                  null,
+                );
+              }
+            }),
+          ),
       );
 
       /**
@@ -2102,7 +2136,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const supportingLeases = (yield* processes.listLiveForWorkspace(
             session.sealantWorkspaceId,
           )).filter((process) => process.kind !== "agent");
-          if (supportingLeases.length === 0) return false;
+          const forwardLeases = (yield* serviceForwards.listOpen()).filter(
+            (forward) => forward.sealantWorkspaceId === session.sealantWorkspaceId,
+          );
+          if (supportingLeases.length === 0 && forwardLeases.length === 0) return false;
           return yield* Effect.gen(function* () {
             const workspace = yield* sealant.getWorkspace(session.sealantWorkspaceId ?? "");
             const status = yield* Effect.promise(() => workspace.status());
@@ -2445,13 +2482,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           service.currentForwardId === null
             ? null
             : yield* serviceForwards.byId(service.currentForwardId);
-        const forward = yield* serviceForwards.create({
+        const forward = yield* serviceForwards.createAndSelect({
           serviceId,
           sealantWorkspaceId: workspaceId,
           preferredHostPort: previous?.hostPort ?? service.preferredHostPort,
           supersedesForwardId: previous?.id ?? null,
         });
-        yield* services.setCurrentForward(serviceId, forward.id);
         const binding = yield* serviceHost
           .start({
             serviceId,
@@ -2467,7 +2503,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             Effect.tapError((error) =>
               serviceForwards
                 .markFailed(forward.id, error.message)
-                .pipe(Effect.andThen(services.setCurrentForward(serviceId, null))),
+                .pipe(
+                  Effect.andThen(services.compareAndSetCurrentForward(serviceId, forward.id, null)),
+                ),
             ),
           );
         yield* serviceForwards.markBound(forward.id, binding.hostPort, binding.boundAddresses);
@@ -2487,7 +2525,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         });
       });
 
-      const addService = Effect.fn("SessionEngine.addService")(function* (
+      const addServiceUnlocked = Effect.fn("SessionEngine.addService")(function* (
         sessionId: SessionId,
         workspacePort: number,
         name: string | null,
@@ -2522,6 +2560,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         return yield* readServiceView(service.id);
       });
+      const addService = (
+        sessionId: SessionId,
+        workspacePort: number,
+        name: string | null,
+        protocol: "tcp" | "udp" = "tcp",
+      ) => withServiceLifecycle(addServiceUnlocked(sessionId, workspacePort, name, protocol));
 
       /** Close a process PTY; the daemon reaps its foreground process group. */
       const closeProcessPty = (workspaceId: SealantWorkspaceId, ptyId: string) =>
@@ -2577,7 +2621,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
         });
 
-      const runService = Effect.fn("SessionEngine.runService")(function* (
+      const runServiceUnlocked = Effect.fn("SessionEngine.runService")(function* (
         sessionId: SessionId,
         argv: ReadonlyArray<string>,
         workspacePort: number,
@@ -2653,8 +2697,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         return yield* readServiceView(service.id);
       });
+      const runService = (
+        sessionId: SessionId,
+        argv: ReadonlyArray<string>,
+        workspacePort: number,
+        name: string | null,
+        protocol: "tcp" | "udp" = "tcp",
+      ) => withServiceLifecycle(runServiceUnlocked(sessionId, argv, workspacePort, name, protocol));
 
-      const restartService = Effect.fn("SessionEngine.restartService")(function* (
+      const restartServiceUnlocked = Effect.fn("SessionEngine.restartService")(function* (
         serviceId: ServiceId,
       ) {
         const service = yield* services.byId(serviceId);
@@ -2662,13 +2713,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const attempts = yield* processes.listForService(service.id);
         const previous =
           service.currentAttemptId === null
-            ? (attempts.findLast((attempt) => attempt.argv.length > 0) ?? null)
+            ? null
             : yield* processes.byId(service.currentAttemptId);
         if (previous === null || previous.argv.length === 0) {
           return yield* new ServiceStartError({
             message: "An adopted Service has no recorded command to restart.",
           });
         }
+        // Resolve the retained workspace before committing a new live-attempt row. A failed
+        // lookup therefore leaves nothing for boot recovery or the one-live-attempt index.
+        const workspace = yield* sealant.getWorkspace(previous.sealantWorkspaceId);
         if (previous.exitedAt === null && previous.sealantSessionId !== null) {
           yield* closeProcessPty(previous.sealantWorkspaceId, previous.sealantSessionId);
           yield* processes.markExited(previous.id, "stopped", null);
@@ -2689,7 +2743,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           status: "starting",
         });
         yield* services.setCurrentAttempt(service.id, attempt.id);
-        const workspace = yield* sealant.getWorkspace(previous.sealantWorkspaceId);
         const pty = yield* sealant
           .openSession(workspace, previous.argv)
           .pipe(Effect.tapError(() => processes.markExited(attempt.id, "exited", null)));
@@ -2726,6 +2779,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         return yield* readServiceView(service.id);
       });
+      const restartService = (serviceId: ServiceId) =>
+        withServiceLifecycle(restartServiceUnlocked(serviceId));
 
       /**
        * What a session's in-workspace socket serves — every closure scoped to
@@ -2879,7 +2934,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }).pipe(Effect.ignore),
       });
 
-      const stopService = Effect.fn("SessionEngine.stopService")(function* (serviceId: ServiceId) {
+      const stopServiceUnlocked = Effect.fn("SessionEngine.stopService")(function* (
+        serviceId: ServiceId,
+      ) {
         const service = yield* services.byId(serviceId);
         if (service === null) return yield* new ServiceNotFoundError({ processId: serviceId });
         const attempt =
@@ -2895,12 +2952,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* serviceHost.stop(service.id);
         if (service.currentForwardId !== null) {
           yield* serviceForwards.markClosed(service.currentForwardId);
+          yield* services.compareAndSetCurrentForward(service.id, service.currentForwardId, null);
         }
-        yield* services.setCurrentAttempt(service.id, null);
-        yield* services.setCurrentForward(service.id, null);
+        if (service.currentAttemptId !== null) {
+          yield* services.compareAndSetCurrentAttempt(service.id, service.currentAttemptId, null);
+        }
         yield* stopWorkspaceIfUnleased(service.sessionId);
         return yield* readServiceView(service.id);
       });
+      const stopService = (serviceId: ServiceId) =>
+        withServiceLifecycle(stopServiceUnlocked(serviceId));
 
       // -----------------------------------------------------------------------------------------
       // Hot sessions — the per-project pool of pre-provisioned session skeletons. A skeleton is a
@@ -3256,6 +3317,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // again — the watcher itself records the end if the workspace is gone.
         const liveProcesses = yield* processes.listLive();
         const allServices = yield* services.listAll();
+        // A crash after committing an attempt but before recording PTY acceptance leaves no
+        // discoverable platform identity in the public SDK. Settle that row so it cannot hold the
+        // one-live-attempt index forever; its command remains as honest retry context.
+        for (const liveProcess of liveProcesses) {
+          if (
+            liveProcess.kind === "service" &&
+            liveProcess.serviceId !== null &&
+            liveProcess.sealantSessionId === null
+          ) {
+            yield* processes.markExited(liveProcess.id, "exited", null);
+          }
+        }
+        const selectedForwardIds = new Set(
+          allServices.flatMap((service) =>
+            service.currentForwardId === null ? [] : [service.currentForwardId],
+          ),
+        );
+        for (const forward of yield* serviceForwards.listOpen()) {
+          if (!selectedForwardIds.has(forward.id)) {
+            yield* serviceForwards.markClosed(forward.id);
+          }
+        }
         // Every session with a live workspace gets its socket re-bound: the
         // dir path is deterministic, so the running container's mount comes
         // back to life without touching it.
@@ -3294,20 +3377,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const status = yield* Effect.promise(() => workspace.status());
             if (!workspaceIsLive(status)) {
               yield* serviceForwards.markClosed(previous.id);
-              yield* services.setCurrentForward(service.id, null);
+              yield* services.compareAndSetCurrentForward(service.id, previous.id, null);
               if (service.currentAttemptId !== null) {
                 yield* processes.markExited(service.currentAttemptId, "exited", null);
               }
               return;
             }
-            yield* serviceForwards.markClosed(previous.id);
-            const forward = yield* serviceForwards.create({
+            const forward = yield* serviceForwards.createAndSelect({
               serviceId: service.id,
               sealantWorkspaceId: previous.sealantWorkspaceId,
               preferredHostPort: previous.hostPort ?? previous.preferredHostPort,
               supersedesForwardId: previous.id,
             });
-            yield* services.setCurrentForward(service.id, forward.id);
+            // Select the replacement before closing the old process-local listener record. If the
+            // process dies between these writes, the next boot follows the new current pointer and
+            // closes the old row as an orphan instead of losing an adopted Service's only lease.
+            yield* serviceForwards.markClosed(previous.id);
             const binding = yield* serviceHost
               .start({
                 serviceId: service.id,
@@ -3323,7 +3408,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 Effect.tapError((error) =>
                   serviceForwards
                     .markFailed(forward.id, error.message)
-                    .pipe(Effect.andThen(services.setCurrentForward(service.id, null))),
+                    .pipe(
+                      Effect.andThen(
+                        services.compareAndSetCurrentForward(service.id, forward.id, null),
+                      ),
+                    ),
                 ),
               );
             yield* serviceForwards.markBound(forward.id, binding.hostPort, binding.boundAddresses);

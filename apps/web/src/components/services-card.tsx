@@ -22,15 +22,18 @@ import { queryClient, sessionRecipesQuery, sessionServicesQuery } from "#/lib/qu
  * a connection, never a judgment about the application.
  */
 
-const latestAttempt = (view: ServiceViewDto): SessionProcessDto | null =>
-  (view.service.currentAttemptId === null
+const currentAttempt = (view: ServiceViewDto): SessionProcessDto | null =>
+  view.service.currentAttemptId === null
     ? null
-    : view.attempts.find((attempt) => attempt.id === view.service.currentAttemptId)) ??
-  view.attempts.at(-1) ??
-  null;
+    : (view.attempts.find((attempt) => attempt.id === view.service.currentAttemptId) ?? null);
+
+const currentObservation = (view: ServiceViewDto) =>
+  view.currentForward !== null && view.latestObservation?.forwardId === view.currentForward.id
+    ? view.latestObservation
+    : null;
 
 const serviceIsLive = (view: ServiceViewDto): boolean => {
-  const attempt = latestAttempt(view);
+  const attempt = currentAttempt(view);
   return (
     (attempt !== null && attempt.exitedAt === null) ||
     view.currentForward?.state === "binding" ||
@@ -39,9 +42,9 @@ const serviceIsLive = (view: ServiceViewDto): boolean => {
 };
 
 const serviceStatus = (view: ServiceViewDto): string =>
-  view.latestObservation?.state ??
-  latestAttempt(view)?.status ??
+  currentObservation(view)?.state ??
   view.currentForward?.state ??
+  currentAttempt(view)?.status ??
   "stopped";
 
 function ServiceStatusDot({ status }: { readonly status: string }) {
@@ -73,7 +76,7 @@ function ServiceRow({
 }) {
   const [copied, setCopied] = useState(false);
   const stable = service.service;
-  const attempt = latestAttempt(service);
+  const attempt = currentAttempt(service);
   const status = serviceStatus(service);
   const url = serviceUrl(service);
   const live = serviceIsLive(service);
@@ -132,7 +135,7 @@ function ServiceRow({
               {copied ? "Copied" : "Copy"}
             </button>
           )}
-          {live && url !== null && service.latestObservation?.state === "reachable" && (
+          {live && url !== null && currentObservation(service)?.state === "reachable" && (
             <a
               href={url}
               target="_blank"
@@ -142,7 +145,7 @@ function ServiceRow({
               Open
             </a>
           )}
-          {live && actionable && attempt !== null && attempt.argv.length > 0 && (
+          {live && attempt !== null && attempt.argv.length > 0 && (
             <button
               type="button"
               onClick={() => onAction("restart", service)}
@@ -152,7 +155,7 @@ function ServiceRow({
               {pending === `restart:${stable.id}` ? "Restarting…" : "Restart"}
             </button>
           )}
-          {live && actionable && (
+          {live && (
             <button
               type="button"
               onClick={() => onAction("stop", service)}
@@ -162,7 +165,7 @@ function ServiceRow({
               {pending === `stop:${stable.id}` ? "Stopping…" : "Stop"}
             </button>
           )}
-          {!live && actionable && (
+          {!live && actionable && attempt !== null && attempt.argv.length > 0 && (
             <button
               type="button"
               onClick={() => onAction("rerun", service)}
@@ -206,7 +209,7 @@ export function ServicesCard({
 
   const act = (verb: ServiceVerb, view: ServiceViewDto) => {
     const stable = view.service;
-    const attempt = latestAttempt(view);
+    const attempt = currentAttempt(view);
     setPending(`${verb}:${stable.id}`);
     const action =
       verb === "restart"

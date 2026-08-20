@@ -668,10 +668,12 @@ interface ServiceViewDto {
     readonly sealantSessionId: string | null;
   }>;
   readonly currentForward: {
+    readonly id: string;
     readonly hostPort: number | null;
     readonly state: "binding" | "bound" | "closed" | "failed";
   } | null;
   readonly latestObservation: {
+    readonly forwardId: string;
     readonly state: "reachable" | "unreachable";
   } | null;
 }
@@ -686,27 +688,30 @@ interface ServiceDto {
   readonly hostPort: number | null;
   readonly protocol: "tcp" | "udp";
   readonly sealantSessionId: string | null;
+  readonly attemptExitedAt: string | null;
   readonly argv: ReadonlyArray<string>;
 }
 
 const flattenService = (view: ServiceViewDto): ServiceDto => {
   const attempt =
-    (view.service.currentAttemptId === null
+    view.service.currentAttemptId === null
       ? null
-      : view.attempts.find((candidate) => candidate.id === view.service.currentAttemptId)) ??
-    view.attempts.at(-1) ??
-    null;
+      : (view.attempts.find((candidate) => candidate.id === view.service.currentAttemptId) ?? null);
+  const observation =
+    view.currentForward !== null && view.latestObservation?.forwardId === view.currentForward.id
+      ? view.latestObservation
+      : null;
   return {
     id: view.service.id,
     processId: attempt?.id ?? null,
     sessionId: view.service.sessionId,
     label: view.service.name,
-    status:
-      view.latestObservation?.state ?? attempt?.status ?? view.currentForward?.state ?? "stopped",
+    status: observation?.state ?? view.currentForward?.state ?? attempt?.status ?? "stopped",
     workspacePort: view.service.workspacePort,
     hostPort: view.currentForward?.hostPort ?? null,
     protocol: view.service.transport,
     sealantSessionId: attempt?.sealantSessionId ?? null,
+    attemptExitedAt: attempt?.exitedAt ?? null,
     argv: attempt?.argv ?? [],
   };
 };
@@ -928,8 +933,8 @@ const serviceLogs = async (config: CliConfig, args: ReadonlyArray<string>) => {
       `"${needle}" is an adopted port — no process of Mend's, no logs. mend service run supervises.`,
     );
   }
-  if (service.status === "exited" || service.status === "stopped") {
-    // Post-mortem: print the record, don't attach.
+  if (service.attemptExitedAt !== null) {
+    // Post-mortem: print the selected attempt's record, don't attach.
     const output = await api<{ readonly text: string }>(
       config,
       "GET",

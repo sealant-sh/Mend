@@ -340,13 +340,35 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
       Effect.gen(function* () {
         const projects = yield* ProjectsRepo;
         const sessions = yield* SessionsRepo;
+        const services = yield* ServicesRepo;
+        const forwards = yield* ServiceForwardsRepo;
         const engine = yield* SessionEngine;
         const store = yield* Store;
         const project = yield* projects
           .byId(params.id)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-        // Stop everything live first — workspaces die with their sessions.
+        // Stop every Service first. A forward-only adopted Service can retain a settled session's
+        // workspace even though no session_process row is live.
         const projectSessions = yield* sessions.listForProject(params.id);
+        for (const session of projectSessions) {
+          for (const service of yield* services.listForSession(session.id)) {
+            yield* engine.stopService(service.id).pipe(Effect.ignore);
+          }
+        }
+        const projectSessionIds = new Set(projectSessions.map((session) => session.id));
+        let remainingForwardLease = false;
+        for (const forward of yield* forwards.listOpen()) {
+          const service = yield* services.byId(forward.serviceId);
+          if (service !== null && projectSessionIds.has(service.sessionId)) {
+            remainingForwardLease = true;
+            break;
+          }
+        }
+        if (remainingForwardLease) {
+          return yield* new StoreFailure({
+            message: "The project still has live Service forwards. Stop them before removal.",
+          });
+        }
         yield* Effect.forEach(
           projectSessions.filter((session) => LIVE_STATES.has(session.status)),
           (session) => engine.stop(session.id).pipe(Effect.ignore),
@@ -1515,6 +1537,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const sessions = yield* SessionsRepo;
         const projects = yield* ProjectsRepo;
         const processes = yield* SessionProcessesRepo;
+        const services = yield* ServicesRepo;
+        const forwards = yield* ServiceForwardsRepo;
         const store = yield* Store;
         const session = yield* sessions
           .byId(params.id)
@@ -1522,7 +1546,17 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const liveProcesses = (yield* processes.listForSession(params.id)).filter(
           (process) => process.exitedAt === null,
         );
-        if (LIVE_STATES.has(session.status) || liveProcesses.length > 0) {
+        const serviceIds = new Set(
+          (yield* services.listForSession(params.id)).map((service) => service.id),
+        );
+        const liveForwards = (yield* forwards.listOpen()).filter((forward) =>
+          serviceIds.has(forward.serviceId),
+        );
+        if (
+          LIVE_STATES.has(session.status) ||
+          liveProcesses.length > 0 ||
+          liveForwards.length > 0
+        ) {
           return yield* new SessionActive({ id: params.id });
         }
         const project = yield* projects

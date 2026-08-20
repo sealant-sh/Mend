@@ -113,6 +113,7 @@ const sealantFakeLayer = Layer.succeed(SealantClient, {
 
 const forwardsStubLayer = Layer.succeed(ServiceForwardsRepo, {
   create: () => Effect.die("not in test"),
+  createAndSelect: () => Effect.die("not in test"),
   byId: () => Effect.succeed(null),
   listForService: () => Effect.succeed([]),
   listOpen: () => Effect.succeed([]),
