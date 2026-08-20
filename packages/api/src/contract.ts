@@ -330,12 +330,13 @@ export class SessionNotLive extends Schema.TaggedErrorClass<SessionNotLive>()(
   { httpApiStatus: 409 },
 ) {}
 
-/** The project's stance on the review-automation switches — both, replaced together. */
+/** The project's stance on the automation switches — all of them, replaced together. */
 export class ProjectAutomationRequest extends Schema.Class<ProjectAutomationRequest>(
   "ProjectAutomationRequest",
 )({
   autoTour: AutomationChoice,
   autoSuggest: AutomationChoice,
+  autoName: AutomationChoice,
 }) {}
 
 /** How host-side git reaches this project's remote (docs/GIT-ACCESS.md). */

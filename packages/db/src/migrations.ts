@@ -775,6 +775,14 @@ const hotSessions = Effect.gen(function* () {
       ON hot_workspaces (project_id, status)`;
 });
 
+/** Session auto-naming: the per-project override of the Settings `autoName` default. */
+const autoName = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE projects
+      ADD COLUMN auto_name text NOT NULL DEFAULT 'inherit'`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -804,4 +812,5 @@ export const migrations = {
   "0025_project_environment": projectEnvironment,
   "0026_project_secrets": projectSecretsMigration,
   "0027_hot_sessions": hotSessions,
+  "0028_auto_name": autoName,
 };

@@ -193,6 +193,8 @@ export class MendSettings extends Schema.Class<MendSettings>("MendSettings")({
   autoTour: onByDefault,
   /** Run the suggestion pass when a session settles — strict, code-anchored; zero suggestions is normal. */
   autoSuggest: onByDefault,
+  /** Name the session from its first prompt — a label appears in lists while it still runs. */
+  autoName: onByDefault,
   /** Base operating system and additional tools baked into every new session workspace. */
   workspaceImage: workspaceImageWithDefault,
 }) {}
@@ -202,5 +204,6 @@ export const defaultSettings = new MendSettings({
   concurrency: 1,
   autoTour: true,
   autoSuggest: true,
+  autoName: true,
   workspaceImage: defaultWorkspaceImage,
 });

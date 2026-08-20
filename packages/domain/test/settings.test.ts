@@ -57,6 +57,25 @@ describe("MendSettings workspace image profile", () => {
     });
   });
 
+  it("defaults autoName on when decoding settings written before it existed", () => {
+    const decoded = Schema.decodeUnknownSync(MendSettings)({
+      prMode: "draft-immediately",
+      concurrency: 1,
+      autoTour: true,
+      autoSuggest: true,
+    });
+    expect(decoded.autoName).toBe(true);
+
+    const explicit = Schema.decodeUnknownSync(MendSettings)({
+      prMode: "draft-immediately",
+      concurrency: 1,
+      autoTour: true,
+      autoSuggest: true,
+      autoName: false,
+    });
+    expect(explicit.autoName).toBe(false);
+  });
+
   it("decodes pre-shell family images to the platform's bash default", () => {
     const decoded = Schema.decodeUnknownSync(MendSettings)({
       prMode: "draft-immediately",

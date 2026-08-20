@@ -315,6 +315,7 @@ export interface ProjectDto {
   readonly adoptedSha: string | null;
   readonly autoTour: AutomationChoiceDto;
   readonly autoSuggest: AutomationChoiceDto;
+  readonly autoName: AutomationChoiceDto;
   readonly gitAuthMode: GitAuthModeDto;
   readonly workspaceImage: WorkspaceImageDto | null;
   readonly applyDotfiles: boolean;
@@ -544,6 +545,7 @@ export interface SettingsDto {
   readonly concurrency: number;
   readonly autoTour: boolean;
   readonly autoSuggest: boolean;
+  readonly autoName: boolean;
   readonly workspaceImage: WorkspaceImageDto;
 }
 
@@ -620,7 +622,11 @@ export const deleteDotfilesSnapshot = () =>
 /** The project's automation overrides, replaced together. */
 export const setProjectAutomation = (
   projectId: string,
-  choices: { readonly autoTour: AutomationChoiceDto; readonly autoSuggest: AutomationChoiceDto },
+  choices: {
+    readonly autoTour: AutomationChoiceDto;
+    readonly autoSuggest: AutomationChoiceDto;
+    readonly autoName: AutomationChoiceDto;
+  },
 ) =>
   request<ProjectDto>(`/api/projects/${projectId}/automation`, {
     method: "PUT",

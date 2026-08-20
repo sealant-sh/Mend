@@ -56,7 +56,7 @@ export function useSetupFactValues(projectId: string) {
         ? "off"
         : `${hotSessions?.ready ?? 0} of ${project.hotSessions} ready`,
     git: project.gitAuthMode === "mend-key" ? "mend key" : project.gitAuthMode,
-    review: `tour ${project.autoTour} · suggest ${project.autoSuggest}`,
+    review: `tour ${project.autoTour} · suggest ${project.autoSuggest} · name ${project.autoName}`,
   };
 }
 

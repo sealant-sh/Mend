@@ -19,6 +19,8 @@ export const InferenceContext = Schema.Literals([
   "change-tour",
   // The suggestion pass — same reading, concrete replacement proposals.
   "change-suggesting",
+  // The session auto-namer — a label from the session's first prompt.
+  "session-naming",
 ]);
 export type InferenceContext = typeof InferenceContext.Type;
 

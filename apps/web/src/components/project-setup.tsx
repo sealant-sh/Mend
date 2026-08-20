@@ -42,11 +42,12 @@ import {
  */
 
 const AUTOMATION_ROWS: ReadonlyArray<{
-  readonly key: "autoTour" | "autoSuggest";
+  readonly key: "autoTour" | "autoSuggest" | "autoName";
   readonly label: string;
 }> = [
   { key: "autoTour", label: "Description & tour" },
   { key: "autoSuggest", label: "Suggest fixes" },
+  { key: "autoName", label: "Name the session" },
 ];
 
 const AUTOMATION_CHOICES: ReadonlyArray<{
@@ -304,12 +305,13 @@ export function HotSessionsSection({ project }: { readonly project: ProjectDto }
 export function ReviewAutomationSection({ project }: { readonly project: ProjectDto }) {
   const [busy, setBusy] = useState<string | null>(null);
 
-  const choose = (key: "autoTour" | "autoSuggest", value: AutomationChoiceDto) => {
+  const choose = (key: "autoTour" | "autoSuggest" | "autoName", value: AutomationChoiceDto) => {
     if (project[key] === value) return;
     setBusy(key);
     void setProjectAutomation(project.id, {
       autoTour: key === "autoTour" ? value : project.autoTour,
       autoSuggest: key === "autoSuggest" ? value : project.autoSuggest,
+      autoName: key === "autoName" ? value : project.autoName,
     })
       .then(() => queryClient.invalidateQueries({ queryKey: ["project", project.id] }))
       .finally(() => setBusy(null));

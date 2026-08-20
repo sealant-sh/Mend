@@ -51,6 +51,8 @@ export class Project extends Schema.Class<Project>("Project")({
   autoTour: AutomationChoice,
   /** Override of the Settings default: run the suggestion pass when a session settles. */
   autoSuggest: AutomationChoice,
+  /** Override of the Settings default: name the session from its first prompt. */
+  autoName: AutomationChoice,
   /** How host-side git authenticates to this project's remote. */
   gitAuthMode: GitAuthMode,
   /** Override of the Settings default workspace image; null inherits it. */
