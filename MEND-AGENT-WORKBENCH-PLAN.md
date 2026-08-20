@@ -1332,7 +1332,10 @@ understand the work.
   them. Raw TCP or UDP forwards have no Mend request authentication and bind only to loopback or
   explicitly selected private interfaces by default. Browser Open requires a separately declared
   HTTP or HTTPS scheme. Services never autostart. A stable Service retains immutable process-attempt
-  history, forwards, and timestamped target observations.
+  history, forwards, and timestamped target observations. Any live agent, shell, Service attempt, or
+  selected open forward renews its ordinary workspace's 12-hour TTL on a separate 10-minute
+  heartbeat from the hot pool. Mend persists the platform-returned expiry; a failure preserves the
+  last successful renewal and known expiry while recording when and why renewal failed.
 
 - **2026-08-20 — Hot sessions: a per-project pool of pre-provisioned workspaces.** Each project
   carries a `hotSessions` count (default 0, the setup page's stepper): Mend keeps that many complete

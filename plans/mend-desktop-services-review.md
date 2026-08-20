@@ -825,7 +825,7 @@ Every phase has a real-repository exit test. Fixtures alone cannot close a phase
 6. [x] Ship native desktop Review with P0 diff controls, comments, and minimum honest evidence.
 7. [x] Make follow-up delivery idempotent, atomic from the client perspective, and recoverable.
 8. [x] Separate stable Services, process attempts, forwards, and observations.
-9. [ ] Enforce private bind policy, browser-scheme declaration, read-only logs, and workspace TTL
+9. [x] Enforce private bind policy, browser-scheme declaration, read-only logs, and workspace TTL
        renewal.
 10. [ ] Ship desktop Services with factual state and retained-workspace controls.
 11. [ ] Add process frontiers and process-aware evidence without false precision.
