@@ -29,6 +29,7 @@ export function TerminalPane({
   process,
   serviceCount,
   serviceAttention,
+  terminalFocusRequest,
   onServices,
   onDetach,
   onReview,
@@ -40,6 +41,7 @@ export function TerminalPane({
   readonly process: SessionProcessDto | null;
   readonly serviceCount: number;
   readonly serviceAttention: boolean;
+  readonly terminalFocusRequest: number;
   readonly onServices: () => void;
   /** Remove this view without stopping its process. */
   readonly onDetach: () => void;
@@ -184,6 +186,7 @@ export function TerminalPane({
           from={isSessionTab ? from : "0"}
           dim={isSessionTab && !live}
           focus
+          focusRequest={terminalFocusRequest}
         />
       </div>
 

@@ -49,7 +49,12 @@ function Main() {
   const [launcherFor, setLauncherFor] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [servicesFor, setServicesFor] = useState<string | null>(null);
+  const [terminalFocusRequest, setTerminalFocusRequest] = useState(0);
   const [shellError, setShellError] = useState<string | null>(null);
+  const closeServices = () => {
+    setServicesFor(null);
+    setTerminalFocusRequest((request) => request + 1);
+  };
 
   const projects = useQuery(projectsQuery);
   const serviceViews = useQuery(servicesQuery);
@@ -225,10 +230,11 @@ function Main() {
       if (row !== undefined) focusRow(row);
     },
     togglePalette: () => setPaletteOpen((value) => !value),
-    toggleServices: () =>
-      setServicesFor((current) =>
-        focusedSessionId === null || current === focusedSessionId ? null : focusedSessionId,
-      ),
+    toggleServices: () => {
+      if (focusedSessionId === null) return;
+      if (servicesFor === focusedSessionId) closeServices();
+      else setServicesFor(focusedSessionId);
+    },
     fontBigger: terminalFont.bigger,
     fontSmaller: terminalFont.smaller,
     fontReset: terminalFont.reset,
@@ -312,6 +318,7 @@ function Main() {
               process={focusedProcess}
               serviceCount={focusedServices.length}
               serviceAttention={focusedServices.some((service) => service.attention !== null)}
+              terminalFocusRequest={terminalFocusRequest}
               onServices={() => setServicesFor(focusedSessionId)}
               onDetach={() => {
                 if (focusedProjectId !== null) {
@@ -330,7 +337,7 @@ function Main() {
             <ServicesDrawer
               session={focusedSession}
               views={serviceViews.data ?? []}
-              onClose={() => setServicesFor(null)}
+              onClose={closeServices}
             />
           )}
           {shellError !== null && (
