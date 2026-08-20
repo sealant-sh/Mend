@@ -49,6 +49,31 @@ pnpm lint
 pnpm format:fix
 ```
 
+## Acknowledgments
+
+Mend borrows deliberately from projects that solved hard problems well. Vendored code keeps its
+upstream license and notices next to it.
+
+- **[t3code](https://github.com/pingdotgg/t3code)** (T3 Tools Inc., MIT) — the project we've taken
+  the most from:
+  - `apps/mobile/modules/t3-terminal` vendors their native terminal module (libghostty on iOS via
+    `GhosttyKit.xcframework`, `libghostty-vt` over JNI on Android); notices in that directory.
+  - `apps/desktop/src/renderer/src/terminal/ghostty` adapts their browser terminal — the official
+    `libghostty-vt` C ABI compiled to wasm with their own renderer and input surface; notices in
+    that directory.
+  - The desktop inbox re-implements their sidebar model: static creation order (activity never
+    reorders), attention carried by contrast, client-local unseen state, lifecycle shelves, held-
+    modifier jump hints.
+  - The terminal reconnect discipline (fixed ladder, reset-once-stable, retry on focus), the mobile
+    chat list's pinned-follow scrolling, PTY frame coalescing, and the notification suppression
+    guards were studied in their source and re-implemented here.
+- **[Ghostty](https://github.com/ghostty-org/ghostty)** (Mitchell Hashimoto & contributors, MIT) —
+  `libghostty-vt` is the terminal core behind every Mend terminal surface, on all three platforms.
+- **[ghostty-web](https://github.com/coder/ghostty-web)** (Coder, MIT) — the wasm terminal used by
+  `apps/web`.
+- **Symbols Nerd Font** (Ryan L McIntyre, MIT) — vendored with the desktop terminal so prompt glyphs
+  render without a locally installed Nerd Font.
+
 ## License
 
 Apache-2.0

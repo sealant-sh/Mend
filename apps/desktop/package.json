@@ -1,0 +1,41 @@
+{
+  "name": "@mend/desktop",
+  "private": true,
+  "description": "The Mend desktop cockpit: every live session as a real terminal, evidence beside it",
+  "type": "module",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "build": "electron-vite build",
+    "dev": "electron-vite dev",
+    "lint": "oxlint .",
+    "preview": "electron-vite preview",
+    "start": "electron-vite preview",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsgo -p tsconfig.json --noEmit && tsgo -p tsconfig.node.json --noEmit"
+  },
+  "dependencies": {
+    "@fontsource/inter": "catalog:",
+    "@fontsource/jetbrains-mono": "catalog:",
+    "@fontsource/space-grotesk": "catalog:",
+    "@mend/ui": "workspace:*",
+    "@tailwindcss/vite": "catalog:",
+    "@tanstack/react-query": "catalog:",
+    "@tanstack/react-router": "catalog:",
+    "@tanstack/router-plugin": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "tailwindcss": "catalog:"
+  },
+  "devDependencies": {
+    "@mend/typescript": "workspace:*",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitejs/plugin-react": "catalog:",
+    "electron": "catalog:",
+    "electron-vite": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:"
+  }
+}

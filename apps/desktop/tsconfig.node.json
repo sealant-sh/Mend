@@ -1,0 +1,16 @@
+{
+  "extends": "@mend/typescript/core.json",
+  "include": [
+    "src/main/**/*.ts",
+    "src/preload/**/*.ts",
+    "src/shared/**/*.ts",
+    "electron.vite.config.ts"
+  ],
+  "exclude": ["out", "node_modules"],
+  "compilerOptions": {
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023"],
+    "types": ["node"]
+  }
+}

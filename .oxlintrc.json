@@ -18,6 +18,23 @@
     "typescript/no-floating-promises": "error",
     "typescript/no-misused-promises": "error",
     "unicorn/prefer-node-protocol": "error",
-    "no-underscore-dangle": ["error", { "allow": ["_splat", "_values"] }]
-  }
+    "no-underscore-dangle": [
+      "error",
+      {
+        "allow": ["_splat", "_values"]
+      }
+    ]
+  },
+  "overrides": [
+    {
+      "files": ["apps/desktop/src/renderer/src/terminal/ghostty/**"],
+      "rules": {
+        "unicorn/consistent-function-scoping": "off",
+        "no-underscore-dangle": "off",
+        "promise/always-return": "off",
+        "promise/no-nesting": "off",
+        "import/no-cycle": "off"
+      }
+    }
+  ]
 }
