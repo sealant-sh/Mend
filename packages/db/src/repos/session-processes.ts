@@ -1,6 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import {
   SessionProcessId,
+  type ServiceId,
   type SealantRunId,
   type SealantWorkspaceId,
   type SessionId,
@@ -19,6 +20,7 @@ import { notifyEvent } from "../events.ts";
 import { agentSessions, sessionProcesses } from "../schema/workbench.ts";
 
 export interface NewSessionProcess {
+  readonly id?: SessionProcessId;
   readonly sessionId: SessionId;
   readonly sealantWorkspaceId: SealantWorkspaceId;
   /** Null for adopted Services — a port Mend forwards without owning a process. */
@@ -27,6 +29,9 @@ export interface NewSessionProcess {
   readonly sealantRunId?: SealantRunId | null;
   /** Server-owned launch intent used to reconcile an accepted process after a retry. */
   readonly launchCorrelationId?: string | null;
+  /** Stable Service identity when this row is a Service process attempt. */
+  readonly serviceId?: ServiceId | null;
+  readonly attemptOrdinal?: number | null;
   readonly kind: SessionProcessKind;
   readonly label: string | null;
   readonly argv: ReadonlyArray<string>;
@@ -51,6 +56,7 @@ export class SessionProcessesRepo extends Context.Service<
     readonly byId: (id: SessionProcessId) => Effect.Effect<SessionProcess | null>;
     readonly byLaunchCorrelation: (correlationId: string) => Effect.Effect<SessionProcess | null>;
     readonly listForSession: (sessionId: SessionId) => Effect.Effect<ReadonlyArray<SessionProcess>>;
+    readonly listForService: (serviceId: ServiceId) => Effect.Effect<ReadonlyArray<SessionProcess>>;
     readonly listLiveForWorkspace: (
       workspaceId: SealantWorkspaceId,
     ) => Effect.Effect<ReadonlyArray<SessionProcess>>;
@@ -116,8 +122,10 @@ export const SessionProcessesRepoLive: Layer.Layer<
         .insert(sessionProcesses)
         .values({
           ...input,
-          id: SessionProcessId.make(crypto.randomUUID()),
+          id: input.id ?? SessionProcessId.make(crypto.randomUUID()),
           launchCorrelationId: input.launchCorrelationId ?? null,
+          serviceId: input.serviceId ?? null,
+          attemptOrdinal: input.attemptOrdinal ?? null,
           status: input.status ?? "running",
         })
         .returning()
@@ -171,6 +179,18 @@ export const SessionProcessesRepoLive: Layer.Layer<
         .from(sessionProcesses)
         .where(eq(sessionProcesses.sessionId, sessionId))
         .orderBy(asc(sessionProcesses.createdAt))
+        .pipe(Effect.orDie);
+      return rows.map(toSessionProcess);
+    });
+
+    const listForService = Effect.fn("SessionProcessesRepo.listForService")(function* (
+      serviceId: ServiceId,
+    ) {
+      const rows = yield* db
+        .select()
+        .from(sessionProcesses)
+        .where(eq(sessionProcesses.serviceId, serviceId))
+        .orderBy(asc(sessionProcesses.attemptOrdinal))
         .pipe(Effect.orDie);
       return rows.map(toSessionProcess);
     });
@@ -296,6 +316,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       byId,
       byLaunchCorrelation,
       listForSession,
+      listForService,
       listLiveForWorkspace,
       listLive,
       listRecentServices,

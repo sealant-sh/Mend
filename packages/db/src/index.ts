@@ -29,5 +29,6 @@ export * from "./repos/runs.ts";
 export * from "./repos/session-changes.ts";
 export * from "./repos/session-git-ops.ts";
 export * from "./repos/session-processes.ts";
+export * from "./repos/services.ts";
 export * from "./repos/session-runs.ts";
 export * from "./repos/settings.ts";

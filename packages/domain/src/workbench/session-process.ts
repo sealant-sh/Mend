@@ -1,6 +1,12 @@
 import { Schema } from "effect";
 
-import { SealantRunId, SealantWorkspaceId, SessionId, SessionProcessId } from "../ids.ts";
+import {
+  SealantRunId,
+  SealantWorkspaceId,
+  ServiceId,
+  SessionId,
+  SessionProcessId,
+} from "../ids.ts";
 
 /**
  * What kind of work a workspace process is doing. The agent is one process in
@@ -42,6 +48,10 @@ export class SessionProcess extends Schema.Class<SessionProcess>("SessionProcess
   sealantRunId: Schema.NullOr(SealantRunId),
   /** Server-owned launch intent used to reconcile retries after process acceptance. */
   launchCorrelationId: Schema.NullOr(Schema.String),
+  /** Stable Service identity when this process is one Service attempt. */
+  serviceId: Schema.NullOr(ServiceId),
+  /** Monotonic within one Service; null for non-Service and legacy projection rows. */
+  attemptOrdinal: Schema.NullOr(Schema.Int),
   kind: SessionProcessKind,
   /** Human name for pickers and lists ("claude", "shell", "web"). */
   label: Schema.NullOr(Schema.String),

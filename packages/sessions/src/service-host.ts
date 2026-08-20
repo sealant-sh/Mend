@@ -2,8 +2,9 @@ import * as dgram from "node:dgram";
 import { once } from "node:events";
 import * as net from "node:net";
 
-import { SessionProcessesRepo } from "@mend/db";
-import type { SealantWorkspaceId, SessionProcessId } from "@mend/domain";
+import { ServiceForwardsRepo, ServiceObservationsRepo } from "@mend/db";
+import type { SealantWorkspaceId, ServiceForwardId, ServiceId } from "@mend/domain";
+import type { ServiceObservationSource } from "@mend/domain/workbench";
 import { SealantClient } from "@mend/sealant";
 import type { WorkspaceForward } from "@sealant/sdk";
 import { Effect, Layer, Option, Schema } from "effect";
@@ -43,7 +44,8 @@ export class ServiceBindError extends Schema.TaggedErrorClass<ServiceBindError>(
 ) {}
 
 export interface ServiceStartInput {
-  readonly processId: SessionProcessId;
+  readonly serviceId: ServiceId;
+  readonly forwardId: ServiceForwardId;
   readonly workspaceId: SealantWorkspaceId;
   readonly workspacePort: number;
   /** Declared transport; UDP binds a datagram socket and relays flows. */
@@ -52,13 +54,20 @@ export interface ServiceStartInput {
   readonly preferredHostPort?: number;
 }
 
+export interface ServiceHostBinding {
+  readonly hostPort: number;
+  readonly boundAddresses: ReadonlyArray<string>;
+}
+
 export class ServiceHost extends Context.Service<
   ServiceHost,
   {
-    /** Bind the listener(s) and start pumping; resolves with the bound host port. */
-    readonly start: (input: ServiceStartInput) => Effect.Effect<number, ServiceBindError>;
+    /** Bind the listener(s) and start pumping; resolves with the exact host binding. */
+    readonly start: (
+      input: ServiceStartInput,
+    ) => Effect.Effect<ServiceHostBinding, ServiceBindError>;
     /** Close the listener(s) and drop live pumps. Idempotent. */
-    readonly stop: (processId: SessionProcessId) => Effect.Effect<void>;
+    readonly stop: (serviceId: ServiceId) => Effect.Effect<void>;
     /** One dial through the forward: does anything answer on the workspace port? */
     readonly probe: (
       workspaceId: SealantWorkspaceId,
@@ -147,21 +156,22 @@ const UDP_FLOW_IDLE_MS = 120_000;
 export const ServiceHostLive: Layer.Layer<
   ServiceHost,
   never,
-  SealantClient | SessionProcessesRepo
+  SealantClient | ServiceForwardsRepo | ServiceObservationsRepo
 > = Layer.effect(
   ServiceHost,
   Effect.gen(function* () {
     const sealant = yield* SealantClient;
-    const processes = yield* SessionProcessesRepo;
-    const active = new Map<SessionProcessId, ActiveService>();
+    const forwards = yield* ServiceForwardsRepo;
+    const observations = yield* ServiceObservationsRepo;
+    const active = new Map<ServiceId, ActiveService>();
 
     // Graceful shutdown: close every listener and sever every pump, or the
     // open handles keep the process alive and `pnpm dev` restarts wedge into
     // a half-dead server (HTTP gone, Service ports still held).
     yield* Effect.addFinalizer(() =>
       Effect.sync(() => {
-        for (const processId of Array.from(active.keys())) {
-          stopSync(processId);
+        for (const serviceId of Array.from(active.keys())) {
+          stopSync(serviceId);
         }
       }),
     );
@@ -182,25 +192,35 @@ export const ServiceHostLive: Layer.Layer<
           .pipe(Effect.catch(() => sealant.forward(workspace, workspacePort, "docker")));
       });
 
-    /** Flip the row's observed state, but only on transitions — not per connection. */
+    /** Persist target-state episodes, but only on transitions — not per connection. */
     const observe = (
-      processId: SessionProcessId,
+      input: ServiceStartInput,
       status: "reachable" | "unreachable",
+      source: ServiceObservationSource,
     ): Promise<void> => {
-      const entry = active.get(processId);
+      const entry = active.get(input.serviceId);
       if (entry === undefined || entry.lastStatus === status) {
         return Promise.resolve();
       }
       entry.lastStatus = status;
-      return Effect.runPromise(processes.setStatus(processId, status).pipe(Effect.ignore));
+      return Effect.runPromise(
+        observations
+          .record({
+            serviceId: input.serviceId,
+            forwardId: input.forwardId,
+            state: status,
+            source,
+          })
+          .pipe(Effect.ignore),
+      );
     };
 
-    const stopSync = (processId: SessionProcessId): void => {
-      const entry = active.get(processId);
+    const stopSync = (serviceId: ServiceId): void => {
+      const entry = active.get(serviceId);
       if (entry === undefined) {
         return;
       }
-      active.delete(processId);
+      active.delete(serviceId);
       clearInterval(entry.timer);
       for (const server of entry.servers) {
         server.close();
@@ -247,7 +267,7 @@ export const ServiceHostLive: Layer.Layer<
       }
 
       const onConnection = (socket: net.Socket): void => {
-        const entry = active.get(input.processId);
+        const entry = active.get(input.serviceId);
         if (entry !== undefined) {
           entry.sockets.add(socket);
           socket.once("close", () => entry.sockets.delete(socket));
@@ -255,11 +275,11 @@ export const ServiceHostLive: Layer.Layer<
         void Effect.runPromise(dial(input.workspaceId, input.workspacePort).pipe(Effect.option))
           .then((forward) => {
             if (Option.isNone(forward)) {
-              void observe(input.processId, "unreachable");
+              void observe(input, "unreachable", "connection");
               socket.destroy();
               return undefined;
             }
-            void observe(input.processId, "reachable");
+            void observe(input, "reachable", "connection");
             pump(socket, forward.value);
             return undefined;
           })
@@ -302,20 +322,20 @@ export const ServiceHostLive: Layer.Layer<
         const timer = setInterval(() => {
           void Effect.runPromise(
             Effect.gen(function* () {
-              const row = yield* processes.byId(input.processId);
-              if (row === null || row.exitedAt !== null) {
-                stopSync(input.processId);
+              const row = yield* forwards.byId(input.forwardId);
+              if (row === null || (row.state !== "binding" && row.state !== "bound")) {
+                stopSync(input.serviceId);
                 return;
               }
               const reachable = yield* probe(input.workspaceId, input.workspacePort);
               yield* Effect.promise(() =>
-                observe(input.processId, reachable ? "reachable" : "unreachable"),
+                observe(input, reachable ? "reachable" : "unreachable", "probe"),
               );
             }).pipe(Effect.ignore),
           );
         }, PROBE_INTERVAL_MS);
         timer.unref();
-        active.set(input.processId, {
+        active.set(input.serviceId, {
           servers,
           dgrams: [],
           flows: new Map(),
@@ -323,7 +343,7 @@ export const ServiceHostLive: Layer.Layer<
           sockets: new Set(),
           lastStatus: null,
         });
-        return port;
+        return { hostPort: port, boundAddresses: hosts };
       }
 
       return yield* new ServiceBindError({
@@ -368,7 +388,7 @@ export const ServiceHostLive: Layer.Layer<
           if (forward === null) {
             return;
           }
-          const entry = active.get(input.processId);
+          const entry = active.get(input.serviceId);
           if (entry === undefined) {
             forward.close();
             return;
@@ -390,7 +410,7 @@ export const ServiceHostLive: Layer.Layer<
                   }
                   flow.forwards = [forward];
                   // A reply is the only reachability evidence UDP has.
-                  void observe(input.processId, "reachable");
+                  void observe(input, "reachable", "udp-reply");
                 }
                 socket.send(chunk, peer.port, peer.address);
               }
@@ -439,7 +459,7 @@ export const ServiceHostLive: Layer.Layer<
         const sockets = bound.value;
         for (const socket of sockets) {
           socket.on("message", (data, peer) => {
-            const entry = active.get(input.processId);
+            const entry = active.get(input.serviceId);
             if (entry === undefined) {
               return;
             }
@@ -471,12 +491,12 @@ export const ServiceHostLive: Layer.Layer<
         const timer = setInterval(() => {
           void Effect.runPromise(
             Effect.gen(function* () {
-              const row = yield* processes.byId(input.processId);
-              if (row === null || row.exitedAt !== null) {
-                stopSync(input.processId);
+              const row = yield* forwards.byId(input.forwardId);
+              if (row === null || (row.state !== "binding" && row.state !== "bound")) {
+                stopSync(input.serviceId);
                 return;
               }
-              const entry = active.get(input.processId);
+              const entry = active.get(input.serviceId);
               if (entry === undefined) {
                 return;
               }
@@ -493,7 +513,7 @@ export const ServiceHostLive: Layer.Layer<
           );
         }, PROBE_INTERVAL_MS);
         timer.unref();
-        active.set(input.processId, {
+        active.set(input.serviceId, {
           servers: [],
           dgrams: sockets,
           flows: new Map(),
@@ -501,7 +521,7 @@ export const ServiceHostLive: Layer.Layer<
           sockets: new Set(),
           lastStatus: null,
         });
-        return port;
+        return { hostPort: port, boundAddresses: hosts };
       }
 
       return yield* new ServiceBindError({
@@ -509,8 +529,8 @@ export const ServiceHostLive: Layer.Layer<
       });
     });
 
-    const stop = Effect.fn("ServiceHost.stop")(function* (processId: SessionProcessId) {
-      yield* Effect.sync(() => stopSync(processId));
+    const stop = Effect.fn("ServiceHost.stop")(function* (serviceId: ServiceId) {
+      yield* Effect.sync(() => stopSync(serviceId));
     });
 
     return { start, stop, probe };

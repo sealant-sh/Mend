@@ -10,6 +10,9 @@ import {
   ProjectSecretsRepo,
   ProjectsRepo,
   ReferencesRepo,
+  ServiceForwardsRepo,
+  ServiceObservationsRepo,
+  ServicesRepo,
   SessionChangesRepo,
   SessionGitOpsRepo,
   type SessionNotFoundError,
@@ -23,6 +26,8 @@ import {
 import {
   SealantRunId,
   SealantWorkspaceId,
+  type ServiceForwardId,
+  type ServiceId,
   SessionGitOpId,
   SessionId,
   SessionProcessId,
@@ -38,7 +43,7 @@ import type {
   SessionProcess,
   SessionRun,
 } from "@mend/domain/workbench";
-import { SessionExtraMount, SessionReferenceMount } from "@mend/domain/workbench";
+import { ServiceView, SessionExtraMount, SessionReferenceMount } from "@mend/domain/workbench";
 import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import {
   AgentBridge,
@@ -439,7 +444,7 @@ export class SessionEngine extends Context.Service<
       name: string | null,
       protocol?: "tcp" | "udp",
     ) => Effect.Effect<
-      SessionProcess,
+      ServiceView,
       | SessionNotFoundError
       | SessionNotLiveError
       | LegacyBenchReadOnlyError
@@ -459,7 +464,7 @@ export class SessionEngine extends Context.Service<
       name: string | null,
       protocol?: "tcp" | "udp",
     ) => Effect.Effect<
-      SessionProcess,
+      ServiceView,
       | SessionNotFoundError
       | SessionNotLiveError
       | LegacyBenchReadOnlyError
@@ -467,20 +472,17 @@ export class SessionEngine extends Context.Service<
       | ServiceBindError
       | ServiceStartError
     >;
-    /**
-     * Re-run a supervised Service's recorded command: same row, same host
-     * port, same URL — only the process is new.
-     */
+    /** Append a process attempt while preserving the stable Service and forward. */
     readonly restartService: (
-      processId: SessionProcessId,
+      serviceId: ServiceId,
     ) => Effect.Effect<
-      SessionProcess,
-      ServiceNotFoundError | SealantPlatformError | ServiceStartError
+      ServiceView,
+      ServiceNotFoundError | SealantPlatformError | ServiceStartError | ServiceBindError
     >;
-    /** Stop a Service: end its process, close its listener, release its lease. */
+    /** Stop a Service: end its current attempt, close its forward, release its lease. */
     readonly stopService: (
-      processId: SessionProcessId,
-    ) => Effect.Effect<SessionProcess, ServiceNotFoundError>;
+      serviceId: ServiceId,
+    ) => Effect.Effect<ServiceView, ServiceNotFoundError>;
     /**
      * Rejoin a session as a continuous piece of work — harness- and
      * machine-agnostic. Same worktree, same change, same conversation: the
@@ -517,8 +519,38 @@ export class SessionEngine extends Context.Service<
       SessionNotFoundError
     >;
   }
->()("@mend/sessions/SessionEngine") {
-  static readonly layer = Layer.effect(
+>()("@mend/sessions/SessionEngine") {}
+
+type SessionEngineRequirements =
+  | SealantClient
+  | SessionsRepo
+  | HotWorkspacesRepo
+  | UserDotfilesRepo
+  | DotfilesStore
+  | SessionRunsRepo
+  | SessionProcessesRepo
+  | ServicesRepo
+  | ServiceForwardsRepo
+  | ServiceObservationsRepo
+  | ServiceHost
+  | SessionSocketHost
+  | ProjectsRepo
+  | SessionChangesRepo
+  | CheckpointsRepo
+  | ReferencesRepo
+  | ProjectMountsRepo
+  | ProjectEnvironmentRepo
+  | ProjectSecretsRepo
+  | SecretCipher
+  | ProjectServiceRecipesRepo
+  | SettingsRepo
+  | Store
+  | SessionGitOpsRepo
+  | MendKeys
+  | AgentBridge;
+
+export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineRequirements> =
+  Layer.effect(
     SessionEngine,
     Effect.gen(function* () {
       const sealant = yield* SealantClient;
@@ -528,6 +560,9 @@ export class SessionEngine extends Context.Service<
       const dotfilesStore = yield* DotfilesStore;
       const sessionRuns = yield* SessionRunsRepo;
       const processes = yield* SessionProcessesRepo;
+      const services = yield* ServicesRepo;
+      const serviceForwards = yield* ServiceForwardsRepo;
+      const serviceObservations = yield* ServiceObservationsRepo;
       const serviceHost = yield* ServiceHost;
       const socketHost = yield* SessionSocketHost;
       const projects = yield* ProjectsRepo;
@@ -547,6 +582,20 @@ export class SessionEngine extends Context.Service<
       /** Open bridge-op attributions, ended when the transport closes. */
       const bridgeContexts = new Map<string, () => void>();
       const scope = yield* Effect.scope;
+
+      const readServiceView = Effect.fn("SessionEngine.readServiceView")(function* (
+        serviceId: ServiceId,
+      ) {
+        const service = yield* services.byId(serviceId);
+        if (service === null) return yield* Effect.die(`Service ${serviceId} disappeared`);
+        const attempts = yield* processes.listForService(service.id);
+        const currentForward =
+          service.currentForwardId === null
+            ? null
+            : yield* serviceForwards.byId(service.currentForwardId);
+        const latestObservation = yield* serviceObservations.latestForService(service.id);
+        return new ServiceView({ service, attempts, currentForward, latestObservation });
+      });
 
       /** The session's worktree path, derived — never stored twice. */
       const worktreeOf = Effect.fn("SessionEngine.worktreeOf")(function* (session: Session) {
@@ -990,10 +1039,14 @@ export class SessionEngine extends Context.Service<
           if (session.sealantWorkspaceId === null) return;
           const workspaceId = session.sealantWorkspaceId;
           if (options?.force !== true) {
-            const leases = yield* processes.listLiveForWorkspace(workspaceId);
-            if (leases.length > 0) {
+            const processLeases = yield* processes.listLiveForWorkspace(workspaceId);
+            const forwardLeases = (yield* serviceForwards.listOpen()).filter(
+              (forward) => forward.sealantWorkspaceId === workspaceId,
+            );
+            const leaseCount = processLeases.length + forwardLeases.length;
+            if (leaseCount > 0) {
               yield* Effect.logInfo("session engine: workspace stop deferred by live leases").pipe(
-                Effect.annotateLogs({ sessionId, workspaceId, leases: leases.length }),
+                Effect.annotateLogs({ sessionId, workspaceId, leases: leaseCount }),
               );
               return;
             }
@@ -1043,6 +1096,19 @@ export class SessionEngine extends Context.Service<
       const sweepWorkspace = (sessionId: SessionId) =>
         tryHarvest(sessionId).pipe(Effect.andThen(stopWorkspaceQuietly(sessionId)));
 
+      const closeCurrentServiceForward = Effect.fn("SessionEngine.closeCurrentServiceForward")(
+        function* (process: SessionProcess) {
+          if (process.serviceId === null) return;
+          const service = yield* services.byId(process.serviceId);
+          if (service === null || service.currentAttemptId !== process.id) return;
+          yield* serviceHost.stop(service.id);
+          if (service.currentForwardId !== null) {
+            yield* serviceForwards.markClosed(service.currentForwardId);
+            yield* services.setCurrentForward(service.id, null);
+          }
+        },
+      );
+
       /**
        * A shell's or supervised Service's lifecycle is its own: poll the PTY
        * until it ends, record the observed exit, then release its workspace
@@ -1086,7 +1152,7 @@ export class SessionEngine extends Context.Service<
                   workspaceStatus !== "running" &&
                   workspaceStatus !== "ready"
                 ) {
-                  yield* serviceHost.stop(shellProcess.id);
+                  yield* closeCurrentServiceForward(shellProcess);
                   yield* processes.markExited(shellProcess.id, "exited", null);
                   return;
                 }
@@ -1108,7 +1174,7 @@ export class SessionEngine extends Context.Service<
             ) {
               return;
             }
-            yield* serviceHost.stop(shellProcess.id);
+            yield* closeCurrentServiceForward(shellProcess);
             yield* processes.markExited(shellProcess.id, "exited", status.exitCode ?? null);
             yield* stopWorkspaceIfUnleased(shellProcess.sessionId);
             return;
@@ -1116,12 +1182,10 @@ export class SessionEngine extends Context.Service<
         }).pipe(
           // An unknown workspace or PTY cannot be reached again — record the end.
           Effect.catch(() =>
-            serviceHost
-              .stop(shellProcess.id)
-              .pipe(
-                Effect.andThen(processes.markExited(shellProcess.id, "exited", null)),
-                Effect.andThen(stopWorkspaceIfUnleased(shellProcess.sessionId)),
-              ),
+            closeCurrentServiceForward(shellProcess).pipe(
+              Effect.andThen(processes.markExited(shellProcess.id, "exited", null)),
+              Effect.andThen(stopWorkspaceIfUnleased(shellProcess.sessionId)),
+            ),
           ),
         );
 
@@ -2330,6 +2394,99 @@ export class SessionEngine extends Context.Service<
         return (yield* processes.byId(processId)) ?? shell;
       });
 
+      const getOrCreateService = Effect.fn("SessionEngine.getOrCreateService")(function* (
+        sessionId: SessionId,
+        name: string,
+        workspacePort: number,
+        transport: "tcp" | "udp",
+        declarationSource: "explicit-run" | "explicit-adopt",
+      ) {
+        const existing = yield* services.byName(sessionId, name);
+        if (existing !== null) {
+          const attempt =
+            existing.currentAttemptId === null
+              ? null
+              : yield* processes.byId(existing.currentAttemptId);
+          const forward =
+            existing.currentForwardId === null
+              ? null
+              : yield* serviceForwards.byId(existing.currentForwardId);
+          if (
+            (attempt !== null && attempt.exitedAt === null) ||
+            (forward !== null && (forward.state === "binding" || forward.state === "bound"))
+          ) {
+            return yield* new ServiceBindError({
+              message: `A live Service named "${name}" already exists in this session — stop it or pick another name.`,
+            });
+          }
+          if (existing.workspacePort === workspacePort && existing.transport === transport) {
+            return existing;
+          }
+        }
+        return yield* services.create({
+          sessionId,
+          name,
+          declarationSource,
+          workspacePort,
+          transport,
+          browserScheme: null,
+        });
+      });
+
+      const bindServiceForward = Effect.fn("SessionEngine.bindServiceForward")(function* (
+        serviceId: ServiceId,
+        workspaceId: SealantWorkspaceId,
+        workspacePort: number,
+        protocol: "tcp" | "udp",
+      ) {
+        const service = yield* services.byId(serviceId);
+        if (service === null) return yield* Effect.die(`Service ${serviceId} disappeared`);
+        const previous =
+          service.currentForwardId === null
+            ? null
+            : yield* serviceForwards.byId(service.currentForwardId);
+        const forward = yield* serviceForwards.create({
+          serviceId,
+          sealantWorkspaceId: workspaceId,
+          preferredHostPort: previous?.hostPort ?? service.preferredHostPort,
+          supersedesForwardId: previous?.id ?? null,
+        });
+        yield* services.setCurrentForward(serviceId, forward.id);
+        const binding = yield* serviceHost
+          .start({
+            serviceId,
+            forwardId: forward.id,
+            workspaceId,
+            workspacePort,
+            protocol,
+            ...(forward.preferredHostPort === null
+              ? {}
+              : { preferredHostPort: forward.preferredHostPort }),
+          })
+          .pipe(
+            Effect.tapError((error) =>
+              serviceForwards
+                .markFailed(forward.id, error.message)
+                .pipe(Effect.andThen(services.setCurrentForward(serviceId, null))),
+            ),
+          );
+        yield* serviceForwards.markBound(forward.id, binding.hostPort, binding.boundAddresses);
+        return forward.id;
+      });
+
+      const recordTcpObservation = Effect.fn("SessionEngine.recordTcpObservation")(function* (
+        serviceId: ServiceId,
+        forwardId: ServiceForwardId,
+        reachable: boolean,
+      ) {
+        yield* serviceObservations.record({
+          serviceId,
+          forwardId,
+          state: reachable ? "reachable" : "unreachable",
+          source: "probe",
+        });
+      });
+
       const addService = Effect.fn("SessionEngine.addService")(function* (
         sessionId: SessionId,
         workspacePort: number,
@@ -2343,42 +2500,27 @@ export class SessionEngine extends Context.Service<
         const workspace = yield* workspaceForSupportingProcess(session);
         const workspaceId = SealantWorkspaceId.make(workspace.id);
         const label = name ?? `port-${workspacePort}`;
-        const liveHere = yield* processes.listLiveForWorkspace(workspaceId);
-        if (liveHere.some((row) => row.kind === "service" && row.label === label)) {
-          return yield* new ServiceBindError({
-            message: `A live Service named "${label}" already exists in this session — stop it or pick another name.`,
-          });
-        }
-        // An add is adoption, not a claim: a port nobody answers on yet is
-        // still a valid Service — it just reads unreachable until it does.
-        // UDP has no handshake to probe: the row starts "running" and a
-        // reply (the only evidence there is) flips it reachable.
-        let status: "running" | "reachable" | "unreachable" = "running";
-        if (protocol === "tcp") {
-          status = (yield* serviceHost.probe(workspaceId, workspacePort))
-            ? "reachable"
-            : "unreachable";
-        }
-        const serviceProcess = yield* processes.create({
+        const service = yield* getOrCreateService(
           sessionId,
-          sealantWorkspaceId: workspaceId,
-          sealantSessionId: null,
-          kind: "service",
           label,
-          argv: [],
-          status,
           workspacePort,
           protocol,
-        });
-        const hostPort = yield* serviceHost
-          .start({ processId: serviceProcess.id, workspaceId, workspacePort, protocol })
-          .pipe(
-            // The row must not survive a listener that never existed.
-            Effect.tapError(() => processes.markExited(serviceProcess.id, "exited", null)),
+          "explicit-adopt",
+        );
+        const forwardId = yield* bindServiceForward(
+          service.id,
+          workspaceId,
+          workspacePort,
+          protocol,
+        );
+        if (protocol === "tcp") {
+          yield* recordTcpObservation(
+            service.id,
+            forwardId,
+            yield* serviceHost.probe(workspaceId, workspacePort),
           );
-        yield* processes.setHostPort(serviceProcess.id, hostPort);
-        const created = yield* processes.byId(serviceProcess.id);
-        return created ?? serviceProcess;
+        }
+        return yield* readServiceView(service.id);
       });
 
       /** Close a process PTY; the daemon reaps its foreground process group. */
@@ -2449,28 +2591,38 @@ export class SessionEngine extends Context.Service<
         const workspace = yield* workspaceForSupportingProcess(session);
         const workspaceId = SealantWorkspaceId.make(workspace.id);
         const label = name ?? argv[0] ?? "service";
-        const liveHere = yield* processes.listLiveForWorkspace(workspaceId);
-        if (liveHere.some((row) => row.kind === "service" && row.label === label)) {
-          return yield* new ServiceBindError({
-            message: `A live Service named "${label}" already exists in this session — stop it or pick another name.`,
-          });
-        }
-        const pty = yield* sealant.openSession(workspace, argv);
-        const serviceProcess = yield* processes.create({
+        const service = yield* getOrCreateService(
+          sessionId,
+          label,
+          workspacePort,
+          protocol,
+          "explicit-run",
+        );
+        const attempts = yield* processes.listForService(service.id);
+        const attemptOrdinal =
+          attempts.reduce((largest, attempt) => Math.max(largest, attempt.attemptOrdinal ?? 0), 0) +
+          1;
+        const attempt = yield* processes.create({
           sessionId,
           sealantWorkspaceId: workspaceId,
-          sealantSessionId: pty.id,
-          sealantRunId: SealantRunId.make(pty.runId),
+          sealantSessionId: null,
+          sealantRunId: null,
+          serviceId: service.id,
+          attemptOrdinal,
           kind: "service",
           label,
           argv,
           status: "starting",
-          workspacePort,
-          protocol,
         });
-        // UDP offers no port handshake to await: give the command a moment
-        // to die on the spot (bad flag, missing binary), then call it
-        // running — replies are the only reachability evidence after that.
+        yield* services.setCurrentAttempt(service.id, attempt.id);
+        const pty = yield* sealant
+          .openSession(workspace, argv)
+          .pipe(Effect.tapError(() => processes.markExited(attempt.id, "exited", null)));
+        yield* processes.setSealantSessionId(attempt.id, pty.id, SealantRunId.make(pty.runId));
+        const runningAttempt = (yield* processes.byId(attempt.id)) ?? attempt;
+        yield* Effect.forkIn(watchProcess(runningAttempt), scope);
+
+        let reachable = false;
         if (protocol === "udp") {
           yield* Effect.sleep("1500 millis");
           const early = yield* Effect.tryPromise({
@@ -2478,83 +2630,101 @@ export class SessionEngine extends Context.Service<
             catch: () => new Error("status failed"),
           }).pipe(Effect.orElseSucceed(() => null));
           if (early !== null && early.status !== "running" && early.status !== "starting") {
-            yield* processes.markExited(serviceProcess.id, "exited", early.exitCode ?? null);
+            yield* processes.markExited(attempt.id, "exited", early.exitCode ?? null);
             const tail = yield* ptyOutputTail(pty);
             return yield* new ServiceStartError({
               message:
                 `The command exited (code ${early.exitCode ?? "unknown"}) immediately.` +
-                (tail === ""
-                  ? ""
-                  : `
---- output ---
-${tail}`),
+                (tail === "" ? "" : `\n--- output ---\n${tail}`),
             });
           }
-          yield* processes.setStatus(serviceProcess.id, "running");
         } else {
-          const reachable = yield* awaitServicePort(
-            pty,
-            workspaceId,
-            workspacePort,
-            serviceProcess.id,
-          );
-          yield* processes.setStatus(serviceProcess.id, reachable ? "reachable" : "unreachable");
+          reachable = yield* awaitServicePort(pty, workspaceId, workspacePort, attempt.id);
         }
-        const hostPort = yield* serviceHost
-          .start({ processId: serviceProcess.id, workspaceId, workspacePort, protocol })
-          .pipe(
-            Effect.tapError(() =>
-              closeProcessPty(workspaceId, pty.id).pipe(
-                Effect.andThen(processes.markExited(serviceProcess.id, "exited", null)),
-              ),
-            ),
-          );
-        yield* processes.setHostPort(serviceProcess.id, hostPort);
-        const created = (yield* processes.byId(serviceProcess.id)) ?? serviceProcess;
-        yield* Effect.forkIn(watchProcess(created), scope);
-        return created;
+        yield* processes.setStatus(attempt.id, "running");
+        const forwardId = yield* bindServiceForward(
+          service.id,
+          workspaceId,
+          workspacePort,
+          protocol,
+        );
+        if (protocol === "tcp") {
+          yield* recordTcpObservation(service.id, forwardId, reachable);
+        }
+        return yield* readServiceView(service.id);
       });
 
       const restartService = Effect.fn("SessionEngine.restartService")(function* (
-        processId: SessionProcessId,
+        serviceId: ServiceId,
       ) {
-        const serviceProcess = yield* processes.byId(processId);
-        if (
-          serviceProcess === null ||
-          serviceProcess.kind !== "service" ||
-          serviceProcess.exitedAt !== null ||
-          serviceProcess.workspacePort === null
-        ) {
-          return yield* new ServiceNotFoundError({ processId });
-        }
-        if (serviceProcess.argv.length === 0) {
+        const service = yield* services.byId(serviceId);
+        if (service === null) return yield* new ServiceNotFoundError({ processId: serviceId });
+        const attempts = yield* processes.listForService(service.id);
+        const previous =
+          service.currentAttemptId === null
+            ? (attempts.findLast((attempt) => attempt.argv.length > 0) ?? null)
+            : yield* processes.byId(service.currentAttemptId);
+        if (previous === null || previous.argv.length === 0) {
           return yield* new ServiceStartError({
             message: "An adopted Service has no recorded command to restart.",
           });
         }
-        const workspaceId = serviceProcess.sealantWorkspaceId;
-        // End the old process first; repointing the row makes its watcher stand down.
-        if (serviceProcess.sealantSessionId !== null) {
-          yield* closeProcessPty(workspaceId, serviceProcess.sealantSessionId);
+        if (previous.exitedAt === null && previous.sealantSessionId !== null) {
+          yield* closeProcessPty(previous.sealantWorkspaceId, previous.sealantSessionId);
+          yield* processes.markExited(previous.id, "stopped", null);
         }
-        const workspace = yield* sealant.getWorkspace(workspaceId);
-        const pty = yield* sealant.openSession(workspace, serviceProcess.argv);
-        yield* processes.setSealantSessionId(processId, pty.id, SealantRunId.make(pty.runId));
-        yield* processes.setStatus(processId, "starting");
-        if (serviceProcess.protocol === "udp") {
-          yield* processes.setStatus(processId, "running");
+        const attemptOrdinal =
+          attempts.reduce((largest, attempt) => Math.max(largest, attempt.attemptOrdinal ?? 0), 0) +
+          1;
+        const attempt = yield* processes.create({
+          sessionId: service.sessionId,
+          sealantWorkspaceId: previous.sealantWorkspaceId,
+          sealantSessionId: null,
+          sealantRunId: null,
+          serviceId: service.id,
+          attemptOrdinal,
+          kind: "service",
+          label: service.name,
+          argv: previous.argv,
+          status: "starting",
+        });
+        yield* services.setCurrentAttempt(service.id, attempt.id);
+        const workspace = yield* sealant.getWorkspace(previous.sealantWorkspaceId);
+        const pty = yield* sealant
+          .openSession(workspace, previous.argv)
+          .pipe(Effect.tapError(() => processes.markExited(attempt.id, "exited", null)));
+        yield* processes.setSealantSessionId(attempt.id, pty.id, SealantRunId.make(pty.runId));
+        const runningAttempt = (yield* processes.byId(attempt.id)) ?? attempt;
+        yield* Effect.forkIn(watchProcess(runningAttempt), scope);
+        let reachable = false;
+        if (service.transport === "udp") {
+          yield* Effect.sleep("1500 millis");
         } else {
-          const reachable = yield* awaitServicePort(
+          reachable = yield* awaitServicePort(
             pty,
-            workspaceId,
-            serviceProcess.workspacePort,
-            processId,
+            previous.sealantWorkspaceId,
+            service.workspacePort,
+            attempt.id,
           );
-          yield* processes.setStatus(processId, reachable ? "reachable" : "unreachable");
         }
-        const restarted = (yield* processes.byId(processId)) ?? serviceProcess;
-        yield* Effect.forkIn(watchProcess(restarted), scope);
-        return restarted;
+        yield* processes.setStatus(attempt.id, "running");
+        const currentForward =
+          service.currentForwardId === null
+            ? null
+            : yield* serviceForwards.byId(service.currentForwardId);
+        const forwardId =
+          currentForward !== null && currentForward.state === "bound"
+            ? currentForward.id
+            : yield* bindServiceForward(
+                service.id,
+                previous.sealantWorkspaceId,
+                service.workspacePort,
+                service.transport,
+              );
+        if (service.transport === "tcp") {
+          yield* recordTcpObservation(service.id, forwardId, reachable);
+        }
+        return yield* readServiceView(service.id);
       });
 
       /**
@@ -2576,13 +2746,9 @@ ${tail}`),
             Effect.orDie,
           ),
         listServices: () =>
-          processes
+          services
             .listForSession(sessionId)
-            .pipe(
-              Effect.map((rows) =>
-                rows.filter((row) => row.kind === "service" && row.exitedAt === null),
-              ),
-            ),
+            .pipe(Effect.flatMap((rows) => Effect.forEach(rows, (row) => readServiceView(row.id)))),
         runService: (argv, port, name, protocol) =>
           runService(sessionId, argv, port, name, protocol).pipe(
             Effect.mapError((error) => new Error(error.message)),
@@ -2593,24 +2759,24 @@ ${tail}`),
             Effect.mapError((error) => new Error(error.message)),
             Effect.orDie,
           ),
-        stopService: (processId) =>
+        stopService: (serviceReference) =>
           Effect.gen(function* () {
-            const row = yield* processes.byId(SessionProcessId.make(processId));
-            if (row === null || row.sessionId !== sessionId) {
-              return yield* new ServiceNotFoundError({ processId });
+            const service = yield* services.byReference(serviceReference);
+            if (service === null || service.sessionId !== sessionId) {
+              return yield* new ServiceNotFoundError({ processId: serviceReference });
             }
-            return yield* stopService(row.id);
+            return yield* stopService(service.id);
           }).pipe(
             Effect.mapError((error) => new Error(String(error.message))),
             Effect.orDie,
           ),
-        restartService: (processId) =>
+        restartService: (serviceReference) =>
           Effect.gen(function* () {
-            const row = yield* processes.byId(SessionProcessId.make(processId));
-            if (row === null || row.sessionId !== sessionId) {
-              return yield* new ServiceNotFoundError({ processId });
+            const service = yield* services.byReference(serviceReference);
+            if (service === null || service.sessionId !== sessionId) {
+              return yield* new ServiceNotFoundError({ processId: serviceReference });
             }
-            return yield* restartService(row.id);
+            return yield* restartService(service.id);
           }).pipe(
             Effect.mapError((error) => new Error(String(error.message))),
             Effect.orDie,
@@ -2713,30 +2879,27 @@ ${tail}`),
           }).pipe(Effect.ignore),
       });
 
-      const stopService = Effect.fn("SessionEngine.stopService")(function* (
-        processId: SessionProcessId,
-      ) {
-        const serviceProcess = yield* processes.byId(processId);
-        if (
-          serviceProcess === null ||
-          serviceProcess.kind !== "service" ||
-          serviceProcess.exitedAt !== null
-        ) {
-          return yield* new ServiceNotFoundError({ processId });
+      const stopService = Effect.fn("SessionEngine.stopService")(function* (serviceId: ServiceId) {
+        const service = yield* services.byId(serviceId);
+        if (service === null) return yield* new ServiceNotFoundError({ processId: serviceId });
+        const attempt =
+          service.currentAttemptId === null
+            ? null
+            : yield* processes.byId(service.currentAttemptId);
+        if (attempt !== null && attempt.exitedAt === null) {
+          if (attempt.sealantSessionId !== null) {
+            yield* closeProcessPty(attempt.sealantWorkspaceId, attempt.sealantSessionId);
+          }
+          yield* processes.markExited(attempt.id, "stopped", null);
         }
-        // Supervised: end the process itself (PTY close reaps the group).
-        if (serviceProcess.sealantSessionId !== null) {
-          yield* closeProcessPty(
-            serviceProcess.sealantWorkspaceId,
-            serviceProcess.sealantSessionId,
-          );
+        yield* serviceHost.stop(service.id);
+        if (service.currentForwardId !== null) {
+          yield* serviceForwards.markClosed(service.currentForwardId);
         }
-        yield* serviceHost.stop(processId);
-        yield* processes.markExited(processId, "stopped", null);
-        // The lease just ended; the workspace goes when nothing else holds it.
-        yield* stopWorkspaceIfUnleased(serviceProcess.sessionId);
-        const stopped = yield* processes.byId(processId);
-        return stopped ?? serviceProcess;
+        yield* services.setCurrentAttempt(service.id, null);
+        yield* services.setCurrentForward(service.id, null);
+        yield* stopWorkspaceIfUnleased(service.sessionId);
+        return yield* readServiceView(service.id);
       });
 
       // -----------------------------------------------------------------------------------------
@@ -3092,6 +3255,7 @@ ${tail}`),
         // running (a detached client is not intent to stop), so watch them
         // again — the watcher itself records the end if the workspace is gone.
         const liveProcesses = yield* processes.listLive();
+        const allServices = yield* services.listAll();
         // Every session with a live workspace gets its socket re-bound: the
         // dir path is deterministic, so the running container's mount comes
         // back to life without touching it.
@@ -3099,42 +3263,85 @@ ${tail}`),
         for (const liveProcess of liveProcesses) {
           socketSessions.add(liveProcess.sessionId);
         }
+        for (const service of allServices) {
+          if (service.currentForwardId !== null) socketSessions.add(service.sessionId);
+        }
         for (const socketSessionId of socketSessions) {
           yield* socketHost
             .start(socketSessionId, socketApiFor(socketSessionId))
             .pipe(Effect.ignore);
         }
         for (const liveProcess of liveProcesses) {
-          if (liveProcess.kind === "shell") {
+          if (
+            liveProcess.kind === "shell" ||
+            (liveProcess.kind === "service" && liveProcess.serviceId !== null)
+          ) {
             yield* Effect.forkIn(watchProcess(liveProcess), scope);
           }
-          // Services: re-bind the listener on the recorded host port so URLs
-          // survive a Mend restart (supervised ones get their PTY watcher
-          // back too). A dead workspace ends the row instead — the supervisor
-          // would notice anyway, this just reports it sooner.
-          if (liveProcess.kind === "service" && liveProcess.workspacePort !== null) {
-            if (liveProcess.sealantSessionId !== null) {
-              yield* Effect.forkIn(watchProcess(liveProcess), scope);
+        }
+
+        // A host listener is process-local, so every boot closes the old
+        // durable forward record and appends the new binding attempt. A bind
+        // failure never settles the supervised process attempt.
+        for (const service of allServices) {
+          if (service.currentForwardId === null) continue;
+          const previous = yield* serviceForwards.byId(service.currentForwardId);
+          if (previous === null || (previous.state !== "binding" && previous.state !== "bound")) {
+            continue;
+          }
+          const reconcileForward = Effect.gen(function* () {
+            const workspace = yield* sealant.getWorkspace(previous.sealantWorkspaceId);
+            const status = yield* Effect.promise(() => workspace.status());
+            if (!workspaceIsLive(status)) {
+              yield* serviceForwards.markClosed(previous.id);
+              yield* services.setCurrentForward(service.id, null);
+              if (service.currentAttemptId !== null) {
+                yield* processes.markExited(service.currentAttemptId, "exited", null);
+              }
+              return;
             }
-            yield* serviceHost
+            yield* serviceForwards.markClosed(previous.id);
+            const forward = yield* serviceForwards.create({
+              serviceId: service.id,
+              sealantWorkspaceId: previous.sealantWorkspaceId,
+              preferredHostPort: previous.hostPort ?? previous.preferredHostPort,
+              supersedesForwardId: previous.id,
+            });
+            yield* services.setCurrentForward(service.id, forward.id);
+            const binding = yield* serviceHost
               .start({
-                processId: liveProcess.id,
-                workspaceId: liveProcess.sealantWorkspaceId,
-                workspacePort: liveProcess.workspacePort,
-                protocol: liveProcess.protocol,
-                ...(liveProcess.hostPort === null
+                serviceId: service.id,
+                forwardId: forward.id,
+                workspaceId: previous.sealantWorkspaceId,
+                workspacePort: service.workspacePort,
+                protocol: service.transport,
+                ...(forward.preferredHostPort === null
                   ? {}
-                  : { preferredHostPort: liveProcess.hostPort }),
+                  : { preferredHostPort: forward.preferredHostPort }),
               })
               .pipe(
-                Effect.flatMap((hostPort) =>
-                  hostPort === liveProcess.hostPort
-                    ? Effect.void
-                    : processes.setHostPort(liveProcess.id, hostPort),
+                Effect.tapError((error) =>
+                  serviceForwards
+                    .markFailed(forward.id, error.message)
+                    .pipe(Effect.andThen(services.setCurrentForward(service.id, null))),
                 ),
-                Effect.catch(() => processes.markExited(liveProcess.id, "exited", null)),
               );
-          }
+            yield* serviceForwards.markBound(forward.id, binding.hostPort, binding.boundAddresses);
+            if (service.transport === "tcp") {
+              yield* recordTcpObservation(
+                service.id,
+                forward.id,
+                yield* serviceHost.probe(previous.sealantWorkspaceId, service.workspacePort),
+              );
+            }
+          }).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("session engine: Service forward reconcile failed").pipe(
+                Effect.annotateLogs({ serviceId: service.id, error: String(error) }),
+              ),
+            ),
+          );
+          yield* reconcileForward;
         }
       });
 
@@ -3210,4 +3417,3 @@ ${tail}`),
       };
     }),
   );
-}

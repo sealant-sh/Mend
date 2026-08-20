@@ -967,6 +967,8 @@ export const reviewDiff = (id: string, sliceId: string) =>
 export interface SessionProcessDto {
   readonly id: string;
   readonly sessionId: string;
+  readonly serviceId: string | null;
+  readonly attemptOrdinal: number | null;
   readonly kind: string;
   readonly label: string | null;
   readonly argv: ReadonlyArray<string>;
@@ -1032,6 +1034,49 @@ export const listSessionProcesses = (id: string) =>
 export const listSessionRecipes = (id: string) =>
   request<ReadonlyArray<ServiceRecipeDto>>(`/api/sessions/${id}/recipes`);
 
+export interface StableServiceDto {
+  readonly id: string;
+  readonly sessionId: string;
+  readonly name: string;
+  readonly declarationSource: string;
+  readonly workspacePort: number;
+  readonly transport: "tcp" | "udp";
+  readonly browserScheme: "http" | "https" | null;
+  readonly preferredHostPort: number | null;
+  readonly currentAttemptId: string | null;
+  readonly currentForwardId: string | null;
+  readonly attemptHistoryComplete: boolean;
+  readonly forwardHistoryComplete: boolean;
+  readonly observationHistoryComplete: boolean;
+}
+
+export interface ServiceForwardDto {
+  readonly id: string;
+  readonly serviceId: string;
+  readonly hostPort: number | null;
+  readonly state: "binding" | "bound" | "closed" | "failed";
+  readonly boundAddresses: ReadonlyArray<string> | null;
+  readonly error: string | null;
+}
+
+export interface ServiceObservationDto {
+  readonly id: string;
+  readonly state: "reachable" | "unreachable";
+  readonly source: "probe" | "connection" | "udp-reply" | "legacy";
+  readonly error: string | null;
+  readonly lastObservedAt: string;
+}
+
+export interface ServiceViewDto {
+  readonly service: StableServiceDto;
+  readonly attempts: ReadonlyArray<SessionProcessDto>;
+  readonly currentForward: ServiceForwardDto | null;
+  readonly latestObservation: ServiceObservationDto | null;
+}
+
+export const listServices = (all = false) =>
+  request<ReadonlyArray<ServiceViewDto>>(`/api/services${all ? "?all=1" : ""}`);
+
 export const runService = (
   sessionId: string,
   input: {
@@ -1040,27 +1085,31 @@ export const runService = (
     name: string | null;
     protocol?: "tcp" | "udp";
   },
-) => post<SessionProcessDto>(`/api/sessions/${sessionId}/services/run`, input);
+) => post<ServiceViewDto>(`/api/sessions/${sessionId}/services/run`, input);
 
 export const addService = (
   sessionId: string,
   input: { port: number; name: string | null; protocol?: "tcp" | "udp" },
-) => post<SessionProcessDto>(`/api/sessions/${sessionId}/services`, input);
+) => post<ServiceViewDto>(`/api/sessions/${sessionId}/services`, input);
 
 export const restartService = (id: string) =>
-  post<SessionProcessDto>(`/api/services/${id}/restart`, {});
+  post<ServiceViewDto>(`/api/services/${id}/restart`, {});
 
-export const stopService = (id: string) => post<SessionProcessDto>(`/api/services/${id}/stop`, {});
+export const stopService = (id: string) => post<ServiceViewDto>(`/api/services/${id}/stop`, {});
 
-/** The Service's reachable URL: the API carries no host — the browser's does. UDP has no page. */
-export const serviceUrl = (service: SessionProcessDto) =>
-  service.hostPort === null || service.protocol === "udp"
+/** Temporary browser projection; Step 9 makes the declared scheme authoritative. */
+export const serviceUrl = (view: ServiceViewDto) =>
+  view.currentForward?.hostPort === null ||
+  view.currentForward?.hostPort === undefined ||
+  view.service.transport === "udp"
     ? null
-    : `http://${window.location.hostname}:${service.hostPort}`;
+    : `${view.service.browserScheme ?? "http"}://${window.location.hostname}:${view.currentForward.hostPort}`;
 
 /** What a client would connect to — the copyable fact, any protocol. */
-export const serviceEndpoint = (service: SessionProcessDto) =>
-  service.hostPort === null ? null : `${window.location.hostname}:${service.hostPort}`;
+export const serviceEndpoint = (view: ServiceViewDto) =>
+  view.currentForward?.hostPort === null || view.currentForward?.hostPort === undefined
+    ? null
+    : `${window.location.hostname}:${view.currentForward.hostPort}`;
 
 export const changeComments = (id: string) =>
   request<ReadonlyArray<ReviewCommentDto>>(`/api/changes/${id}/comments`);

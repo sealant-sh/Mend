@@ -10,9 +10,10 @@ import {
   serviceUrl,
   stopService,
   type ServiceRecipeDto,
+  type ServiceViewDto,
   type SessionProcessDto,
 } from "#/lib/api";
-import { queryClient, sessionProcessesQuery, sessionRecipesQuery } from "#/lib/queries";
+import { queryClient, sessionRecipesQuery, sessionServicesQuery } from "#/lib/queries";
 
 /**
  * The session's Services (docs/SESSION-SERVICES.md §presentation): what runs
@@ -21,7 +22,27 @@ import { queryClient, sessionProcessesQuery, sessionRecipesQuery } from "#/lib/q
  * a connection, never a judgment about the application.
  */
 
-const LIVE = new Set(["starting", "running", "reachable", "unreachable"]);
+const latestAttempt = (view: ServiceViewDto): SessionProcessDto | null =>
+  (view.service.currentAttemptId === null
+    ? null
+    : view.attempts.find((attempt) => attempt.id === view.service.currentAttemptId)) ??
+  view.attempts.at(-1) ??
+  null;
+
+const serviceIsLive = (view: ServiceViewDto): boolean => {
+  const attempt = latestAttempt(view);
+  return (
+    (attempt !== null && attempt.exitedAt === null) ||
+    view.currentForward?.state === "binding" ||
+    view.currentForward?.state === "bound"
+  );
+};
+
+const serviceStatus = (view: ServiceViewDto): string =>
+  view.latestObservation?.state ??
+  latestAttempt(view)?.status ??
+  view.currentForward?.state ??
+  "stopped";
 
 function ServiceStatusDot({ status }: { readonly status: string }) {
   const tone =
@@ -44,24 +65,27 @@ function ServiceRow({
   onAction,
   first,
 }: {
-  readonly service: SessionProcessDto;
+  readonly service: ServiceViewDto;
   readonly actionable: boolean;
   readonly pending: string | null;
-  readonly onAction: (verb: ServiceVerb, service: SessionProcessDto) => void;
+  readonly onAction: (verb: ServiceVerb, service: ServiceViewDto) => void;
   readonly first: boolean;
 }) {
   const [copied, setCopied] = useState(false);
+  const stable = service.service;
+  const attempt = latestAttempt(service);
+  const status = serviceStatus(service);
   const url = serviceUrl(service);
-  const live = LIVE.has(service.status);
+  const live = serviceIsLive(service);
   // What a client would connect to — the copyable fact. Dead forwards are
   // not offered: an ended Service has no host port worth pasting anywhere.
   const endpoint = live ? serviceEndpoint(service) : null;
   const meta = [
-    service.workspacePort === null
-      ? null
-      : `:${service.workspacePort}${service.protocol === "udp" ? "/udp" : ""}`,
+    `:${stable.workspacePort}${stable.transport === "udp" ? "/udp" : ""}`,
     endpoint === null ? null : `→ ${endpoint}`,
-    !live && service.exitCode !== null ? `code ${service.exitCode}` : null,
+    !live && attempt?.exitCode !== null && attempt?.exitCode !== undefined
+      ? `code ${attempt.exitCode}`
+      : null,
   ]
     .filter((part) => part !== null)
     .join(" ");
@@ -78,10 +102,8 @@ function ServiceRow({
   return (
     <div className={`group px-4 py-3 ${first ? "" : "border-t border-rule-faint"}`}>
       <div className="flex items-center justify-between gap-3">
-        <p className="min-w-0 truncate font-sans text-[13px] font-medium text-ink">
-          {service.label ?? service.id.slice(0, 8)}
-        </p>
-        <ServiceStatusDot status={service.status} />
+        <p className="min-w-0 truncate font-sans text-[13px] font-medium text-ink">{stable.name}</p>
+        <ServiceStatusDot status={status} />
       </div>
       <div className="mt-1 flex items-center justify-between gap-3">
         {endpoint === null ? (
@@ -110,7 +132,7 @@ function ServiceRow({
               {copied ? "Copied" : "Copy"}
             </button>
           )}
-          {live && url !== null && service.status === "reachable" && (
+          {live && url !== null && service.latestObservation?.state === "reachable" && (
             <a
               href={url}
               target="_blank"
@@ -120,14 +142,14 @@ function ServiceRow({
               Open
             </a>
           )}
-          {live && actionable && service.argv.length > 0 && (
+          {live && actionable && attempt !== null && attempt.argv.length > 0 && (
             <button
               type="button"
               onClick={() => onAction("restart", service)}
               disabled={pending !== null}
               className="font-sans text-xs text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-ink"
             >
-              {pending === `restart:${service.id}` ? "Restarting…" : "Restart"}
+              {pending === `restart:${stable.id}` ? "Restarting…" : "Restart"}
             </button>
           )}
           {live && actionable && (
@@ -137,17 +159,17 @@ function ServiceRow({
               disabled={pending !== null}
               className="font-sans text-xs text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-ink"
             >
-              {pending === `stop:${service.id}` ? "Stopping…" : "Stop"}
+              {pending === `stop:${stable.id}` ? "Stopping…" : "Stop"}
             </button>
           )}
-          {!live && actionable && service.workspacePort !== null && (
+          {!live && actionable && (
             <button
               type="button"
               onClick={() => onAction("rerun", service)}
               disabled={pending !== null}
               className="font-sans text-xs font-medium text-info hover:underline disabled:opacity-50"
             >
-              {pending === `rerun:${service.id}` ? "Starting…" : "Run"}
+              {pending === `rerun:${stable.id}` ? "Starting…" : "Run"}
             </button>
           )}
         </span>
@@ -163,50 +185,45 @@ export function ServicesCard({
   readonly sessionId: string;
   readonly sessionLive: boolean;
 }) {
-  const processes = useQuery(sessionProcessesQuery(sessionId));
+  const serviceViews = useQuery(sessionServicesQuery(sessionId));
   const recipes = useQuery(sessionRecipesQuery(sessionId));
   const [pending, setPending] = useState<string | null>(null);
 
-  const services = (processes.data ?? []).filter((process) => process.kind === "service");
-  const liveServices = services.filter((service) => LIVE.has(service.status));
-  const liveLabels = new Set(liveServices.map((service) => service.label ?? service.id));
-  const endedByName = new Map<string, SessionProcessDto>();
-  for (const service of services.filter((item) => !LIVE.has(item.status))) {
-    // Latest attempt per name (list is oldest-first), and a live successor
-    // retires its history from the card — the record still holds it all.
-    if (liveLabels.has(service.label ?? service.id)) continue;
-    endedByName.set(service.label ?? service.id, service);
+  const services = serviceViews.data ?? [];
+  const liveServices = services.filter(serviceIsLive);
+  const liveNames = new Set(liveServices.map((view) => view.service.name));
+  const endedByName = new Map<string, ServiceViewDto>();
+  for (const view of services.filter((item) => !serviceIsLive(item))) {
+    if (liveNames.has(view.service.name)) continue;
+    endedByName.set(view.service.name, view);
   }
   const endedServices = [...endedByName.values()].slice(-3);
-  // One row per name: an ended Service already carries its command, so its
-  // Run re-runs it — the same-named recipe would only echo the row.
-  const shownNames = new Set(
-    [...liveServices, ...endedServices].map((service) => service.label ?? ""),
-  );
+  const shownNames = new Set([...liveServices, ...endedServices].map((view) => view.service.name));
   const startable = (recipes.data ?? []).filter((recipe) => !shownNames.has(recipe.name));
 
   const invalidate = () =>
-    queryClient.invalidateQueries({ queryKey: ["session", sessionId, "processes"] });
+    queryClient.invalidateQueries({ queryKey: ["session", sessionId, "services"] });
 
-  const act = (verb: ServiceVerb, service: SessionProcessDto) => {
-    setPending(`${verb}:${service.id}`);
+  const act = (verb: ServiceVerb, view: ServiceViewDto) => {
+    const stable = view.service;
+    const attempt = latestAttempt(view);
+    setPending(`${verb}:${stable.id}`);
     const action =
       verb === "restart"
-        ? restartService(service.id)
+        ? restartService(stable.id)
         : verb === "stop"
-          ? stopService(service.id)
-          : // rerun: an ended row keeps its command and port — start it fresh.
-            service.argv.length > 0
+          ? stopService(stable.id)
+          : attempt !== null && attempt.argv.length > 0
             ? runService(sessionId, {
-                argv: service.argv,
-                port: service.workspacePort ?? 0,
-                name: service.label,
-                protocol: service.protocol,
+                argv: attempt.argv,
+                port: stable.workspacePort,
+                name: stable.name,
+                protocol: stable.transport,
               })
             : addService(sessionId, {
-                port: service.workspacePort ?? 0,
-                name: service.label,
-                protocol: service.protocol,
+                port: stable.workspacePort,
+                name: stable.name,
+                protocol: stable.transport,
               });
     void action.then(invalidate).finally(() => setPending(null));
   };
@@ -241,7 +258,7 @@ export function ServicesCard({
           <>
             {[...liveServices, ...endedServices].map((service, index) => (
               <ServiceRow
-                key={service.id}
+                key={service.service.id}
                 service={service}
                 actionable={sessionLive}
                 pending={pending}

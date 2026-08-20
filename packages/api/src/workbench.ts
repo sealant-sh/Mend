@@ -18,6 +18,9 @@ import {
   ReferencesRepo,
   ReviewCommentsRepo,
   ReviewSlicesRepo,
+  ServiceForwardsRepo,
+  ServiceObservationsRepo,
+  ServicesRepo,
   SessionChangesRepo,
   SessionProcessesRepo,
   SessionsRepo,
@@ -40,6 +43,7 @@ import {
   resolveAutomation,
   routeDotenvName,
   validateProjectSecretValue,
+  ServiceView,
   type GitAuthMode,
 } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
@@ -1418,12 +1422,29 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("listServices", ({ query }) =>
       Effect.gen(function* () {
+        const services = yield* ServicesRepo;
         const processes = yield* SessionProcessesRepo;
-        if (query.all !== undefined) {
-          return yield* processes.listRecentServices();
-        }
-        const live = yield* processes.listLive();
-        return live.filter((process) => process.kind === "service");
+        const forwards = yield* ServiceForwardsRepo;
+        const observations = yield* ServiceObservationsRepo;
+        const rows = yield* services.listAll();
+        const views = yield* Effect.forEach(rows, (service) =>
+          Effect.gen(function* () {
+            const attempts = yield* processes.listForService(service.id);
+            const currentForward =
+              service.currentForwardId === null
+                ? null
+                : yield* forwards.byId(service.currentForwardId);
+            const latestObservation = yield* observations.latestForService(service.id);
+            return new ServiceView({ service, attempts, currentForward, latestObservation });
+          }),
+        );
+        if (query.all !== undefined) return views;
+        return views.filter(
+          (view) =>
+            view.attempts.some((attempt) => attempt.exitedAt === null) ||
+            view.currentForward?.state === "binding" ||
+            view.currentForward?.state === "bound",
+        );
       }),
     )
     .handle("processOutput", ({ params }) =>
@@ -1472,6 +1493,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             SealantPlatformError: (error) =>
               Effect.fail(new StoreFailure({ message: error.message })),
             ServiceStartError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
+            ServiceBindError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
           }),
         );
       }),

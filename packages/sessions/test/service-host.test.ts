@@ -1,8 +1,14 @@
 import { once } from "node:events";
 import * as net from "node:net";
 
-import { SessionProcessesRepo } from "@mend/db";
-import { SealantWorkspaceId, SessionProcessId } from "@mend/domain";
+import { ServiceForwardsRepo, ServiceObservationsRepo } from "@mend/db";
+import {
+  SealantWorkspaceId,
+  ServiceForwardId,
+  ServiceId,
+  ServiceObservationId,
+} from "@mend/domain";
+import { ServiceObservation } from "@mend/domain/workbench";
 import { SealantClient } from "@mend/sealant";
 import { ServiceHost, ServiceHostLive } from "@mend/sessions";
 import type { Workspace, WorkspaceForward } from "@sealant/sdk";
@@ -105,28 +111,38 @@ const sealantFakeLayer = Layer.succeed(SealantClient, {
   resolveWorkspacePackage: () => Effect.die("not in test"),
 });
 
-const processesStubLayer = Layer.succeed(SessionProcessesRepo, {
+const forwardsStubLayer = Layer.succeed(ServiceForwardsRepo, {
   create: () => Effect.die("not in test"),
   byId: () => Effect.succeed(null),
-  byLaunchCorrelation: () => Effect.succeed(null),
-  listForSession: () => Effect.succeed([]),
-  listLiveForWorkspace: () => Effect.succeed([]),
-  listLive: () => Effect.succeed([]),
-  setStatus: () => Effect.void,
-  setLabel: () => Effect.void,
-  setHostPort: () => Effect.void,
-  setSealantSessionId: () => Effect.void,
-  listRecentServices: () => Effect.succeed([]),
-  markExited: () => Effect.void,
-  reapLiveForWorkspace: () => Effect.void,
+  listForService: () => Effect.succeed([]),
+  listOpen: () => Effect.succeed([]),
+  markBound: () => Effect.void,
+  markFailed: () => Effect.void,
+  markClosed: () => Effect.void,
+});
+
+const observationsStubLayer = Layer.succeed(ServiceObservationsRepo, {
+  record: (input) =>
+    Effect.succeed(
+      new ServiceObservation({
+        id: ServiceObservationId.make(crypto.randomUUID()),
+        ...input,
+        error: input.error ?? null,
+        firstObservedAt: new Date(),
+        lastObservedAt: new Date(),
+      }),
+    ),
+  latestForService: () => Effect.succeed(null),
+  listForService: () => Effect.succeed([]),
 });
 
 const TestLayer = ServiceHostLive.pipe(
   Layer.provide(sealantFakeLayer),
-  Layer.provide(processesStubLayer),
+  Layer.provide(Layer.mergeAll(forwardsStubLayer, observationsStubLayer)),
 );
 
-const PROCESS_ID = SessionProcessId.make("svc-1");
+const SERVICE_ID = ServiceId.make("svc-1");
+const FORWARD_ID = ServiceForwardId.make("forward-1");
 const WORKSPACE_ID = SealantWorkspaceId.make("workspace-1");
 
 describe("ServiceHost", () => {
@@ -134,15 +150,16 @@ describe("ServiceHost", () => {
     await Effect.runPromise(
       Effect.gen(function* () {
         const host = yield* ServiceHost;
-        const hostPort = yield* host.start({
-          processId: PROCESS_ID,
+        const binding = yield* host.start({
+          serviceId: SERVICE_ID,
+          forwardId: FORWARD_ID,
           workspaceId: WORKSPACE_ID,
           workspacePort: 3000,
           protocol: "tcp",
         });
 
         const echoed = yield* Effect.promise(async () => {
-          const socket = net.connect(hostPort, "127.0.0.1");
+          const socket = net.connect(binding.hostPort, "127.0.0.1");
           await once(socket, "connect");
           socket.write("ping through the pump");
           socket.end(); // half-close: the echo must still drain back
@@ -153,12 +170,12 @@ describe("ServiceHost", () => {
         });
         expect(echoed).toBe("ping through the pump");
 
-        yield* host.stop(PROCESS_ID);
+        yield* host.stop(SERVICE_ID);
         // The listener is gone: a fresh connect must be refused.
         const refused = yield* Effect.promise(
           () =>
             new Promise<boolean>((resolve) => {
-              const socket = net.connect(hostPort, "127.0.0.1");
+              const socket = net.connect(binding.hostPort, "127.0.0.1");
               socket.once("error", () => resolve(true));
               socket.once("connect", () => {
                 socket.destroy();
@@ -176,21 +193,23 @@ describe("ServiceHost", () => {
       Effect.gen(function* () {
         const host = yield* ServiceHost;
         const first = yield* host.start({
-          processId: PROCESS_ID,
+          serviceId: SERVICE_ID,
+          forwardId: FORWARD_ID,
           workspaceId: WORKSPACE_ID,
           workspacePort: 3000,
           protocol: "tcp",
         });
-        yield* host.stop(PROCESS_ID);
+        yield* host.stop(SERVICE_ID);
         const second = yield* host.start({
-          processId: PROCESS_ID,
+          serviceId: SERVICE_ID,
+          forwardId: FORWARD_ID,
           workspaceId: WORKSPACE_ID,
           workspacePort: 3000,
           protocol: "tcp",
-          preferredHostPort: first,
+          preferredHostPort: first.hostPort,
         });
-        expect(second).toBe(first);
-        yield* host.stop(PROCESS_ID);
+        expect(second.hostPort).toBe(first.hostPort);
+        yield* host.stop(SERVICE_ID);
       }).pipe(Effect.provide(TestLayer)),
     );
   });
