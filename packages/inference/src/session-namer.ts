@@ -4,9 +4,18 @@ import * as Context from "effect/Context";
 
 import { InferenceError, InferenceProvider } from "./provider.ts";
 
-/** The `name-session` job's payload — enqueued at launch, retried until a first prompt exists. */
+/**
+ * The `name-session` job's payload. Two enqueue shapes share one idempotency
+ * key (`name-session:{sessionId}`), so whichever fires first wins:
+ * - launch-time, no prompt: the worker polls the harness's native transcript
+ *   (delayed first attempt + spaced retries until the first prompt exists);
+ * - send-time, prompt inline (`firstUserTurn`): a Mend-owned composer saw the
+ *   prompt on its way to the session — the worker names immediately, with no
+ *   transcript read and no harness-parseability gate.
+ */
 export class NameSessionJob extends Schema.Class<NameSessionJob>("NameSessionJob")({
   sessionId: SessionId,
+  firstUserTurn: Schema.optional(Schema.String),
 }) {}
 
 /**

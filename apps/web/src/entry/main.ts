@@ -314,28 +314,20 @@ const InferenceWorkersLive = Layer.effectDiscard(
         Effect.orDie,
       ),
     );
-    // Session auto-naming: enqueued at launch, retried (with backoff) until
-    // the first prompt exists in the harness's native transcript. Every
-    // no-name outcome besides "no prompt yet" is a quiet success — a renamed
-    // or deleted session, a switched-off cascade, an unparseable harness.
+    // Session auto-naming, two payload shapes: launch-time (no prompt — poll
+    // the harness's native transcript, retried with backoff until the first
+    // prompt exists) and send-time (prompt inline from a Mend-owned composer —
+    // name immediately, any harness). Every no-name outcome besides "no
+    // prompt yet" is a quiet success — a renamed or deleted session, a
+    // switched-off cascade, an unparseable harness on the transcript path.
     const namer = yield* SessionNamer;
     const sessions = yield* SessionsRepo;
     const projects = yield* ProjectsRepo;
     const settingsRepo = yield* SettingsRepo;
     const engine = yield* SessionEngine;
-    const nameSession = Effect.fn("nameSession")(function* (job: NameSessionJob) {
-      const session = yield* sessions
-        .byId(job.sessionId)
-        .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-      if (session === null || session.label !== null) return;
-      if (!NAMEABLE_HARNESSES.has(session.harness)) return;
-      const project = yield* projects
-        .byId(session.projectId)
-        .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
-      if (project === null) return;
-      const settings = yield* settingsRepo.get();
-      if (!resolveAutomation(project.autoName, settings.autoName)) return;
-
+    const firstPromptFromTranscript = Effect.fn("firstPromptFromTranscript")(function* (
+      job: NameSessionJob,
+    ) {
       const transcript = yield* engine
         .transcript(job.sessionId)
         .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
@@ -349,12 +341,36 @@ const InferenceWorkersLive = Layer.effectDiscard(
       const reply = events
         .slice(firstUserAt + 1)
         .find((event): event is typeof event & { kind: "assistant" } => event.kind === "assistant");
+      return {
+        firstUserTurn: firstUser.text,
+        ...(reply === undefined ? {} : { assistantReply: reply.text }),
+      };
+    });
+    const nameSession = Effect.fn("nameSession")(function* (job: NameSessionJob) {
+      const session = yield* sessions
+        .byId(job.sessionId)
+        .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+      if (session === null || session.label !== null) return;
+      const inlinePrompt = job.firstUserTurn?.trim();
+      const hasInlinePrompt = inlinePrompt !== undefined && inlinePrompt.length > 0;
+      // The harness gate guards only transcript parsing — an inline prompt
+      // names any harness, opencode and shell included.
+      if (!hasInlinePrompt && !NAMEABLE_HARNESSES.has(session.harness)) return;
+      const project = yield* projects
+        .byId(session.projectId)
+        .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
+      if (project === null) return;
+      const settings = yield* settingsRepo.get();
+      if (!resolveAutomation(project.autoName, settings.autoName)) return;
+
+      const turns = hasInlinePrompt
+        ? { firstUserTurn: inlinePrompt }
+        : yield* firstPromptFromTranscript(job);
 
       const label = yield* namer.name({
         harness: session.harness,
         projectName: project.name,
-        firstUserTurn: firstUser.text,
-        ...(reply === undefined ? {} : { assistantReply: reply.text }),
+        ...turns,
       });
       const wrote = yield* sessions.setLabelIfUnset(job.sessionId, label);
       yield* Effect.annotateLogs(Effect.logInfo("session named"), {

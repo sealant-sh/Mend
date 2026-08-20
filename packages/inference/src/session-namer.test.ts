@@ -1,8 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Schema } from "effect";
 
 import { InferenceError, InferenceProvider, type InferenceRequest } from "./provider.ts";
-import { normalizeLabel, SessionNamer, SessionNamerLive } from "./session-namer.ts";
+import { NameSessionJob, normalizeLabel, SessionNamer, SessionNamerLive } from "./session-namer.ts";
 
 const input = {
   harness: "claude",
@@ -75,7 +75,9 @@ describe("SessionNamer", () => {
 
       expect(label).toBe("reaper retry storm");
       expect(requests).toHaveLength(2);
-      expect(requests[1]).toEqual(expect.objectContaining({ provider: "codex", model: "gpt-5.6-luna" }));
+      expect(requests[1]).toEqual(
+        expect.objectContaining({ provider: "codex", model: "gpt-5.6-luna" }),
+      );
     });
   });
 
@@ -116,5 +118,20 @@ describe("normalizeLabel", () => {
   it("returns undefined for effectively empty answers", () => {
     expect(normalizeLabel("   ")).toBeUndefined();
     expect(normalizeLabel('""')).toBeUndefined();
+  });
+});
+
+describe("NameSessionJob", () => {
+  const sessionId = "55555555-5555-5555-5555-555555555555";
+
+  it("decodes the launch-time shape (no prompt) and the send-time shape (prompt inline)", () => {
+    const launch = Schema.decodeUnknownSync(NameSessionJob)({ sessionId });
+    expect(launch.firstUserTurn).toBeUndefined();
+
+    const send = Schema.decodeUnknownSync(NameSessionJob)({
+      sessionId,
+      firstUserTurn: "fix the flaky retry loop",
+    });
+    expect(send.firstUserTurn).toBe("fix the flaky retry loop");
   });
 });
