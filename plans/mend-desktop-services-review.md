@@ -1,6 +1,6 @@
 # Mend desktop: ownership, Services, and Review
 
-**Status:** Approved; implementation in progress (Steps 1–7 complete)
+**Status:** Approved; implementation in progress (Steps 1–8 complete)
 
 **Authority:** `MEND-AGENT-WORKBENCH-PLAN.md` remains canonical. This plan records the approved
 implementation sequence for desktop ownership, Review, and Services. Step 1 folded the product
@@ -824,7 +824,7 @@ Every phase has a real-repository exit test. Fixtures alone cannot close a phase
 5. [x] Prove the Review contract in web or CLI against a real repository.
 6. [x] Ship native desktop Review with P0 diff controls, comments, and minimum honest evidence.
 7. [x] Make follow-up delivery idempotent, atomic from the client perspective, and recoverable.
-8. [ ] Separate stable Services, process attempts, forwards, and observations.
+8. [x] Separate stable Services, process attempts, forwards, and observations.
 9. [ ] Enforce private bind policy, browser-scheme declaration, read-only logs, and workspace TTL
        renewal.
 10. [ ] Ship desktop Services with factual state and retained-workspace controls.
