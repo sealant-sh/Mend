@@ -4,9 +4,16 @@ import { useState } from "react";
 import { ReplayScrubber } from "#/components/replay-scrubber";
 import { StatusDot } from "#/components/status-dot";
 import { TtyTerminal } from "#/components/tty-terminal";
-import { checkpointSession, stopSession, type SessionDto } from "#/lib/api";
-import { useConnection } from "#/lib/connection";
+import {
+  checkpointSession,
+  openReview,
+  renameShell as renameShellProcess,
+  stopSession,
+  type SessionDto,
+  type SessionProcessDto,
+} from "#/lib/api";
 import { queryClient, sessionDetailQuery } from "#/lib/queries";
+import { reviewOpenKey, takeReplayCursor } from "#/lib/review";
 import { isLive, statusTone, statusWord } from "#/lib/words";
 import type { Tab } from "#/lib/workbench";
 
@@ -19,18 +26,26 @@ import type { Tab } from "#/lib/workbench";
 export function TerminalPane({
   tab,
   session,
+  process,
+  onDetach,
+  onReview,
 }: {
   readonly tab: Tab;
-  /** The session behind the tab (the agent session, or the bench). */
+  /** The visible session that owns this terminal and its worktree. */
   readonly session: SessionDto | null;
+  /** Present for a supporting-shell tab. */
+  readonly process: SessionProcessDto | null;
+  /** Remove this view without stopping its process. */
+  readonly onDetach: () => void;
+  /** Enter native Review after the server returns the immutable slice. */
+  readonly onReview: (changeId: string, sliceId: string) => void;
 }) {
-  const connection = useConnection();
   const isSessionTab = tab.kind === "session";
   const detail = useQuery({
     ...sessionDetailQuery(tab.sessionId),
     enabled: isSessionTab,
   });
-  const [from, setFrom] = useState("0");
+  const [from, setFrom] = useState(() => takeReplayCursor(tab.sessionId));
   const mark = useMutation({
     mutationFn: () => checkpointSession(tab.sessionId, "user-mark"),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["session", tab.sessionId] }),
@@ -44,13 +59,21 @@ export function TerminalPane({
       }
     },
   });
+  const rename = useMutation({
+    mutationFn: (label: string) =>
+      process === null
+        ? Promise.reject(new Error("shell process unavailable"))
+        : renameShellProcess(process.id, label),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["session", tab.sessionId, "processes"] }),
+  });
 
   const live = session !== null && isLive(session);
   const change = detail.data?.change ?? null;
-  const reviewUrl =
-    change !== null && connection !== null && connection.url !== ""
-      ? `${connection.url.replace(/\/+$/, "")}/changes/${change.id}`
-      : null;
+  const review = useMutation({
+    mutationFn: (changeId: string) => openReview(changeId, reviewOpenKey(changeId)),
+    onSuccess: (opened) => onReview(opened.slice.changeId, opened.slice.id),
+  });
 
   const quiet =
     "font-sans text-[12.5px] text-label hover:text-foreground disabled:opacity-40 disabled:hover:text-label";
@@ -67,25 +90,25 @@ export function TerminalPane({
             />
             <span className="truncate font-mono text-[12px] text-label">{session.branch}</span>
             <span className="flex-1" />
-            {mark.isError && (
+            {(mark.isError || review.isError) && (
               <span className="truncate font-mono text-[11.5px] text-danger">
-                {mark.error instanceof Error ? mark.error.message : "checkpoint failed"}
+                {mark.error instanceof Error
+                  ? mark.error.message
+                  : review.error instanceof Error
+                    ? review.error.message
+                    : "Review could not be opened"}
               </span>
             )}
             <button
               type="button"
               className={quiet}
-              disabled={reviewUrl === null}
-              title={
-                reviewUrl === null
-                  ? "No change recorded yet"
-                  : "Opens the web review (native review is M2)"
-              }
+              disabled={change === null || review.isPending}
+              title={change === null ? "No change recorded yet" : "Open the pinned native Review"}
               onClick={() => {
-                if (reviewUrl !== null) void window.mend.shell.openExternal(reviewUrl);
+                if (change !== null) review.mutate(change.id);
               }}
             >
-              review the change
+              {review.isPending ? "opening Review…" : "review the change"}
             </button>
             <button
               type="button"
@@ -107,11 +130,30 @@ export function TerminalPane({
         )}
         {!isSessionTab && (
           <>
-            <span className="font-mono text-[12px] text-label">
-              mend shell · bench workspace
-              {session !== null ? ` · ${session.branch}` : ""}
+            <span className="truncate font-mono text-[12px] text-label">
+              {process?.label ?? "shell"} · session worktree
+              {session === null ? "" : ` · ${session.branch}`}
             </span>
             <span className="flex-1" />
+            {rename.isError && (
+              <span className="truncate font-mono text-[11.5px] text-danger">
+                {rename.error instanceof Error ? rename.error.message : "rename failed"}
+              </span>
+            )}
+            <button
+              type="button"
+              className={quiet}
+              disabled={process === null || rename.isPending}
+              onClick={() => {
+                const next = window.prompt("Shell name", process?.label ?? "shell");
+                if (next !== null && next.trim() !== "") rename.mutate(next);
+              }}
+            >
+              {rename.isPending ? "renaming…" : "rename"}
+            </button>
+            <button type="button" className={quiet} onClick={onDetach}>
+              detach tab
+            </button>
           </>
         )}
       </div>
@@ -119,7 +161,7 @@ export function TerminalPane({
       <div className="relative min-h-0 flex-1 bg-term">
         <TtyTerminal
           target={
-            tab.kind === "shell" && tab.processId !== null
+            tab.kind === "shell"
               ? { kind: "process", id: tab.processId }
               : { kind: "session", id: tab.sessionId }
           }

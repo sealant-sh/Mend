@@ -39,6 +39,25 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEvent) => void) =>
               });
             }
             break;
+          case "review-comment":
+            if (event.changeId !== undefined) {
+              void queryClient.invalidateQueries({
+                queryKey: ["change", event.changeId, "comments"],
+              });
+            }
+            break;
+          case "session-change":
+            if (event.changeId !== undefined) {
+              // The immutable patch cannot change. Keep high-frequency session
+              // events from re-running the full-worktree staleness probe.
+              void queryClient.invalidateQueries({
+                queryKey: ["change", event.changeId, "comments"],
+              });
+            }
+            if (event.sessionId !== undefined) {
+              void queryClient.invalidateQueries({ queryKey: ["session", event.sessionId] });
+            }
+            break;
           default:
             break;
         }

@@ -8,6 +8,10 @@ import { LIVE_STATUSES, type SessionDto, type SessionStatusDto } from "#/lib/api
 
 export type Tone = "accent" | "green" | "amber" | "red" | "hollow";
 
+const unexpectedStatus = (status: never): never => {
+  throw new Error(`Unhandled session status: ${String(status)}`);
+};
+
 export const isLive = (session: SessionDto): boolean => LIVE_STATUSES.has(session.status);
 
 export const statusTone = (status: SessionStatusDto): Tone => {
@@ -24,6 +28,8 @@ export const statusTone = (status: SessionStatusDto): Tone => {
     case "idle":
     case "stopped":
       return "hollow";
+    default:
+      return unexpectedStatus(status);
   }
 };
 
@@ -45,12 +51,16 @@ export const statusWord = (session: SessionDto): string => {
       return "failed";
     case "stopped":
       return "stopped";
+    default:
+      return unexpectedStatus(session.status);
   }
 };
 
-/** "codex — udp services": harness, then the label or the branch. */
+/** A visible session title, including the migration warning for a retired hidden bench. */
 export const sessionTitle = (session: SessionDto): string =>
-  `${session.harness} — ${session.label ?? session.branch}`;
+  session.harness === "shell" && session.label === "bench"
+    ? `legacy bench · ${session.branch} · review before removal`
+    : `${session.harness} · ${session.label ?? session.branch}`;
 
 /** Minutes and hours only — the inbox is a glance, not a log. */
 export const ago = (iso: string | null, now: number): string | null => {

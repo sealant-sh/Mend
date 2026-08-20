@@ -14,7 +14,7 @@ export type SessionStatusDto =
   | "failed"
   | "stopped";
 
-export const LIVE_STATUSES: ReadonlySet<SessionStatusDto> = new Set([
+export const LIVE_STATUSES: ReadonlySet<SessionStatusDto> = new Set<SessionStatusDto>([
   "starting",
   "running",
   "waiting",
@@ -75,6 +75,8 @@ export interface CheckpointDto {
   readonly sessionId: string;
   readonly ref: string;
   readonly sha: string;
+  /** The coding-agent record active when this checkpoint was observed. */
+  readonly sealantRunId: string | null;
   /** Record sequence at the checkpoint — bigint on the wire, string here. */
   readonly seq: string;
   readonly trigger: string;
@@ -96,6 +98,139 @@ export interface SessionDetailDto {
   readonly change: SessionChangeDto | null;
 }
 
+export interface ReviewSliceDto {
+  readonly id: string;
+  readonly changeId: string;
+  readonly checkpointAId: string;
+  readonly checkpointBId: string;
+  readonly diffDigest: string;
+  readonly createdAt: string;
+}
+
+export interface OpenReviewDto {
+  readonly slice: ReviewSliceDto;
+  readonly checkpointA: CheckpointDto;
+  readonly checkpointB: CheckpointDto;
+  readonly reused: boolean;
+}
+
+export interface ReviewDiffHunkDto {
+  readonly header: string;
+  readonly oldStart: number;
+  readonly oldLines: number;
+  readonly newStart: number;
+  readonly newLines: number;
+  readonly contextHash: string;
+  readonly patch: string;
+}
+
+export interface ReviewDiffFileDto {
+  readonly oldPath: string | null;
+  readonly newPath: string | null;
+  readonly status:
+    | "added"
+    | "modified"
+    | "deleted"
+    | "renamed"
+    | "copied"
+    | "type-changed"
+    | "unmerged"
+    | "unknown";
+  readonly additions: number;
+  readonly deletions: number;
+  readonly binary: boolean;
+  readonly patch: string;
+  readonly hunks: ReadonlyArray<ReviewDiffHunkDto>;
+}
+
+export interface ReviewDiffDto {
+  readonly change: SessionChangeDto;
+  readonly slice: ReviewSliceDto;
+  readonly checkpointA: CheckpointDto;
+  readonly checkpointB: CheckpointDto;
+  readonly patch: string;
+  readonly files: ReadonlyArray<ReviewDiffFileDto>;
+  readonly anchorFiles: ReadonlyArray<ReviewDiffFileDto>;
+  readonly worktreeChangedSinceSnapshot: boolean;
+}
+
+export interface RecordLinkDto {
+  readonly sealantRunId: string;
+  readonly sequence: string;
+  readonly excerpt: string;
+}
+
+export interface ReviewCommentAnchorDto {
+  readonly reviewSliceId: string;
+  readonly checkpointAId: string;
+  readonly checkpointBId: string;
+  readonly diffDigest: string;
+  readonly oldPath: string | null;
+  readonly newPath: string | null;
+  readonly side: "old" | "new" | null;
+  readonly startLine: number | null;
+  readonly endLine: number | null;
+  readonly hunkContextHash: string | null;
+  readonly mapping: "anchored" | "moved" | "not-found";
+}
+
+export interface ReviewCommentDto {
+  readonly id: string;
+  readonly changeId: string;
+  readonly file: string | null;
+  readonly line: number | null;
+  readonly endLine: number | null;
+  readonly anchor: ReviewCommentAnchorDto | null;
+  readonly authorKind: "reviewer" | "mend";
+  readonly authorName: string;
+  readonly body: string;
+  readonly kind: "note" | "suggestion";
+  readonly suggestion: string | null;
+  readonly state: "draft" | "open" | "addressed" | "dismissed";
+  readonly evidence: ReadonlyArray<RecordLinkDto>;
+  readonly sentToSessionId: string | null;
+  readonly createdAt: string;
+}
+
+export interface SliceCommentTargetDto {
+  readonly oldPath: string | null;
+  readonly newPath: string | null;
+  readonly side: "old" | "new" | null;
+  readonly startLine: number | null;
+  readonly endLine: number | null;
+  readonly hunkContextHash: string | null;
+}
+
+export interface FollowUpDto {
+  readonly id: string;
+  readonly sessionId: string;
+  readonly changeId: string;
+  readonly reviewSliceId: string | null;
+  readonly checkpointAId: string | null;
+  readonly checkpointBId: string | null;
+  readonly diffDigest: string | null;
+  readonly commentIds: ReadonlyArray<string>;
+  readonly idempotencyKey: string | null;
+  readonly instruction: string;
+  readonly status: "pending" | "delivering" | "delivered" | "delivery_failed" | "superseded";
+  readonly deliveryProcessId: string | null;
+  readonly deliverySealantRunId: string | null;
+  readonly deliveryError: string | null;
+  readonly deliveryStartedAt: string | null;
+  readonly createdAt: string;
+  readonly deliveredAt: string | null;
+}
+
+export interface DeliverFollowUpInput {
+  readonly reviewSliceId: string;
+  readonly checkpointAId: string;
+  readonly checkpointBId: string;
+  readonly diffDigest: string;
+  readonly commentIds: ReadonlyArray<string>;
+  readonly instruction: string;
+  readonly idempotencyKey: string;
+}
+
 export type SessionProcessKind = "agent" | "shell" | "service";
 
 /** Observed lifecycle only — never a judgment about the work. */
@@ -111,6 +246,9 @@ export type SessionProcessStatus =
 export interface SessionProcessDto {
   readonly id: string;
   readonly sessionId: string;
+  readonly sealantWorkspaceId: string;
+  readonly sealantSessionId: string | null;
+  readonly sealantRunId: string | null;
   readonly kind: SessionProcessKind;
   readonly label: string | null;
   readonly argv: ReadonlyArray<string>;
@@ -119,10 +257,12 @@ export interface SessionProcessDto {
   readonly workspacePort: number | null;
   readonly protocol: "tcp" | "udp";
   readonly hostPort: number | null;
+  readonly createdAt: string;
   readonly exitedAt: string | null;
+  readonly updatedAt: string;
 }
 
-export const LIVE_PROCESS: ReadonlySet<SessionProcessStatus> = new Set([
+export const LIVE_PROCESS: ReadonlySet<SessionProcessStatus> = new Set<SessionProcessStatus>([
   "starting",
   "running",
   "reachable",
@@ -189,6 +329,24 @@ export const sessionDetail = (id: string) => get<SessionDetailDto>(`/api/session
 export const listSessionProcesses = (id: string) =>
   get<ReadonlyArray<SessionProcessDto>>(`/api/sessions/${id}/processes`);
 
+export const processOutput = (id: string) =>
+  get<{ readonly text: string }>(`/api/processes/${id}/output`);
+
+export const reviewDiff = (
+  changeId: string,
+  sliceId: string,
+  options: { readonly whitespace: "include" | "ignore"; readonly context: number },
+) => {
+  const query = new URLSearchParams({
+    whitespace: options.whitespace,
+    context: String(options.context),
+  });
+  return get<ReviewDiffDto>(`/api/changes/${changeId}/reviews/${sliceId}/diff?${query}`);
+};
+
+export const changeComments = (changeId: string) =>
+  get<ReadonlyArray<ReviewCommentDto>>(`/api/changes/${changeId}/comments`);
+
 // ─── writes ─────────────────────────────────────────────────────────────────
 
 export const createSession = (projectId: string, harness: string, label: string | null) =>
@@ -213,7 +371,37 @@ export const launchArgv = (harness: string): ReadonlyArray<string> =>
 export const checkpointSession = (id: string, trigger: "review-open" | "user-mark") =>
   post<CheckpointDto>(`/api/sessions/${id}/checkpoints`, { trigger });
 
-/** The second pane: a real shell in the session's live workspace. */
+export const openReview = (changeId: string, idempotencyKey: string) =>
+  post<OpenReviewDto>(`/api/changes/${changeId}/reviews/open`, { idempotencyKey });
+
+export const postSliceReviewComment = (
+  changeId: string,
+  sliceId: string,
+  target: SliceCommentTargetDto,
+  body: string,
+) =>
+  post<ReviewCommentDto>(`/api/changes/${changeId}/reviews/${sliceId}/comments`, {
+    target,
+    body,
+  });
+
+export const setReviewCommentState = (
+  changeId: string,
+  commentId: string,
+  state: "open" | "addressed" | "dismissed",
+) => post<ReviewCommentDto>(`/api/changes/${changeId}/comments/${commentId}/state`, { state });
+
+export const deliverFollowUp = (sessionId: string, input: DeliverFollowUpInput) =>
+  post<FollowUpDto>(`/api/sessions/${sessionId}/follow-up/deliver`, input);
+
+/** Open a supporting shell in the session's current reachable workspace. */
 export const openShell = (id: string) => post<SessionProcessDto>(`/api/sessions/${id}/shell`, {});
+
+/** Stop one supporting shell process group. Repeating a completed stop is safe. */
+export const stopShell = (id: string) => post<SessionProcessDto>(`/api/processes/${id}/stop`, {});
+
+/** Rename one live supporting shell. */
+export const renameShell = (id: string, label: string) =>
+  post<SessionProcessDto>(`/api/processes/${id}/label`, { label });
 
 export const stopSession = (id: string) => post<SessionDto>(`/api/sessions/${id}/stop`, {});
