@@ -1,12 +1,12 @@
 # Session Services
 
-> **Status:** Architecture proposal — supersedes the 2026-08-11 draft
+> **Status:** Decided architecture, amended 2026-08-20
 >
 > **Date:** 2026-08-12
 >
-> **Canonical direction:** Read with `MEND-AGENT-WORKBENCH-PLAN.md` §7.6 and §8.1.H. This design
-> follows the recorded 2026-08-01 decision: per-port TCP forwards on the machine's private network
-> boundary. If adopted, fold the decisions here back into the plan.
+> **Canonical direction:** Read with `MEND-AGENT-WORKBENCH-PLAN.md` §7.6, §8.1.H, and the 2026-08-20
+> decision log. Services are explicit session capabilities exposed through raw per-port forwards on
+> loopback and selected private interfaces.
 
 ## What
 
@@ -39,36 +39,41 @@ right now across all my sessions?_ — one list, from any device.
 
 ## Two rules
 
-**Explicit only — no detection.** Mend never scans the workspace for listeners or guesses which
-process owns a port. Automatic detection across process trees, forks, and containers is fragile and
-fails silently; an explicit declaration is one flag and never lies. The agent is taught the same
-explicit path (see below), so "run the app so I can look at it" still just works. Static suggestion
-is not detection: reading the project's own manifests to _propose_ declarations (see
-`mend service init`) is an offline, deterministic read whose output the user confirms — nothing is
-observed at runtime and nothing runs.
+**Explicit creation.** A recipe or user action creates a Service. Mend never scans container
+internals or guesses which process owns a port. Reading project manifests in `mend service init` may
+propose recipes for confirmation. A future typed listener event from the public Sealant SDK may also
+produce a factual suggestion such as `Port 5173 started listening, observed`; accepting the
+suggestion is still explicit. No observation creates or exposes a Service by itself.
 
-**No authentication.** A Service is exposed only where the machine already serves private traffic:
-loopback and explicitly selected private interfaces (plan §7.5), with Tailscale or similar for
-remote private reachability. Never public by default. Securing the private network is the user's
-responsibility; Mend adds no login, ticket, or pairing step in front of a dev server.
+**Private forwarding, no Mend request authentication.** A Service binds only to loopback and
+explicitly selected private interfaces by default, with Tailscale or a similar network for remote
+reachability. Mend adds no login or ticket in front of the raw port. The UI says that anyone who can
+reach the private address can connect. Wildcard and public bindings are refused unless a later
+operator policy explicitly allows them.
 
 ## The model
 
-A live session has one current workspace. Everything in the session — agent, shell, Services —
-shares it: same `/workspace/repo`, same dependencies, same network. When the agent edits a file, the
-dev server's watcher sees the write and HMR flows through the Service URL.
+A session has one current workspace. The coding agent, supporting shells, and Services share the
+same worktree, dependencies, and network. Their states remain independent: the coding-agent run can
+complete while a shell or Service retains the workspace.
 
 ```text
-Mend session — durable
-├── worktree and change — durable
-├── conversation and record — durable
-└── current workspace — replaceable
-    ├── agent process            (harness)
-    └── Service · web            (pnpm dev, supervised by Mend)
-        Service · db             (existing listener, adopted by port)
+Mend session, durable
+├── coding-agent conversation and ordered runs
+├── worktree and change
+├── Service · web, stable identity
+│   ├── attempt 1 · pnpm dev · Sealant run
+│   ├── attempt 2 · pnpm dev · Sealant run
+│   └── current forward · host port -> workspace port
+├── Service · db, adopted port with no process attempt
+└── current workspace, replaceable
+    ├── coding-agent process
+    ├── supporting shell processes
+    └── current Service attempts
 ```
 
-The agent does not own the workspace; it is one process in it.
+The stable Service, its process attempts, its host forward, and target observations are separate
+facts. Restart appends an attempt and preserves prior run pointers, output, exits, and timestamps.
 
 There are two ways to declare a Service:
 
@@ -77,7 +82,8 @@ There are two ways to declare a Service:
 | `mend service run --port 3000 -- pnpm dev` | starts and supervises the command in the workspace, forwards the port | dev server, API server the user launches |
 | `mend service add 5432 --name db`          | forwards an already-listening workspace port; no supervision, no logs | docker compose database, sidecar process |
 
-That is the whole declaration surface. No promotion prompts, no observation heuristics.
+That is the creation surface. Listener observations may later suggest one of these explicit actions,
+but never perform it automatically.
 
 ### Declared Services — `mend.toml`
 
@@ -88,6 +94,7 @@ code, so it travels to every collaborator and every session worktree:
 [service.web]
 command = "pnpm dev"
 port = 3000
+browserScheme = "http"
 
 [service.db]
 # No command: an already-listening port to adopt (compose sidecar, external daemon).
@@ -95,9 +102,14 @@ port = 5432
 ```
 
 A declaration is a recipe, never a running process. `mend service run web` starts one by name; the
-web and phone **Run Service** forms offer the declared set one-tap; a port-only entry is an `add`
-recipe. Nothing autostarts — declaring is not starting. The session's own worktree copy is the one
-read, so an agent can add a recipe as part of its change and it reviews like any other edit.
+web, desktop, and phone Run Service forms offer the declared set. A port-only entry is an `add`
+recipe. Nothing autostarts: declaring, claiming a hot workspace, resuming, and reconnecting do not
+start a Service. The session's worktree copy is authoritative, so an agent can add a recipe as part
+of its change and Review shows that edit.
+
+Transport and browser behavior are separate. `protocol` remains `tcp | udp`; `browserScheme` is
+optional `http | https`. Mend shows Open only when a browser scheme exists. Other Services show Copy
+endpoint.
 
 `mend service init` scaffolds the file: it reads the project's own manifests — package.json scripts,
 compose files — and proposes entries for the user to confirm and commit. A generator for the recipe
@@ -185,77 +197,64 @@ Both interactive layers make the explicit argument cheap:
 
 ### Observed states
 
-```mermaid
-stateDiagram-v2
-    [*] --> starting
-    starting --> reachable: port accepts
-    starting --> exited: process ends first
-    reachable --> unreachable: port stops answering
-    unreachable --> reachable: port answers again
-    reachable --> exited: process ends
-    reachable --> stopped: user stops
-    unreachable --> stopped: user stops
-    exited --> [*]
-    stopped --> [*]
-```
-
-State words describe what was observed, never a verdict:
+Do not collapse process, forward, and target state into one word:
 
 ```text
-reachable     the forwarded port accepts connections
-unreachable   process exists (if supervised); port did not answer
-exited        supervised process ended; exit code shown
-stopped       user requested stop
+process     starting | running | exited | stopped | absent
+forward     binding | bound | failed | closed
+target      reachable | unreachable | unobserved
+workspace   ready | retained | unreachable | stopped | expired
 ```
 
-Adopted Services (`service add`) have no process to supervise: they are reachable, unreachable, or
-removed.
+`reachable` means the target accepted the declared transport. It does not mean healthy, ready,
+authenticated, or correct. Each observation carries its time and error when one exists. An adopted
+Service has no Mend-owned process attempt, so its process state is `absent` and it has no Restart,
+Stop process, or process logs action.
 
 ## Lifecycle
 
-**Workspace leases.** Today the harness settling stops the workspace. With Services, the workspace
-stays up while any lease is live:
+**Workspace leases.** The workspace stays up while any coding agent, supporting shell, Service, or
+explicit temporary operation holds a live lease. A completed coding-agent run does not release other
+leases. Mend renews ordinary workspace expiry while a lease remains live; if renewal fails, the UI
+shows the last successful renewal and known expiry.
 
-```text
-keep the workspace while any of:
-- agent process
-- Service
-- explicit temporary operation
-```
+Leases persist and reconcile after a Mend restart. Mend reattaches to surviving processes rather
+than inventing replacements. When the last lease ends, Mend stops the workspace promptly.
 
-Agent state is harvested when the agent settles; the container is reclaimed when the last lease is
-released or a configured expiry passes. Leases are persisted and reconciled after a Mend restart —
-Mend re-attaches to the surviving process rather than inventing a new one.
+**Disconnection is not intent.** A closed browser, desktop app, dropped network, or detached CLI
+stops nothing. Stops are explicit.
 
-**Disconnection is not intent.** A closed browser, dropped network, or detached CLI never stops a
-Service. Stops are explicit: Ctrl-C equivalent via `service stop`, the process exiting on its own,
-session close, or expiry.
-
-**Resume.** A settled session resumed later gets a fresh workspace around the same worktree.
-Processes do not migrate. The Service's recorded command is offered for explicit restart; nothing
-auto-starts.
+**Resume.** When supporting processes retain the workspace, resuming the coding agent starts a new
+run in that workspace and leaves them intact. The user may instead choose Stop retained work and
+resume fresh, with every process named before confirmation. Once no retained workspace exists, a
+later resume provisions a fresh workspace around the same worktree. Services never autostart there.
 
 ## Data
 
-Mend currently records one platform PTY per session (`sealantSessionId`). Services require plural
-process records:
+Persist four related records rather than overloading one process row:
 
 ```text
-id
-mendSessionId
-workspaceId
-sealantSessionId          (supervised only)
-kind: agent | service
-name                      ("web", "db")
-command                   (supervised only)
-workspacePort
-hostPort
-status + lastObservedAt
-createdAt / exitedAt
+Service
+  id · sessionId · name · declarationSource
+  workspacePort · transport · browserScheme · bindPolicy
+  preferredHostPort · currentAttemptId · currentForwardId
+
+ServiceAttempt
+  id · serviceId · workspaceId · argv
+  sealantSessionId · sealantRunId · processState
+  lastObservedSequence · exitCode · startedAt · exitedAt
+
+ServiceForward
+  id · serviceId · workspaceId
+  preferredHostPort · currentHostPort · boundAddresses
+  forwardState · forwardError · previousEndpoint · openedAt · closedAt
+
+TargetObservation
+  serviceId · targetState · lastObservedAt · lastObservationError
 ```
 
-Persisted per project: previously used Service commands, so web/phone can offer "Run Service" with
-one tap.
+Project-local recipes remain the machine-specific companion to repository `mend.toml` recipes. Every
+client shows the recipe source. Name collisions are visible and the shadowed recipe cannot run.
 
 ## Surfaces
 
@@ -270,19 +269,22 @@ mend service restart <service>
 mend service stop <service>
 ```
 
-Every surface presents the same object:
+Every surface presents the same facts:
 
 ```text
-web                                        reachable
-pnpm dev                                   :3000 → workbox:43127
+web
+process running
+forward bound · 127.0.0.1:43127
+TCP accepted on :3000 · observed 12s ago
 
-http://workbox:43127
+http://127.0.0.1:43127
 
 [ Open ] [ Logs ] [ Restart ] [ Stop ]
 ```
 
-The phone prioritizes Open, state, recent logs, Restart, Stop. It is a control surface for the same
-runtime, not a separate execution environment.
+An adopted database port instead shows `Port only, no Mend process or logs` with Copy endpoint and
+Remove forward. The phone and desktop are control surfaces for the same runtime, not separate
+execution environments.
 
 `mend shell` — an interactive shell in the session's current workspace, the terminal that is not ssh
 — shares all of this plumbing (concurrent processes, plural records, leases, session resolution) and
@@ -300,6 +302,7 @@ Mend consumes the platform only through the public SDK. Needed, tracked in `PLAT
   and exit reporting.
 
 Nothing here requires listener observation, process-tree attribution, or Docker/runtime internals.
+Typed public listener events are an optional future input for declaration suggestions only.
 
 **Spike results (2026-08-12, SDK 0.9.0 and 0.13.1 against the deployed platform):** the shared
 workspace holds. Two concurrent PTYs in one mount-sourced workspace, independent output streams,
@@ -317,20 +320,16 @@ runs that full stack and ships something usable on its own.
 1. **Spike: prove concurrency.** No product code. Two PTYs in one workspace via the SDK, independent
    detach/reattach, working directory, resize, signals, exit reporting. The go/no-go for everything
    below.
-2. **Lifecycle foundation.** Plural process records and terminal-addressed attachment in Mend;
-   workspace leases replacing settle-means-stop; lease and record reconciliation after a Mend
-   restart.
-3. **`mend shell`.** Session resolution, the picker, dynamic completions. Needs no new platform
-   surface beyond the spike — ships standalone value while slice 4's platform work proceeds.
-4. **Forward.** Sealantd forwarding capability and the SDK `workspace.forward(port)` primitive (can
-   start in the Sealant repo in parallel with 2–3); host port allocation and binding policy;
-   `mend service add`; reachable/unreachable states; Service list in CLI and a basic web list.
-5. **Supervise.** `mend service run` with port probe and URL report; logs, restart, stop; declared
-   Services (`mend.toml` recipes resolved by `service run <name>`); the in-workspace `mend` helper
-   and harness instruction.
-6. **Everywhere.** Phone Service cards and actions; Run Service form on web (declared recipes
-   one-tap); `mend service init` manifest scan; persisted project commands; restart offer on fresh
-   workspaces.
+2. **Lifecycle foundation.** Session-owned shells, plural attempts, terminal-addressed attachment,
+   workspace leases, TTL renewal, and reconciliation after a Mend restart.
+3. **Stable Service history.** Separate Service, attempt, forward, and target observation records;
+   append attempts on restart and preserve every Sealant run pointer.
+4. **Private forward policy.** Public SDK forwarding, explicit interface selection, server-resolved
+   endpoints, browser-scheme declarations, endpoint movement, and read-only record logs.
+5. **Dogfood in CLI and web.** Correct post-completion controls, recipe collision visibility, event
+   invalidation, TCP, UDP, HMR, restart, and retained-workspace resume.
+6. **Desktop and phone.** Session-nested Services, factual state, explicit actions, stale
+   observation timestamps, and no standalone inbox rows for ordinary reachable Services.
 
 ## Acceptance scenarios
 
@@ -347,10 +346,8 @@ runs that full stack and ships something usable on its own.
 
 ## Open decisions
 
-- Default expiry for a workspace whose agent settled but whose Service still runs.
-- Host port allocation range and stability (same Service, same port across restarts?).
-- The friendly-address lookup (`session:port`), if ever — presentation only.
-- Whether a declared Service may opt into starting with the session (`autostart = true` in
-  `mend.toml`). The safe default stands: declaring is not starting.
-- The full `mend.toml` recipe shape beyond `command` + `port` (cwd, env) — grow it when a real
-  project needs the field.
+- Host port allocation range. A stable Service prefers its previous port and reports endpoint
+  movement when that port is occupied.
+- The friendly-address lookup (`session:port`), if ever; this is presentation only.
+- The full `mend.toml` recipe shape beyond command, port, transport, and browser scheme. Add cwd,
+  environment references, or readiness rules only when a real project needs them.
