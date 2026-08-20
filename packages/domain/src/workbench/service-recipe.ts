@@ -14,6 +14,10 @@ export class ServiceRecipe extends Schema.Class<ServiceRecipe>("ServiceRecipe")(
   port: Schema.Int,
   /** Declared transport; UDP entries relay datagrams instead of a byte stream. */
   protocol: Schema.Literals(["tcp", "udp"]),
+  /** Open exists only when explicitly declared; TCP alone never implies HTTP. */
+  browserScheme: Schema.NullOr(Schema.Literals(["http", "https"])),
   /** Where it was declared: the repo's mend.toml (travels, reviewable) or this machine's project row. */
   source: Schema.Literals(["file", "project"]),
+  /** A colliding declaration remains visible but cannot run. */
+  shadowedBy: Schema.NullOr(Schema.Literals(["file", "project"])),
 }) {}

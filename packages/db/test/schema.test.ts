@@ -18,6 +18,7 @@ import {
   projectMounts,
   projectSecrets,
   projectReferences,
+  projectServiceRecipes,
   projects,
   pushDevices,
   referenceRepos,
@@ -292,6 +293,9 @@ describe("Mend Drizzle schema", () => {
     const serviceConfig = getTableConfig(services);
     expect(serviceConfig.columns.map((column) => column.name)).toContain("current_attempt_id");
     expect(serviceConfig.columns.map((column) => column.name)).toContain("current_forward_id");
+    expect(serviceConfig.columns.find((column) => column.name === "bind_addresses")?.notNull).toBe(
+      false,
+    );
     expect(serviceConfig.foreignKeys[0]?.onDelete).toBe("cascade");
 
     const attemptConfig = getTableConfig(sessionProcesses);
@@ -317,6 +321,10 @@ describe("Mend Drizzle schema", () => {
     ]);
     expect(observationConfig.columns.map((column) => column.name)).toContain("first_observed_at");
     expect(observationConfig.columns.map((column) => column.name)).toContain("last_observed_at");
+
+    expect(getTableConfig(projectServiceRecipes).columns.map((column) => column.name)).toContain(
+      "browser_scheme",
+    );
   });
 
   it("maps the append-only inference audit record", () => {

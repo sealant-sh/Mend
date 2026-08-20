@@ -657,6 +657,16 @@ interface ServiceRecipeDto {
   readonly command: string | null;
   readonly port: number;
   readonly protocol: "tcp" | "udp";
+  readonly browserScheme: "http" | "https" | null;
+  readonly shadowedBy: "file" | "project" | null;
+}
+
+interface ServiceEndpointDto {
+  readonly authority: string;
+  readonly hostPort: number;
+  readonly scope: "loopback" | "private";
+  readonly browserUrl: string | null;
+  readonly mendAuthentication: "none";
 }
 
 interface ServiceViewDto {
@@ -684,6 +694,7 @@ interface ServiceViewDto {
     readonly forwardId: string;
     readonly state: "reachable" | "unreachable";
   } | null;
+  readonly endpoints: ReadonlyArray<ServiceEndpointDto>;
 }
 
 interface ServiceDto {
@@ -694,6 +705,10 @@ interface ServiceDto {
   readonly status: string;
   readonly workspacePort: number;
   readonly hostPort: number | null;
+  readonly authority: string | null;
+  readonly browserUrl: string | null;
+  readonly exposureScope: "loopback" | "private" | null;
+  readonly mendAuthentication: "none" | null;
   readonly protocol: "tcp" | "udp";
   readonly sealantSessionId: string | null;
   readonly attemptExitedAt: string | null;
@@ -709,6 +724,10 @@ const flattenService = (view: ServiceViewDto): ServiceDto => {
     view.currentForward !== null && view.latestObservation?.forwardId === view.currentForward.id
       ? view.latestObservation
       : null;
+  const endpoint =
+    view.endpoints.find((candidate) => candidate.scope === "private") ?? view.endpoints[0] ?? null;
+  const browserUrl =
+    view.endpoints.find((candidate) => candidate.browserUrl !== null)?.browserUrl ?? null;
   return {
     id: view.service.id,
     processId: attempt?.id ?? null,
@@ -716,7 +735,11 @@ const flattenService = (view: ServiceViewDto): ServiceDto => {
     label: view.service.name,
     status: observation?.state ?? view.currentForward?.state ?? attempt?.status ?? "stopped",
     workspacePort: view.service.workspacePort,
-    hostPort: view.currentForward?.hostPort ?? null,
+    hostPort: endpoint?.hostPort ?? null,
+    authority: endpoint?.authority ?? null,
+    browserUrl,
+    exposureScope: endpoint?.scope ?? null,
+    mendAuthentication: endpoint?.mendAuthentication ?? null,
     protocol: view.service.transport,
     sealantSessionId: attempt?.sealantSessionId ?? null,
     attemptExitedAt: attempt?.exitedAt ?? null,
@@ -738,18 +761,30 @@ const mutateService = async (
 ): Promise<ServiceDto> =>
   flattenService(await api<ServiceViewDto>(config, method, endpointPath, body));
 
-const serviceUrl = (config: CliConfig, service: ServiceDto): string => {
-  const host = parseMendUrl(config.url).hostname || "localhost";
-  // A UDP Service has no page to open — the endpoint is the whole fact.
-  return service.protocol === "udp"
-    ? `${host}:${service.hostPort ?? "?"} (udp)`
-    : `http://${host}:${service.hostPort ?? "?"}`;
+const serviceUrl = (service: ServiceDto): string =>
+  service.browserUrl ??
+  (service.authority === null
+    ? "unbound"
+    : `${service.authority}${service.protocol === "udp" ? " (udp)" : ""}`);
+
+const serviceExposure = (service: ServiceDto): string => {
+  if (service.exposureScope === null) return "";
+  if (service.exposureScope === "private") {
+    return "No Mend sign-in protects this port. Anyone who can reach this private address can connect.";
+  }
+  return `Loopback only · Mend auth: ${service.mendAuthentication ?? "unknown"}`;
 };
 
-const printService = (config: CliConfig, service: ServiceDto) => {
+const printServiceEndpoint = (service: ServiceDto): void => {
+  const exposure = serviceExposure(service);
+  say(`  ${cobalt(serviceUrl(service))}${exposure === "" ? "" : `  ${dim(exposure)}`}`);
+};
+
+const printService = (service: ServiceDto) => {
   const status = service.status === "reachable" ? green(service.status) : amber(service.status);
+  const exposure = serviceExposure(service);
   say(
-    `${(service.label ?? service.id.slice(0, 8)).padEnd(12)}  ${dim(`:${service.workspacePort ?? "?"}${service.protocol === "udp" ? "/udp" : ""} →`)} ${serviceUrl(config, service)}  ${status}  ${dim(service.id.slice(0, 8))}`,
+    `${(service.label ?? service.id.slice(0, 8)).padEnd(12)}  ${dim(`:${service.workspacePort ?? "?"}${service.protocol === "udp" ? "/udp" : ""} →`)} ${serviceUrl(service)}  ${status}  ${dim(service.id.slice(0, 8))}${exposure === "" ? "" : `  ${dim(exposure)}`}`,
   );
 };
 
@@ -763,12 +798,19 @@ const serviceAdd = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const name =
     nameFlag !== -1 && args[nameFlag + 1] !== undefined ? String(args[nameFlag + 1]) : null;
   const protocol = args.includes("--udp") ? ("udp" as const) : ("tcp" as const);
+  const http = args.includes("--http");
+  const https = args.includes("--https");
+  if (http && https) return fail("Choose either --http or --https, not both.");
+  const browserScheme = https ? ("https" as const) : http ? ("http" as const) : null;
+  if (protocol === "udp" && browserScheme !== null) {
+    return fail("UDP Services cannot use --http or --https");
+  }
   const positional = args.filter(
     (a, i) => !a.startsWith("--") && (nameFlag === -1 || i !== nameFlag + 1),
   );
   const portRaw = positional.find((a) => /^\d+$/.test(a));
   if (portRaw === undefined) {
-    return fail("usage: mend service add [session] <port> [--name <n>] [--udp]");
+    return fail("usage: mend service add [session] <port> [--name <n>] [--udp] [--http|--https]");
   }
   const port = Number(portRaw);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -781,9 +823,10 @@ const serviceAdd = async (config: CliConfig, args: ReadonlyArray<string>) => {
     port,
     name,
     protocol,
+    browserScheme,
   });
   say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
-  say(`  ${cobalt(serviceUrl(config, service))}`);
+  printServiceEndpoint(service);
   if (protocol === "udp") {
     say(dim(`  udp — a reply is the only reachability signal; silence just relays`));
   } else if (service.status !== "reachable") {
@@ -797,7 +840,7 @@ const serviceList = async (config: CliConfig) => {
     say(dim("no live services — mend service add <port> adopts a listening one"));
     return;
   }
-  for (const service of services) printService(config, service);
+  for (const service of services) printService(service);
 };
 
 const serviceStop = async (config: CliConfig, args: ReadonlyArray<string>) => {
@@ -838,7 +881,7 @@ const findLiveService = async (config: CliConfig, needle: string): Promise<Servi
 const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const dashdash = args.indexOf("--");
   const usage =
-    "usage: mend service run [session] --port <port> [--name <n>] [--udp] -- <command...>\n" +
+    "usage: mend service run [session] --port <port> [--name <n>] [--udp] [--http|--https] -- <command...>\n" +
     "       mend service run [session] <name>          (a declared recipe)";
   // No explicit command = a DECLARED Service: resolve the name against the
   // session worktree's mend.toml and start (or adopt) its recipe.
@@ -873,7 +916,7 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
       }),
     );
     say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
-    say(`  ${cobalt(serviceUrl(config, service))}`);
+    printServiceEndpoint(service);
     say(dim(`  logs: mend service logs ${service.label ?? service.id.slice(0, 8)}`));
     return;
   }
@@ -887,6 +930,11 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const name =
     nameFlag !== -1 && head[nameFlag + 1] !== undefined ? String(head[nameFlag + 1]) : null;
   const protocol = head.includes("--udp") ? ("udp" as const) : ("tcp" as const);
+  const http = head.includes("--http");
+  const https = head.includes("--https");
+  if (http && https) return fail(usage);
+  const browserScheme = https ? ("https" as const) : http ? ("http" as const) : null;
+  if (protocol === "udp" && browserScheme !== null) return fail(usage);
   const prefix = head.find(
     (a, i) => !a.startsWith("--") && i !== portFlag + 1 && i !== nameFlag + 1,
   );
@@ -901,10 +949,11 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
       port,
       name,
       protocol,
+      browserScheme,
     }),
   );
   say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
-  say(`  ${cobalt(serviceUrl(config, service))}`);
+  printServiceEndpoint(service);
   say(dim(`  logs: mend service logs ${service.label ?? service.id.slice(0, 8)}`));
 };
 
@@ -982,7 +1031,7 @@ const serviceRestart = async (config: CliConfig, args: ReadonlyArray<string>) =>
     mutateService(config, "POST", `/services/${service.id}/restart`),
   );
   say(`${green("✓")} restarted · ${restarted.status}`);
-  say(`  ${cobalt(serviceUrl(config, restarted))}`);
+  printServiceEndpoint(restarted);
 };
 
 /**

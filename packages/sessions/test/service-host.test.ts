@@ -10,7 +10,7 @@ import {
 } from "@mend/domain";
 import { ServiceObservation } from "@mend/domain/workbench";
 import { SealantClient } from "@mend/sealant";
-import { ServiceHost, ServiceHostLive } from "@mend/sessions";
+import { ServiceHost, ServiceHostLive, validateServiceBindAddresses } from "@mend/sessions";
 import type { Workspace, WorkspaceForward } from "@sealant/sdk";
 import { Effect, Layer, Stream } from "effect";
 import { describe, expect, it } from "vitest";
@@ -146,6 +146,38 @@ const SERVICE_ID = ServiceId.make("svc-1");
 const FORWARD_ID = ServiceForwardId.make("forward-1");
 const WORKSPACE_ID = SealantWorkspaceId.make("workspace-1");
 
+describe("validateServiceBindAddresses", () => {
+  const assigned = new Set(["10.0.0.8", "192.168.1.4", "fe80::1"]);
+
+  it("accepts only assigned private or loopback literal addresses", () => {
+    expect(
+      validateServiceBindAddresses(
+        ["127.0.0.1", "::1", "10.0.0.8", "192.168.1.4", "fe80::1%eth0"],
+        assigned,
+      ),
+    ).toEqual({
+      ok: true,
+      addresses: ["127.0.0.1", "::1", "10.0.0.8", "192.168.1.4", "fe80::1%eth0"],
+    });
+  });
+
+  it.each([
+    [[], "contains no addresses"],
+    [["0.0.0.0"], "Wildcard"],
+    [["::"], "Wildcard"],
+    [["8.8.8.8"], "Public"],
+    [["10.0.0.9"], "not assigned"],
+    [["localhost"], "not a literal IP address"],
+    [["127.0.0.1", ""], "not a literal IP address"],
+    [["127.0.0.1", "127.0.0.1"], "duplicated"],
+    [["127.0.0.1", "8.8.8.8"], "Public"],
+  ] as const)("rejects %j atomically", (addresses, message) => {
+    const result = validateServiceBindAddresses(addresses, assigned);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain(message);
+  });
+});
+
 describe("ServiceHost", () => {
   it("accepts, dials a forward, and pumps bytes both ways", async () => {
     await Effect.runPromise(
@@ -157,6 +189,7 @@ describe("ServiceHost", () => {
           workspaceId: WORKSPACE_ID,
           workspacePort: 3000,
           protocol: "tcp",
+          bindAddresses: ["127.0.0.1"],
         });
 
         const echoed = yield* Effect.promise(async () => {
@@ -199,6 +232,7 @@ describe("ServiceHost", () => {
           workspaceId: WORKSPACE_ID,
           workspacePort: 3000,
           protocol: "tcp",
+          bindAddresses: ["127.0.0.1"],
         });
         yield* host.stop(SERVICE_ID);
         const second = yield* host.start({
@@ -207,6 +241,7 @@ describe("ServiceHost", () => {
           workspaceId: WORKSPACE_ID,
           workspacePort: 3000,
           protocol: "tcp",
+          bindAddresses: ["127.0.0.1"],
           preferredHostPort: first.hostPort,
         });
         expect(second.hostPort).toBe(first.hostPort);

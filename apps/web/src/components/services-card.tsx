@@ -89,9 +89,16 @@ function ServiceRow({
   // What a client would connect to — the copyable fact. Dead forwards are
   // not offered: an ended Service has no host port worth pasting anywhere.
   const endpoint = live ? serviceEndpoint(service) : null;
+  const exposedEndpoint =
+    service.endpoints.find((candidate) => candidate.scope === "private") ??
+    service.endpoints[0] ??
+    null;
   const meta = [
     `:${stable.workspacePort}${stable.transport === "udp" ? "/udp" : ""}`,
     endpoint === null ? null : `→ ${endpoint}`,
+    endpoint === null || exposedEndpoint === null
+      ? null
+      : `${exposedEndpoint.scope === "private" ? "private network" : "this machine"} · Mend auth: ${exposedEndpoint.mendAuthentication}`,
     !live && displayAttempt?.exitCode !== null && displayAttempt?.exitCode !== undefined
       ? `code ${displayAttempt.exitCode}`
       : null,
@@ -183,6 +190,11 @@ function ServiceRow({
           )}
         </span>
       </div>
+      {live && exposedEndpoint?.scope === "private" && (
+        <p className="mt-2 border-l-2 border-warning pl-2 font-sans text-xs leading-relaxed text-warning">
+          No Mend sign-in protects this port. Anyone who can reach this private address can connect.
+        </p>
+      )}
     </div>
   );
 }
@@ -209,7 +221,10 @@ export function ServicesCard({
   }
   const endedServices = [...endedByName.values()].slice(-3);
   const shownNames = new Set([...liveServices, ...endedServices].map((view) => view.service.name));
-  const startable = (recipes.data ?? []).filter((recipe) => !shownNames.has(recipe.name));
+  const startable = (recipes.data ?? []).filter(
+    (recipe) => recipe.shadowedBy === null && !shownNames.has(recipe.name),
+  );
+  const shadowed = (recipes.data ?? []).filter((recipe) => recipe.shadowedBy !== null);
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ["session", sessionId, "services"] });
@@ -223,14 +238,15 @@ export function ServicesCard({
         ? restartService(stable.id)
         : verb === "stop"
           ? stopService(stable.id)
-          : rerunAttempt !== null
-            ? runService(sessionId, {
+          : rerunAttempt === null
+            ? Promise.reject(new Error("This Service has no supervised attempt to run again."))
+            : runService(sessionId, {
                 argv: rerunAttempt.argv,
                 port: stable.workspacePort,
                 name: stable.name,
                 protocol: stable.transport,
-              })
-            : Promise.reject(new Error("This Service has no supervised attempt to run again."));
+                browserScheme: stable.browserScheme,
+              });
     void action.then(invalidate).finally(() => setPending(null));
   };
 
@@ -240,7 +256,7 @@ export function ServicesCard({
     void action.then(invalidate).finally(() => setPending(null));
   };
 
-  const empty = services.length === 0 && startable.length === 0;
+  const empty = services.length === 0 && startable.length === 0 && shadowed.length === 0;
 
   return (
     <section className="mt-6">
@@ -267,7 +283,7 @@ export function ServicesCard({
             {canStart &&
               startable.map((recipe, index) => (
                 <div
-                  key={recipe.name}
+                  key={`${recipe.source}:${recipe.name}`}
                   className={`px-4 py-3 ${index === 0 && services.length === 0 ? "" : "border-t border-rule-faint"}`}
                 >
                   <div className="flex items-center justify-between gap-3">
@@ -290,6 +306,22 @@ export function ServicesCard({
                   </p>
                 </div>
               ))}
+            {shadowed.map((recipe) => (
+              <div
+                key={`${recipe.source}:${recipe.name}:shadowed`}
+                className="border-t border-rule-faint px-4 py-3 opacity-60"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <p className="min-w-0 truncate font-sans text-[13px] font-medium text-ink-2">
+                    {recipe.name}
+                  </p>
+                  <span className="font-sans text-xs text-muted-foreground">Shadowed</span>
+                </div>
+                <p className="mt-1 truncate font-mono text-[11px] text-faint">
+                  project declaration · overridden by {recipe.shadowedBy}
+                </p>
+              </div>
+            ))}
           </>
         )}
         {canStart && (
@@ -330,6 +362,13 @@ function RunServiceForm({
     const name = String(data.get("name") ?? "").trim();
     const port = Number(String(data.get("port") ?? "").trim());
     const protocol = data.get("udp") === "on" ? ("udp" as const) : ("tcp" as const);
+    const requestedScheme = String(data.get("browserScheme") ?? "");
+    const browserScheme =
+      protocol === "udp" || requestedScheme === ""
+        ? null
+        : requestedScheme === "https"
+          ? ("https" as const)
+          : ("http" as const);
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
       setError("A port between 1 and 65535 is the one required field.");
       return;
@@ -339,8 +378,14 @@ function RunServiceForm({
     const label = name === "" ? null : name;
     const action =
       command === ""
-        ? addService(sessionId, { port, name: label, protocol })
-        : runService(sessionId, { argv: ["sh", "-c", command], port, name: label, protocol });
+        ? addService(sessionId, { port, name: label, protocol, browserScheme })
+        : runService(sessionId, {
+            argv: ["sh", "-c", command],
+            port,
+            name: label,
+            protocol,
+            browserScheme,
+          });
     void action
       .then(() => {
         onDone();
@@ -392,6 +437,16 @@ function RunServiceForm({
           placeholder="name (optional)"
           className="min-w-0 flex-1 rounded-lg border border-input bg-background px-2.5 py-1.5 font-mono text-xs text-ink placeholder:text-faint"
         />
+        <select
+          name="browserScheme"
+          aria-label="Browser behavior"
+          defaultValue=""
+          className="rounded-lg border border-input bg-background px-2 py-1.5 font-mono text-[11px] text-muted-foreground"
+        >
+          <option value="">raw</option>
+          <option value="http">http</option>
+          <option value="https">https</option>
+        </select>
         <label className="flex shrink-0 items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
           <input type="checkbox" name="udp" className="size-3.5 accent-[var(--sw-accent)]" />
           udp

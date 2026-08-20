@@ -256,6 +256,7 @@ const sealantLaunchLayer = (
 
 /** Services bind no real sockets in these worlds. */
 const serviceHostStubLayer = Layer.succeed(ServiceHost, {
+  bindAddresses: () => Effect.succeed(["127.0.0.1"]),
   start: () => Effect.succeed({ hostPort: 43127, boundAddresses: ["127.0.0.1"] }),
   stop: () => Effect.void,
   probe: () => Effect.succeed(true),

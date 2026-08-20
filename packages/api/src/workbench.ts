@@ -41,6 +41,7 @@ import {
   formatProjectEnvironmentIssue,
   parseDotenv,
   resolveAutomation,
+  resolveServiceEndpoints,
   routeDotenvName,
   validateProjectSecretValue,
   ServiceView,
@@ -1153,13 +1154,21 @@ export const ProjectRecipesGroupLive = HttpApiBuilder.group(MendApi, "projectRec
           return yield* new StoreFailure({ message: `Port out of range: ${payload.port}` });
         }
         const command = payload.command?.trim();
+        const protocol = payload.protocol ?? "tcp";
+        const browserScheme = payload.browserScheme ?? null;
+        if (protocol === "udp" && browserScheme !== null) {
+          return yield* new StoreFailure({
+            message: "UDP Services cannot declare an HTTP or HTTPS browser scheme.",
+          });
+        }
         return yield* recipes
           .create({
             projectId: params.id,
             name: payload.name,
             command: command === undefined || command === "" ? null : command,
             port: payload.port,
-            protocol: payload.protocol ?? "tcp",
+            protocol,
+            browserScheme,
           })
           .pipe(
             Effect.catchTag("RecipeNameTakenError", () =>
@@ -1396,7 +1405,13 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
       Effect.gen(function* () {
         const engine = yield* SessionEngine;
         return yield* engine
-          .addService(params.id, payload.port, payload.name, payload.protocol)
+          .addService(
+            params.id,
+            payload.port,
+            payload.name,
+            payload.protocol,
+            payload.browserScheme,
+          )
           .pipe(
             Effect.catchTag("SessionNotFoundError", () =>
               Effect.fail(new NotFound({ id: params.id })),
@@ -1420,7 +1435,14 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
       Effect.gen(function* () {
         const engine = yield* SessionEngine;
         return yield* engine
-          .runService(params.id, payload.argv, payload.port, payload.name, payload.protocol)
+          .runService(
+            params.id,
+            payload.argv,
+            payload.port,
+            payload.name,
+            payload.protocol,
+            payload.browserScheme,
+          )
           .pipe(
             Effect.catchTag("SessionNotFoundError", () =>
               Effect.fail(new NotFound({ id: params.id })),
@@ -1500,8 +1522,20 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
               service.currentForwardId === null
                 ? null
                 : yield* forwards.byId(service.currentForwardId);
+            const previousForward =
+              currentForward === null || currentForward.supersedesForwardId === null
+                ? null
+                : yield* forwards.byId(currentForward.supersedesForwardId);
             const latestObservation = yield* observations.latestForService(service.id);
-            return new ServiceView({ service, attempts, currentForward, latestObservation });
+            return new ServiceView({
+              service,
+              attempts,
+              currentForward,
+              previousForward,
+              latestObservation,
+              endpoints: resolveServiceEndpoints(service, currentForward),
+              previousEndpoints: resolveServiceEndpoints(service, previousForward),
+            });
           }),
         );
         if (query.all !== undefined) return views;

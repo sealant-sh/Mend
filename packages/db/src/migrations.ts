@@ -955,6 +955,14 @@ const stableServices = Effect.gen(function* () {
     $$`;
 });
 
+/** Browser behavior is declaration data; null continues to mean raw TCP or UDP. */
+const serviceAccessPolicy = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE project_service_recipes
+      ADD COLUMN IF NOT EXISTS browser_scheme text`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -989,4 +997,5 @@ export const migrations = {
   "0030_recoverable_follow_up_delivery": recoverableFollowUpDelivery,
   "0031_follow_up_delivery_leases": followUpDeliveryLeases,
   "0032_stable_services": stableServices,
+  "0033_service_access_policy": serviceAccessPolicy,
 };

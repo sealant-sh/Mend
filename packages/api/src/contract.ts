@@ -43,6 +43,7 @@ import {
   Reference,
   ReviewComment,
   ReviewSlice,
+  ServiceBrowserScheme,
   ServiceRecipe,
   ServiceView,
   Session,
@@ -988,6 +989,7 @@ export class AddProjectServiceRecipe extends Schema.Class<AddProjectServiceRecip
   command: Schema.NullOr(Schema.String),
   port: Schema.Int,
   protocol: Schema.optional(Schema.Literals(["tcp", "udp"])),
+  browserScheme: Schema.optional(ServiceBrowserScheme),
 }) {}
 
 /**
@@ -1150,6 +1152,7 @@ const sessionsGroup = HttpApiGroup.make("sessions")
         port: Schema.Int,
         name: Schema.NullOr(Schema.String),
         protocol: Schema.optional(Schema.Literals(["tcp", "udp"])),
+        browserScheme: Schema.optional(ServiceBrowserScheme),
       }),
       success: ServiceView,
       error: [NotFound, SessionNotLive, StoreFailure],
@@ -1165,6 +1168,7 @@ const sessionsGroup = HttpApiGroup.make("sessions")
         port: Schema.Int,
         name: Schema.NullOr(Schema.String),
         protocol: Schema.optional(Schema.Literals(["tcp", "udp"])),
+        browserScheme: Schema.optional(ServiceBrowserScheme),
       }),
       success: ServiceView,
       error: [NotFound, SessionNotLive, StoreFailure],

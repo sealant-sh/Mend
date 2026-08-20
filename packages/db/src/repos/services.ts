@@ -38,8 +38,8 @@ export interface NewService {
   readonly declarationSource: ServiceDeclarationSource;
   readonly workspacePort: number;
   readonly transport: ServiceTransport;
-  readonly browserScheme?: ServiceBrowserScheme;
-  readonly bindAddresses?: ReadonlyArray<string> | null;
+  readonly browserScheme: ServiceBrowserScheme;
+  readonly bindAddresses: ReadonlyArray<string>;
   readonly preferredHostPort?: number | null;
   readonly attemptHistoryComplete?: boolean;
   readonly forwardHistoryComplete?: boolean;
@@ -173,8 +173,8 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
             declarationSource: input.declarationSource,
             workspacePort: input.workspacePort,
             transport: input.transport,
-            browserScheme: input.browserScheme ?? null,
-            bindAddresses: input.bindAddresses ?? null,
+            browserScheme: input.browserScheme,
+            bindAddresses: input.bindAddresses,
             preferredHostPort: input.preferredHostPort ?? null,
             currentAttemptId: null,
             currentForwardId: null,

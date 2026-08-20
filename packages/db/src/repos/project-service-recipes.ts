@@ -29,6 +29,7 @@ export interface NewProjectServiceRecipe {
   readonly command: string | null;
   readonly port: number;
   readonly protocol: "tcp" | "udp";
+  readonly browserScheme: "http" | "https" | null;
 }
 
 export class ProjectServiceRecipesRepo extends Context.Service<
@@ -47,13 +48,16 @@ const toRecipe = (row: {
   readonly command: string | null;
   readonly port: number;
   readonly protocol: "tcp" | "udp";
+  readonly browserScheme: "http" | "https" | null;
 }): ServiceRecipe =>
   new ServiceRecipe({
     name: row.name,
     command: row.command,
     port: row.port,
     protocol: row.protocol,
+    browserScheme: row.browserScheme,
     source: "project",
+    shadowedBy: null,
   });
 
 export const ProjectServiceRecipesRepoLive: Layer.Layer<

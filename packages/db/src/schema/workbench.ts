@@ -678,6 +678,7 @@ export const projectServiceRecipes = pgTable(
     command: text(),
     port: integer().notNull(),
     protocol: text().$type<"tcp" | "udp">().notNull().default("tcp"),
+    browserScheme: text().$type<"http" | "https">(),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [primaryKey({ columns: [table.projectId, table.name] })],

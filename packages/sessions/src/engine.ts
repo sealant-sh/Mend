@@ -44,7 +44,9 @@ import type {
   SessionRun,
 } from "@mend/domain/workbench";
 import {
+  type ServiceBrowserScheme,
   type ServiceDeclarationSource,
+  resolveServiceEndpoints,
   ServiceView,
   SessionExtraMount,
   SessionReferenceMount,
@@ -449,6 +451,7 @@ export class SessionEngine extends Context.Service<
       workspacePort: number,
       name: string | null,
       protocol?: "tcp" | "udp",
+      browserScheme?: ServiceBrowserScheme,
     ) => Effect.Effect<
       ServiceView,
       | SessionNotFoundError
@@ -469,6 +472,7 @@ export class SessionEngine extends Context.Service<
       workspacePort: number,
       name: string | null,
       protocol?: "tcp" | "udp",
+      browserScheme?: ServiceBrowserScheme,
     ) => Effect.Effect<
       ServiceView,
       | SessionNotFoundError
@@ -617,8 +621,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           service.currentForwardId === null
             ? null
             : yield* serviceForwards.byId(service.currentForwardId);
+        const previousForward =
+          currentForward === null || currentForward.supersedesForwardId === null
+            ? null
+            : yield* serviceForwards.byId(currentForward.supersedesForwardId);
         const latestObservation = yield* serviceObservations.latestForService(service.id);
-        return new ServiceView({ service, attempts, currentForward, latestObservation });
+        return new ServiceView({
+          service,
+          attempts,
+          currentForward,
+          previousForward,
+          latestObservation,
+          endpoints: resolveServiceEndpoints(service, currentForward),
+          previousEndpoints: resolveServiceEndpoints(service, previousForward),
+        });
       });
 
       /** The session's worktree path, derived — never stored twice. */
@@ -2463,8 +2479,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         name: string,
         workspacePort: number,
         transport: "tcp" | "udp",
+        browserScheme: ServiceBrowserScheme,
         declarationSource: ServiceDeclarationSource,
       ) {
+        if (transport === "udp" && browserScheme !== null) {
+          return yield* new ServiceBindError({
+            message: "UDP Services cannot declare an HTTP or HTTPS browser scheme.",
+          });
+        }
+        const bindAddresses = yield* serviceHost.bindAddresses();
         const existing = yield* services.byName(sessionId, name);
         if (existing !== null) {
           const attempt =
@@ -2483,7 +2506,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               message: `A live Service named "${name}" already exists in this session — stop it or pick another name.`,
             });
           }
-          if (existing.workspacePort === workspacePort && existing.transport === transport) {
+          if (
+            existing.workspacePort === workspacePort &&
+            existing.transport === transport &&
+            existing.browserScheme === browserScheme &&
+            existing.bindAddresses !== null &&
+            existing.bindAddresses.length === bindAddresses.length &&
+            existing.bindAddresses.every((address, index) => address === bindAddresses[index])
+          ) {
             return existing;
           }
         }
@@ -2493,7 +2523,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           declarationSource,
           workspacePort,
           transport,
-          browserScheme: null,
+          browserScheme,
+          bindAddresses,
         });
       });
 
@@ -2509,6 +2540,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           service.currentForwardId === null
             ? null
             : yield* serviceForwards.byId(service.currentForwardId);
+        const bindAddresses = service.bindAddresses ?? previous?.boundAddresses ?? null;
+        if (bindAddresses === null) {
+          return yield* new ServiceBindError({
+            message: "The Service has no recorded bind policy. Start it again explicitly.",
+          });
+        }
         const forward = yield* serviceForwards.createAndSelect({
           serviceId,
           sealantWorkspaceId: workspaceId,
@@ -2522,6 +2559,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             workspaceId,
             workspacePort,
             protocol,
+            bindAddresses,
             ...(forward.preferredHostPort === null
               ? {}
               : { preferredHostPort: forward.preferredHostPort }),
@@ -2557,6 +2595,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         workspacePort: number,
         name: string | null,
         protocol: "tcp" | "udp" = "tcp",
+        browserScheme: ServiceBrowserScheme = null,
         declarationSource: ServiceDeclarationSource = "explicit-adopt",
       ) {
         const session = yield* sessions.byId(sessionId);
@@ -2571,6 +2610,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           label,
           workspacePort,
           protocol,
+          browserScheme,
           declarationSource,
         );
         const forwardId = yield* bindServiceForward(
@@ -2593,10 +2633,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         workspacePort: number,
         name: string | null,
         protocol: "tcp" | "udp" = "tcp",
+        browserScheme: ServiceBrowserScheme = null,
         declarationSource: ServiceDeclarationSource = "explicit-adopt",
       ) =>
         withServiceLifecycle(
-          addServiceUnlocked(sessionId, workspacePort, name, protocol, declarationSource),
+          addServiceUnlocked(
+            sessionId,
+            workspacePort,
+            name,
+            protocol,
+            browserScheme,
+            declarationSource,
+          ),
         );
 
       /** Close a process PTY; the daemon reaps its foreground process group. */
@@ -2659,6 +2707,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         workspacePort: number,
         name: string | null,
         protocol: "tcp" | "udp" = "tcp",
+        browserScheme: ServiceBrowserScheme = null,
         declarationSource: ServiceDeclarationSource = "explicit-run",
       ) {
         const session = yield* sessions.byId(sessionId);
@@ -2673,6 +2722,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           label,
           workspacePort,
           protocol,
+          browserScheme,
           declarationSource,
         );
         const attempts = yield* processes.listForService(service.id);
@@ -2736,10 +2786,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         workspacePort: number,
         name: string | null,
         protocol: "tcp" | "udp" = "tcp",
+        browserScheme: ServiceBrowserScheme = null,
         declarationSource: ServiceDeclarationSource = "explicit-run",
       ) =>
         withServiceLifecycle(
-          runServiceUnlocked(sessionId, argv, workspacePort, name, protocol, declarationSource),
+          runServiceUnlocked(
+            sessionId,
+            argv,
+            workspacePort,
+            name,
+            protocol,
+            browserScheme,
+            declarationSource,
+          ),
         );
 
       const runServiceRecipe = Effect.fn("SessionEngine.runServiceRecipe")(function* (
@@ -2761,7 +2820,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           fromFile,
           yield* projectRecipes.listForProject(session.projectId),
         );
-        const recipe = recipes.find((candidate) => candidate.name === name);
+        const recipe = recipes.find(
+          (candidate) => candidate.name === name && candidate.shadowedBy === null,
+        );
         if (recipe === undefined) {
           return yield* new ServiceStartError({
             message: `No Service recipe named "${name}" exists in this session.`,
@@ -2770,13 +2831,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const declarationSource =
           recipe.source === "file" ? ("recipe-file" as const) : ("recipe-project" as const);
         return yield* recipe.command === null
-          ? addService(sessionId, recipe.port, recipe.name, recipe.protocol, declarationSource)
+          ? addService(
+              sessionId,
+              recipe.port,
+              recipe.name,
+              recipe.protocol,
+              recipe.browserScheme,
+              declarationSource,
+            )
           : runService(
               sessionId,
               ["sh", "-c", recipe.command],
               recipe.port,
               recipe.name,
               recipe.protocol,
+              recipe.browserScheme,
               declarationSource,
             );
       });
@@ -3498,6 +3567,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 }
                 return;
               }
+              const bindAddresses = service.bindAddresses ?? previous.boundAddresses;
+              if (bindAddresses === null) {
+                yield* serviceForwards.markFailed(
+                  forward.id,
+                  "The Service has no recorded bind policy and cannot be recovered.",
+                );
+                yield* services.compareAndSetCurrentForward(service.id, forward.id, null);
+                return;
+              }
               const binding = yield* serviceHost
                 .start({
                   serviceId: service.id,
@@ -3505,6 +3583,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   workspaceId: previous.sealantWorkspaceId,
                   workspacePort: service.workspacePort,
                   protocol: service.transport,
+                  bindAddresses,
                   ...(forward.preferredHostPort === null
                     ? {}
                     : { preferredHostPort: forward.preferredHostPort }),
