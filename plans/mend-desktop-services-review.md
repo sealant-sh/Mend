@@ -1,17 +1,18 @@
 # Mend desktop: ownership, Services, and Review
 
-**Status:** Proposed plan for owner annotation
+**Status:** Approved; implementation in progress (Steps 1–7 complete)
 
-**Authority:** `MEND-AGENT-WORKBENCH-PLAN.md` remains canonical. This plan proposes changes to the
-desktop brief and two unresolved product decisions. Fold approved decisions into the canonical
-documents before implementation.
+**Authority:** `MEND-AGENT-WORKBENCH-PLAN.md` remains canonical. This plan records the approved
+implementation sequence for desktop ownership, Review, and Services. Step 1 folded the product
+decisions into the canonical plan and supporting documents.
 
-**Research basis:** A workflow audited the desktop, API, session engine, Services implementation,
-web Review, database model, and public Sealant boundary. It also compared terminal ownership and
-forwarded-port behavior in modern developer tools. This was a source audit. The worktree had no
-installed dependencies, so the workflow did not run the product or tests.
+**Research basis:** The initial workflow audited the desktop, API, session engine, Services
+implementation, web Review, database model, and public Sealant boundary. It also compared terminal
+ownership and forwarded-port behavior in modern developer tools. Completed steps have since been
+validated with package tests, forced repository checks, and real-repository or real-database exit
+proofs where required.
 
-## Recommended decision
+## Approved direction
 
 Retire the hidden project bench. A visible coding-agent session should own every writable shell and
 Service that can affect its worktree.
@@ -795,9 +796,9 @@ Every phase has a real-repository exit test. Fixtures alone cannot close a phase
 - no claim of durable terminal replay until record-backed replay works after workspace reaping;
 - no claim of exact multi-process attribution until process cursors and checkpoint frontiers exist.
 
-## Decisions for annotation
+## Approved decisions
 
-| ID  | Decision                                                                 | Recommended default                                                                              |
+| ID  | Decision                                                                 | Approved decision                                                                                |
 | --- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
 | D1  | Who owns writable interactive shells?                                    | The focused visible coding-agent session. No hidden bench.                                       |
 | D2  | What does shell tab close do?                                            | Confirm and stop the process group. `Detach tab` is a separate context action.                   |
@@ -814,19 +815,19 @@ Every phase has a real-repository exit test. Fixtures alone cannot close a phase
 
 ## Implementation checklist
 
-- [ ] Record approved decisions in the canonical plan, desktop brief, Services design, and platform
-      feedback.
-- [ ] Remove hidden bench creation and ship honest shell stop, detach, discovery, restore, and
-      resume behavior.
-- [ ] Migrate legacy benches without reparenting or deleting dirty changes.
-- [ ] Add immutable checkpoint-pair diff contracts and slice-bound comments.
-- [ ] Prove the Review contract in web or CLI against a real repository.
-- [ ] Ship native desktop Review with P0 diff controls, comments, and minimum honest evidence.
-- [ ] Make follow-up delivery idempotent, atomic from the client perspective, and recoverable.
-- [ ] Separate stable Services, process attempts, forwards, and observations.
-- [ ] Enforce private bind policy, browser-scheme declaration, read-only logs, and workspace TTL
-      renewal.
-- [ ] Ship desktop Services with factual state and retained-workspace controls.
-- [ ] Add process frontiers and process-aware evidence without false precision.
-- [ ] Run the real-repository exit test for every phase, then run `pnpm format:fix`, forced turbo
-      typecheck, and forced turbo lint before publication.
+1. [x] Record approved decisions in the canonical plan, desktop brief, Services design, and platform
+       feedback.
+2. [x] Remove hidden bench creation and ship honest shell stop, detach, discovery, restore, and
+       resume behavior.
+3. [x] Migrate legacy benches without reparenting or deleting dirty changes.
+4. [x] Add immutable checkpoint-pair diff contracts and slice-bound comments.
+5. [x] Prove the Review contract in web or CLI against a real repository.
+6. [x] Ship native desktop Review with P0 diff controls, comments, and minimum honest evidence.
+7. [x] Make follow-up delivery idempotent, atomic from the client perspective, and recoverable.
+8. [ ] Separate stable Services, process attempts, forwards, and observations.
+9. [ ] Enforce private bind policy, browser-scheme declaration, read-only logs, and workspace TTL
+       renewal.
+10. [ ] Ship desktop Services with factual state and retained-workspace controls.
+11. [ ] Add process frontiers and process-aware evidence without false precision.
+12. [ ] Run the real-repository exit test for every phase, then run `pnpm format:fix`, forced turbo
+        typecheck, and forced turbo lint before publication.
