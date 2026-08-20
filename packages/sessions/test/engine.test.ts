@@ -1595,6 +1595,17 @@ describe("SessionEngine", () => {
           expect(stopped.service.currentAttemptId).toBeNull();
           expect(stopped.service.currentForwardId).toBeNull();
           expect(stopped.attempts.at(-1)?.status).toBe("stopped");
+
+          const rerun = yield* engine.runService(
+            session.id,
+            stopped.attempts.at(-1)?.argv ?? [],
+            stopped.service.workspacePort,
+            stopped.service.name,
+            stopped.service.transport,
+          );
+          expect(rerun.service.id).toBe(service.service.id);
+          expect(rerun.attempts).toHaveLength(3);
+          expect(rerun.service.currentAttemptId).toBe(rerun.attempts.at(-1)?.id);
         }),
       { sealantLayer: sealantLaunchLayer(created) },
     );
@@ -1627,6 +1638,38 @@ describe("SessionEngine", () => {
           expect(service.attempts[0]?.argv).toEqual(["sh", "-c", "pnpm dev"]);
         }),
       { sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
+  it("keeps a Service live across a transient watcher lookup failure", async () => {
+    const created: CreateOptions[] = [];
+    let workspaceLookups = 0;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            ownerUserId: null,
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          const service = yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web");
+          yield* Effect.sleep(Duration.millis(1_200));
+
+          const attempt = world.processes.get(service.service.currentAttemptId ?? "");
+          expect(attempt?.exitedAt).toBeNull();
+          expect(world.services.get(service.service.id)?.currentForwardId).not.toBeNull();
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created, undefined, undefined, undefined, () => {
+          workspaceLookups += 1;
+          return workspaceLookups === 2;
+        }),
+      },
     );
   });
 

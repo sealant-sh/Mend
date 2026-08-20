@@ -1232,12 +1232,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return;
           }
         }).pipe(
-          // An unknown workspace or PTY cannot be reached again — record the end.
-          Effect.catch(() =>
-            closeCurrentServiceForward(shellProcess).pipe(
-              Effect.andThen(processes.markExited(shellProcess.id, "exited", null)),
-              Effect.andThen(stopWorkspaceIfUnleased(shellProcess.sessionId)),
-            ),
+          // A control-plane outage is blindness, not exit evidence. Retry until the platform
+          // authoritatively says the workspace or PTY is gone.
+          Effect.retry({
+            while: (error) => error instanceof SealantPlatformError && !runIsGone(error),
+            schedule: SUPERVISE_RETRY,
+          }),
+          Effect.catchTag("SealantPlatformError", (error) =>
+            runIsGone(error)
+              ? closeCurrentServiceForward(shellProcess).pipe(
+                  Effect.andThen(processes.markExited(shellProcess.id, "exited", null)),
+                  Effect.andThen(stopWorkspaceIfUnleased(shellProcess.sessionId)),
+                )
+              : Effect.logWarning(
+                  "session engine: process watcher stopped without exit evidence",
+                ).pipe(Effect.annotateLogs({ processId: shellProcess.id, error: error.message })),
           ),
         );
 
@@ -3471,6 +3480,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   times: 4,
                   schedule: Schedule.exponential("500 millis"),
                 }),
+                Effect.tapError((error) =>
+                  serviceForwards
+                    .markFailed(forward.id, error.message)
+                    .pipe(
+                      Effect.andThen(
+                        services.compareAndSetCurrentForward(service.id, forward.id, null),
+                      ),
+                    ),
+                ),
               );
               if (!workspaceIsLive(status)) {
                 yield* serviceForwards.markFailed(forward.id, `workspace observed ${status}`);

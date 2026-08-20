@@ -28,6 +28,9 @@ const currentAttempt = (view: ServiceViewDto): SessionProcessDto | null =>
     ? null
     : (view.attempts.find((attempt) => attempt.id === view.service.currentAttemptId) ?? null);
 
+const latestSupervisedAttempt = (view: ServiceViewDto): SessionProcessDto | null =>
+  view.attempts.findLast((attempt) => attempt.argv.length > 0) ?? null;
+
 const currentObservation = (view: ServiceViewDto) =>
   view.currentForward !== null && view.latestObservation?.forwardId === view.currentForward.id
     ? view.latestObservation
@@ -78,6 +81,8 @@ function ServiceRow({
   const [copied, setCopied] = useState(false);
   const stable = service.service;
   const attempt = currentAttempt(service);
+  const rerunAttempt = latestSupervisedAttempt(service);
+  const displayAttempt = attempt ?? rerunAttempt;
   const status = serviceStatus(service);
   const url = serviceUrl(service);
   const live = serviceIsLive(service);
@@ -87,8 +92,8 @@ function ServiceRow({
   const meta = [
     `:${stable.workspacePort}${stable.transport === "udp" ? "/udp" : ""}`,
     endpoint === null ? null : `→ ${endpoint}`,
-    !live && attempt?.exitCode !== null && attempt?.exitCode !== undefined
-      ? `code ${attempt.exitCode}`
+    !live && displayAttempt?.exitCode !== null && displayAttempt?.exitCode !== undefined
+      ? `code ${displayAttempt.exitCode}`
       : null,
   ]
     .filter((part) => part !== null)
@@ -166,7 +171,7 @@ function ServiceRow({
               {pending === `stop:${stable.id}` ? "Stopping…" : "Stop"}
             </button>
           )}
-          {!live && actionable && attempt !== null && attempt.argv.length > 0 && (
+          {!live && actionable && rerunAttempt !== null && (
             <button
               type="button"
               onClick={() => onAction("rerun", service)}
@@ -211,25 +216,21 @@ export function ServicesCard({
 
   const act = (verb: ServiceVerb, view: ServiceViewDto) => {
     const stable = view.service;
-    const attempt = currentAttempt(view);
+    const rerunAttempt = latestSupervisedAttempt(view);
     setPending(`${verb}:${stable.id}`);
     const action =
       verb === "restart"
         ? restartService(stable.id)
         : verb === "stop"
           ? stopService(stable.id)
-          : attempt !== null && attempt.argv.length > 0
+          : rerunAttempt !== null
             ? runService(sessionId, {
-                argv: attempt.argv,
+                argv: rerunAttempt.argv,
                 port: stable.workspacePort,
                 name: stable.name,
                 protocol: stable.transport,
               })
-            : addService(sessionId, {
-                port: stable.workspacePort,
-                name: stable.name,
-                protocol: stable.transport,
-              });
+            : Promise.reject(new Error("This Service has no supervised attempt to run again."));
     void action.then(invalidate).finally(() => setPending(null));
   };
 
