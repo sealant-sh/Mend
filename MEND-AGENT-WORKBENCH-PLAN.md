@@ -1278,6 +1278,21 @@ understand the work.
 
 ### Decided
 
+- **2026-08-20 — Hot sessions: a per-project pool of pre-provisioned workspaces.** Each project
+  carries a `hotSessions` count (default 0, the setup page's stepper): Mend keeps that many complete
+  session skeletons ready — a pre-generated session id, its worktree and branch, its session socket
+  dir, and a live workspace mounting them — so a new session claims one at provision and the launch
+  skips straight to opening the PTY. The skeleton must be complete because the platform fixes every
+  create-time input (mount path, mounts, env, secrets, dotfiles, image, credentials) at
+  `workspaces.create` with no mutation API; a fingerprint over those resolved inputs gates claims,
+  and the engine drains-and-rewarms the pool when any of them change (settings handlers trigger it;
+  a 10-minute heartbeat re-arms workspace TTLs and heals the rest). The worktree is a bind mount, so
+  the claim freshens it to the requested base host-side and the running container sees the reset
+  immediately. Skeletons launch with the shell shape — every harness CLI baked, all connected
+  accounts attached — so one pool serves claude, codex, and shell sessions. Resumes stay cold (their
+  worktree is fixed; recorded as platform feedback). Status stays observational: "2 ready · 1
+  warming", never a promise.
+
 - **2026-08-11 — One saved workspace profile, with runtime services distinct from packages.** Mend
   settings own the environment for workspace launches: OS family, portable package names, and
   explicit services. The initial profile is Arch with pnpm, Python + uv, mise for managed Node and

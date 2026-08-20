@@ -359,6 +359,30 @@ export class ProjectApplyDotfilesRequest extends Schema.Class<ProjectApplyDotfil
   applyDotfiles: Schema.Boolean,
 }) {}
 
+/** How many hot workspaces this project keeps ready for new sessions (0 = none). */
+export class ProjectHotSessionsRequest extends Schema.Class<ProjectHotSessionsRequest>(
+  "ProjectHotSessionsRequest",
+)({
+  hotSessions: Schema.Int.pipe(
+    Schema.check(
+      Schema.makeFilter((value: number) =>
+        value >= 0 && value <= 8 ? undefined : "a count between 0 and 8",
+      ),
+    ),
+  ),
+}) {}
+
+/** Observed pool state for the setup page: counts, plus the latest failure when one exists. */
+export class ProjectHotSessionsStatus extends Schema.Class<ProjectHotSessionsStatus>(
+  "ProjectHotSessionsStatus",
+)({
+  hotSessions: Schema.Int,
+  ready: Schema.Int,
+  warming: Schema.Int,
+  failed: Schema.Int,
+  error: Schema.NullOr(Schema.String),
+}) {}
+
 /** One file in the user's dotfiles snapshot — path relative to `~`, size as a fact. */
 export class DotfilesSnapshotFileView extends Schema.Class<DotfilesSnapshotFileView>(
   "DotfilesSnapshotFileView",
@@ -594,6 +618,21 @@ const projectsGroup = HttpApiGroup.make("projects")
       params: { id: ProjectId },
       payload: ProjectApplyDotfilesRequest,
       success: Project,
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put("hotSessions", "/projects/:id/hot-sessions", {
+      params: { id: ProjectId },
+      payload: ProjectHotSessionsRequest,
+      success: Project,
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("hotSessionsStatus", "/projects/:id/hot-sessions", {
+      params: { id: ProjectId },
+      success: ProjectHotSessionsStatus,
       error: NotFound,
     }),
   )

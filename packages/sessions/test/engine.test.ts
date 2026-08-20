@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import {
   CheckpointsRepo,
+  HotWorkspacesRepo,
   ProjectNotFoundError,
   ProjectEnvironmentRepo,
   ProjectMountNotFoundError,
@@ -46,6 +47,7 @@ import {
 import {
   Change,
   Checkpoint,
+  HotWorkspace,
   Project,
   ProjectEnvironmentSnapshot,
   ProjectEnvironmentVariable,
@@ -90,6 +92,7 @@ const sealantDeadLayer = Layer.succeed(SealantClient, {
   openSession: () => Effect.die("not in test"),
   forward: () => Effect.die("not in test"),
   stopWorkspace: () => Effect.die("not in test"),
+  expireWorkspace: () => Effect.die("not in test"),
   getSession: () => Effect.die("not in test"),
   exec: () => Effect.die("not in test"),
   diffCommits: () => Effect.die("not in test"),
@@ -99,6 +102,18 @@ const sealantDeadLayer = Layer.succeed(SealantClient, {
   runChanges: () => Effect.die("not in test"),
   connectionCheck: () => Effect.die("not in test"),
   resolveWorkspacePackage: () => Effect.die("not in test"),
+});
+
+/** No pool in these worlds — claims miss and the boot sweep sees nothing. */
+const hotWorkspacesEmptyLayer = Layer.succeed(HotWorkspacesRepo, {
+  create: () => Effect.die("not in test"),
+  byId: () => Effect.succeed(null),
+  listForProject: () => Effect.succeed([]),
+  listAll: () => Effect.succeed([]),
+  setReady: () => Effect.void,
+  setFailed: () => Effect.void,
+  claim: () => Effect.succeed(null),
+  remove: () => Effect.void,
 });
 
 const settingsLayer = (workspaceImage = defaultSettings.workspaceImage) =>
@@ -186,6 +201,7 @@ const sealantLaunchLayer = (
       Effect.sync(() => {
         stopped?.push(target.id);
       }),
+    expireWorkspace: () => Effect.void,
     getSession: () => Effect.succeed(pty),
     // Typed failure, not a defect: the settle-path harvest must degrade
     // quietly and still reach the workspace reap.
@@ -478,6 +494,7 @@ const projectsLayer = (world: World) =>
     setGitAuthMode: () => Effect.die("not in test"),
     setWorkspaceImage: () => Effect.die("not in test"),
     setApplyDotfiles: () => Effect.die("not in test"),
+    setHotSessions: () => Effect.die("not in test"),
     byId: (id) => {
       const found = world.projects.get(id);
       return found === undefined
@@ -709,6 +726,7 @@ const setup = (tmp: string, world: World) => {
       gitAuthMode: "ambient",
       workspaceImage: null,
       applyDotfiles: true,
+      hotSessions: 0,
       createdAt: now(),
       updatedAt: now(),
     });
@@ -721,6 +739,7 @@ const withEngine = <A, E>(
   work: (world: World, tmp: string) => Effect.Effect<A, E, SessionEngine | Store>,
   options: {
     readonly sealantLayer?: Layer.Layer<SealantClient>;
+    readonly hotWorkspacesLayer?: Layer.Layer<HotWorkspacesRepo>;
     readonly workspaceImage?: typeof defaultSettings.workspaceImage;
     readonly environment?: () => {
       readonly revision: number;
@@ -753,6 +772,7 @@ const withEngine = <A, E>(
     Layer.provide(referencesEmptyLayer),
     Layer.provide(projectMountsEmptyLayer),
     Layer.provide(projectRecipesEmptyLayer),
+    Layer.provide(options.hotWorkspacesLayer ?? hotWorkspacesEmptyLayer),
     Layer.provide(
       Layer.mergeAll(
         projectEnvironmentLayer(options.environment ?? emptyEnvironment),
@@ -1557,6 +1577,7 @@ describe("SessionEngine", () => {
       Layer.provide(referencesEmptyLayer),
       Layer.provide(projectMountsEmptyLayer),
       Layer.provide(projectRecipesEmptyLayer),
+      Layer.provide(hotWorkspacesEmptyLayer),
       Layer.provide(
         Layer.mergeAll(
           projectEnvironmentLayer(emptyEnvironment),
@@ -1581,5 +1602,107 @@ describe("SessionEngine", () => {
     const settled = world.sessions.get(orphan.id);
     expect(settled?.status).toBe("failed");
     expect(settled?.summary).toContain("restarted before the harness started");
+  });
+});
+
+describe("SessionEngine hot sessions", () => {
+  /**
+   * An in-memory pool with one skeleton. `claim` ignores the fingerprint — the test simulates a
+   * project whose inputs still match — and `create` dies so the post-claim rewarm stops before
+   * touching the platform (its worktree creation is real and harmless in the tmp store).
+   */
+  const hotPoolLayer = (pool: { entries: Array<HotWorkspace>; removed: Array<string> }) =>
+    Layer.succeed(HotWorkspacesRepo, {
+      create: () => Effect.die("not in test"),
+      byId: (id) => Effect.sync(() => pool.entries.find((entry) => entry.id === id) ?? null),
+      listForProject: (projectId) =>
+        Effect.sync(() => pool.entries.filter((entry) => entry.projectId === projectId)),
+      listAll: () => Effect.sync(() => [...pool.entries]),
+      setReady: () => Effect.void,
+      setFailed: () => Effect.void,
+      claim: (projectId) =>
+        Effect.sync(() => {
+          const index = pool.entries.findIndex(
+            (entry) => entry.projectId === projectId && entry.status === "ready",
+          );
+          const entry = pool.entries[index];
+          if (entry === undefined) return null;
+          const claimed = new HotWorkspace({ ...entry, status: "claimed", updatedAt: now() });
+          pool.entries[index] = claimed;
+          return claimed;
+        }),
+      remove: (id) =>
+        Effect.sync(() => {
+          pool.removed.push(id);
+          pool.entries = pool.entries.filter((entry) => entry.id !== id);
+        }),
+    });
+
+  it("claims a ready skeleton: provision adopts its id and launch skips the create", async () => {
+    const created: CreateOptions[] = [];
+    const spawned: ReadonlyArray<string>[] = [];
+    const pool = { entries: [] as Array<HotWorkspace>, removed: [] as Array<string> };
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const store = yield* Store;
+          const skeletonId = SessionId.make(crypto.randomUUID());
+          const worktree = yield* store.createWorktree(project.storePath, skeletonId, null);
+          pool.entries.push(
+            new HotWorkspace({
+              id: skeletonId,
+              projectId: project.id,
+              ownerUserId: "user-fixture",
+              status: "ready",
+              error: null,
+              fingerprint: "match-simulated-by-the-fake-claim",
+              worktree: worktree.name,
+              branch: worktree.branch,
+              baseSha: worktree.baseSha,
+              sealantWorkspaceId: SealantWorkspaceId.make("workspace-1"),
+              workspaceImage: defaultSettings.workspaceImage,
+              dotfiles: { repository: null, snapshotSha: null },
+              environment: {
+                environmentRevision: 0,
+                environmentVariableNames: [],
+                secretRevision: 0,
+                secretNames: [],
+              },
+              referenceMounts: [],
+              extraMounts: [],
+              createdAt: now(),
+              updatedAt: now(),
+            }),
+          );
+
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          // The session adopted the skeleton wholesale — same id, same worktree and branch.
+          expect(session.id).toBe(skeletonId);
+          expect(session.worktree).toBe(worktree.name);
+          expect(session.branch).toBe(worktree.branch);
+
+          yield* engine.launch(session.id, ["codex"]);
+
+          expect(created).toHaveLength(0);
+          expect(spawned.length).toBeGreaterThan(0);
+          expect(pool.removed).toContain(skeletonId);
+          const launched = world.sessions.get(session.id);
+          expect(launched?.status).toBe("running");
+          expect(launched?.sealantWorkspaceId).toBe("workspace-1");
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created, () => false, undefined, spawned),
+        hotWorkspacesLayer: hotPoolLayer(pool),
+      },
+    );
   });
 });

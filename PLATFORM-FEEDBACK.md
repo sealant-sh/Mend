@@ -7,6 +7,23 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-08-20 · 0.19.0 · Warm pools must pre-bind everything: no standby workspaces, no re-pointable mounts
+
+- **Needed:** instant session attach. Mend now keeps a per-project pool of ready workspaces ("hot
+  sessions"): a new session claims one and goes straight to `sessions.open`.
+- **Today:** every create-time input is fixed at `workspaces.create` — `source.path`, `mounts`,
+  `env`, `secretEnv`, `dotfiles`, `credentials`, image, packages — and `Workspace` has no mutation
+  surface (`restart()` reuses the stored spec). So a pooled workspace must be pre-bound to a real
+  worktree and session socket dir, which forces Mend to pre-provision complete session skeletons
+  (pre-generated session id → worktree → socket → workspace) and to drain the pool whenever any
+  input changes. Two costs follow: **resumes can never be served hot** (a resume is bound to its
+  existing worktree path), and every configuration change burns and rebuilds containers instead of
+  re-binding one.
+- **Suggested:** either a standby shape (`workspaces.create` without a source, with the mount bound
+  at first use) or a re-point operation on a live workspace's primary mount. Independently, the
+  plan-hash build short-circuit (docs/WORKSPACE-IMAGES.md direction item 1) compounds with any pool
+  by making the rebuild half of drain-and-rewarm cheap.
+
 ## 2026-08-20 · 0.19.0 · Nix-family workspace images cannot boot: `sealantd` is not on the base image's PATH
 
 **Implemented at the source** — [sealant#180](https://github.com/sealant-sh/sealant/pull/180)

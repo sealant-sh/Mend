@@ -318,6 +318,7 @@ export interface ProjectDto {
   readonly gitAuthMode: GitAuthModeDto;
   readonly workspaceImage: WorkspaceImageDto | null;
   readonly applyDotfiles: boolean;
+  readonly hotSessions: number;
   readonly createdAt: string;
 }
 
@@ -651,6 +652,26 @@ export const setProjectApplyDotfiles = (projectId: string, applyDotfiles: boolea
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ applyDotfiles }),
   });
+
+/** How many hot workspaces this project keeps ready for new sessions (0 = none). */
+export const setProjectHotSessions = (projectId: string, hotSessions: number) =>
+  request<ProjectDto>(`/api/projects/${projectId}/hot-sessions`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ hotSessions }),
+  });
+
+/** Observed pool state: counts, plus the latest provisioning failure when one exists. */
+export interface ProjectHotSessionsStatusDto {
+  readonly hotSessions: number;
+  readonly ready: number;
+  readonly warming: number;
+  readonly failed: number;
+  readonly error: string | null;
+}
+
+export const projectHotSessionsStatus = (projectId: string) =>
+  request<ProjectHotSessionsStatusDto>(`/api/projects/${projectId}/hot-sessions`);
 
 /** A workbench SSE event — pointers only; clients re-read through the API. */
 export interface WorkbenchEventDto {

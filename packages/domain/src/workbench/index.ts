@@ -21,6 +21,7 @@ export * from "./checkpoint.ts";
 export * from "./context.ts";
 export * from "./dotenv.ts";
 export * from "./follow-up.ts";
+export * from "./hot-workspace.ts";
 export * from "./mount.ts";
 export * from "./pass.ts";
 export * from "./project.ts";

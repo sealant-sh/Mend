@@ -5,6 +5,7 @@ import {
   ChangeToursRepo,
   CheckpointsRepo,
   FollowUpsRepo,
+  HotWorkspacesRepo,
   ProjectEnvironmentRepo,
   ProjectMountsRepo,
   ProjectNotFoundError,
@@ -66,6 +67,7 @@ import {
   NotFound,
   ProjectDetail,
   ProjectEnvironmentMutationResult,
+  ProjectHotSessionsStatus,
   ProjectSecretMutationResult,
   ProjectWorkspaceImageSaveResult,
   DotfilesSnapshotFileView,
@@ -104,6 +106,28 @@ const STORE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 /** Live session states — removal refuses these; project removal stops them. */
 const LIVE_STATES = new Set(["starting", "running", "waiting", "idle"]);
+
+/**
+ * Fingerprint-mutating handlers rewarm the project's hot pool: workspaces are created from these
+ * inputs, so stale ready entries drain and rebuild. Coalesced and fire-and-forget in the engine —
+ * the mutation's response never waits on a container.
+ */
+const rewarmHotSessions = (projectId: ProjectId) =>
+  Effect.gen(function* () {
+    const engine = yield* SessionEngine;
+    yield* engine.reconcileHotSessions(projectId);
+  });
+
+/** Dotfiles are per-user, so a change touches every project that keeps hot workspaces. */
+const rewarmAllHotSessions = Effect.gen(function* () {
+  const projects = yield* ProjectsRepo;
+  const engine = yield* SessionEngine;
+  const all = yield* projects.list();
+  yield* Effect.forEach(
+    all.filter((project) => project.hotSessions > 0),
+    (project) => engine.reconcileHotSessions(project.id),
+  );
+});
 
 /**
  * A remote git failure as a `StoreFailure`: a readable sentence when the
@@ -293,6 +317,22 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           (session) => engine.stop(session.id).pipe(Effect.ignore),
           { concurrency: 4 },
         );
+        // Hot workspaces too: their rows cascade with the project, but the containers would
+        // otherwise burn until the platform TTL. Worktrees go with the store directory below.
+        const hotWorkspaces = yield* HotWorkspacesRepo;
+        const sealant = yield* SealantClient;
+        const hotEntries = yield* hotWorkspaces.listForProject(params.id);
+        yield* Effect.forEach(
+          hotEntries,
+          (entry) =>
+            entry.sealantWorkspaceId === null
+              ? Effect.void
+              : sealant.getWorkspace(entry.sealantWorkspaceId).pipe(
+                  Effect.flatMap((workspace) => sealant.stopWorkspace(workspace)),
+                  Effect.ignore,
+                ),
+          { concurrency: 4 },
+        );
         const { leftover } = yield* store.removeProjectStore(project.storePath);
         yield* projects.remove(params.id);
         return new RemovalReport({ removed: true, leftover });
@@ -329,6 +369,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           const project = yield* projects
             .setWorkspaceImage(params.id, null)
             .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+          yield* rewarmHotSessions(params.id);
           return new ProjectWorkspaceImageSaveResult({ saved: true, project, resolutions: [] });
         }
         const sealant = yield* SealantClient;
@@ -349,15 +390,54 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         const project = yield* projects
           .setWorkspaceImage(params.id, resolved.workspaceImage)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        yield* rewarmHotSessions(params.id);
         return new ProjectWorkspaceImageSaveResult({ saved: true, project, resolutions });
       }),
     )
     .handle("applyDotfiles", ({ params, payload }) =>
       Effect.gen(function* () {
         const projects = yield* ProjectsRepo;
-        return yield* projects
+        const engine = yield* SessionEngine;
+        const project = yield* projects
           .setApplyDotfiles(params.id, payload.applyDotfiles)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        // Dotfiles are a create-time workspace input — rewarm the pool.
+        yield* engine.reconcileHotSessions(params.id);
+        return project;
+      }),
+    )
+    .handle("hotSessions", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        const engine = yield* SessionEngine;
+        const project = yield* projects
+          .setHotSessions(params.id, payload.hotSessions)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        yield* engine.reconcileHotSessions(params.id);
+        return project;
+      }),
+    )
+    .handle("hotSessionsStatus", ({ params }) =>
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        const hotWorkspaces = yield* HotWorkspacesRepo;
+        const project = yield* projects
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        const entries = yield* hotWorkspaces.listForProject(params.id);
+        const countOf = (status: string) =>
+          entries.filter((entry) => entry.status === status).length;
+        // The latest failure, when one exists — the setup page shows it verbatim.
+        const failed = entries
+          .toReversed()
+          .find((entry) => entry.status === "failed" && entry.error !== null);
+        return new ProjectHotSessionsStatus({
+          hotSessions: project.hotSessions,
+          ready: countOf("ready"),
+          warming: countOf("warming"),
+          failed: countOf("failed"),
+          error: failed?.error ?? null,
+        });
       }),
     ),
 );
@@ -403,6 +483,7 @@ export const DotfilesGroupLive = HttpApiBuilder.group(MendApi, "dotfiles", (hand
         const caller = yield* CurrentUser;
         const userDotfiles = yield* UserDotfilesRepo;
         yield* userDotfiles.setRepository(caller.user.id, payload.repository);
+        yield* rewarmAllHotSessions;
         return yield* dotfilesView(caller.user.id);
       }),
     )
@@ -416,6 +497,7 @@ export const DotfilesGroupLive = HttpApiBuilder.group(MendApi, "dotfiles", (hand
             merge: payload.merge,
           })
           .pipe(Effect.mapError((error) => new SettingsFailure({ message: error.message })));
+        yield* rewarmAllHotSessions;
         return yield* dotfilesView(caller.user.id);
       }),
     )
@@ -426,6 +508,7 @@ export const DotfilesGroupLive = HttpApiBuilder.group(MendApi, "dotfiles", (hand
         yield* store
           .clear(caller.user.id)
           .pipe(Effect.mapError((error) => new SettingsFailure({ message: error.message })));
+        yield* rewarmAllHotSessions;
         return yield* dotfilesView(caller.user.id);
       }),
     ),
@@ -532,12 +615,14 @@ export const ProjectMountsGroupLive = HttpApiBuilder.group(MendApi, "projectMoun
             message: `Already declared on this project: ${clash.name} (${clash.hostPath})`,
           });
         }
-        return yield* mounts.create({
+        const created = yield* mounts.create({
           projectId: params.id,
           name: payload.name,
           hostPath: payload.hostPath,
           readOnly: payload.readOnly,
         });
+        yield* rewarmHotSessions(params.id);
+        return created;
       }),
     )
     .handle("remove", ({ params }) =>
@@ -550,6 +635,7 @@ export const ProjectMountsGroupLive = HttpApiBuilder.group(MendApi, "projectMoun
           return yield* new NotFound({ id: params.mountId });
         }
         yield* mounts.remove(params.mountId);
+        yield* rewarmHotSessions(params.id);
       }),
     ),
 );
@@ -620,6 +706,7 @@ export const ProjectEnvironmentGroupLive = HttpApiBuilder.group(
                 ProjectEnvironmentLimitError: (error) => rejectEnvironment(error),
               }),
             );
+          yield* rewarmHotSessions(params.id);
           return new ProjectEnvironmentMutationResult({
             variable: result.variable,
             revision: result.revision,
@@ -651,6 +738,7 @@ export const ProjectEnvironmentGroupLive = HttpApiBuilder.group(
                 ProjectEnvironmentLimitError: (error) => rejectEnvironment(error),
               }),
             );
+          yield* rewarmHotSessions(params.id);
           return new ProjectEnvironmentMutationResult({
             variable: result.variable,
             revision: result.revision,
@@ -674,6 +762,7 @@ export const ProjectEnvironmentGroupLive = HttpApiBuilder.group(
                   }),
               }),
             );
+          yield* rewarmHotSessions(params.id);
           return new ProjectEnvironmentMutationResult({
             variable: null,
             revision: result.revision,
@@ -810,6 +899,7 @@ export const ProjectEnvironmentGroupLive = HttpApiBuilder.group(
               .snapshot(params.id)
               .pipe(Effect.catchTag("ProjectNotFoundError", () => new NotFound({ id: params.id }))),
           ]);
+          yield* rewarmHotSessions(params.id);
           return new EnvironmentLoadReport({
             loaded,
             rejected,
@@ -914,6 +1004,7 @@ export const ProjectSecretsGroupLive = HttpApiBuilder.group(MendApi, "projectSec
         );
         // A name lives in exactly one lane: the secret now owns it.
         yield* evictPlaintextCopy(params.id, payload.name);
+        yield* rewarmHotSessions(params.id);
         return new ProjectSecretMutationResult({
           secret: result.secret,
           revision: result.revision,
@@ -947,6 +1038,7 @@ export const ProjectSecretsGroupLive = HttpApiBuilder.group(MendApi, "projectSec
           );
         // A name lives in exactly one lane: the secret now owns it.
         yield* evictPlaintextCopy(params.id, payload.name);
+        yield* rewarmHotSessions(params.id);
         return new ProjectSecretMutationResult({
           secret: result.secret,
           revision: result.revision,
@@ -969,6 +1061,7 @@ export const ProjectSecretsGroupLive = HttpApiBuilder.group(MendApi, "projectSec
                 }),
             }),
           );
+        yield* rewarmHotSessions(params.id);
         return new ProjectSecretMutationResult({ secret: null, revision: result.revision });
       }),
     ),
@@ -1114,6 +1207,7 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
           .byId(params.id)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         yield* references.setForProject(params.id, payload.referenceIds);
+        yield* rewarmHotSessions(params.id);
         return yield* references.listForProject(params.id);
       }),
     ),

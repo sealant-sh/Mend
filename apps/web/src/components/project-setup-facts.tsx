@@ -4,6 +4,7 @@ import { Link } from "@tanstack/react-router";
 import {
   projectDetailQuery,
   projectEnvironmentQuery,
+  projectHotSessionsQuery,
   projectMountsQuery,
   projectRecipesQuery,
   projectReferencesQuery,
@@ -27,6 +28,7 @@ export function useSetupFactValues(projectId: string) {
   const references = useQuery(projectReferencesQuery(projectId)).data;
   const mounts = useQuery(projectMountsQuery(projectId)).data;
   const recipes = useQuery(projectRecipesQuery(projectId)).data;
+  const hotSessions = useQuery(projectHotSessionsQuery(projectId)).data;
   if (detail === undefined) return null;
   const { project } = detail;
 
@@ -49,6 +51,10 @@ export function useSetupFactValues(projectId: string) {
           ? "none"
           : `${recipes.length} ${recipes.length === 1 ? "recipe" : "recipes"}`,
     dotfiles: project.applyDotfiles ? "on" : "off",
+    hot:
+      project.hotSessions === 0
+        ? "off"
+        : `${hotSessions?.ready ?? 0} of ${project.hotSessions} ready`,
     git: project.gitAuthMode === "mend-key" ? "mend key" : project.gitAuthMode,
     review: `tour ${project.autoTour} · suggest ${project.autoSuggest}`,
   };
@@ -68,6 +74,7 @@ const FACT_ROWS: ReadonlyArray<{
   { anchor: "mounts", label: "Mounted folders", key: "mounts" },
   { anchor: "services", label: "Services", key: "services" },
   { anchor: "dotfiles", label: "Dotfiles", key: "dotfiles" },
+  { anchor: "hot-sessions", label: "Hot sessions", key: "hot" },
   { anchor: "git", label: "Git access", key: "git" },
   { anchor: "review", label: "Review automation", key: "review" },
 ];
@@ -91,6 +98,7 @@ const EXPLANATIONS: Record<FactKey, string> = {
     "Commands sessions can run and expose — a dev server, a database — declared here or in the repo's mend.toml.",
   dotfiles:
     "Whether sessions in this project receive your dotfiles (repo plus synced home files, set up in Settings) at launch.",
+  hot: "How many workspaces this project keeps ready for new sessions. A new session claims one and attaches immediately; each ready workspace is a live container on this machine.",
   git: "How Mend reaches this project's remote: ambient uses your login user's git and ssh setup; mend key is this machine's own deploy key; bridge signs through an ssh-agent shared from another machine.",
   review:
     "What Mend runs when a session settles here — a description and tour of the change, and drafted fix suggestions. Draft comments, never verdicts; inherit follows Settings.",
@@ -148,7 +156,7 @@ const INDEX_GROUPS: ReadonlyArray<{
 }> = [
   { label: "environment", rows: FACT_ROWS.slice(0, 3) },
   { label: "sources", rows: FACT_ROWS.slice(3, 7) },
-  { label: "policy", rows: FACT_ROWS.slice(7, 9) },
+  { label: "policy", rows: FACT_ROWS.slice(7, 10) },
 ];
 
 /**

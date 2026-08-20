@@ -22,6 +22,7 @@ import {
   ChangeToursRepoLive,
   CheckpointsRepoLive,
   FollowUpsRepoLive,
+  HotWorkspacesRepoLive,
   InferenceCallsRepoLive,
   IssuesRepoLive,
   MendDBLive,
@@ -106,6 +107,7 @@ const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..
 // ─── Data: Postgres, migrated before anything reads it ─────────────────────
 const DrizzleRepositoriesLive = Layer.mergeAll(
   UserDotfilesRepoLive,
+  HotWorkspacesRepoLive,
   SessionGitOpsRepoLive,
   SessionProcessesRepoLive,
   SessionRunsRepoLive,

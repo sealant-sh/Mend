@@ -128,6 +128,17 @@ export class Store extends Context.Service<
       sessionId: SessionId,
       base: string | null,
     ) => Effect.Effect<SessionWorktree, GitError>;
+    /**
+     * Freshen an existing worktree to `base` (default branch when null) without recreating it:
+     * hard-reset the session branch, then clean untracked files. Ignore rules — including the
+     * store-level excludes — keep dependency stores in place. For a bind-mounted worktree the
+     * reset is immediately visible inside a running workspace.
+     */
+    readonly resetWorktree: (
+      storePath: string,
+      name: string,
+      base: string | null,
+    ) => Effect.Effect<{ readonly path: string; readonly baseSha: Sha }, GitError>;
     /** Remove a session worktree; checkpoint refs survive in the bare repo. */
     readonly removeWorktree: (storePath: string, name: string) => Effect.Effect<void, GitError>;
     /**
@@ -257,6 +268,19 @@ export class Store extends Context.Service<
         const worktreePath = path.join(path.dirname(storePath), "worktrees", name);
         yield* git(["worktree", "add", "-b", branch, worktreePath, baseSha], storePath);
         return { path: worktreePath, name, branch, baseSha: sha(baseSha) };
+      });
+
+      const resetWorktree = Effect.fn("Store.resetWorktree")(function* (
+        storePath: string,
+        name: string,
+        base: string | null,
+      ) {
+        const worktreePath = path.join(path.dirname(storePath), "worktrees", name);
+        const baseRef = base ?? (yield* git(["symbolic-ref", "--short", "HEAD"], storePath));
+        const baseSha = yield* git(["rev-parse", `${baseRef}^{commit}`], storePath);
+        yield* git(["reset", "--hard", baseSha], worktreePath);
+        yield* git(["clean", "-fd"], worktreePath);
+        return { path: worktreePath, baseSha: sha(baseSha) };
       });
 
       const removeWorktree = Effect.fn("Store.removeWorktree")(function* (
@@ -462,6 +486,7 @@ export class Store extends Context.Service<
         removeReference,
         adopt,
         createWorktree,
+        resetWorktree,
         removeWorktree,
         removeWorktreeForce,
         removeProjectStore,

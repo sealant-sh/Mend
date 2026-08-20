@@ -10,6 +10,7 @@ export * from "./repos/briefs.ts";
 export * from "./repos/changes.ts";
 export * from "./repos/checkpoints.ts";
 export * from "./repos/follow-ups.ts";
+export * from "./repos/hot-workspaces.ts";
 export * from "./repos/inference-calls.ts";
 export * from "./repos/issues.ts";
 export * from "./repos/project-environment.ts";

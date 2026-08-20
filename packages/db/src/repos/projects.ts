@@ -53,6 +53,11 @@ export class ProjectsRepo extends Context.Service<
       id: ProjectId,
       applyDotfiles: boolean,
     ) => Effect.Effect<Project, ProjectNotFoundError>;
+    /** How many hot workspaces to keep ready for new sessions (0 = none). */
+    readonly setHotSessions: (
+      id: ProjectId,
+      hotSessions: number,
+    ) => Effect.Effect<Project, ProjectNotFoundError>;
     /** Hard delete — sessions and everything under them cascade. */
     readonly remove: (id: ProjectId) => Effect.Effect<void>;
   }
@@ -179,6 +184,22 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return updated;
       });
 
+      const setHotSessions = Effect.fn("ProjectsRepo.setHotSessions")(function* (
+        id: ProjectId,
+        hotSessions: number,
+      ) {
+        const [row] = yield* db
+          .update(projects)
+          .set({ hotSessions, updatedAt: new Date() })
+          .where(eq(projects.id, id))
+          .returning()
+          .pipe(Effect.orDie);
+        if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
+        const updated = toProject(row);
+        yield* notifyEvent(sql, { type: "project", projectId: id });
+        return updated;
+      });
+
       const remove = Effect.fn("ProjectsRepo.remove")(function* (id: ProjectId) {
         yield* db.delete(projects).where(eq(projects.id, id)).pipe(Effect.orDie);
         yield* notifyEvent(sql, { type: "project", projectId: id });
@@ -193,6 +214,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         setGitAuthMode,
         setWorkspaceImage,
         setApplyDotfiles,
+        setHotSessions,
         remove,
       };
     }),

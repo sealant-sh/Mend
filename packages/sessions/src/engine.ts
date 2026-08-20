@@ -3,6 +3,7 @@ import * as path from "node:path";
 
 import {
   CheckpointsRepo,
+  HotWorkspacesRepo,
   ProjectEnvironmentRepo,
   ProjectMountsRepo,
   ProjectNotFoundError,
@@ -31,6 +32,8 @@ import {
 import type {
   Checkpoint,
   CheckpointTrigger,
+  HotWorkspace,
+  Project,
   Session,
   SessionProcess,
   SessionRun,
@@ -68,6 +71,7 @@ import {
   type HarnessStateManifest,
   readHarnessStateManifest,
 } from "./harness-state.ts";
+import { hotFingerprint, type HotFingerprintInputs } from "./hot-pool.ts";
 import {
   convertNativeSession,
   ingestNativeSession,
@@ -233,6 +237,10 @@ const SUPERVISE_RETRY = Schedule.exponential("1 second").pipe(
   ),
 );
 
+/** Workspace statuses a hot entry can still serve from; anything else drains it. */
+const workspaceIsLive = (status: string) =>
+  status === "queued" || status === "running" || status === "ready";
+
 export interface ProvisionInput {
   readonly projectId: ProjectId;
   readonly harness: string;
@@ -323,6 +331,12 @@ export class SessionEngine extends Context.Service<
       | SessionLaunchSetupError
       | DotfilesResolveError
     >;
+    /**
+     * Schedule a hot-pool reconcile for the project (coalesced per project; returns
+     * immediately). Call after any change to an input workspaces are created from — the
+     * hot-sessions count itself, the image, dotfiles, env, secrets, references, or mounts.
+     */
+    readonly reconcileHotSessions: (projectId: ProjectId) => Effect.Effect<void>;
     /** Snapshot the worktree now — review-open and user-mark come through here. */
     readonly checkpointNow: (
       sessionId: SessionId,
@@ -430,6 +444,7 @@ export class SessionEngine extends Context.Service<
     Effect.gen(function* () {
       const sealant = yield* SealantClient;
       const sessions = yield* SessionsRepo;
+      const hotWorkspaces = yield* HotWorkspacesRepo;
       const userDotfilesRepo = yield* UserDotfilesRepo;
       const dotfilesStore = yield* DotfilesStore;
       const sessionRuns = yield* SessionRunsRepo;
@@ -596,6 +611,19 @@ export class SessionEngine extends Context.Service<
 
       const provision = Effect.fn("SessionEngine.provision")(function* (input: ProvisionInput) {
         const project = yield* projects.byId(input.projectId);
+        // Hot path: adopt a pre-provisioned skeleton when the project keeps them ready. Any
+        // failure here falls back to the cold path — a claim must never cost a session.
+        if (project.hotSessions > 0) {
+          const claimed = yield* claimHotSession(project, input).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("session engine: hot claim failed — cold provision").pipe(
+                Effect.annotateLogs({ projectId: project.id, error: String(error) }),
+                Effect.as(null),
+              ),
+            ),
+          );
+          if (claimed !== null) return claimed;
+        }
         const sessionId = SessionId.make(crypto.randomUUID());
         const worktree = yield* store.createWorktree(project.storePath, sessionId, input.base);
         const session = yield* sessions.create({
@@ -1018,34 +1046,37 @@ export class SessionEngine extends Context.Service<
           ),
         );
 
-      const launchInternal = Effect.fn("SessionEngine.launchInternal")(function* (
-        sessionId: SessionId,
-        argv: ReadonlyArray<string>,
-        nativeImport: ConvertedNativeSession | null,
-        manifestOverride?: HarnessStateManifest | null,
-      ) {
-        const session = yield* sessions.byId(sessionId);
-        const project = yield* projects.byId(session.projectId);
+      /**
+       * Create a live workspace over `worktree` — the create-time half of a launch, shared by
+       * the cold launch path and the hot-session prewarm. Resolves every create-fixed input
+       * (image, dotfiles, env, secrets, mounts), runs the credential ladder, executes
+       * custom-image setup commands, and wires the in-workspace helper + git transport.
+       * `onFailure` reports a readable message to the caller's ledger (session settle or pool
+       * row) before the error propagates.
+       */
+      const provisionWorkspace = Effect.fn("SessionEngine.provisionWorkspace")(function* (input: {
+        readonly project: Project;
+        readonly sessionId: SessionId;
+        /** Absolute worktree path — the workspace's mount source. */
+        readonly worktree: string;
+        /** The session socket dir from `socketHost.start`, mounted at `/run/mend`. */
+        readonly socketDir: string;
+        readonly shape: ReturnType<typeof platformShape>;
+        readonly ownerUserId: string | null;
+        readonly onFailure: (message: string) => Effect.Effect<void>;
+      }) {
+        const { project, sessionId, worktree, socketDir, shape, ownerUserId } = input;
         const settings = yield* settingsRepo.get();
-        const worktree = worktreePathOf(project.storePath, session.worktree);
-        // A bash launch (shell session, shell resume) is an open workbench:
-        // shape by what actually launches, not the session's harness identity.
-        const shape = platformShape(argv[0] === "bash" ? "shell" : session.harness);
-        const stateDir = sessionStatePathOf(project.storePath, session.id);
-        // An explicit null skips both the read and the restore (a shell
-        // resume tolerates a session that never harvested state).
-        const manifest =
-          manifestOverride !== undefined
-            ? manifestOverride
-            : yield* readHarnessStateManifest(stateDir, session.id).pipe(
-                Effect.catchTag("HarnessStateNotFoundError", (error) =>
-                  session.sealantRunId === null ? Effect.succeed(null) : Effect.fail(error),
-                ),
-              );
+        const report = <A, E extends { readonly message: string }>(
+          effect: Effect.Effect<A, E>,
+        ): Effect.Effect<A, E> =>
+          effect.pipe(
+            Effect.tapError((error) => input.onFailure(error.message).pipe(Effect.ignore)),
+          );
         // What rides beside the worktree (plan §17, 2026-08-01): selected
         // references read-only at /workspace/ref/<name>, and the project's
         // declared host folders at /workspace/home/<name> — read-only unless
-        // deliberately chosen otherwise. Resolved at launch; the session
+        // deliberately chosen otherwise. Resolved at provision; the session
         // records exactly what it received.
         const selectedReferences = yield* references
           .listForProject(project.id)
@@ -1053,9 +1084,6 @@ export class SessionEngine extends Context.Service<
         const declaredMounts = yield* projectMounts
           .listForProject(project.id)
           .pipe(Effect.orElseSucceed(() => []));
-        // The in-workspace control surface: the session's socket + helper,
-        // bound BEFORE the workspace exists so the mount can carry it.
-        const socketDir = yield* socketHost.start(sessionId, socketApiFor(sessionId));
         const workspaceMounts = [
           { hostPath: socketDir, mountPath: SESSION_SOCKET_MOUNT_PATH },
           ...selectedReferences.map((reference) => ({
@@ -1069,41 +1097,17 @@ export class SessionEngine extends Context.Service<
             ...(mount.readOnly ? {} : { readOnly: false }),
           })),
         ];
-        // A failed provision settles the session — fire-and-forget launchers
-        // (the web) must never strand a row in "starting" with no error.
-        const settleOnFailure = <A>(effect: Effect.Effect<A, SealantPlatformError>) =>
-          effect.pipe(
-            Effect.tapError((error) =>
-              sessions
-                .settle(sessionId, "failed", `launch failed: ${error.message}`)
-                .pipe(Effect.ignore),
-            ),
-          );
-        // A relaunch is about to overwrite the row's workspace pointer; stop
-        // the previous workspace first or it becomes unaddressable and leaks
-        // until the platform TTL. Forced: leases cannot hold a workspace that
-        // is being replaced.
-        if (session.sealantWorkspaceId !== null) {
-          yield* stopWorkspaceQuietly(sessionId, { force: true });
-        }
         // The project's workspace-image override wins; null inherits the global default. The
-        // session records whichever one it ACTUALLY launched with, so a later settings change
+        // caller records whichever one it ACTUALLY provisioned with, so a later settings change
         // never rewrites what a past session ran on.
         const workspaceImage = project.workspaceImage ?? settings.workspaceImage;
-        // Dotfiles are the OWNER's: the account stamped at provision; sessions from before
-        // ownership existed fall back to the instance's first account (the static-token
-        // semantics). Both sources resolve server-side — the repo clone at launch, the store
-        // snapshot as the exact commit the owner last synced — and the workspace only ever
-        // sees file trees, never a URL or credential. Custom images skip dotfiles entirely:
-        // the platform rejects them there (POSIX-shell-only contract), and a project that
-        // brings its own base brings its own environment.
-        const ownerUserId = session.ownerUserId ?? (yield* userDotfilesRepo.firstUserId());
+        // Dotfiles are the OWNER's. Both sources resolve server-side — the repo clone at
+        // provision, the store snapshot as the exact commit the owner last synced — and the
+        // workspace only ever sees file trees, never a URL or credential. Custom images skip
+        // dotfiles entirely: the platform rejects them there (POSIX-shell-only contract), and a
+        // project that brings its own base brings its own environment.
         const dotfilesEnabled =
           project.applyDotfiles && workspaceImage.mode !== "custom" && ownerUserId !== null;
-        const settleDotfilesFailure = (error: { readonly message: string }) =>
-          sessions
-            .settle(sessionId, "failed", `launch failed: ${error.message}`)
-            .pipe(Effect.ignore);
         const dotfilesRepository =
           dotfilesEnabled && ownerUserId !== null
             ? yield* userDotfilesRepo.repository(ownerUserId)
@@ -1112,13 +1116,13 @@ export class SessionEngine extends Context.Service<
           dotfilesEnabled && ownerUserId !== null
             ? yield* dotfilesStore.archive(ownerUserId).pipe(
                 Effect.mapError((error) => new DotfilesResolveError({ message: error.message })),
-                Effect.tapError(settleDotfilesFailure),
+                report,
               )
             : null;
         const dotfilesArchives = yield* resolveDotfilesArchives({
           repository: dotfilesRepository,
           snapshot: dotfilesSnapshot,
-        }).pipe(Effect.tapError(settleDotfilesFailure));
+        }).pipe(report);
         // The project env store, read ONCE per fresh workspace (plan: one snapshot per launch, a
         // live workspace is never mutated). Configuration rides `env` (plaintext by contract);
         // Secrets are unsealed here — the only place Mend ever holds their plaintext — and ride
@@ -1130,7 +1134,7 @@ export class SessionEngine extends Context.Service<
                 message: `project environment could not be read: ${String(error)}`,
               }),
           ),
-          Effect.tapError(settleDotfilesFailure),
+          report,
         );
         const sealedSecrets = yield* projectSecrets.sealedForLaunch(project.id).pipe(
           Effect.mapError(
@@ -1139,7 +1143,7 @@ export class SessionEngine extends Context.Service<
                 message: `project secrets could not be read: ${String(error)}`,
               }),
           ),
-          Effect.tapError(settleDotfilesFailure),
+          report,
         );
         const secretEnv = yield* Effect.forEach(
           sealedSecrets.secrets,
@@ -1157,7 +1161,7 @@ export class SessionEngine extends Context.Service<
           { concurrency: 1 },
         ).pipe(
           Effect.map((pairs) => Object.fromEntries(pairs)),
-          Effect.tapError(settleDotfilesFailure),
+          report,
         );
         const env = Object.fromEntries(
           environment.variables.map((variable) => [variable.name, variable.value] as const),
@@ -1173,7 +1177,7 @@ export class SessionEngine extends Context.Service<
             source: { kind: "mount", path: worktree },
             ...(workspaceMounts.length === 0 ? {} : { mounts: workspaceMounts }),
             harness: shape.harness,
-            name: `mend-${session.id.slice(0, 8)}`,
+            name: `mend-${sessionId.slice(0, 8)}`,
             ...(workspaceImage.mode === "custom"
               ? { baseImage: workspaceImage.baseImage }
               : { os: workspaceImage.os }),
@@ -1220,35 +1224,261 @@ export class SessionEngine extends Context.Service<
         // A missing harness account must not discard a valid GitHub account (and vice versa).
         // Try the complete identity first, then each useful subset before interactive auth.
         const workspace = yield* createWithCredentialFallback(shape.credentialAttempts).pipe(
-          settleOnFailure,
+          report,
         );
-        yield* sessions.setWorkspaceImage(sessionId, workspaceImage);
-        // Stamped alongside the image: what this session ACTUALLY launched with — the repo
-        // url+ref that was cloned and the exact snapshot sha the store packed.
-        yield* sessions.setDotfiles(sessionId, {
-          repository:
-            dotfilesRepository === null
-              ? null
-              : { url: dotfilesRepository.url, ref: dotfilesRepository.ref },
-          snapshotSha: dotfilesSnapshot?.sha ?? null,
-        });
-
         // Custom-image setup commands run in the fresh workspace BEFORE anything else (state
         // restore, harness launch). They are part of the image contract, so a failing one fails
-        // the launch loudly instead of handing the agent a half-prepared environment.
+        // the provision loudly instead of handing the agent a half-prepared environment.
         if (workspaceImage.mode === "custom") {
           for (const command of workspaceImage.setupCommands) {
-            const result = yield* sealant
-              .exec(workspace, ["sh", "-lc", command])
-              .pipe(settleOnFailure);
+            const result = yield* sealant.exec(workspace, ["sh", "-lc", command]).pipe(report);
             if (result.exitCode !== 0) {
               const message = `setup command failed (exit ${result.exitCode}): ${command}`;
-              yield* sessions.settle(sessionId, "failed", message).pipe(Effect.ignore);
+              yield* input.onFailure(message).pipe(Effect.ignore);
               yield* sealant.stopWorkspace(workspace).pipe(Effect.ignore);
               return yield* new SessionLaunchSetupError({ sessionId, command, message });
             }
           }
         }
+        // The helper reaches everyone through PATH, not prompt engineering.
+        // Git's ssh becomes the transport shim the same way: system config, so
+        // every process in the workspace — agent, shell, service — pushes and
+        // fetches through the host with zero credentials in the container.
+        // ssh.variant=ssh keeps ports and protocol v2 working through it.
+        // Touches /usr/local/bin and system git config, never $HOME, so it is
+        // safe before any state restore.
+        yield* sealant
+          .exec(workspace, [
+            "sh",
+            "-c",
+            `ln -sf ${SESSION_SOCKET_MOUNT_PATH}/bin/mend /usr/local/bin/mend; ` +
+              `git config --system core.sshCommand ${SESSION_SOCKET_MOUNT_PATH}/bin/mend-git-ssh; ` +
+              `git config --system ssh.variant ssh`,
+          ])
+          .pipe(Effect.ignore);
+        return {
+          workspace,
+          workspaceImage,
+          environmentManifest,
+          dotfiles: {
+            repository:
+              dotfilesRepository === null
+                ? null
+                : { url: dotfilesRepository.url, ref: dotfilesRepository.ref },
+            snapshotSha: dotfilesSnapshot?.sha ?? null,
+          },
+          referenceMounts: selectedReferences.map(
+            (reference) =>
+              new SessionReferenceMount({
+                name: reference.name,
+                mountPath: `/workspace/ref/${reference.name}`,
+                sha: reference.headSha,
+              }),
+          ),
+          extraMounts: declaredMounts.map(
+            (mount) =>
+              new SessionExtraMount({
+                name: mount.name,
+                hostPath: mount.hostPath,
+                mountPath: `/workspace/home/${mount.name}`,
+                readOnly: mount.readOnly,
+              }),
+          ),
+        };
+      });
+
+      /**
+       * Tell the harness what rides beside the repo — appended to each harness's global memory
+       * file in the workspace $HOME (never the worktree: the note is not review content). A cold
+       * launch runs this after state restore, which rewrites $HOME; a prewarm runs it at
+       * provision time (no restore ever lands in a hot workspace's $HOME).
+       */
+      const appendWorkspaceNote = Effect.fn("SessionEngine.appendWorkspaceNote")(function* (
+        workspace: Workspace,
+        project: Project,
+        worktree: string,
+        referenceMounts: ReadonlyArray<SessionReferenceMount>,
+        extraMounts: ReadonlyArray<SessionExtraMount>,
+      ) {
+        const referencesSection =
+          referenceMounts.length === 0
+            ? ""
+            : `Read-only clones of dependency sources — read the actual source here ` +
+              `before guessing a dependency's API:\n\n` +
+              referenceMounts.map((reference) => `- ${reference.mountPath}`).join("\n") +
+              `\n\n`;
+        const foldersSection =
+          extraMounts.length === 0
+            ? ""
+            : `Project folders from the user's machine:\n\n` +
+              extraMounts
+                .map((mount) =>
+                  mount.readOnly
+                    ? `- ${mount.mountPath} (read-only)`
+                    : `- ${mount.mountPath} (read-write — writes land on the ` +
+                      `user's folder directly and are not part of the reviewed change)`,
+                )
+                .join("\n") +
+              `\n\n`;
+        const declaredRecipes = mergeRecipes(
+          yield* readServiceRecipes(worktree).pipe(Effect.orElseSucceed(() => [])),
+          yield* projectRecipes.listForProject(project.id).pipe(Effect.orElseSucceed(() => [])),
+        );
+        const recipesLine =
+          declaredRecipes.length === 0
+            ? ""
+            : `Declared Services (mend.toml + project): ` +
+              declaredRecipes.map((recipe) => recipe.name).join(", ") +
+              ` — start one with \`mend service run <name>\`.\n\n`;
+        const servicesSection =
+          `## Mend Services\n\n` +
+          `For any long-running server (dev server, database), use ` +
+          `\`mend service run --port <port> [--name <n>] -- <command...>\` — it runs the ` +
+          `command supervised in this workspace, waits for the port, and makes it reachable ` +
+          `from the user's own machine. NEVER background a server inside a tool call. ` +
+          `\`mend service add <port>\` adopts something already listening; ` +
+          `\`mend service list\` shows what runs.\n\n` +
+          recipesLine;
+        const note =
+          `\n<!-- mend:mounts -->\n## Mend mounts\n\nMounted beside the repo:\n\n` +
+          referencesSection +
+          foldersSection +
+          `\n` +
+          servicesSection;
+        yield* sealant
+          .exec(workspace, [
+            "sh",
+            "-c",
+            `mkdir -p "$HOME/.claude" "$HOME/.codex"; ` +
+              `for f in "$HOME/.claude/CLAUDE.md" "$HOME/.codex/AGENTS.md"; do ` +
+              `grep -Eq "mend:(mounts|references)" "$f" 2>/dev/null || printf '%s' "$1" >> "$f"; done`,
+            "sh",
+            note,
+          ])
+          .pipe(Effect.ignore);
+      });
+
+      /**
+       * Try to adopt a claimed hot workspace for the session that owns its id. Null means the
+       * entry was unusable (dead container, half-stamped row): it is drained — keeping the
+       * worktree, which the session now owns — and the caller falls through to the cold path.
+       */
+      const adoptClaimedWorkspace = Effect.fn("SessionEngine.adoptClaimedWorkspace")(function* (
+        entry: HotWorkspace,
+      ) {
+        const unusable = () =>
+          drainHotWorkspace(entry, { keepWorktree: true }).pipe(Effect.as(null));
+        if (
+          entry.sealantWorkspaceId === null ||
+          entry.workspaceImage === null ||
+          entry.environment === null
+        ) {
+          return yield* unusable();
+        }
+        const workspaceId = entry.sealantWorkspaceId;
+        const live = yield* Effect.gen(function* () {
+          const workspace = yield* sealant.getWorkspace(workspaceId);
+          const status = yield* Effect.promise(() => workspace.status());
+          return status === "queued" || status === "running" || status === "ready"
+            ? workspace
+            : null;
+        }).pipe(
+          Effect.catch(() => Effect.succeed(null)),
+          Effect.catchDefect(() => Effect.succeed(null)),
+        );
+        if (live === null) {
+          yield* Effect.logWarning(
+            "session engine: claimed hot workspace was dead — cold launch",
+          ).pipe(Effect.annotateLogs({ sessionId: entry.id, workspaceId }));
+          return yield* unusable();
+        }
+        return {
+          workspace: live,
+          workspaceImage: entry.workspaceImage,
+          dotfiles: entry.dotfiles ?? { repository: null, snapshotSha: null },
+          environmentManifest: entry.environment,
+          referenceMounts: entry.referenceMounts,
+          extraMounts: entry.extraMounts,
+        };
+      });
+
+      const launchInternal = Effect.fn("SessionEngine.launchInternal")(function* (
+        sessionId: SessionId,
+        argv: ReadonlyArray<string>,
+        nativeImport: ConvertedNativeSession | null,
+        manifestOverride?: HarnessStateManifest | null,
+      ) {
+        const session = yield* sessions.byId(sessionId);
+        const project = yield* projects.byId(session.projectId);
+        const worktree = worktreePathOf(project.storePath, session.worktree);
+        // A bash launch (shell session, shell resume) is an open workbench:
+        // shape by what actually launches, not the session's harness identity.
+        const shape = platformShape(argv[0] === "bash" ? "shell" : session.harness);
+        const stateDir = sessionStatePathOf(project.storePath, session.id);
+        // An explicit null skips both the read and the restore (a shell
+        // resume tolerates a session that never harvested state).
+        const manifest =
+          manifestOverride !== undefined
+            ? manifestOverride
+            : yield* readHarnessStateManifest(stateDir, session.id).pipe(
+                Effect.catchTag("HarnessStateNotFoundError", (error) =>
+                  session.sealantRunId === null ? Effect.succeed(null) : Effect.fail(error),
+                ),
+              );
+        // The in-workspace control surface: the session's socket + helper,
+        // bound BEFORE the workspace exists so the mount can carry it. For a
+        // claimed hot workspace the dir already exists — re-binding re-arms
+        // the api without touching the running container's mount.
+        const socketDir = yield* socketHost.start(sessionId, socketApiFor(sessionId));
+        // A failed provision settles the session — fire-and-forget launchers
+        // (the web) must never strand a row in "starting" with no error.
+        const settleOnFailure = <A>(effect: Effect.Effect<A, SealantPlatformError>) =>
+          effect.pipe(
+            Effect.tapError((error) =>
+              sessions
+                .settle(sessionId, "failed", `launch failed: ${error.message}`)
+                .pipe(Effect.ignore),
+            ),
+          );
+        // A relaunch is about to overwrite the row's workspace pointer; stop
+        // the previous workspace first or it becomes unaddressable and leaks
+        // until the platform TTL. Forced: leases cannot hold a workspace that
+        // is being replaced.
+        if (session.sealantWorkspaceId !== null) {
+          yield* stopWorkspaceQuietly(sessionId, { force: true });
+        }
+        // Dotfiles are the OWNER's: the account stamped at provision; sessions from before
+        // ownership existed fall back to the instance's first account (the static-token
+        // semantics).
+        const ownerUserId = session.ownerUserId ?? (yield* userDotfilesRepo.firstUserId());
+        // A brand-new session may have claimed a hot workspace at provision — the
+        // pre-provisioned skeleton whose id this session adopted. Adopt its live workspace and
+        // skip the create entirely; a dead or half-stamped entry drains (keeping the worktree,
+        // which the session owns) and the launch falls through to the cold path.
+        const claimedEntry =
+          manifest === null && nativeImport === null ? yield* hotWorkspaces.byId(sessionId) : null;
+        const adopted =
+          claimedEntry !== null && claimedEntry.status === "claimed"
+            ? yield* adoptClaimedWorkspace(claimedEntry)
+            : null;
+        const provisioned =
+          adopted ??
+          (yield* provisionWorkspace({
+            project,
+            sessionId,
+            worktree,
+            socketDir,
+            shape,
+            ownerUserId,
+            onFailure: (message) =>
+              sessions.settle(sessionId, "failed", `launch failed: ${message}`).pipe(Effect.ignore),
+          }));
+        const { workspace, workspaceImage, environmentManifest } = provisioned;
+        yield* sessions.setWorkspaceImage(sessionId, workspaceImage);
+        // Stamped alongside the image: what this session ACTUALLY launched with — the repo
+        // url+ref that was cloned and the exact snapshot sha the store packed (for a hot
+        // workspace: whatever the prewarm actually applied).
+        yield* sessions.setDotfiles(sessionId, provisioned.dotfiles);
 
         // A relaunch restores the ORIGINAL harness's saved state into the
         // fresh workspace before anything starts — for a same-harness launch
@@ -1433,109 +1663,22 @@ export class SessionEngine extends Context.Service<
           }
         }
 
-        if (selectedReferences.length > 0) {
-          yield* sessions.setReferenceMounts(
-            sessionId,
-            selectedReferences.map(
-              (reference) =>
-                new SessionReferenceMount({
-                  name: reference.name,
-                  mountPath: `/workspace/ref/${reference.name}`,
-                  sha: reference.headSha,
-                }),
-            ),
-          );
+        if (provisioned.referenceMounts.length > 0) {
+          yield* sessions.setReferenceMounts(sessionId, provisioned.referenceMounts);
         }
-        if (declaredMounts.length > 0) {
-          yield* sessions.setExtraMounts(
-            sessionId,
-            declaredMounts.map(
-              (mount) =>
-                new SessionExtraMount({
-                  name: mount.name,
-                  hostPath: mount.hostPath,
-                  mountPath: `/workspace/home/${mount.name}`,
-                  readOnly: mount.readOnly,
-                }),
-            ),
-          );
+        if (provisioned.extraMounts.length > 0) {
+          yield* sessions.setExtraMounts(sessionId, provisioned.extraMounts);
         }
-        // The helper reaches everyone through PATH, not prompt engineering.
-        // Git's ssh becomes the transport shim the same way: system config, so
-        // every process in the workspace — agent, shell, service — pushes and
-        // fetches through the host with zero credentials in the container.
-        // ssh.variant=ssh keeps ports and protocol v2 working through it.
-        yield* sealant
-          .exec(workspace, [
-            "sh",
-            "-c",
-            `ln -sf ${SESSION_SOCKET_MOUNT_PATH}/bin/mend /usr/local/bin/mend; ` +
-              `git config --system core.sshCommand ${SESSION_SOCKET_MOUNT_PATH}/bin/mend-git-ssh; ` +
-              `git config --system ssh.variant ssh`,
-          ])
-          .pipe(Effect.ignore);
-        {
-          // Tell the harness the mounts exist — appended to its global memory
-          // file in the workspace $HOME (never the worktree: the note is not
-          // review content). After state restore, which rewrites $HOME.
-          const referencesSection =
-            selectedReferences.length === 0
-              ? ""
-              : `Read-only clones of dependency sources — read the actual source here ` +
-                `before guessing a dependency's API:\n\n` +
-                selectedReferences
-                  .map((reference) => `- /workspace/ref/${reference.name}`)
-                  .join("\n") +
-                `\n\n`;
-          const foldersSection =
-            declaredMounts.length === 0
-              ? ""
-              : `Project folders from the user's machine:\n\n` +
-                declaredMounts
-                  .map((mount) =>
-                    mount.readOnly
-                      ? `- /workspace/home/${mount.name} (read-only)`
-                      : `- /workspace/home/${mount.name} (read-write — writes land on the ` +
-                        `user's folder directly and are not part of the reviewed change)`,
-                  )
-                  .join("\n") +
-                `\n\n`;
-          const declaredRecipes = mergeRecipes(
-            yield* readServiceRecipes(worktree).pipe(Effect.orElseSucceed(() => [])),
-            yield* projectRecipes.listForProject(project.id).pipe(Effect.orElseSucceed(() => [])),
+        // The mounts note lands after state restore (which rewrites $HOME); a hot workspace
+        // already carries it from prewarm.
+        if (adopted === null) {
+          yield* appendWorkspaceNote(
+            workspace,
+            project,
+            worktree,
+            provisioned.referenceMounts,
+            provisioned.extraMounts,
           );
-          const recipesLine =
-            declaredRecipes.length === 0
-              ? ""
-              : `Declared Services (mend.toml + project): ` +
-                declaredRecipes.map((recipe) => recipe.name).join(", ") +
-                ` — start one with \`mend service run <name>\`.\n\n`;
-          const servicesSection =
-            `## Mend Services\n\n` +
-            `For any long-running server (dev server, database), use ` +
-            `\`mend service run --port <port> [--name <n>] -- <command...>\` — it runs the ` +
-            `command supervised in this workspace, waits for the port, and makes it reachable ` +
-            `from the user's own machine. NEVER background a server inside a tool call. ` +
-            `\`mend service add <port>\` adopts something already listening; ` +
-            `\`mend service list\` shows what runs.\n\n` +
-            recipesLine;
-          const note =
-            `\n<!-- mend:mounts -->\n## Mend mounts\n\nMounted beside the repo:\n\n` +
-            referencesSection +
-            foldersSection +
-            `\n` +
-            servicesSection;
-          yield* sealant
-            .exec(workspace, [
-              "sh",
-              "-c",
-              `mkdir -p "$HOME/.claude" "$HOME/.codex"; ` +
-                `for f in "$HOME/.claude/CLAUDE.md" "$HOME/.codex/AGENTS.md"; do ` +
-                `grep -Eq "mend:(mounts|references)" "$f" 2>/dev/null || printf '%s' "$1" >> "$f"; done`,
-              "sh",
-              note,
-            ])
-            .pipe(Effect.ignore);
         }
 
         const pty = yield* sealant
@@ -1561,6 +1704,11 @@ export class SessionEngine extends Context.Service<
           SealantWorkspaceId.make(workspace.id),
         );
         yield* sessions.setSealantSessionId(sessionId, pty.id);
+        // The skeleton is consumed: the session row now owns the workspace,
+        // worktree, and socket, and the pool entry has nothing left to say.
+        if (adopted !== null) {
+          yield* hotWorkspaces.remove(sessionId);
+        }
         // The plural record: the agent is one process in this workspace, not
         // its owner. The singular pointer above stays as the legacy attach
         // handle while clients migrate to process addressing.
@@ -2270,6 +2418,325 @@ ${tail}`),
         return stopped ?? serviceProcess;
       });
 
+      // -----------------------------------------------------------------------------------------
+      // Hot sessions — the per-project pool of pre-provisioned session skeletons. A skeleton is a
+      // pre-generated session id, its worktree, its socket dir, and a live workspace mounting
+      // them; `provision` claims one so the launch skips straight to opening the PTY.
+      // -----------------------------------------------------------------------------------------
+
+      /** Re-armed on every reconcile so the platform reaper leaves ready entries alone. */
+      const HOT_WORKSPACE_TTL = "12h";
+
+      /** The create-time-fixed inputs as the project resolves them RIGHT NOW for `ownerUserId`. */
+      const hotInputsFor = Effect.fn("SessionEngine.hotInputsFor")(function* (
+        project: Project,
+        ownerUserId: string | null,
+      ) {
+        const settings = yield* settingsRepo.get();
+        const workspaceImage = project.workspaceImage ?? settings.workspaceImage;
+        const dotfilesEnabled =
+          project.applyDotfiles && workspaceImage.mode !== "custom" && ownerUserId !== null;
+        const repository =
+          dotfilesEnabled && ownerUserId !== null
+            ? yield* userDotfilesRepo.repository(ownerUserId)
+            : null;
+        // The store snapshot is fingerprinted by its head commit (cheap); the cloned repository
+        // only by url+ref — its content is never pinned, so a push between reconciles rides
+        // until the next drain. Cold launches always clone fresh.
+        const snapshot =
+          dotfilesEnabled && ownerUserId !== null
+            ? yield* dotfilesStore.current(ownerUserId).pipe(Effect.orElseSucceed(() => null))
+            : null;
+        const environment = yield* projectEnvironment.snapshot(project.id);
+        const secrets = yield* projectSecrets.snapshot(project.id);
+        const selectedReferences = yield* references
+          .listForProject(project.id)
+          .pipe(Effect.orElseSucceed(() => []));
+        const declaredMounts = yield* projectMounts
+          .listForProject(project.id)
+          .pipe(Effect.orElseSucceed(() => []));
+        const inputs: HotFingerprintInputs = {
+          workspaceImage,
+          applyDotfiles: project.applyDotfiles,
+          dotfiles: {
+            repository: repository === null ? null : { url: repository.url, ref: repository.ref },
+            snapshotSha: snapshot?.sha ?? null,
+          },
+          environmentRevision: environment.revision,
+          secretRevision: secrets.revision,
+          references: selectedReferences.map((r) => ({ name: r.name, path: r.path })),
+          mounts: declaredMounts.map((m) => ({
+            name: m.name,
+            hostPath: m.hostPath,
+            readOnly: m.readOnly,
+          })),
+        };
+        return inputs;
+      });
+
+      /**
+       * Tear a pool entry down. `keepWorktree` is the claim/adopt path: the session now owns the
+       * worktree and socket dir, so only the row (and a dead workspace) go.
+       */
+      const drainHotWorkspace = Effect.fn("SessionEngine.drainHotWorkspace")(function* (
+        entry: HotWorkspace,
+        options?: { readonly keepWorktree?: boolean },
+      ) {
+        if (entry.sealantWorkspaceId !== null) {
+          yield* sealant.getWorkspace(entry.sealantWorkspaceId).pipe(
+            Effect.flatMap((workspace) => sealant.stopWorkspace(workspace)),
+            Effect.ignore,
+          );
+        }
+        if (options?.keepWorktree !== true) {
+          yield* socketHost.stop(entry.id).pipe(Effect.ignore);
+          yield* projects.byId(entry.projectId).pipe(
+            Effect.flatMap((project) =>
+              store.removeWorktreeForce(project.storePath, entry.worktree),
+            ),
+            Effect.ignore,
+          );
+        }
+        yield* hotWorkspaces.remove(entry.id);
+      });
+
+      /** Provision one skeleton: worktree → row → socket → workspace → prewarm note → ready. */
+      const provisionHotWorkspace = Effect.fn("SessionEngine.provisionHotWorkspace")(function* (
+        project: Project,
+        ownerUserId: string | null,
+        fingerprint: string,
+      ) {
+        const sessionId = SessionId.make(crypto.randomUUID());
+        const worktree = yield* store.createWorktree(project.storePath, sessionId, null);
+        const entry = yield* hotWorkspaces.create({
+          id: sessionId,
+          projectId: project.id,
+          ownerUserId,
+          fingerprint,
+          worktree: worktree.name,
+          branch: worktree.branch,
+          baseSha: worktree.baseSha,
+        });
+        const socketDir = yield* socketHost.start(sessionId, socketApiFor(sessionId));
+        const provisionAttempt = Effect.gen(function* () {
+          const provisioned = yield* provisionWorkspace({
+            project,
+            sessionId,
+            worktree: worktree.path,
+            socketDir,
+            // The unified image carries EVERY baked agent CLI and the shell shape's credential
+            // ladder attaches all connected accounts, so one skeleton serves any harness.
+            shape: platformShape("shell"),
+            ownerUserId,
+            onFailure: (message) => hotWorkspaces.setFailed(sessionId, message),
+          });
+          yield* appendWorkspaceNote(
+            provisioned.workspace,
+            project,
+            worktree.path,
+            provisioned.referenceMounts,
+            provisioned.extraMounts,
+          );
+          yield* hotWorkspaces.setReady(sessionId, {
+            sealantWorkspaceId: SealantWorkspaceId.make(provisioned.workspace.id),
+            workspaceImage: provisioned.workspaceImage,
+            dotfiles: provisioned.dotfiles,
+            environment: provisioned.environmentManifest,
+            referenceMounts: provisioned.referenceMounts,
+            extraMounts: provisioned.extraMounts,
+          });
+          return true;
+        });
+        return yield* provisionAttempt.pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("session engine: hot workspace provision failed").pipe(
+              Effect.annotateLogs({
+                projectId: project.id,
+                hotWorkspaceId: entry.id,
+                error: String(error),
+              }),
+              Effect.as(false),
+            ),
+          ),
+        );
+      });
+
+      /** One reconcile pass; callers serialize through `requestHotReconcile`. */
+      const reconcileHotPoolOnce = Effect.fn("SessionEngine.reconcileHotPoolOnce")(function* (
+        projectId: ProjectId,
+      ) {
+        const project = yield* projects
+          .byId(projectId)
+          .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
+        const entries = yield* hotWorkspaces.listForProject(projectId);
+        if (project === null) {
+          for (const entry of entries) yield* drainHotWorkspace(entry);
+          return;
+        }
+        const ownerUserId = yield* userDotfilesRepo.firstUserId();
+        const inputs = yield* hotInputsFor(project, ownerUserId).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("session engine: hot pool inputs unreadable").pipe(
+              Effect.annotateLogs({ projectId, error: String(error) }),
+              Effect.as(null),
+            ),
+          ),
+        );
+        if (inputs === null) return;
+        const fingerprint = hotFingerprint(inputs);
+        const target = Math.max(0, project.hotSessions);
+        const survivors: Array<HotWorkspace> = [];
+        for (const entry of entries) {
+          // Claimed entries belong to a launch in flight; the boot sweep reaps abandoned ones.
+          if (entry.status === "claimed") continue;
+          if (
+            entry.status === "ready" &&
+            entry.fingerprint === fingerprint &&
+            survivors.length < target
+          ) {
+            survivors.push(entry);
+            continue;
+          }
+          // warming = a crashed provision (this pass is the only live one), failed = retry by
+          // rebuild, stale fingerprint or over-target = drain.
+          yield* drainHotWorkspace(entry);
+        }
+        // Probe survivors and keep the platform reaper away; a dead one drains instead.
+        let count = 0;
+        for (const entry of survivors) {
+          const workspaceId = entry.sealantWorkspaceId;
+          const alive =
+            workspaceId === null
+              ? false
+              : yield* sealant.getWorkspace(workspaceId).pipe(
+                  Effect.flatMap((workspace) =>
+                    Effect.promise(() => workspace.status()).pipe(
+                      Effect.tap((status) =>
+                        workspaceIsLive(status)
+                          ? sealant
+                              .expireWorkspace(workspace, HOT_WORKSPACE_TTL)
+                              .pipe(Effect.ignore)
+                          : Effect.void,
+                      ),
+                      Effect.map(workspaceIsLive),
+                    ),
+                  ),
+                  Effect.catch(() => Effect.succeed(false)),
+                  Effect.catchDefect(() => Effect.succeed(false)),
+                );
+          if (alive) count += 1;
+          else yield* drainHotWorkspace(entry);
+        }
+        while (count < target) {
+          const provisioned = yield* provisionHotWorkspace(project, ownerUserId, fingerprint);
+          // A failure leaves its row `failed` for the setup page; the next trigger retries.
+          if (!provisioned) break;
+          count += 1;
+        }
+      });
+
+      /**
+       * Coalesced per-project scheduling: at most one reconcile runs per project, and a trigger
+       * landing mid-run re-runs it once more instead of stacking fibers.
+       */
+      const hotReconcileStates = new Map<ProjectId, { again: boolean }>();
+      const requestHotReconcile = Effect.fn("SessionEngine.requestHotReconcile")(function* (
+        projectId: ProjectId,
+      ) {
+        const running = hotReconcileStates.get(projectId);
+        if (running !== undefined) {
+          running.again = true;
+          return;
+        }
+        const state = { again: false };
+        hotReconcileStates.set(projectId, state);
+        const loop = Effect.gen(function* () {
+          for (;;) {
+            yield* reconcileHotPoolOnce(projectId).pipe(
+              Effect.catchDefect((defect) =>
+                Effect.logWarning("session engine: hot pool reconcile died").pipe(
+                  Effect.annotateLogs({ projectId, defect: String(defect) }),
+                ),
+              ),
+            );
+            if (!state.again) return;
+            state.again = false;
+          }
+        }).pipe(Effect.ensuring(Effect.sync(() => hotReconcileStates.delete(projectId))));
+        yield* Effect.forkIn(loop, scope);
+      });
+
+      /**
+       * Adopt a ready skeleton for a new session: atomically pop a fingerprint-matching entry,
+       * freshen its worktree to the requested base (a bind mount — the running container sees
+       * the reset immediately), and create the session row under the POOLED id, which the
+       * worktree, branch, and socket dir already carry. Null falls back to the cold path.
+       */
+      const claimHotSession = Effect.fn("SessionEngine.claimHotSession")(function* (
+        project: Project,
+        input: ProvisionInput,
+      ) {
+        const ownerUserId = input.ownerUserId ?? (yield* userDotfilesRepo.firstUserId());
+        const inputs = yield* hotInputsFor(project, ownerUserId);
+        const entry = yield* hotWorkspaces.claim(project.id, hotFingerprint(inputs));
+        if (entry === null) return null;
+        // The replacement warms in the background while this session launches.
+        yield* requestHotReconcile(project.id);
+        const freshened = yield* store
+          .resetWorktree(project.storePath, entry.worktree, input.base)
+          .pipe(Effect.tapError(() => drainHotWorkspace(entry)));
+        const session = yield* sessions.create({
+          id: entry.id,
+          projectId: project.id,
+          harness: input.harness,
+          label: input.label,
+          ownerUserId: input.ownerUserId,
+          worktree: entry.worktree,
+          branch: entry.branch,
+          baseSha: freshened.baseSha,
+          contextSnapshotId: null,
+        });
+        yield* tryCheckpoint(session, "session-start", { sealantRunId: null, sequence: 0n });
+        yield* changes.ensureForSession(project.id, session.id, entry.branch, freshened.baseSha);
+        return session;
+      });
+
+      /**
+       * Boot-and-heartbeat pass: abandoned claims and dead entries drain, live ready entries get
+       * their socket re-bound (deterministic dir — the running container's mount comes back to
+       * life untouched), and every project with a target or leftovers reconciles. Doubles as the
+       * TTL-refresh heartbeat every 10 minutes.
+       */
+      const hotPoolSweep = Effect.fn("SessionEngine.hotPoolSweep")(function* () {
+        const entries = yield* hotWorkspaces.listAll();
+        const projectIds = new Set<ProjectId>();
+        for (const entry of entries) {
+          projectIds.add(entry.projectId);
+          if (entry.status === "claimed") {
+            // A claim whose session died before launch consumed it: the settled (or missing)
+            // session tells the abandoned claim from one still launching.
+            const session = yield* sessions
+              .byId(entry.id)
+              .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+            if (session === null) yield* drainHotWorkspace(entry);
+            else if (session.settledAt !== null) {
+              yield* drainHotWorkspace(entry, { keepWorktree: true });
+            }
+            continue;
+          }
+          if (entry.status === "ready") {
+            yield* socketHost.start(entry.id, socketApiFor(entry.id)).pipe(Effect.ignore);
+          }
+        }
+        const allProjects = yield* projects.list();
+        for (const project of allProjects) {
+          if (project.hotSessions > 0) projectIds.add(project.id);
+        }
+        for (const projectId of projectIds) {
+          yield* requestHotReconcile(projectId);
+        }
+      });
+
       /** Re-attach to sessions that were live when the last process died. */
       const resume = Effect.fn("SessionEngine.resume")(function* () {
         const activeRuns = yield* sessionRuns.listActive();
@@ -2385,6 +2852,19 @@ ${tail}`),
 
       yield* resume();
       yield* Effect.forkIn(sweepLeftovers(), scope);
+      // The pool's boot pass runs after `resume` has settled stranded sessions (so abandoned
+      // claims read as settled), then repeats as the TTL-refresh heartbeat.
+      yield* Effect.forkIn(
+        hotPoolSweep().pipe(
+          Effect.catchDefect((defect) =>
+            Effect.logWarning("session engine: hot pool sweep died").pipe(
+              Effect.annotateLogs({ defect: String(defect) }),
+            ),
+          ),
+          Effect.repeat(Schedule.spaced(Duration.minutes(10))),
+        ),
+        scope,
+      );
 
       const launch = (sessionId: SessionId, argv: ReadonlyArray<string>) =>
         launchInternal(sessionId, argv, null);
@@ -2393,6 +2873,7 @@ ${tail}`),
         provision,
         attachRun,
         launch,
+        reconcileHotSessions: requestHotReconcile,
         checkpointNow,
         stop,
         openShell,
