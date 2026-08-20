@@ -68,6 +68,7 @@ interface DotfilesDto {
   readonly repository: {
     readonly url: string;
     readonly ref: string | null;
+    readonly subdirectory: string | null;
     readonly bootstrap: boolean;
   } | null;
   readonly snapshot: {
@@ -1313,8 +1314,12 @@ const dotfilesShow = async (config: CliConfig) => {
     say(`repo      ${dim("none")}`);
   } else {
     const branch = dotfiles.repository.ref ?? "default branch";
+    const subdir =
+      dotfiles.repository.subdirectory === null ? [] : [`${dotfiles.repository.subdirectory}/`];
     const bootstrap = dotfiles.repository.bootstrap ? "install.sh on" : "install.sh off";
-    say(`repo      ${dotfiles.repository.url} ${dim(`(${branch} · ${bootstrap})`)}`);
+    say(
+      `repo      ${dotfiles.repository.url} ${dim(`(${[branch, ...subdir, bootstrap].join(" · ")})`)}`,
+    );
   }
   if (dotfiles.snapshot === null) {
     say(`snapshot  ${dim("none — sync from this machine: mend dotfiles sync --all")}`);
