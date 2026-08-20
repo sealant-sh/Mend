@@ -5,6 +5,7 @@ import { useReducer, useRef, useState } from "react";
 import {
   DotfilesSection,
   GitAccessSection,
+  HotSessionsSection,
   MountsSection,
   ReferencesSection,
   RemoveProjectSection,
@@ -133,6 +134,7 @@ function ProjectSetupPage() {
           <MountsSection projectId={projectId} />
           <ServicesSection projectId={projectId} />
           <DotfilesSection project={project} />
+          <HotSessionsSection project={project} />
           <GitAccessSection project={project} />
           <ReviewAutomationSection project={project} />
           <RemoveProjectSection projectId={projectId} />

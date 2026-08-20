@@ -49,6 +49,8 @@ import type {
   CommentAuthor,
   CommentKind,
   CommentState,
+  HotWorkspaceEnvironment,
+  HotWorkspaceStatus,
   PassKind,
   PassStatus,
   RecordLink,
@@ -226,9 +228,50 @@ export const projects = pgTable("projects", {
   environmentRevision: integer().notNull().default(0),
   // Same discipline for the Secrets set.
   secretRevision: integer().notNull().default(0),
+  // How many hot workspaces to keep ready for new sessions (0 = none).
+  hotSessions: integer().notNull().default(0),
   createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * Pre-provisioned session skeletons kept ready for instant session starts. `id` is the session id
+ * the claiming session adopts; the worktree, branch, and session socket dir all derive from it.
+ * Claimable only while `fingerprint` (a hash of every create-time-fixed workspace input) still
+ * matches the project's current configuration.
+ */
+export const hotWorkspaces = pgTable(
+  "hot_workspaces",
+  {
+    id: text().$type<SessionId>().primaryKey(),
+    projectId: text()
+      .$type<ProjectId>()
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    ownerUserId: text(),
+    status: text().$type<HotWorkspaceStatus>().notNull().default("warming"),
+    error: text(),
+    fingerprint: text().notNull(),
+    worktree: text().notNull(),
+    branch: text().notNull(),
+    baseSha: text().$type<Sha>().notNull(),
+    sealantWorkspaceId: text().$type<SealantWorkspaceId>(),
+    workspaceImage: jsonb().$type<typeof WorkspaceImage.Encoded>(),
+    dotfiles: jsonb().$type<typeof SessionDotfiles.Encoded>(),
+    environment: jsonb().$type<typeof HotWorkspaceEnvironment.Encoded>(),
+    referenceMounts: jsonb()
+      .$type<ReadonlyArray<SessionReferenceMount>>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    extraMounts: jsonb()
+      .$type<ReadonlyArray<SessionExtraMount>>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("hot_workspaces_project_status_idx").on(table.projectId, table.status)],
+);
 
 /**
  * Per-user dotfiles configuration — the repository knob only. Snapshot CONTENT lives in the

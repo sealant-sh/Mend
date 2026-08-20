@@ -61,6 +61,12 @@ export class Project extends Schema.Class<Project>("Project")({
    * "does this project want them applied".
    */
   applyDotfiles: Schema.Boolean,
+  /**
+   * How many hot workspaces to keep ready for new sessions (0 = none). Each is a fully
+   * pre-provisioned worktree + live workspace a new session claims at start, so the attach is
+   * effectively instant. Explicit resource intent: N ready containers per project.
+   */
+  hotSessions: Schema.Number,
   createdAt: Schema.Date,
   updatedAt: Schema.Date,
 }) {}

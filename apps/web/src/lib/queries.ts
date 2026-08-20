@@ -18,6 +18,7 @@ import {
   listReferences,
   pendingFollowUp,
   projectDetail,
+  projectHotSessionsStatus,
   projectMounts,
   projectRecipes,
   projectReferences,
@@ -97,6 +98,14 @@ export const projectRecipesQuery = (id: string) =>
   queryOptions({
     queryKey: ["project", id, "service-recipes"],
     queryFn: () => projectRecipes(id),
+  });
+
+/** Pool state moves as containers warm — poll while the section is on screen. */
+export const projectHotSessionsQuery = (id: string) =>
+  queryOptions({
+    queryKey: ["project", id, "hot-sessions"],
+    queryFn: () => projectHotSessionsStatus(id),
+    refetchInterval: 5_000,
   });
 
 /** The shell's MACHINE block — a tailnet interface can come and go, so re-observe slowly. */

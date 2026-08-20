@@ -16,6 +16,7 @@ import {
   setProjectAutomation,
   setProjectApplyDotfiles,
   setProjectGitAuth,
+  setProjectHotSessions,
   type AutomationChoiceDto,
   type GitAuthModeDto,
   type ProjectDto,
@@ -23,6 +24,7 @@ import {
 import {
   gitBridgeQuery,
   gitKeyQuery,
+  projectHotSessionsQuery,
   projectMountsQuery,
   projectRecipesQuery,
   projectReferencesQuery,
@@ -210,6 +212,91 @@ export function DotfilesSection({ project }: { readonly project: ProjectDto }) {
         </div>
       )}
       {error === null ? null : <p className="mt-2 text-xs leading-relaxed text-danger">{error}</p>}
+    </section>
+  );
+}
+
+/**
+ * Hot sessions: how many pre-provisioned workspaces this project keeps ready. A new session
+ * claims one and attaches immediately instead of waiting for a container to build and boot.
+ * Each ready workspace is a live container on this machine — the count is explicit resource
+ * intent. The pool drains and rewarms itself when the image, variables, secrets, references,
+ * mounts, or dotfiles change.
+ */
+export function HotSessionsSection({ project }: { readonly project: ProjectDto }) {
+  const status = useQuery(projectHotSessionsQuery(project.id));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = (hotSessions: number) => {
+    if (busy || hotSessions < 0 || hotSessions > 8 || hotSessions === project.hotSessions) return;
+    setBusy(true);
+    setError(null);
+    void setProjectHotSessions(project.id, hotSessions)
+      .then(() =>
+        Promise.all([
+          queryClient.invalidateQueries({ queryKey: ["project", project.id] }),
+          queryClient.invalidateQueries({ queryKey: ["project", project.id, "hot-sessions"] }),
+        ]),
+      )
+      .catch((cause: unknown) =>
+        setError(cause instanceof Error ? cause.message : "Could not save the hot-sessions count."),
+      )
+      .finally(() => setBusy(false));
+  };
+
+  const observed = status.data;
+  const parts: Array<string> = [];
+  if (observed !== undefined) {
+    if (observed.ready > 0) parts.push(`${observed.ready} ready`);
+    if (observed.warming > 0) parts.push(`${observed.warming} warming`);
+    if (observed.failed > 0) parts.push(`${observed.failed} failed`);
+  }
+  const statusLine =
+    parts.length > 0 ? parts.join(" · ") : project.hotSessions === 0 ? "off" : "none ready yet";
+
+  return (
+    <section id="hot-sessions" className="scroll-mt-6">
+      <p className="border-b border-rule pb-2 text-xs font-medium text-label">Hot sessions</p>
+      <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
+        Workspaces kept ready for new sessions — a new session claims one and attaches immediately.
+        Each ready workspace is a live container on this machine; the pool rebuilds when the image,
+        variables, secrets, references, mounts, or dotfiles change.
+      </p>
+      <div className="mt-3 flex items-center justify-between gap-3">
+        <p className="min-w-0 font-mono text-xs text-ink-2">{statusLine}</p>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <button
+            type="button"
+            disabled={busy || project.hotSessions === 0}
+            onClick={() => save(project.hotSessions - 1)}
+            aria-label="Keep one fewer workspace ready"
+            className="h-[26px] rounded-lg border border-border bg-card px-2 font-mono text-xs text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40"
+          >
+            −
+          </button>
+          <span className="min-w-5 text-center font-mono text-xs text-foreground">
+            {project.hotSessions}
+          </span>
+          <button
+            type="button"
+            disabled={busy || project.hotSessions >= 8}
+            onClick={() => save(project.hotSessions + 1)}
+            aria-label="Keep one more workspace ready"
+            className="h-[26px] rounded-lg border border-border bg-card px-2 font-mono text-xs text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40"
+          >
+            +
+          </button>
+        </div>
+      </div>
+      {observed?.error != null && (
+        <p className="mt-2 border-l-2 border-[var(--sw-red)] pl-2 font-mono text-xs text-danger">
+          warming failed · {observed.error}
+        </p>
+      )}
+      {error !== null && (
+        <p className="mt-2 border-l-2 border-[var(--sw-red)] pl-2 text-xs text-danger">{error}</p>
+      )}
     </section>
   );
 }

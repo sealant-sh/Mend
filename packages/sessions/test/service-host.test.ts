@@ -91,6 +91,7 @@ const sealantFakeLayer = Layer.succeed(SealantClient, {
   openSession: () => Effect.die("not in test"),
   forward: (workspace, port) => Effect.promise(() => workspace.forward(port)),
   stopWorkspace: () => Effect.die("not in test"),
+  expireWorkspace: () => Effect.die("not in test"),
   getSession: () => Effect.die("not in test"),
   exec: () => Effect.die("not in test"),
   diffCommits: () => Effect.die("not in test"),

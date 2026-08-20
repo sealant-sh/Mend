@@ -109,6 +109,11 @@ export class SealantClient extends Context.Service<
     /** Reattach to a PTY session by id — works from any workspace handle. */
     /** Stop the workspace: remove its container, settle it "stopped". */
     readonly stopWorkspace: (workspace: Workspace) => Effect.Effect<void, SealantPlatformError>;
+    /** Re-arm the workspace's TTL (`in` like `"12h"`) so the platform reaper leaves it alone. */
+    readonly expireWorkspace: (
+      workspace: Workspace,
+      inDuration: string,
+    ) => Effect.Effect<void, SealantPlatformError>;
     readonly getSession: (
       workspace: Workspace,
       sessionId: string,
@@ -262,6 +267,11 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantEnv> = 
 
     const stopWorkspace = Effect.fn("SealantClient.stopWorkspace")((workspace: Workspace) =>
       wrap(() => workspace.stop()),
+    );
+
+    const expireWorkspace = Effect.fn("SealantClient.expireWorkspace")(
+      (workspace: Workspace, inDuration: string) =>
+        wrap(() => workspace.expire({ in: inDuration })),
     );
 
     const getSession = Effect.fn("SealantClient.getSession")(
@@ -457,6 +467,7 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantEnv> = 
       openSession,
       forward,
       stopWorkspace,
+      expireWorkspace,
       getSession,
       exec,
       diffCommits,

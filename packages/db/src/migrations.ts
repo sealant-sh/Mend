@@ -740,6 +740,41 @@ const projectSecretsMigration = Effect.gen(function* () {
     ALTER TABLE session_runs ADD COLUMN IF NOT EXISTS secret_names jsonb`;
 });
 
+/**
+ * Hot sessions: a per-project count of pre-provisioned session skeletons (worktree + live
+ * workspace keyed by a pre-generated session id) claimable at session start, plus the pool table
+ * itself. `fingerprint` hashes every create-time-fixed workspace input; a claim requires an exact
+ * match, and the reconciler drains mismatched entries.
+ */
+const hotSessions = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE projects ADD COLUMN IF NOT EXISTS hot_sessions integer NOT NULL DEFAULT 0`;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS hot_workspaces (
+      id text PRIMARY KEY,
+      project_id text NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+      owner_user_id text,
+      status text NOT NULL DEFAULT 'warming',
+      error text,
+      fingerprint text NOT NULL,
+      worktree text NOT NULL,
+      branch text NOT NULL,
+      base_sha text NOT NULL,
+      sealant_workspace_id text,
+      workspace_image jsonb,
+      dotfiles jsonb,
+      environment jsonb,
+      reference_mounts jsonb NOT NULL DEFAULT '[]'::jsonb,
+      extra_mounts jsonb NOT NULL DEFAULT '[]'::jsonb,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS hot_workspaces_project_status_idx
+      ON hot_workspaces (project_id, status)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -768,4 +803,5 @@ export const migrations = {
   "0024_dotfiles_store": dotfilesStore,
   "0025_project_environment": projectEnvironment,
   "0026_project_secrets": projectSecretsMigration,
+  "0027_hot_sessions": hotSessions,
 };
