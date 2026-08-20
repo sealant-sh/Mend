@@ -17,7 +17,7 @@ export class NameSessionJob extends Schema.Class<NameSessionJob>("NameSessionJob
  * account-less attempt and the session simply stays unnamed.
  */
 const CLAUDE_NAMING_MODEL = "claude-haiku-4-5";
-const CODEX_NAMING_MODEL = "lunna";
+const CODEX_NAMING_MODEL = "lunar";
 
 const SYSTEM = `You name coding sessions. Given the session's first prompt, answer with a short label a developer can pick out of a list of sessions.
 
