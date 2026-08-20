@@ -111,6 +111,7 @@ const sealantLaunchLayer = (
   created: CreateOptions[],
   rejectCredentials: (credentials: CreateOptions["credentials"]) => boolean = () => false,
   stopped?: string[],
+  spawned?: ReadonlyArray<string>[],
 ) => {
   const pty: InteractiveSession = {
     id: "pty-1",
@@ -175,7 +176,11 @@ const sealantLaunchLayer = (
     startHarness: () => Effect.die("not in test"),
     startHarnessInWorkspace: () => Effect.die("not in test"),
     waitRun: () => Effect.die("not in test"),
-    openSession: () => Effect.succeed(pty),
+    openSession: (_workspace, argv) =>
+      Effect.sync(() => {
+        spawned?.push(argv);
+        return pty;
+      }),
     forward: () => Effect.die("not in test"),
     stopWorkspace: (target) =>
       Effect.sync(() => {
@@ -799,6 +804,41 @@ describe("SessionEngine", () => {
           packages: ["bat", "lazygit"],
           shell: "bash",
           services: { docker: true },
+        },
+      },
+    );
+  });
+
+  it("launches a shell session in the image's configured login shell", async () => {
+    const created: CreateOptions[] = [];
+    const spawned: ReadonlyArray<string>[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "shell",
+            label: null,
+            ownerUserId: null,
+            base: null,
+          });
+
+          // The UI's shell harness always requests ["bash"] — the sentinel for
+          // "an interactive shell" — but the PTY must run the image's shell so
+          // the owner's dotfiles actually load. Flags ride along.
+          yield* engine.launch(session.id, ["bash"]);
+          expect(spawned.at(-1)).toEqual(["zsh"]);
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created, undefined, undefined, spawned),
+        workspaceImage: {
+          mode: "family",
+          os: "arch",
+          packages: [],
+          shell: "zsh",
+          services: { docker: false },
         },
       },
     );
