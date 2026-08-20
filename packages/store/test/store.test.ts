@@ -92,6 +92,50 @@ describe("Store", () => {
         const files = yield* store.changedFiles(wt.path, wt.baseSha, cp2.sha);
         const paths = files.map((f) => f.path).toSorted();
         expect(paths).toEqual(["app.ts", "extra.ts"]);
+        expect(yield* store.worktreeMatchesCommit(wt.path, cp2.sha)).toBe(true);
+
+        fs.renameSync(path.join(wt.path, "extra.ts"), path.join(wt.path, "renamed.ts"));
+        fs.writeFileSync(path.join(wt.path, "asset.bin"), Buffer.from([0, 1, 2, 3]));
+        expect(yield* store.worktreeMatchesCommit(wt.path, cp2.sha)).toBe(false);
+        const cp3 = yield* store.checkpoint(wt.path, sessionId, 3, cp2.sha);
+        execFileSync("git", ["config", "diff.renames", "false"], { cwd: wt.path });
+        const renamePatch = yield* store.diffRange(wt.path, cp2.sha, cp3.sha);
+        expect(renamePatch).toContain("rename from extra.ts");
+        expect(yield* store.worktreeMatchesCommit(wt.path, cp3.sha)).toBe(true);
+        const facts = yield* store.diffFileFacts(wt.path, cp2.sha, cp3.sha);
+        expect(facts).toEqual([
+          {
+            oldPath: null,
+            newPath: "asset.bin",
+            status: "added",
+            additions: 0,
+            deletions: 0,
+            binary: true,
+          },
+          {
+            oldPath: "extra.ts",
+            newPath: "renamed.ts",
+            status: "renamed",
+            additions: 0,
+            deletions: 0,
+            binary: false,
+          },
+        ]);
+
+        // Review rendering options stay paired: a whitespace-only edit disappears
+        // from both the patch and its file facts when whitespace is ignored.
+        fs.writeFileSync(path.join(wt.path, "app.ts"), "export  const answer = 42\n");
+        const cp4 = yield* store.checkpoint(wt.path, sessionId, 4, cp3.sha);
+        expect(yield* store.diffRange(wt.path, cp3.sha, cp4.sha)).toContain("app.ts");
+        expect(yield* store.diffRange(wt.path, cp3.sha, cp4.sha, { ignoreWhitespace: true })).toBe(
+          "",
+        );
+        expect(yield* store.diffFileFacts(wt.path, cp3.sha, cp4.sha)).toHaveLength(1);
+        expect(
+          yield* store.diffFileFacts(wt.path, cp3.sha, cp4.sha, { ignoreWhitespace: true }),
+        ).toEqual([]);
+        const noContext = yield* store.diffRange(wt.path, cp3.sha, cp4.sha, { contextLines: 0 });
+        expect(noContext).toContain("@@ -1 +1 @@");
 
         // Worktree removal leaves the checkpoint refs intact in the bare repo.
         yield* store.removeWorktree(adopted.storePath, wt.name);

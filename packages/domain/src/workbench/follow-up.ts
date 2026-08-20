@@ -1,13 +1,31 @@
 import { Schema } from "effect";
 
-import { ChangeId, FollowUpId, SessionId } from "../ids.ts";
+import {
+  ChangeId,
+  CheckpointId,
+  FollowUpId,
+  ReviewCommentId,
+  ReviewSliceId,
+  SealantRunId,
+  SessionId,
+  SessionProcessId,
+} from "../ids.ts";
+import { DiffDigest } from "./review-slice.ts";
 
 /**
- * `pending` — assembled and waiting for the session to pick it up.
- * `delivered` — the session resumed with this instruction.
- * `superseded` — a newer follow-up replaced it before delivery.
+ * `pending` — persisted and waiting for a settled session.
+ * `delivering` — the server owns a launch attempt; retries reconcile by correlation.
+ * `delivered` — the platform accepted the exact instruction and Mend persisted membership.
+ * `delivery_failed` — no accepted process was found; the same key may retry.
+ * `superseded` — a newer bundle replaced it before delivery began.
  */
-export const FollowUpStatus = Schema.Literals(["pending", "delivered", "superseded"]);
+export const FollowUpStatus = Schema.Literals([
+  "pending",
+  "delivering",
+  "delivered",
+  "delivery_failed",
+  "superseded",
+]);
 export type FollowUpStatus = typeof FollowUpStatus.Type;
 
 /**
@@ -21,9 +39,23 @@ export class FollowUp extends Schema.Class<FollowUp>("FollowUp")({
   id: FollowUpId,
   sessionId: SessionId,
   changeId: ChangeId,
+  /** Immutable Review input. Null only on legacy bundles created before slices shipped. */
+  reviewSliceId: Schema.NullOr(ReviewSliceId),
+  checkpointAId: Schema.NullOr(CheckpointId),
+  checkpointBId: Schema.NullOr(CheckpointId),
+  diffDigest: Schema.NullOr(DiffDigest),
+  /** Exactly the reviewer-selected comments; legacy bundles decode as an empty list. */
+  commentIds: Schema.Array(ReviewCommentId),
+  /** Client retry key. Null only on legacy bundles. */
+  idempotencyKey: Schema.NullOr(Schema.String),
   /** The instruction as the user approved it — verbatim what the harness receives. */
   instruction: Schema.String,
   status: FollowUpStatus,
+  /** Durable launch correlation, populated only after process membership exists. */
+  deliveryProcessId: Schema.NullOr(SessionProcessId),
+  deliverySealantRunId: Schema.NullOr(SealantRunId),
+  deliveryError: Schema.NullOr(Schema.String),
+  deliveryStartedAt: Schema.NullOr(Schema.Date),
   createdAt: Schema.Date,
   deliveredAt: Schema.NullOr(Schema.Date),
 }) {}

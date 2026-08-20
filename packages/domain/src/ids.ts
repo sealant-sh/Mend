@@ -45,6 +45,9 @@ export type CheckpointId = typeof CheckpointId.Type;
 export const ReviewCommentId = Schema.String.pipe(Schema.brand("ReviewCommentId"));
 export type ReviewCommentId = typeof ReviewCommentId.Type;
 
+export const ReviewSliceId = Schema.String.pipe(Schema.brand("ReviewSliceId"));
+export type ReviewSliceId = typeof ReviewSliceId.Type;
+
 export const ContextSnapshotId = Schema.String.pipe(Schema.brand("ContextSnapshotId"));
 export type ContextSnapshotId = typeof ContextSnapshotId.Type;
 

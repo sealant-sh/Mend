@@ -23,6 +23,7 @@ import {
   referenceRepos,
   reviewQuestions,
   reviewComments,
+  reviewSlices,
   runs,
   sessionChanges,
   sessionRuns,
@@ -304,23 +305,39 @@ describe("Mend Drizzle schema", () => {
     expect(config.columns[0]?.primary).toBe(true);
   });
 
-  it("maps follow-up ownership, status, and delivery timestamps", () => {
+  it("maps immutable follow-up input, idempotency, and delivery correlation", () => {
     const config = getTableConfig(followUps);
     expect(config.name).toBe("follow_ups");
     expect(config.columns.map((column) => column.name)).toEqual([
       "id",
       "session_id",
       "change_id",
+      "review_slice_id",
+      "checkpoint_a_id",
+      "checkpoint_b_id",
+      "diff_digest",
+      "comment_ids",
+      "idempotency_key",
       "instruction",
       "status",
+      "delivery_process_id",
+      "delivery_sealant_run_id",
+      "delivery_error",
+      "delivery_started_at",
+      "delivery_attempt_id",
+      "delivery_lease_expires_at",
       "created_at",
       "delivered_at",
     ]);
     expect(config.foreignKeys.map((foreignKey) => foreignKey.onDelete)).toEqual([
       "cascade",
       "cascade",
+      "set null",
     ]);
-    expect(config.indexes[0]?.config.name).toBe("follow_ups_session_idx");
+    expect(config.indexes.map((index) => index.config.name)).toEqual([
+      "follow_ups_session_idx",
+      "follow_ups_session_key_idx",
+    ]);
   });
 
   it("maps review comment anchors, evidence, and notification ownership", () => {
@@ -342,13 +359,39 @@ describe("Mend Drizzle schema", () => {
       "evidence",
       "kind",
       "suggestion",
+      "anchor",
     ]);
     expect(config.columns[12]?.getSQLType()).toBe("jsonb");
+    expect(config.columns[15]?.getSQLType()).toBe("jsonb");
     expect(config.foreignKeys.map((foreignKey) => foreignKey.onDelete)).toEqual([
       "cascade",
       "set null",
     ]);
     expect(config.indexes[0]?.config.name).toBe("review_comments_change_idx");
+  });
+
+  it("maps immutable Review slices and idempotency", () => {
+    const config = getTableConfig(reviewSlices);
+    expect(config.name).toBe("review_slices");
+    expect(config.columns.map((column) => column.name)).toEqual([
+      "id",
+      "change_id",
+      "checkpoint_a_id",
+      "checkpoint_b_id",
+      "diff_digest",
+      "idempotency_key",
+      "created_at",
+    ]);
+    expect(config.foreignKeys.map((foreignKey) => foreignKey.onDelete)).toEqual([
+      "cascade",
+      "cascade",
+      "cascade",
+    ]);
+    expect(config.indexes.map((index) => index.config.name)).toEqual([
+      "review_slices_change_key_idx",
+      "review_slices_change_created_idx",
+    ]);
+    expect(config.indexes[0]?.config.unique).toBe(true);
   });
 
   it("maps one composed tour per change with encoded stops", () => {

@@ -1,4 +1,4 @@
-import {
+import type {
   BriefCommentId,
   BriefDocument,
   EvidencePointer,
@@ -9,33 +9,34 @@ import {
   MendSettings,
   ReviewQuestionId,
   ReviewCommentId,
-  type BriefId,
-  type ChangeId,
-  type CheckpointId,
-  type CommentAuthorKind,
-  type ContextSnapshotId,
-  type Disposition,
-  type Freshness,
-  type InferenceContext,
-  type InferenceToolName,
-  type IssueSource,
-  type IssueStage,
-  type ProjectEnvironmentVariableId,
-  type ProjectId,
-  type ProjectSecretId,
-  type ProjectMountId,
-  type ReferenceId,
-  type RoutedAction,
-  type RunId,
-  type RunKind,
-  type RunOutcome,
-  type RunStatus,
-  type SealantRunId,
-  type SealantWorkspaceId,
-  type SessionGitOpId,
-  type SessionId,
-  type SessionProcessId,
-  type Sha,
+  ReviewSliceId,
+  BriefId,
+  ChangeId,
+  CheckpointId,
+  CommentAuthorKind,
+  ContextSnapshotId,
+  Disposition,
+  Freshness,
+  InferenceContext,
+  InferenceToolName,
+  IssueSource,
+  IssueStage,
+  ProjectEnvironmentVariableId,
+  ProjectId,
+  ProjectSecretId,
+  ProjectMountId,
+  ReferenceId,
+  RoutedAction,
+  RunId,
+  RunKind,
+  RunOutcome,
+  RunStatus,
+  SealantRunId,
+  SealantWorkspaceId,
+  SessionGitOpId,
+  SessionId,
+  SessionProcessId,
+  Sha,
   DotfilesRepository,
   WorkspaceImage,
 } from "@mend/domain";
@@ -54,6 +55,8 @@ import type {
   PassKind,
   PassStatus,
   RecordLink,
+  ReviewCommentAnchor,
+  DiffDigest,
   TourStop,
   SessionExtraMount,
   SessionProcessKind,
@@ -509,6 +512,7 @@ export const sessionProcesses = pgTable(
     sealantWorkspaceId: text().$type<SealantWorkspaceId>().notNull(),
     sealantSessionId: text(),
     sealantRunId: text().$type<SealantRunId>(),
+    launchCorrelationId: text(),
     kind: text().$type<SessionProcessKind>().notNull(),
     label: text(),
     argv: jsonb()
@@ -526,6 +530,9 @@ export const sessionProcesses = pgTable(
   },
   (table) => [
     index("session_processes_session_idx").on(table.sessionId, table.createdAt),
+    uniqueIndex("session_processes_launch_correlation_idx")
+      .on(table.launchCorrelationId)
+      .where(sql`${table.launchCorrelationId} IS NOT NULL`),
     // Live rows are workspace leases — the reap path queries by workspace.
     index("session_processes_live_idx")
       .on(table.sealantWorkspaceId)
@@ -608,12 +615,35 @@ export const followUps = pgTable(
       .$type<ChangeId>()
       .notNull()
       .references(() => sessionChanges.id, { onDelete: "cascade" }),
+    reviewSliceId: text().$type<ReviewSliceId>(),
+    checkpointAId: text().$type<CheckpointId>(),
+    checkpointBId: text().$type<CheckpointId>(),
+    diffDigest: text().$type<DiffDigest>(),
+    commentIds: jsonb()
+      .$type<ReadonlyArray<ReviewCommentId>>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    idempotencyKey: text(),
     instruction: text().notNull(),
     status: text().$type<FollowUpStatus>().notNull().default("pending"),
+    deliveryProcessId: text()
+      .$type<SessionProcessId>()
+      .references(() => sessionProcesses.id, { onDelete: "set null" }),
+    deliverySealantRunId: text().$type<SealantRunId>(),
+    deliveryError: text(),
+    deliveryStartedAt: timestamp({ mode: "date", withTimezone: true }),
+    /** Internal claim token and renewable lease; clients observe status, never ownership. */
+    deliveryAttemptId: text(),
+    deliveryLeaseExpiresAt: timestamp({ mode: "date", withTimezone: true }),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     deliveredAt: timestamp({ mode: "date", withTimezone: true }),
   },
-  (table) => [index("follow_ups_session_idx").on(table.sessionId, table.createdAt)],
+  (table) => [
+    index("follow_ups_session_idx").on(table.sessionId, table.createdAt),
+    uniqueIndex("follow_ups_session_key_idx")
+      .on(table.sessionId, table.idempotencyKey)
+      .where(sql`${table.idempotencyKey} IS NOT NULL`),
+  ],
 );
 
 export const reviewComments = pgTable(
@@ -642,6 +672,7 @@ export const reviewComments = pgTable(
       .default(sql`'[]'::jsonb`),
     kind: text().$type<CommentKind>().notNull().default("note"),
     suggestion: text(),
+    anchor: jsonb().$type<typeof ReviewCommentAnchor.Encoded>(),
   },
   (table) => [index("review_comments_change_idx").on(table.changeId, table.createdAt)],
 );
@@ -704,6 +735,32 @@ export const checkpoints = pgTable(
   ],
 );
 
+export const reviewSlices = pgTable(
+  "review_slices",
+  {
+    id: text().$type<ReviewSliceId>().primaryKey(),
+    changeId: text()
+      .$type<ChangeId>()
+      .notNull()
+      .references(() => sessionChanges.id, { onDelete: "cascade" }),
+    checkpointAId: text()
+      .$type<CheckpointId>()
+      .notNull()
+      .references(() => checkpoints.id, { onDelete: "cascade" }),
+    checkpointBId: text()
+      .$type<CheckpointId>()
+      .notNull()
+      .references(() => checkpoints.id, { onDelete: "cascade" }),
+    diffDigest: text().$type<DiffDigest>().notNull(),
+    idempotencyKey: text().notNull(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("review_slices_change_key_idx").on(table.changeId, table.idempotencyKey),
+    index("review_slices_change_created_idx").on(table.changeId, table.createdAt),
+  ],
+);
+
 export type ProjectRow = typeof projects.$inferSelect;
 export type IssueRow = typeof issues.$inferSelect;
 export type ChangeRow = typeof changes.$inferSelect;
@@ -724,6 +781,7 @@ export type SessionRunRow = typeof sessionRuns.$inferSelect;
 export type SessionChangeRow = typeof sessionChanges.$inferSelect;
 export type FollowUpRow = typeof followUps.$inferSelect;
 export type ReviewCommentRow = typeof reviewComments.$inferSelect;
+export type ReviewSliceRow = typeof reviewSlices.$inferSelect;
 export type ChangeTourRow = typeof changeTours.$inferSelect;
 export type ChangePassRow = typeof changePasses.$inferSelect;
 export type CheckpointRow = typeof checkpoints.$inferSelect;

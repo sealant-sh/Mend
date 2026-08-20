@@ -25,6 +25,8 @@ export interface NewSessionProcess {
   readonly sealantSessionId: string | null;
   /** The run recording this process; null for adopted Services. */
   readonly sealantRunId?: SealantRunId | null;
+  /** Server-owned launch intent used to reconcile an accepted process after a retry. */
+  readonly launchCorrelationId?: string | null;
   readonly kind: SessionProcessKind;
   readonly label: string | null;
   readonly argv: ReadonlyArray<string>;
@@ -47,6 +49,7 @@ export class SessionProcessesRepo extends Context.Service<
   {
     readonly create: (input: NewSessionProcess) => Effect.Effect<SessionProcess>;
     readonly byId: (id: SessionProcessId) => Effect.Effect<SessionProcess | null>;
+    readonly byLaunchCorrelation: (correlationId: string) => Effect.Effect<SessionProcess | null>;
     readonly listForSession: (sessionId: SessionId) => Effect.Effect<ReadonlyArray<SessionProcess>>;
     readonly listLiveForWorkspace: (
       workspaceId: SealantWorkspaceId,
@@ -57,6 +60,8 @@ export class SessionProcessesRepo extends Context.Service<
     readonly listRecentServices: () => Effect.Effect<ReadonlyArray<SessionProcess>>;
     /** Flip a LIVE row's observed state (reachable ⇄ unreachable, starting → running). */
     readonly setStatus: (id: SessionProcessId, status: SessionProcessStatus) => Effect.Effect<void>;
+    /** Rename a live supporting process. The engine owns kind and label validation. */
+    readonly setLabel: (id: SessionProcessId, label: string) => Effect.Effect<void>;
     /** Record the bound host port once the listener exists (Services only). */
     readonly setHostPort: (id: SessionProcessId, hostPort: number) => Effect.Effect<void>;
     /** Point a LIVE row at a fresh platform PTY + run (Service restart keeps identity + URL). */
@@ -112,6 +117,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
         .values({
           ...input,
           id: SessionProcessId.make(crypto.randomUUID()),
+          launchCorrelationId: input.launchCorrelationId ?? null,
           status: input.status ?? "running",
         })
         .returning()
@@ -140,6 +146,18 @@ export const SessionProcessesRepoLive: Layer.Layer<
         .select()
         .from(sessionProcesses)
         .where(eq(sessionProcesses.id, id))
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row === undefined ? null : toSessionProcess(row);
+    });
+
+    const byLaunchCorrelation = Effect.fn("SessionProcessesRepo.byLaunchCorrelation")(function* (
+      correlationId: string,
+    ) {
+      const [row] = yield* db
+        .select()
+        .from(sessionProcesses)
+        .where(eq(sessionProcesses.launchCorrelationId, correlationId))
         .limit(1)
         .pipe(Effect.orDie);
       return row === undefined ? null : toSessionProcess(row);
@@ -193,6 +211,20 @@ export const SessionProcessesRepoLive: Layer.Layer<
         .orderBy(asc(sessionProcesses.createdAt))
         .pipe(Effect.orDie);
       return rows.map(toSessionProcess);
+    });
+
+    const setLabel = Effect.fn("SessionProcessesRepo.setLabel")(function* (
+      id: SessionProcessId,
+      label: string,
+    ) {
+      const rows = yield* db
+        .update(sessionProcesses)
+        .set({ label, updatedAt: new Date() })
+        .where(and(eq(sessionProcesses.id, id), isNull(sessionProcesses.exitedAt)))
+        .returning({ sessionId: sessionProcesses.sessionId })
+        .pipe(Effect.orDie);
+      const first = rows[0];
+      if (first !== undefined) yield* notify(first.sessionId);
     });
 
     const setHostPort = Effect.fn("SessionProcessesRepo.setHostPort")(function* (
@@ -262,11 +294,13 @@ export const SessionProcessesRepoLive: Layer.Layer<
     return {
       create,
       byId,
+      byLaunchCorrelation,
       listForSession,
       listLiveForWorkspace,
       listLive,
       listRecentServices,
       setStatus,
+      setLabel,
       setHostPort,
       setSealantSessionId,
       markExited,

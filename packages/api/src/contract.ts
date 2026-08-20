@@ -6,6 +6,7 @@ import {
   BriefVersion,
   Change,
   ChangeId,
+  CheckpointId,
   Issue,
   IssueId,
   MendSettings,
@@ -15,6 +16,7 @@ import {
   ProjectSecretId,
   ReferenceId,
   ReviewCommentId,
+  ReviewSliceId,
   Run,
   RunId,
   SessionId,
@@ -28,6 +30,7 @@ import {
   ChangePass,
   ChangeTour,
   Checkpoint,
+  DiffDigest,
   FollowUp,
   GitAuthMode,
   Project,
@@ -38,6 +41,7 @@ import {
   ProjectSecretsSnapshot,
   Reference,
   ReviewComment,
+  ReviewSlice,
   ServiceRecipe,
   Session,
   SessionProcess,
@@ -323,7 +327,7 @@ export class SessionActive extends Schema.TaggedErrorClass<SessionActive>()(
   { httpApiStatus: 409 },
 ) {}
 
-/** A shell needs a live workspace — a settled session has none; resume it first. */
+/** A supporting process needs a current reachable workspace. */
 export class SessionNotLive extends Schema.TaggedErrorClass<SessionNotLive>()(
   "SessionNotLive",
   { id: Schema.String },
@@ -1032,9 +1036,17 @@ export class CheckpointRequest extends Schema.Class<CheckpointRequest>("Checkpoi
   trigger: Schema.Literals(["review-open", "user-mark"]),
 }) {}
 
-/** The instruction exactly as the user edited it in the send-review dialog. */
-export class NewFollowUp extends Schema.Class<NewFollowUp>("NewFollowUp")({
+/** Immutable Review bundle plus the exact edited instruction and client retry key. */
+export class DeliverFollowUpRequest extends Schema.Class<DeliverFollowUpRequest>(
+  "DeliverFollowUpRequest",
+)({
+  reviewSliceId: ReviewSliceId,
+  checkpointAId: CheckpointId,
+  checkpointBId: CheckpointId,
+  diffDigest: DiffDigest,
+  commentIds: Schema.Array(ReviewCommentId),
   instruction: Schema.String,
+  idempotencyKey: Schema.String,
 }) {}
 
 /** What to run in the session's PTY — argv[0] is the program. */
@@ -1056,9 +1068,18 @@ export class SessionTranscript extends Schema.Class<SessionTranscript>("SessionT
   events: Schema.Array(TranscriptEvent),
 }) {}
 
-/** Rejoin a settled session; `harness` null = the one it last ran with. */
+/** Rename one live supporting shell. */
+export class RenameShellRequest extends Schema.Class<RenameShellRequest>("RenameShellRequest")({
+  label: Schema.String,
+}) {}
+
+/**
+ * Rejoin a settled session. `harness` null keeps the current harness; `fresh` explicitly stops
+ * retained supporting processes before provisioning another workspace.
+ */
 export class ResumeRequest extends Schema.Class<ResumeRequest>("ResumeRequest")({
   harness: Schema.NullOr(Schema.String),
+  fresh: Schema.optionalKey(Schema.Boolean),
 }) {}
 
 const sessionsGroup = HttpApiGroup.make("sessions")
@@ -1095,6 +1116,21 @@ const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       success: SessionProcess,
       error: Schema.Union([NotFound, SessionNotLive, StoreFailure]),
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("stopShell", "/processes/:id/stop", {
+      params: { id: SessionProcessId },
+      success: SessionProcess,
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("renameShell", "/processes/:id/label", {
+      params: { id: SessionProcessId },
+      payload: RenameShellRequest,
+      success: SessionProcess,
+      error: Schema.Union([NotFound, StoreFailure]),
     }),
   )
   .add(
@@ -1173,7 +1209,7 @@ const sessionsGroup = HttpApiGroup.make("sessions")
     HttpApiEndpoint.delete("remove", "/sessions/:id", {
       params: { id: SessionId },
       success: RemovalReport,
-      error: Schema.Union([NotFound, SessionActive]),
+      error: Schema.Union([NotFound, SessionActive, StoreFailure]),
     }),
   )
   .add(
@@ -1229,16 +1265,6 @@ const sessionsGroup = HttpApiGroup.make("sessions")
     }),
   )
   .add(
-    // The review bundle, as the user approved it. Creating it marks the
-    // change's unsent open comments as sent with this follow-up.
-    HttpApiEndpoint.post("followUpCreate", "/sessions/:id/follow-up", {
-      params: { id: SessionId },
-      payload: NewFollowUp,
-      success: FollowUp,
-      error: NotFound,
-    }),
-  )
-  .add(
     HttpApiEndpoint.get("followUpPending", "/sessions/:id/follow-up", {
       params: { id: SessionId },
       success: Schema.NullOr(FollowUp),
@@ -1246,11 +1272,13 @@ const sessionsGroup = HttpApiGroup.make("sessions")
     }),
   )
   .add(
-    // `mend continue` picks the bundle up: marks it delivered and reopens the session.
+    // One server-owned operation: persist intent, launch, correlate membership,
+    // then mark exactly the selected comments sent. Same key = same run.
     HttpApiEndpoint.post("followUpDeliver", "/sessions/:id/follow-up/deliver", {
       params: { id: SessionId },
+      payload: DeliverFollowUpRequest,
       success: FollowUp,
-      error: NotFound,
+      error: Schema.Union([NotFound, StoreFailure]),
     }),
   )
   .middleware(AuthMiddleware);
@@ -1266,17 +1294,6 @@ export class ChangeDiff extends Schema.Class<ChangeDiff>("ChangeDiff")({
   change: SessionChange,
   diff: Schema.String,
   files: Schema.Array(ChangedFileView),
-}) {}
-
-/** A reviewer's comment: file/line anchor (both null = change-level), and the words. */
-export class NewReviewCommentRequest extends Schema.Class<NewReviewCommentRequest>(
-  "NewReviewCommentRequest",
-)({
-  file: Schema.NullOr(Schema.String),
-  line: Schema.NullOr(Schema.Int),
-  /** Inclusive range end; omitted/null = single-line anchor. */
-  endLine: Schema.optional(Schema.NullOr(Schema.Int)),
-  body: Schema.String,
 }) {}
 
 /**
@@ -1296,8 +1313,111 @@ export class ChangeStats extends Schema.Class<ChangeStats>("ChangeStats")({
   deletions: Schema.Int,
 }) {}
 
+export class OpenReviewRequest extends Schema.Class<OpenReviewRequest>("OpenReviewRequest")({
+  idempotencyKey: Schema.String,
+}) {}
+
+export class OpenReviewResult extends Schema.Class<OpenReviewResult>("OpenReviewResult")({
+  slice: ReviewSlice,
+  checkpointA: Checkpoint,
+  checkpointB: Checkpoint,
+  /** True when no new review-open checkpoint was needed. */
+  reused: Schema.Boolean,
+}) {}
+
+export class ReviewDiffHunkView extends Schema.Class<ReviewDiffHunkView>("ReviewDiffHunkView")({
+  header: Schema.String,
+  oldStart: Schema.Int,
+  oldLines: Schema.Int,
+  newStart: Schema.Int,
+  newLines: Schema.Int,
+  contextHash: Schema.String,
+  patch: Schema.String,
+}) {}
+
+export class ReviewDiffFileView extends Schema.Class<ReviewDiffFileView>("ReviewDiffFileView")({
+  oldPath: Schema.NullOr(Schema.String),
+  newPath: Schema.NullOr(Schema.String),
+  status: Schema.Literals([
+    "added",
+    "modified",
+    "deleted",
+    "renamed",
+    "copied",
+    "type-changed",
+    "unmerged",
+    "unknown",
+  ]),
+  additions: Schema.Int,
+  deletions: Schema.Int,
+  binary: Schema.Boolean,
+  patch: Schema.String,
+  hunks: Schema.Array(ReviewDiffHunkView),
+}) {}
+
+export class ReviewDiffView extends Schema.Class<ReviewDiffView>("ReviewDiffView")({
+  change: SessionChange,
+  slice: ReviewSlice,
+  checkpointA: Checkpoint,
+  checkpointB: Checkpoint,
+  patch: Schema.String,
+  /** Files as rendered for the requested whitespace and context controls. */
+  files: Schema.Array(ReviewDiffFileView),
+  /** Canonical files used to create stable comment anchors across rendering controls. */
+  anchorFiles: Schema.Array(ReviewDiffFileView),
+  /** A live observation only; it never changes this response's patch. */
+  worktreeChangedSinceSnapshot: Schema.Boolean,
+}) {}
+
+/** Null paths = change target; paths plus null side/lines = file target. */
+export class SliceCommentTargetRequest extends Schema.Class<SliceCommentTargetRequest>(
+  "SliceCommentTargetRequest",
+)({
+  oldPath: Schema.NullOr(Schema.String),
+  newPath: Schema.NullOr(Schema.String),
+  side: Schema.NullOr(Schema.Literals(["old", "new"])),
+  startLine: Schema.NullOr(Schema.Int),
+  endLine: Schema.NullOr(Schema.Int),
+  hunkContextHash: Schema.NullOr(Schema.String),
+}) {}
+
+export class NewSliceReviewCommentRequest extends Schema.Class<NewSliceReviewCommentRequest>(
+  "NewSliceReviewCommentRequest",
+)({
+  target: SliceCommentTargetRequest,
+  body: Schema.String,
+}) {}
+
 const sessionChangesGroup = HttpApiGroup.make("sessionChanges")
   .add(
+    HttpApiEndpoint.post("openReview", "/changes/:id/reviews/open", {
+      params: { id: ChangeId },
+      payload: OpenReviewRequest,
+      success: OpenReviewResult,
+      error: Schema.Union([NotFound, StoreFailure]),
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("reviewDiff", "/changes/:id/reviews/:sliceId/diff", {
+      params: { id: ChangeId, sliceId: ReviewSliceId },
+      query: {
+        whitespace: Schema.optional(Schema.Literals(["include", "ignore"])),
+        context: Schema.optional(Schema.String),
+      },
+      success: ReviewDiffView,
+      error: Schema.Union([NotFound, StoreFailure]),
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("sliceComment", "/changes/:id/reviews/:sliceId/comments", {
+      params: { id: ChangeId, sliceId: ReviewSliceId },
+      payload: NewSliceReviewCommentRequest,
+      success: ReviewComment,
+      error: Schema.Union([NotFound, StoreFailure]),
+    }),
+  )
+  .add(
+    /** Retained temporarily for legacy clients; new Review surfaces use explicit slices. */
     HttpApiEndpoint.get("diff", "/changes/:id/diff", {
       params: { id: ChangeId },
       success: ChangeDiff,
@@ -1315,14 +1435,6 @@ const sessionChangesGroup = HttpApiGroup.make("sessionChanges")
     HttpApiEndpoint.get("comments", "/changes/:id/comments", {
       params: { id: ChangeId },
       success: Schema.Array(ReviewComment),
-      error: NotFound,
-    }),
-  )
-  .add(
-    HttpApiEndpoint.post("comment", "/changes/:id/comments", {
-      params: { id: ChangeId },
-      payload: NewReviewCommentRequest,
-      success: ReviewComment,
       error: NotFound,
     }),
   )

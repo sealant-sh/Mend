@@ -40,6 +40,8 @@ export class SessionProcess extends Schema.Class<SessionProcess>("SessionProcess
   sealantSessionId: Schema.NullOr(Schema.String),
   /** The run recording this process — its record outlives the process AND the workspace. */
   sealantRunId: Schema.NullOr(SealantRunId),
+  /** Server-owned launch intent used to reconcile retries after process acceptance. */
+  launchCorrelationId: Schema.NullOr(Schema.String),
   kind: SessionProcessKind,
   /** Human name for pickers and lists ("claude", "shell", "web"). */
   label: Schema.NullOr(Schema.String),

@@ -1,13 +1,13 @@
 import { PgClient } from "@effect/sql-pg";
 import { type ChangeId, ReviewCommentId, type SessionId } from "@mend/domain";
-import { RecordLink } from "@mend/domain/workbench";
+import { RecordLink, ReviewCommentAnchor } from "@mend/domain/workbench";
 import {
   ReviewComment,
   type CommentAuthor,
   type CommentKind,
   type CommentState,
 } from "@mend/domain/workbench";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -29,6 +29,8 @@ export interface NewReviewComment {
   readonly file: string | null;
   readonly line: number | null;
   readonly endLine: number | null;
+  /** Null/omitted only for comments created by the retired live-diff contract. */
+  readonly anchor?: ReviewCommentAnchor | null;
   readonly authorKind: CommentAuthor;
   readonly authorName: string;
   readonly body: string;
@@ -42,6 +44,7 @@ export interface NewReviewComment {
 }
 
 const encodeEvidence = Schema.encodeEffect(Schema.Array(RecordLink));
+const encodeAnchor = Schema.encodeEffect(ReviewCommentAnchor);
 
 /** Review comments on a session change (plan §5.7) — reviewer's and Mend's, one pipeline. */
 export class ReviewCommentsRepo extends Context.Service<
@@ -55,6 +58,11 @@ export class ReviewCommentsRepo extends Context.Service<
     readonly setState: (id: ReviewCommentId, state: CommentState) => Effect.Effect<void>;
     /** Records which session a bundled follow-up carrying this comment went to. */
     readonly markSent: (id: ReviewCommentId, sessionId: SessionId) => Effect.Effect<void>;
+    /** Marks only selected unsent comments after process membership is durable. */
+    readonly markSelectedSent: (
+      ids: ReadonlyArray<ReviewCommentId>,
+      sessionId: SessionId,
+    ) => Effect.Effect<number>;
   }
 >()("@mend/db/ReviewCommentsRepo") {}
 
@@ -95,6 +103,10 @@ export const ReviewCommentsRepoLive: Layer.Layer<
     const create = Effect.fn("ReviewCommentsRepo.create")(function* (comment: NewReviewComment) {
       // Sequences ride JSONB as decimal strings — the RecordLink codec's wire shape.
       const evidence = yield* encodeEvidence(comment.evidence ?? []).pipe(Effect.orDie);
+      const anchor =
+        comment.anchor === undefined || comment.anchor === null
+          ? null
+          : yield* encodeAnchor(comment.anchor).pipe(Effect.orDie);
       const [row] = yield* db
         .insert(reviewComments)
         .values({
@@ -103,6 +115,7 @@ export const ReviewCommentsRepoLive: Layer.Layer<
           file: comment.file,
           line: comment.line,
           endLine: comment.endLine,
+          anchor,
           authorKind: comment.authorKind,
           authorName: comment.authorName,
           body: comment.body,
@@ -166,6 +179,21 @@ export const ReviewCommentsRepoLive: Layer.Layer<
         .pipe(Effect.orDie);
     });
 
-    return { create, byId, listForChange, setState, markSent };
+    const markSelectedSent = Effect.fn("ReviewCommentsRepo.markSelectedSent")(function* (
+      ids: ReadonlyArray<ReviewCommentId>,
+      sessionId: SessionId,
+    ) {
+      if (ids.length === 0) return 0;
+      const rows = yield* db
+        .update(reviewComments)
+        .set({ sentToSessionId: sessionId, updatedAt: new Date() })
+        .where(and(inArray(reviewComments.id, ids), isNull(reviewComments.sentToSessionId)))
+        .returning({ id: reviewComments.id, changeId: reviewComments.changeId })
+        .pipe(Effect.orDie);
+      yield* Effect.forEach(rows, (row) => notify(row.id, row.changeId));
+      return rows.length;
+    });
+
+    return { create, byId, listForChange, setState, markSent, markSelectedSent };
   }),
 );

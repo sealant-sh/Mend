@@ -6,13 +6,13 @@ import {
   HotWorkspacesRepo,
   ProjectEnvironmentRepo,
   ProjectMountsRepo,
-  ProjectNotFoundError,
+  type ProjectNotFoundError,
   ProjectSecretsRepo,
   ProjectsRepo,
   ReferencesRepo,
   SessionChangesRepo,
   SessionGitOpsRepo,
-  SessionNotFoundError,
+  type SessionNotFoundError,
   ProjectServiceRecipesRepo,
   SessionProcessesRepo,
   SessionRunsRepo,
@@ -43,7 +43,7 @@ import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import {
   AgentBridge,
   DotfilesStore,
-  GitError,
+  type GitError,
   MendKeys,
   NO_SIGNER_MESSAGE,
   SecretCipher,
@@ -85,16 +85,37 @@ import {
   type SessionSocketApi,
 } from "./session-socket.ts";
 
-/** How a harness takes an opening prompt (the cross-harness handoff). */
+/**
+ * How a harness takes an opening prompt (the cross-harness handoff). The public SDK rejects argv
+ * elements with outer whitespace, so the exact user-approved bytes travel as bounded base64 chunks
+ * and are decoded in the workspace. The sentinel preserves trailing newlines through POSIX command
+ * substitution.
+ */
 const promptArgv = (harness: string, prompt: string): ReadonlyArray<string> | null => {
-  switch (harness) {
-    case "claude":
-      return ["claude", prompt];
-    case "codex":
-      return ["codex", prompt];
-    default:
-      return null;
+  const command = (() => {
+    switch (harness) {
+      case "claude":
+        return 'exec claude --dangerously-skip-permissions "$prompt"';
+      case "codex":
+        return 'exec codex --dangerously-bypass-approvals-and-sandbox "$prompt"';
+      case "opencode":
+        return 'exec opencode run "$prompt"';
+      default:
+        return null;
+    }
+  })();
+  if (command === null) return null;
+
+  const encoded = Buffer.from(prompt, "utf8").toString("base64");
+  const chunks: string[] = [];
+  for (let offset = 0; offset < encoded.length; offset += 60_000) {
+    chunks.push(encoded.slice(offset, offset + 60_000));
   }
+  const decode =
+    'encoded=; for chunk; do encoded="$encoded$chunk"; done; ' +
+    'prompt="$(printf %s "$encoded" | base64 -d; printf x)"; prompt=${prompt%x}; ' +
+    command;
+  return ["sh", "-c", decode, "sh", ...chunks];
 };
 
 /** Credentials ride connected accounts (references only); harness picks image behavior. */
@@ -241,6 +262,10 @@ const SUPERVISE_RETRY = Schedule.exponential("1 second").pipe(
 const workspaceIsLive = (status: string) =>
   status === "queued" || status === "running" || status === "ready";
 
+/** Hidden shell sessions created by the retired desktop bench path. */
+const isLegacyBench = (session: Session): boolean =>
+  session.harness === "shell" && session.label === "bench";
+
 export interface ProvisionInput {
   readonly projectId: ProjectId;
   readonly harness: string;
@@ -251,13 +276,33 @@ export interface ProvisionInput {
   readonly ownerUserId: string | null;
 }
 
-/** A shell needs a live workspace; a settled session has none to enter. */
+/** A supporting process needs a current reachable workspace. */
 export class SessionNotLiveError extends Schema.TaggedErrorClass<SessionNotLiveError>()(
   "SessionNotLiveError",
   {
     sessionId: Schema.String,
   },
 ) {}
+
+/** A retired hidden bench remains reviewable but cannot start more work. */
+export class LegacyBenchReadOnlyError extends Schema.TaggedErrorClass<LegacyBenchReadOnlyError>()(
+  "LegacyBenchReadOnlyError",
+  { sessionId: Schema.String },
+) {}
+
+/** The process id is unknown or does not identify a supporting shell. */
+export class ShellProcessNotFoundError extends Schema.TaggedErrorClass<ShellProcessNotFoundError>()(
+  "ShellProcessNotFoundError",
+  {
+    processId: Schema.String,
+  },
+) {}
+
+/** A supporting shell label is empty, too long, or already used by a live sibling. */
+export class ShellLabelError extends Schema.TaggedErrorClass<ShellLabelError>()("ShellLabelError", {
+  processId: Schema.String,
+  message: Schema.String,
+}) {}
 
 /** The process id is unknown, ended, or not a Service. */
 export class ServiceNotFoundError extends Schema.TaggedErrorClass<ServiceNotFoundError>()(
@@ -325,6 +370,23 @@ export class SessionEngine extends Context.Service<
     ) => Effect.Effect<
       Session,
       | SessionNotFoundError
+      | LegacyBenchReadOnlyError
+      | ProjectNotFoundError
+      | SealantPlatformError
+      | HarnessStateError
+      | SessionLaunchSetupError
+      | DotfilesResolveError
+    >;
+    /** Launch the exact approved Review instruction with a durable process correlation. */
+    readonly launchFollowUp: (
+      sessionId: SessionId,
+      instruction: string,
+      launchCorrelationId: string,
+    ) => Effect.Effect<
+      Session,
+      | SessionNotFoundError
+      | SessionNotLiveError
+      | LegacyBenchReadOnlyError
       | ProjectNotFoundError
       | SealantPlatformError
       | HarnessStateError
@@ -354,8 +416,17 @@ export class SessionEngine extends Context.Service<
       sessionId: SessionId,
     ) => Effect.Effect<
       SessionProcess,
-      SessionNotFoundError | SessionNotLiveError | SealantPlatformError
+      SessionNotFoundError | SessionNotLiveError | LegacyBenchReadOnlyError | SealantPlatformError
     >;
+    /** Stop one supporting shell process group. Repeating a completed stop is idempotent. */
+    readonly stopShell: (
+      processId: SessionProcessId,
+    ) => Effect.Effect<SessionProcess, ShellProcessNotFoundError>;
+    /** Rename one live supporting shell inside its owning session. */
+    readonly renameShell: (
+      processId: SessionProcessId,
+      label: string,
+    ) => Effect.Effect<SessionProcess, ShellProcessNotFoundError | ShellLabelError>;
     /**
      * Adopt an already-listening workspace port as a Service
      * (docs/SESSION-SERVICES.md): bind a host listener on the private
@@ -369,7 +440,11 @@ export class SessionEngine extends Context.Service<
       protocol?: "tcp" | "udp",
     ) => Effect.Effect<
       SessionProcess,
-      SessionNotFoundError | SessionNotLiveError | ServiceBindError
+      | SessionNotFoundError
+      | SessionNotLiveError
+      | LegacyBenchReadOnlyError
+      | SealantPlatformError
+      | ServiceBindError
     >;
     /**
      * Start and supervise a Service (docs/SESSION-SERVICES.md): a PTY-backed
@@ -387,6 +462,7 @@ export class SessionEngine extends Context.Service<
       SessionProcess,
       | SessionNotFoundError
       | SessionNotLiveError
+      | LegacyBenchReadOnlyError
       | SealantPlatformError
       | ServiceBindError
       | ServiceStartError
@@ -416,9 +492,12 @@ export class SessionEngine extends Context.Service<
     readonly resumeSession: (
       sessionId: SessionId,
       harness: string | null,
+      fresh?: boolean,
     ) => Effect.Effect<
       Session,
       | SessionNotFoundError
+      | SessionNotLiveError
+      | LegacyBenchReadOnlyError
       | ProjectNotFoundError
       | SealantPlatformError
       | HarnessStateError
@@ -1351,7 +1430,10 @@ export class SessionEngine extends Context.Service<
             "-c",
             `mkdir -p "$HOME/.claude" "$HOME/.codex"; ` +
               `for f in "$HOME/.claude/CLAUDE.md" "$HOME/.codex/AGENTS.md"; do ` +
-              `grep -Eq "mend:(mounts|references)" "$f" 2>/dev/null || printf '%s' "$1" >> "$f"; done`,
+              `node -e 'const fs=require("fs"),p=process.argv[1],n=process.argv[2];` +
+              `let s="";try{s=fs.readFileSync(p,"utf8")}catch{}` +
+              `s=s.replace(/\\n?<!-- mend:mounts -->[\\s\\S]*$/,"");fs.writeFileSync(p,s+n)' ` +
+              `"$f" "$1"; done`,
             "sh",
             note,
           ])
@@ -1402,13 +1484,142 @@ export class SessionEngine extends Context.Service<
         };
       });
 
+      /** Stage converted harness files through the mounted worktree into one workspace home. */
+      const placeConvertedFiles = (
+        session: Session,
+        workspace: Workspace,
+        worktree: string,
+        files: ConvertedNativeSession["files"],
+        dirName: string,
+      ): Effect.Effect<
+        void,
+        HarnessStateIOError | HarnessStateCommandError | SealantPlatformError
+      > => {
+        const importDir = path.join(worktree, dirName);
+        return Effect.tryPromise({
+          try: async () => {
+            for (const file of files) {
+              const target = path.join(importDir, file.path);
+              await fs.mkdir(path.dirname(target), { recursive: true });
+              await fs.writeFile(target, file.content);
+            }
+          },
+          catch: (cause) =>
+            new HarnessStateIOError({
+              sessionId: session.id,
+              operation: "stage-import",
+              path: importDir,
+              message: `Could not stage the converted session state for session ${session.id}.`,
+              cause,
+            }),
+        }).pipe(
+          Effect.andThen(
+            sealant.exec(workspace, [
+              "sh",
+              "-c",
+              `cp -a "/workspace/repo/${dirName}/." "$HOME"/ && rm -rf "/workspace/repo/${dirName}"`,
+            ]),
+          ),
+          Effect.flatMap((result) =>
+            result.exitCode === 0
+              ? Effect.void
+              : Effect.fail(
+                  new HarnessStateCommandError({
+                    sessionId: session.id,
+                    harness: session.harness,
+                    operation: "import-session",
+                    exitCode: result.exitCode,
+                    stderr: result.stderr,
+                    message: `Could not import converted state for session ${session.id}.`,
+                  }),
+                ),
+          ),
+          Effect.ensuring(
+            Effect.promise(() => fs.rm(importDir, { recursive: true, force: true })).pipe(
+              Effect.ignore,
+            ),
+          ),
+        );
+      };
+
+      /** Settle one coding-agent run from its PTY without owning the workspace lifetime. */
+      const forkAgentPtyWatcher = (
+        sessionId: SessionId,
+        pty: {
+          readonly status: () => Promise<{ readonly status: string; readonly exitCode?: number }>;
+        },
+        sealantRunId: SealantRunId,
+        agentProcess: SessionProcess,
+        interactiveShell: boolean,
+      ) =>
+        Effect.forkIn(
+          Effect.gen(function* () {
+            let blindPolls = 0;
+            for (;;) {
+              yield* Effect.sleep("2 seconds");
+              const status = yield* Effect.tryPromise({
+                try: () => pty.status(),
+                catch: (cause) =>
+                  new SealantPlatformError({
+                    code: "session_status_failed",
+                    status: null,
+                    message: "session status failed",
+                    cause,
+                  }),
+              }).pipe(Effect.catchTag("SealantPlatformError", () => Effect.succeed(null)));
+              if (status === null) {
+                blindPolls += 1;
+                if (blindPolls % 30 === 0) {
+                  yield* Effect.logWarning("session engine: pty status unreachable").pipe(
+                    Effect.annotateLogs({ sessionId, blindPolls }),
+                  );
+                }
+                continue;
+              }
+              blindPolls = 0;
+              if (status.status === "running" || status.status === "starting") continue;
+              const current = yield* sessions.byId(sessionId);
+              if (current.settledAt !== null) return;
+              const outcome =
+                interactiveShell || status.exitCode === undefined || status.exitCode === 0
+                  ? "completed"
+                  : "failed";
+              yield* processes.markExited(agentProcess.id, "exited", status.exitCode ?? null);
+              yield* sessionRuns.settle(
+                sealantRunId,
+                outcome,
+                status.exitCode === undefined ? null : `exited with code ${status.exitCode}`,
+              );
+              yield* sessions.settle(
+                sessionId,
+                outcome,
+                status.exitCode === undefined ? null : `exited with code ${status.exitCode}`,
+              );
+              const settled = yield* sessions.byId(sessionId);
+              const settledRun = yield* sessionRuns.bySealantRunId(sealantRunId);
+              yield* tryCheckpoint(settled, "turn-boundary", {
+                sealantRunId,
+                sequence: settledRun?.lastSeenSequence ?? 0n,
+              });
+              yield* refreshChangeHead(settled).pipe(Effect.ignore);
+              yield* sweepWorkspace(sessionId);
+              return;
+            }
+          }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void)),
+          scope,
+        );
+
       const launchInternal = Effect.fn("SessionEngine.launchInternal")(function* (
         sessionId: SessionId,
         argv: ReadonlyArray<string>,
         nativeImport: ConvertedNativeSession | null,
         manifestOverride?: HarnessStateManifest | null,
+        launchCorrelationId: string | null = null,
       ) {
         const session = yield* sessions.byId(sessionId);
+        if (isLegacyBench(session)) {
+          return yield* new LegacyBenchReadOnlyError({ sessionId });
+        }
         const project = yield* projects.byId(session.projectId);
         const worktree = worktreePathOf(project.storePath, session.worktree);
         // A bash launch (shell session, shell resume) is an open workbench:
@@ -1418,13 +1629,13 @@ export class SessionEngine extends Context.Service<
         // An explicit null skips both the read and the restore (a shell
         // resume tolerates a session that never harvested state).
         const manifest =
-          manifestOverride !== undefined
-            ? manifestOverride
-            : yield* readHarnessStateManifest(stateDir, session.id).pipe(
+          manifestOverride === undefined
+            ? yield* readHarnessStateManifest(stateDir, session.id).pipe(
                 Effect.catchTag("HarnessStateNotFoundError", (error) =>
                   session.sealantRunId === null ? Effect.succeed(null) : Effect.fail(error),
                 ),
-              );
+              )
+            : manifestOverride;
         // The in-workspace control surface: the session's socket + helper,
         // bound BEFORE the workspace exists so the mount can carry it. For a
         // claimed hot workspace the dir already exists — re-binding re-arms
@@ -1559,68 +1770,17 @@ export class SessionEngine extends Context.Service<
           }
         }
 
-        // Stage a converted session's files into the worktree and copy them
-        // into the workspace $HOME. Distinct dir per placement so parallel
-        // imports never collide.
-        const placeConvertedFiles = (
-          files: ConvertedNativeSession["files"],
-          dirName: string,
-        ): Effect.Effect<
-          void,
-          HarnessStateIOError | HarnessStateCommandError | SealantPlatformError
-        > => {
-          const importDir = path.join(worktree, dirName);
-          return Effect.tryPromise({
-            try: async () => {
-              for (const file of files) {
-                const target = path.join(importDir, file.path);
-                await fs.mkdir(path.dirname(target), { recursive: true });
-                await fs.writeFile(target, file.content);
-              }
-            },
-            catch: (cause) =>
-              new HarnessStateIOError({
-                sessionId,
-                operation: "stage-import",
-                path: importDir,
-                message: `Could not stage the converted session state for session ${sessionId}.`,
-                cause,
-              }),
-          }).pipe(
-            Effect.andThen(
-              sealant.exec(workspace, [
-                "sh",
-                "-c",
-                `cp -a "/workspace/repo/${dirName}/." "$HOME"/ && rm -rf "/workspace/repo/${dirName}"`,
-              ]),
-            ),
-            Effect.flatMap((result) =>
-              result.exitCode === 0
-                ? Effect.void
-                : Effect.fail(
-                    new HarnessStateCommandError({
-                      sessionId,
-                      harness: session.harness,
-                      operation: "import-session",
-                      exitCode: result.exitCode,
-                      stderr: result.stderr,
-                      message: `Could not import converted state for session ${sessionId}.`,
-                    }),
-                  ),
-            ),
-            Effect.ensuring(
-              Effect.promise(() => fs.rm(importDir, { recursive: true, force: true })).pipe(
-                Effect.ignore,
-              ),
-            ),
-          );
-        };
-
         if (nativeImport !== null) {
           // Cross-harness open: place the CONVERTED native session into the
           // fresh workspace's $HOME so the target harness resumes it as its
           // own — full history, its own session id, no distillation.
-          yield* placeConvertedFiles(nativeImport.files, ".mend-native-import").pipe(
+          yield* placeConvertedFiles(
+            session,
+            workspace,
+            worktree,
+            nativeImport.files,
+            ".mend-native-import",
+          ).pipe(
             Effect.tapError((error) =>
               sessions
                 .settle(sessionId, "failed", `resume failed: ${error.message}`)
@@ -1652,7 +1812,13 @@ export class SessionEngine extends Context.Service<
                 now: new Date().toISOString(),
               });
               if (converted === null) continue;
-              yield* placeConvertedFiles(converted.files, `.mend-native-import-${other}`).pipe(
+              yield* placeConvertedFiles(
+                session,
+                workspace,
+                worktree,
+                converted.files,
+                `.mend-native-import-${other}`,
+              ).pipe(
                 Effect.catch((error) =>
                   Effect.logWarning("session engine: sibling-harness import failed").pipe(
                     Effect.annotateLogs({ sessionId, harness: other, error: String(error) }),
@@ -1669,17 +1835,15 @@ export class SessionEngine extends Context.Service<
         if (provisioned.extraMounts.length > 0) {
           yield* sessions.setExtraMounts(sessionId, provisioned.extraMounts);
         }
-        // The mounts note lands after state restore (which rewrites $HOME); a hot workspace
-        // already carries it from prewarm.
-        if (adopted === null) {
-          yield* appendWorkspaceNote(
-            workspace,
-            project,
-            worktree,
-            provisioned.referenceMounts,
-            provisioned.extraMounts,
-          );
-        }
+        // State restore can rewrite $HOME, while a hot claim can freshen mend.toml after prewarm.
+        // Rewrite the managed note after both paths so it reflects the claimed worktree now.
+        yield* appendWorkspaceNote(
+          workspace,
+          project,
+          worktree,
+          provisioned.referenceMounts,
+          provisioned.extraMounts,
+        );
 
         const pty = yield* sealant
           .openSession(workspace, withHarnessBootstrap(session.harness, shapedArgv))
@@ -1717,80 +1881,17 @@ export class SessionEngine extends Context.Service<
           sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
           sealantSessionId: pty.id,
           sealantRunId,
+          launchCorrelationId,
           kind: "agent",
           label: session.harness,
           argv: shapedArgv,
         });
+        if (launchCorrelationId !== null) yield* sessions.reopen(sessionId);
         yield* sessions.setStatus(sessionId, "running");
         yield* forkSupervision(sessionId, sealantRunId);
 
-        // The run heartbeats past the PTY's exit (the workspace stays warm), so
-        // settle on the SESSION's lifecycle: poll status until it leaves
-        // `running`, then settle + checkpoint — unless supervision already did.
-        const watchPty = Effect.gen(function* () {
-          // A status error is blindness, not an exit: keep polling. Only an
-          // answered poll that says "not running" settles anything — so a
-          // control-plane restart mid-session never reads as a crash.
-          let blindPolls = 0;
-          for (;;) {
-            yield* Effect.sleep("2 seconds");
-            const status = yield* Effect.tryPromise({
-              try: () => pty.status(),
-              catch: (cause) =>
-                new SealantPlatformError({
-                  code: "session_status_failed",
-                  status: null,
-                  message: "session status failed",
-                  cause,
-                }),
-            }).pipe(Effect.catchTag("SealantPlatformError", () => Effect.succeed(null)));
-            if (status === null) {
-              blindPolls += 1;
-              if (blindPolls % 30 === 0) {
-                yield* Effect.logWarning("session engine: pty status unreachable").pipe(
-                  Effect.annotateLogs({ sessionId, blindPolls }),
-                );
-              }
-              continue;
-            }
-            blindPolls = 0;
-            if (status.status === "running") continue;
-            const current = yield* sessions.byId(sessionId);
-            if (current.settledAt !== null) return;
-            // An interactive shell's exit status is bash's $? — the LAST
-            // command's status, not a verdict: `^C` then `exit` reads 130,
-            // and nobody means "failed" by that (docs/BUGS.md 2026-08-13).
-            // The observed code still lands in the summary; only the verdict
-            // stops guessing.
-            const outcome =
-              interactiveShell || status.exitCode === undefined || status.exitCode === 0
-                ? "completed"
-                : "failed";
-            // The watcher knows the observed exit precisely; the sweep's reap
-            // would only record "exited" with the code lost.
-            yield* processes.markExited(agentProcess.id, "exited", status.exitCode ?? null);
-            yield* sessionRuns.settle(
-              sealantRunId,
-              outcome,
-              status.exitCode === undefined ? null : `exited with code ${status.exitCode}`,
-            );
-            yield* sessions.settle(
-              sessionId,
-              outcome,
-              status.exitCode === undefined ? null : `exited with code ${status.exitCode}`,
-            );
-            const settled = yield* sessions.byId(sessionId);
-            const settledRun = yield* sessionRuns.bySealantRunId(sealantRunId);
-            yield* tryCheckpoint(settled, "turn-boundary", {
-              sealantRunId,
-              sequence: settledRun?.lastSeenSequence ?? 0n,
-            });
-            yield* refreshChangeHead(settled).pipe(Effect.ignore);
-            yield* sweepWorkspace(sessionId);
-            return;
-          }
-        }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void));
-        yield* Effect.forkIn(watchPty, scope);
+        // The coding-agent run settles independently; supporting-process leases own retention.
+        yield* forkAgentPtyWatcher(sessionId, pty, sealantRunId, agentProcess, interactiveShell);
         return yield* sessions.byId(sessionId);
       });
 
@@ -1855,11 +1956,141 @@ export class SessionEngine extends Context.Service<
         return { sourceHarness: session.harness, events: canonical?.events ?? [] };
       });
 
+      /** Start the next coding-agent run without replacing a workspace retained by live leases. */
+      const launchInRetainedWorkspace = Effect.fn("SessionEngine.launchInRetainedWorkspace")(
+        function* (
+          sessionId: SessionId,
+          argv: ReadonlyArray<string>,
+          nativeImport: ConvertedNativeSession | null,
+          launchCorrelationId: string | null = null,
+        ) {
+          const session = yield* sessions.byId(sessionId);
+          const project = yield* projects.byId(session.projectId);
+          const worktree = worktreePathOf(project.storePath, session.worktree);
+          const workspace = yield* workspaceForSupportingProcess(session);
+          if (nativeImport !== null) {
+            yield* placeConvertedFiles(
+              session,
+              workspace,
+              worktree,
+              nativeImport.files,
+              ".mend-native-import-retained",
+            );
+          }
+          yield* socketHost.start(sessionId, socketApiFor(sessionId)).pipe(Effect.ignore);
+          const interactiveShell = argv[0] === "bash";
+          const shapedArgv = interactiveShell
+            ? interactiveShellArgv(session.workspaceImage, argv.slice(1))
+            : argv;
+          const pty = yield* sealant
+            .openSession(workspace, withHarnessBootstrap(session.harness, shapedArgv))
+            .pipe(
+              Effect.tapError((error) =>
+                sessions
+                  .settle(sessionId, "failed", `resume failed: ${error.message}`)
+                  .pipe(Effect.ignore),
+              ),
+            );
+          const sealantRunId = SealantRunId.make(pty.runId);
+          const previousRun = yield* sessionRuns.latestForSession(sessionId);
+          yield* sessionRuns.create({
+            sessionId,
+            harness: session.harness,
+            sealantRunId,
+            sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
+            sealantSessionId: pty.id,
+            ...(previousRun === null
+              ? {}
+              : {
+                  environmentRevision: previousRun.environmentRevision,
+                  environmentVariableNames: previousRun.environmentVariableNames,
+                  secretRevision: previousRun.secretRevision,
+                  secretNames: previousRun.secretNames,
+                }),
+          });
+          yield* sessions.setSealantIds(
+            sessionId,
+            sealantRunId,
+            SealantWorkspaceId.make(workspace.id),
+          );
+          yield* sessions.setSealantSessionId(sessionId, pty.id);
+          const agentProcess = yield* processes.create({
+            sessionId,
+            sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
+            sealantSessionId: pty.id,
+            sealantRunId,
+            launchCorrelationId,
+            kind: "agent",
+            label: session.harness,
+            argv: shapedArgv,
+          });
+          if (launchCorrelationId !== null) yield* sessions.reopen(sessionId);
+          yield* sessions.setStatus(sessionId, "running");
+          yield* forkSupervision(sessionId, sealantRunId);
+          yield* forkAgentPtyWatcher(sessionId, pty, sealantRunId, agentProcess, interactiveShell);
+          return yield* sessions.byId(sessionId);
+        },
+      );
+
+      const retainedWorkspaceAvailable = Effect.fn("SessionEngine.retainedWorkspaceAvailable")(
+        function* (session: Session) {
+          if (session.sealantWorkspaceId === null) return false;
+          const supportingLeases = (yield* processes.listLiveForWorkspace(
+            session.sealantWorkspaceId,
+          )).filter((process) => process.kind !== "agent");
+          if (supportingLeases.length === 0) return false;
+          return yield* Effect.gen(function* () {
+            const workspace = yield* sealant.getWorkspace(session.sealantWorkspaceId ?? "");
+            const status = yield* Effect.promise(() => workspace.status());
+            return workspaceIsLive(status);
+          }).pipe(
+            Effect.catch(() => Effect.succeed(false)),
+            Effect.catchDefect(() => Effect.succeed(false)),
+          );
+        },
+      );
+
+      const launchFollowUp = Effect.fn("SessionEngine.launchFollowUp")(function* (
+        sessionId: SessionId,
+        instruction: string,
+        launchCorrelationId: string,
+      ) {
+        const session = yield* sessions.byId(sessionId);
+        if (isLegacyBench(session)) {
+          return yield* new LegacyBenchReadOnlyError({ sessionId });
+        }
+        if (session.settledAt === null && ACTIVE_STATUSES.has(session.status)) {
+          return yield* new SealantPlatformError({
+            code: "session_active",
+            status: null,
+            message: "The session became active before this follow-up could be delivered.",
+            cause: null,
+          });
+        }
+        const argv = promptArgv(session.harness, instruction);
+        if (argv === null) {
+          return yield* new SealantPlatformError({
+            code: "unknown_harness",
+            status: null,
+            message: `Harness "${session.harness}" has no known follow-up command.`,
+            cause: null,
+          });
+        }
+        const retainCurrentWorkspace = yield* retainedWorkspaceAvailable(session);
+        return yield* retainCurrentWorkspace
+          ? launchInRetainedWorkspace(sessionId, argv, null, launchCorrelationId)
+          : launchInternal(sessionId, argv, null, undefined, launchCorrelationId);
+      });
+
       const resumeSession = Effect.fn("SessionEngine.resumeSession")(function* (
         sessionId: SessionId,
         harness: string | null,
+        fresh = false,
       ) {
         const session = yield* sessions.byId(sessionId);
+        if (isLegacyBench(session)) {
+          return yield* new LegacyBenchReadOnlyError({ sessionId });
+        }
         if (session.settledAt === null && ACTIVE_STATUSES.has(session.status)) {
           return yield* new SealantPlatformError({
             code: "session_active",
@@ -1869,6 +2100,7 @@ export class SessionEngine extends Context.Service<
           });
         }
         const target = harness ?? session.harness;
+        const retainCurrentWorkspace = !fresh && (yield* retainedWorkspaceAvailable(session));
         // A shell resume reopens the worktree with no agent: saved state
         // restored when it exists — and none required, because the session
         // that died before harvesting is exactly the one worth a shell. The
@@ -1882,7 +2114,9 @@ export class SessionEngine extends Context.Service<
             Effect.catchTag("HarnessStateNotFoundError", () => Effect.succeed(null)),
           );
           yield* sessions.reopen(sessionId);
-          return yield* launchInternal(sessionId, ["bash"], null, manifest);
+          return yield* retainCurrentWorkspace
+            ? launchInRetainedWorkspace(sessionId, ["bash"], null)
+            : launchInternal(sessionId, ["bash"], null, manifest);
         }
         const defaultArgv = HARNESS_ARGV[target];
         if (defaultArgv === undefined) {
@@ -1940,10 +2174,7 @@ export class SessionEngine extends Context.Service<
             cwd: "/workspace/repo",
             now: new Date().toISOString(),
           });
-          if (nativeImport !== null) {
-            argv = nativeImport.resumeArgv;
-            yield* sessions.setProviderSessionId(sessionId, nativeImport.providerSessionId);
-          } else {
+          if (nativeImport === null) {
             const turns = extractTranscript(manifest.harness, native);
             if (turns.length === 0) {
               return yield* new HarnessStateInvalidError({
@@ -1963,11 +2194,19 @@ export class SessionEngine extends Context.Service<
               });
             }
             argv = openingArgv;
+          } else {
+            argv = nativeImport.resumeArgv;
+            yield* sessions.setProviderSessionId(sessionId, nativeImport.providerSessionId);
           }
+        }
+        if (retainCurrentWorkspace && manifest.harness === target) {
+          argv = nativeResumeArgv(target, manifest.providerSessionId, argv);
         }
         if (target !== session.harness) yield* sessions.setHarness(sessionId, target);
         yield* sessions.reopen(sessionId);
-        return yield* launchInternal(sessionId, argv, nativeImport, manifest);
+        return yield* retainCurrentWorkspace
+          ? launchInRetainedWorkspace(sessionId, argv, nativeImport)
+          : launchInternal(sessionId, argv, nativeImport, manifest);
       });
 
       const stop = Effect.fn("SessionEngine.stop")(function* (sessionId: SessionId) {
@@ -1988,26 +2227,107 @@ export class SessionEngine extends Context.Service<
         yield* Effect.forkIn(sweepWorkspace(sessionId), scope);
       });
 
+      const workspaceForSupportingProcess = Effect.fn(
+        "SessionEngine.workspaceForSupportingProcess",
+      )(function* (session: Session) {
+        const workspaceId = session.sealantWorkspaceId;
+        if (workspaceId === null) return yield* new SessionNotLiveError({ sessionId: session.id });
+        const workspace = yield* sealant.getWorkspace(workspaceId);
+        const status = yield* Effect.tryPromise({
+          try: () => workspace.status(),
+          catch: (cause) =>
+            new SealantPlatformError({
+              code: "workspace_status_failed",
+              status: null,
+              message: "Could not observe the session workspace status.",
+              cause,
+            }),
+        });
+        if (!workspaceIsLive(status)) {
+          return yield* new SessionNotLiveError({ sessionId: session.id });
+        }
+        return workspace;
+      });
+
       const openShell = Effect.fn("SessionEngine.openShell")(function* (sessionId: SessionId) {
         const session = yield* sessions.byId(sessionId);
-        if (session.sealantWorkspaceId === null || session.settledAt !== null) {
-          return yield* new SessionNotLiveError({ sessionId });
+        if (isLegacyBench(session)) {
+          return yield* new LegacyBenchReadOnlyError({ sessionId });
         }
-        const workspace = yield* sealant.getWorkspace(session.sealantWorkspaceId);
+        const workspace = yield* workspaceForSupportingProcess(session);
+        const existing = yield* processes.listForSession(sessionId);
+        const shellNumber =
+          existing.reduce((largest, process) => {
+            if (process.kind !== "shell" || process.label === null) return largest;
+            const match = /^shell (\d+)$/.exec(process.label);
+            const value = match?.[1] === undefined ? 0 : Number(match[1]);
+            return Number.isSafeInteger(value) ? Math.max(largest, value) : largest;
+          }, 0) + 1;
         // The image stamped at launch names the login shell this tab should run.
         const shellArgv = interactiveShellArgv(session.workspaceImage);
         const pty = yield* sealant.openSession(workspace, shellArgv);
         const shellProcess = yield* processes.create({
           sessionId,
-          sealantWorkspaceId: session.sealantWorkspaceId,
+          sealantWorkspaceId: session.sealantWorkspaceId ?? SealantWorkspaceId.make(workspace.id),
           sealantSessionId: pty.id,
           sealantRunId: SealantRunId.make(pty.runId),
           kind: "shell",
-          label: "shell",
+          label: `shell ${shellNumber}`,
           argv: shellArgv,
         });
         yield* Effect.forkIn(watchProcess(shellProcess), scope);
         return shellProcess;
+      });
+
+      const stopShell = Effect.fn("SessionEngine.stopShell")(function* (
+        processId: SessionProcessId,
+      ) {
+        const shell = yield* processes.byId(processId);
+        if (shell === null || shell.kind !== "shell") {
+          return yield* new ShellProcessNotFoundError({ processId });
+        }
+        if (shell.exitedAt !== null) return shell;
+        if (shell.sealantSessionId === null) {
+          return yield* new ShellProcessNotFoundError({ processId });
+        }
+        yield* closeProcessPty(shell.sealantWorkspaceId, shell.sealantSessionId);
+        yield* processes.markExited(processId, "stopped", null);
+        yield* stopWorkspaceIfUnleased(shell.sessionId);
+        return (yield* processes.byId(processId)) ?? shell;
+      });
+
+      const renameShell = Effect.fn("SessionEngine.renameShell")(function* (
+        processId: SessionProcessId,
+        requestedLabel: string,
+      ) {
+        const shell = yield* processes.byId(processId);
+        if (shell === null || shell.kind !== "shell" || shell.exitedAt !== null) {
+          return yield* new ShellProcessNotFoundError({ processId });
+        }
+        const label = requestedLabel.trim();
+        if (label.length === 0 || label.length > 64) {
+          return yield* new ShellLabelError({
+            processId,
+            message: "A shell label must contain between 1 and 64 characters.",
+          });
+        }
+        const siblings = yield* processes.listForSession(shell.sessionId);
+        if (
+          siblings.some(
+            (process) =>
+              process.id !== processId &&
+              process.kind === "shell" &&
+              process.exitedAt === null &&
+              process.label === label,
+          )
+        ) {
+          return yield* new ShellLabelError({
+            processId,
+            message: `A live shell named "${label}" already exists in this session.`,
+          });
+        }
+        yield* processes.setLabel(processId, label);
+        return (yield* processes.byId(processId)) ?? shell;
       });
 
       const addService = Effect.fn("SessionEngine.addService")(function* (
@@ -2017,10 +2337,11 @@ export class SessionEngine extends Context.Service<
         protocol: "tcp" | "udp" = "tcp",
       ) {
         const session = yield* sessions.byId(sessionId);
-        if (session.sealantWorkspaceId === null || session.settledAt !== null) {
-          return yield* new SessionNotLiveError({ sessionId });
+        if (isLegacyBench(session)) {
+          return yield* new LegacyBenchReadOnlyError({ sessionId });
         }
-        const workspaceId = session.sealantWorkspaceId;
+        const workspace = yield* workspaceForSupportingProcess(session);
+        const workspaceId = SealantWorkspaceId.make(workspace.id);
         const label = name ?? `port-${workspacePort}`;
         const liveHere = yield* processes.listLiveForWorkspace(workspaceId);
         if (liveHere.some((row) => row.kind === "service" && row.label === label)) {
@@ -2032,12 +2353,12 @@ export class SessionEngine extends Context.Service<
         // still a valid Service — it just reads unreachable until it does.
         // UDP has no handshake to probe: the row starts "running" and a
         // reply (the only evidence there is) flips it reachable.
-        const status =
-          protocol === "udp"
-            ? ("running" as const)
-            : (yield* serviceHost.probe(workspaceId, workspacePort))
-              ? ("reachable" as const)
-              : ("unreachable" as const);
+        let status: "running" | "reachable" | "unreachable" = "running";
+        if (protocol === "tcp") {
+          status = (yield* serviceHost.probe(workspaceId, workspacePort))
+            ? "reachable"
+            : "unreachable";
+        }
         const serviceProcess = yield* processes.create({
           sessionId,
           sealantWorkspaceId: workspaceId,
@@ -2060,8 +2381,8 @@ export class SessionEngine extends Context.Service<
         return created ?? serviceProcess;
       });
 
-      /** Close a Service's PTY — the daemon reaps the process group. Quiet: a gone PTY is done. */
-      const closeServicePty = (workspaceId: SealantWorkspaceId, ptyId: string) =>
+      /** Close a process PTY; the daemon reaps its foreground process group. */
+      const closeProcessPty = (workspaceId: SealantWorkspaceId, ptyId: string) =>
         sealant.getWorkspace(workspaceId).pipe(
           Effect.flatMap((workspace) => sealant.getSession(workspace, ptyId)),
           Effect.flatMap((pty) =>
@@ -2122,10 +2443,11 @@ export class SessionEngine extends Context.Service<
         protocol: "tcp" | "udp" = "tcp",
       ) {
         const session = yield* sessions.byId(sessionId);
-        if (session.sealantWorkspaceId === null || session.settledAt !== null) {
-          return yield* new SessionNotLiveError({ sessionId });
+        if (isLegacyBench(session)) {
+          return yield* new LegacyBenchReadOnlyError({ sessionId });
         }
-        const workspaceId = session.sealantWorkspaceId;
+        const workspace = yield* workspaceForSupportingProcess(session);
+        const workspaceId = SealantWorkspaceId.make(workspace.id);
         const label = name ?? argv[0] ?? "service";
         const liveHere = yield* processes.listLiveForWorkspace(workspaceId);
         if (liveHere.some((row) => row.kind === "service" && row.label === label)) {
@@ -2133,7 +2455,6 @@ export class SessionEngine extends Context.Service<
             message: `A live Service named "${label}" already exists in this session — stop it or pick another name.`,
           });
         }
-        const workspace = yield* sealant.getWorkspace(workspaceId);
         const pty = yield* sealant.openSession(workspace, argv);
         const serviceProcess = yield* processes.create({
           sessionId,
@@ -2183,7 +2504,7 @@ ${tail}`),
           .start({ processId: serviceProcess.id, workspaceId, workspacePort, protocol })
           .pipe(
             Effect.tapError(() =>
-              closeServicePty(workspaceId, pty.id).pipe(
+              closeProcessPty(workspaceId, pty.id).pipe(
                 Effect.andThen(processes.markExited(serviceProcess.id, "exited", null)),
               ),
             ),
@@ -2214,7 +2535,7 @@ ${tail}`),
         const workspaceId = serviceProcess.sealantWorkspaceId;
         // End the old process first; repointing the row makes its watcher stand down.
         if (serviceProcess.sealantSessionId !== null) {
-          yield* closeServicePty(workspaceId, serviceProcess.sealantSessionId);
+          yield* closeProcessPty(workspaceId, serviceProcess.sealantSessionId);
         }
         const workspace = yield* sealant.getWorkspace(workspaceId);
         const pty = yield* sealant.openSession(workspace, serviceProcess.argv);
@@ -2405,7 +2726,7 @@ ${tail}`),
         }
         // Supervised: end the process itself (PTY close reaps the group).
         if (serviceProcess.sealantSessionId !== null) {
-          yield* closeServicePty(
+          yield* closeProcessPty(
             serviceProcess.sealantWorkspaceId,
             serviceProcess.sealantSessionId,
           );
@@ -2873,10 +3194,13 @@ ${tail}`),
         provision,
         attachRun,
         launch,
+        launchFollowUp,
         reconcileHotSessions: requestHotReconcile,
         checkpointNow,
         stop,
         openShell,
+        stopShell,
+        renameShell,
         addService,
         runService,
         restartService,

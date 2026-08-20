@@ -17,15 +17,24 @@ import {
   ProjectEnvironmentLimitError,
   ReferencesRepo,
   ReviewCommentsRepo,
+  ReviewSlicesRepo,
   SessionChangesRepo,
   SessionProcessesRepo,
   SessionsRepo,
   SettingsRepo,
   UserDotfilesRepo,
 } from "@mend/db";
-import { MendSettings, workspaceImagesEqual, type ProjectId } from "@mend/domain";
 import {
-  FollowUp,
+  MendSettings,
+  workspaceImagesEqual,
+  type ChangeId,
+  type ProjectId,
+  type ReviewSliceId,
+} from "@mend/domain";
+import {
+  DiffDigest,
+  ReviewCommentAnchor,
+  type ReviewSlice,
   formatProjectEnvironmentIssue,
   parseDotenv,
   resolveAutomation,
@@ -35,7 +44,13 @@ import {
 } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
 import { SealantClient } from "@mend/sealant";
-import { RECIPE_NAME, SessionEngine, mergeRecipes, readServiceRecipes } from "@mend/sessions";
+import {
+  FollowUpDelivery,
+  RECIPE_NAME,
+  SessionEngine,
+  mergeRecipes,
+  readServiceRecipes,
+} from "@mend/sessions";
 import {
   AgentBridge,
   MendKeys,
@@ -74,7 +89,11 @@ import {
   DotfilesSnapshotFileView,
   DotfilesSnapshotView,
   DotfilesView,
+  OpenReviewResult,
   RemovalReport,
+  ReviewDiffFileView,
+  ReviewDiffHunkView,
+  ReviewDiffView,
   SessionActive,
   SessionAnnotation,
   SessionDetail,
@@ -86,6 +105,7 @@ import {
   WorkspacePackageResolutionView,
 } from "./contract.ts";
 import { HostEnvironment } from "./host-environment.ts";
+import { digestReviewPatch, lineAnchorExists, parseReviewDiff } from "./review-diff.ts";
 import {
   resolveWorkspaceEnvironment,
   saveResolvedWorkspaceEnvironment,
@@ -1277,10 +1297,38 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           Effect.catchTag("SessionNotFoundError", () =>
             Effect.fail(new NotFound({ id: params.id })),
           ),
+          Effect.catchTag("LegacyBenchReadOnlyError", () =>
+            Effect.fail(new StoreFailure({ message: "Legacy bench sessions are review-only." })),
+          ),
           Effect.catchTag("SessionNotLiveError", () =>
             Effect.fail(new SessionNotLive({ id: params.id })),
           ),
           Effect.catchTag("SealantPlatformError", (error) =>
+            Effect.fail(new StoreFailure({ message: error.message })),
+          ),
+        );
+      }),
+    )
+    .handle("stopShell", ({ params }) =>
+      Effect.gen(function* () {
+        const engine = yield* SessionEngine;
+        return yield* engine
+          .stopShell(params.id)
+          .pipe(
+            Effect.catchTag("ShellProcessNotFoundError", () =>
+              Effect.fail(new NotFound({ id: params.id })),
+            ),
+          );
+      }),
+    )
+    .handle("renameShell", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const engine = yield* SessionEngine;
+        return yield* engine.renameShell(params.id, payload.label).pipe(
+          Effect.catchTag("ShellProcessNotFoundError", () =>
+            Effect.fail(new NotFound({ id: params.id })),
+          ),
+          Effect.catchTag("ShellLabelError", (error) =>
             Effect.fail(new StoreFailure({ message: error.message })),
           ),
         );
@@ -1295,12 +1343,18 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             Effect.catchTag("SessionNotFoundError", () =>
               Effect.fail(new NotFound({ id: params.id })),
             ),
+            Effect.catchTag("LegacyBenchReadOnlyError", () =>
+              Effect.fail(new StoreFailure({ message: "Legacy bench sessions are review-only." })),
+            ),
             Effect.catchTag("SessionNotLiveError", () =>
               Effect.fail(new SessionNotLive({ id: params.id })),
             ),
-            Effect.catchTag("ServiceBindError", (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            ),
+            Effect.catchTags({
+              SealantPlatformError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+              ServiceBindError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+            }),
           );
       }),
     )
@@ -1312,6 +1366,9 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           .pipe(
             Effect.catchTag("SessionNotFoundError", () =>
               Effect.fail(new NotFound({ id: params.id })),
+            ),
+            Effect.catchTag("LegacyBenchReadOnlyError", () =>
+              Effect.fail(new StoreFailure({ message: "Legacy bench sessions are review-only." })),
             ),
             Effect.catchTag("SessionNotLiveError", () =>
               Effect.fail(new SessionNotLive({ id: params.id })),
@@ -1425,16 +1482,32 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
       Effect.gen(function* () {
         const sessions = yield* SessionsRepo;
         const projects = yield* ProjectsRepo;
+        const processes = yield* SessionProcessesRepo;
         const store = yield* Store;
         const session = yield* sessions
           .byId(params.id)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-        if (LIVE_STATES.has(session.status)) {
+        const liveProcesses = (yield* processes.listForSession(params.id)).filter(
+          (process) => process.exitedAt === null,
+        );
+        if (LIVE_STATES.has(session.status) || liveProcesses.length > 0) {
           return yield* new SessionActive({ id: params.id });
         }
         const project = yield* projects
           .byId(session.projectId)
           .pipe(Effect.mapError(() => new NotFound({ id: session.projectId })));
+        if (session.harness === "shell" && session.label === "bench") {
+          const worktree = worktreePathOf(project.storePath, session.worktree);
+          const diff = yield* store
+            .diffWorktree(worktree, session.baseSha)
+            .pipe(Effect.mapError((error) => new StoreFailure({ message: error.stderr })));
+          if (diff.trim() !== "") {
+            return yield* new StoreFailure({
+              message:
+                "This legacy bench still contains a reviewable change. Review, export, commit, or discard it before removal.",
+            });
+          }
+        }
         const { leftover } = yield* store.removeWorktreeForce(project.storePath, session.worktree);
         yield* sessions.remove(params.id);
         return new RemovalReport({ removed: true, leftover });
@@ -1507,12 +1580,18 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     .handle("resume", ({ params, payload }) =>
       Effect.gen(function* () {
         const engine = yield* SessionEngine;
-        return yield* engine.resumeSession(params.id, payload.harness).pipe(
+        return yield* engine.resumeSession(params.id, payload.harness, payload.fresh ?? false).pipe(
           Effect.catchTag("SessionNotFoundError", () =>
             Effect.fail(new NotFound({ id: params.id })),
           ),
+          Effect.catchTag("LegacyBenchReadOnlyError", () =>
+            Effect.fail(new StoreFailure({ message: "Legacy bench sessions are review-only." })),
+          ),
           Effect.catchTag("ProjectNotFoundError", () =>
             Effect.fail(new NotFound({ id: params.id })),
+          ),
+          Effect.catchTag("SessionNotLiveError", () =>
+            Effect.fail(new StoreFailure({ message: "The retained workspace is not reachable." })),
           ),
           Effect.catchTag("SealantPlatformError", (error) =>
             Effect.fail(new StoreFailure({ message: error.message })),
@@ -1574,6 +1653,9 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           Effect.catchTag("SessionNotFoundError", () =>
             Effect.fail(new NotFound({ id: params.id })),
           ),
+          Effect.catchTag("LegacyBenchReadOnlyError", () =>
+            Effect.fail(new StoreFailure({ message: "Legacy bench sessions are review-only." })),
+          ),
           Effect.catchTag("ProjectNotFoundError", () =>
             Effect.fail(new NotFound({ id: params.id })),
           ),
@@ -1597,42 +1679,27 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         );
       }),
     )
-    .handle("followUpCreate", ({ params, payload }) =>
-      Effect.gen(function* () {
-        const sessions = yield* SessionsRepo;
-        const changes = yield* SessionChangesRepo;
-        const followUps = yield* FollowUpsRepo;
-        const comments = yield* ReviewCommentsRepo;
-        yield* sessions
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-        const change = yield* changes.bySession(params.id);
-        if (change === null) return yield* new NotFound({ id: params.id });
-        const followUp = yield* followUps.create(params.id, change.id, payload.instruction);
-        // The bundle carries the open comments — record where they went.
-        const open = yield* comments.listForChange(change.id);
-        yield* Effect.forEach(
-          open.filter((comment) => comment.state === "open" && comment.sentToSessionId === null),
-          (comment) => comments.markSent(comment.id, params.id),
-        );
-        return followUp;
-      }),
-    )
     .handle("followUpPending", ({ params }) =>
       Effect.gen(function* () {
         const followUps = yield* FollowUpsRepo;
-        return yield* followUps.pendingForSession(params.id);
+        return yield* followUps.activeForSession(params.id);
       }),
     )
-    .handle("followUpDeliver", ({ params }) =>
+    .handle("followUpDeliver", ({ params, payload }) =>
       Effect.gen(function* () {
-        const sessions = yield* SessionsRepo;
-        const followUps = yield* FollowUpsRepo;
-        const pending = yield* followUps.pendingForSession(params.id);
-        if (pending === null) return yield* new NotFound({ id: params.id });
-        yield* followUps.markDelivered(pending.id);
-        yield* sessions.reopen(params.id);
-        return new FollowUp({ ...pending, status: "delivered", deliveredAt: new Date() });
+        const delivery = yield* FollowUpDelivery;
+        return yield* delivery
+          .deliver({
+            sessionId: params.id,
+            reviewSliceId: payload.reviewSliceId,
+            checkpointAId: payload.checkpointAId,
+            checkpointBId: payload.checkpointBId,
+            diffDigest: payload.diffDigest,
+            commentIds: payload.commentIds,
+            instruction: payload.instruction,
+            idempotencyKey: payload.idempotencyKey,
+          })
+          .pipe(Effect.mapError((error) => new StoreFailure({ message: error.message })));
       }),
     ),
 );
@@ -1640,8 +1707,324 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
 const toFailure = (error: { readonly stderr: string }) =>
   new StoreFailure({ message: error.stderr });
 
+const openReviewResult = Effect.fn("SessionChanges.openReviewResult")(function* (
+  slice: ReviewSlice,
+  reused: boolean,
+) {
+  const checkpoints = yield* CheckpointsRepo;
+  const checkpointA = yield* checkpoints.byId(slice.checkpointAId);
+  const checkpointB = yield* checkpoints.byId(slice.checkpointBId);
+  if (checkpointA === null || checkpointB === null) {
+    return yield* new NotFound({ id: slice.id });
+  }
+  return new OpenReviewResult({ slice, checkpointA, checkpointB, reused });
+});
+
+const loadReviewContext = Effect.fn("SessionChanges.loadReviewContext")(function* (
+  changeId: ChangeId,
+  sliceId: ReviewSliceId,
+) {
+  const changes = yield* SessionChangesRepo;
+  const sessions = yield* SessionsRepo;
+  const projects = yield* ProjectsRepo;
+  const slices = yield* ReviewSlicesRepo;
+  const checkpoints = yield* CheckpointsRepo;
+  const change = yield* changes
+    .byId(changeId)
+    .pipe(Effect.mapError(() => new NotFound({ id: changeId })));
+  const slice = yield* slices.byId(sliceId);
+  if (slice === null || slice.changeId !== changeId) {
+    return yield* new NotFound({ id: sliceId });
+  }
+  const session = yield* sessions
+    .byId(change.sessionId)
+    .pipe(Effect.mapError(() => new NotFound({ id: change.sessionId })));
+  const project = yield* projects
+    .byId(change.projectId)
+    .pipe(Effect.mapError(() => new NotFound({ id: change.projectId })));
+  const checkpointA = yield* checkpoints.byId(slice.checkpointAId);
+  const checkpointB = yield* checkpoints.byId(slice.checkpointBId);
+  if (
+    checkpointA === null ||
+    checkpointB === null ||
+    checkpointA.sessionId !== session.id ||
+    checkpointB.sessionId !== session.id
+  ) {
+    return yield* new NotFound({ id: slice.id });
+  }
+  return {
+    change,
+    session,
+    project,
+    slice,
+    checkpointA,
+    checkpointB,
+    worktree: worktreePathOf(project.storePath, session.worktree),
+  };
+});
+
 export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionChanges", (handlers) =>
   handlers
+    .handle("openReview", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const slices = yield* ReviewSlicesRepo;
+        return yield* slices.withChangeLock(
+          params.id,
+          Effect.gen(function* () {
+            const key = payload.idempotencyKey.trim();
+            if (key === "" || key.length > 200) {
+              return yield* new StoreFailure({
+                message: "Review idempotency keys must contain between 1 and 200 characters.",
+              });
+            }
+            const changes = yield* SessionChangesRepo;
+            const sessions = yield* SessionsRepo;
+            const projects = yield* ProjectsRepo;
+            const checkpoints = yield* CheckpointsRepo;
+            const store = yield* Store;
+            const engine = yield* SessionEngine;
+            const change = yield* changes
+              .byId(params.id)
+              .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+            const existing = yield* slices.byIdempotencyKey(params.id, key);
+            if (existing !== null) return yield* openReviewResult(existing, true);
+
+            const session = yield* sessions
+              .byId(change.sessionId)
+              .pipe(Effect.mapError(() => new NotFound({ id: change.sessionId })));
+            const project = yield* projects
+              .byId(change.projectId)
+              .pipe(Effect.mapError(() => new NotFound({ id: change.projectId })));
+            const worktree = worktreePathOf(project.storePath, session.worktree);
+            const sessionCheckpoints = yield* checkpoints.listForSession(session.id);
+            const checkpointA = sessionCheckpoints.find(
+              (checkpoint) => checkpoint.trigger === "session-start",
+            );
+            if (checkpointA === undefined) {
+              return yield* new StoreFailure({
+                message: "The session has no session-start checkpoint to anchor Review.",
+              });
+            }
+
+            const latest = yield* slices.latestForChange(params.id);
+            if (latest !== null) {
+              const latestB = yield* checkpoints.byId(latest.checkpointBId);
+              if (latestB !== null) {
+                const worktreeMatches = yield* store
+                  .worktreeMatchesCommit(worktree, latestB.sha)
+                  .pipe(Effect.mapError(toFailure));
+                if (worktreeMatches) {
+                  const reused = yield* slices.create({
+                    changeId: params.id,
+                    checkpointAId: latest.checkpointAId,
+                    checkpointBId: latest.checkpointBId,
+                    diffDigest: latest.diffDigest,
+                    idempotencyKey: key,
+                  });
+                  return yield* openReviewResult(reused, true);
+                }
+              }
+            }
+
+            const orphanedCheckpoint = sessionCheckpoints
+              .toReversed()
+              .find((checkpoint) => checkpoint.trigger === "review-open");
+            if (orphanedCheckpoint !== undefined) {
+              const worktreeMatches = yield* store
+                .worktreeMatchesCommit(worktree, orphanedCheckpoint.sha)
+                .pipe(Effect.mapError(toFailure));
+              if (worktreeMatches) {
+                const patch = yield* store
+                  .diffRange(worktree, checkpointA.sha, orphanedCheckpoint.sha)
+                  .pipe(Effect.mapError(toFailure));
+                const recovered = yield* slices.create({
+                  changeId: params.id,
+                  checkpointAId: checkpointA.id,
+                  checkpointBId: orphanedCheckpoint.id,
+                  diffDigest: DiffDigest.make(digestReviewPatch(patch)),
+                  idempotencyKey: key,
+                });
+                return yield* openReviewResult(recovered, true);
+              }
+            }
+
+            const checkpointB = yield* engine.checkpointNow(session.id, "review-open").pipe(
+              Effect.catchTags({
+                SessionNotFoundError: () => Effect.fail(new NotFound({ id: session.id })),
+                ProjectNotFoundError: () => Effect.fail(new NotFound({ id: project.id })),
+                GitError: (error) => Effect.fail(toFailure(error)),
+              }),
+            );
+            const patch = yield* store
+              .diffRange(worktree, checkpointA.sha, checkpointB.sha)
+              .pipe(Effect.mapError(toFailure));
+            const slice = yield* slices.create({
+              changeId: params.id,
+              checkpointAId: checkpointA.id,
+              checkpointBId: checkpointB.id,
+              diffDigest: DiffDigest.make(digestReviewPatch(patch)),
+              idempotencyKey: key,
+            });
+            return yield* openReviewResult(slice, false);
+          }),
+        );
+      }),
+    )
+    .handle("reviewDiff", ({ params, query }) =>
+      Effect.gen(function* () {
+        const context = yield* loadReviewContext(params.id, params.sliceId);
+        const store = yield* Store;
+        const canonicalPatch = yield* store
+          .diffRange(context.worktree, context.checkpointA.sha, context.checkpointB.sha)
+          .pipe(Effect.mapError(toFailure));
+        if (digestReviewPatch(canonicalPatch) !== context.slice.diffDigest) {
+          return yield* new StoreFailure({
+            message: "The Review patch did not match its persisted diff digest.",
+          });
+        }
+        const contextLines =
+          query.context === undefined ? undefined : Number.parseInt(query.context, 10);
+        if (
+          contextLines !== undefined &&
+          (!Number.isInteger(contextLines) ||
+            contextLines < 0 ||
+            contextLines > 100 ||
+            String(contextLines) !== query.context)
+        ) {
+          return yield* new StoreFailure({
+            message: "Review context must be a whole number from 0 to 100.",
+          });
+        }
+        const patch =
+          query.whitespace === "ignore" || contextLines !== undefined
+            ? yield* store
+                .diffRange(
+                  context.worktree,
+                  context.checkpointA.sha,
+                  context.checkpointB.sha,
+                  contextLines === undefined
+                    ? { ignoreWhitespace: query.whitespace === "ignore" }
+                    : { ignoreWhitespace: query.whitespace === "ignore", contextLines },
+                )
+                .pipe(Effect.mapError(toFailure))
+            : canonicalPatch;
+        const canonicalFacts = yield* store
+          .diffFileFacts(context.worktree, context.checkpointA.sha, context.checkpointB.sha)
+          .pipe(Effect.mapError(toFailure));
+        const renderedFacts =
+          query.whitespace === "ignore"
+            ? yield* store
+                .diffFileFacts(context.worktree, context.checkpointA.sha, context.checkpointB.sha, {
+                  ignoreWhitespace: true,
+                })
+                .pipe(Effect.mapError(toFailure))
+            : canonicalFacts;
+        const toView = (source: string, sourceFacts: typeof canonicalFacts) =>
+          parseReviewDiff(source, sourceFacts).map(
+            (file) =>
+              new ReviewDiffFileView({
+                ...file,
+                hunks: file.hunks.map((hunk) => new ReviewDiffHunkView(hunk)),
+              }),
+          );
+        const anchorFiles = toView(canonicalPatch, canonicalFacts);
+        const files = patch === canonicalPatch ? anchorFiles : toView(patch, renderedFacts);
+        const worktreeMatches = yield* store
+          .worktreeMatchesCommit(context.worktree, context.checkpointB.sha)
+          .pipe(Effect.mapError(toFailure));
+        return new ReviewDiffView({
+          change: context.change,
+          slice: context.slice,
+          checkpointA: context.checkpointA,
+          checkpointB: context.checkpointB,
+          patch,
+          files,
+          anchorFiles,
+          worktreeChangedSinceSnapshot: !worktreeMatches,
+        });
+      }),
+    )
+    .handle("sliceComment", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const context = yield* loadReviewContext(params.id, params.sliceId);
+        const comments = yield* ReviewCommentsRepo;
+        const store = yield* Store;
+        const user = yield* CurrentUser;
+        const patch = yield* store
+          .diffRange(context.worktree, context.checkpointA.sha, context.checkpointB.sha)
+          .pipe(Effect.mapError(toFailure));
+        if (digestReviewPatch(patch) !== context.slice.diffDigest) {
+          return yield* new StoreFailure({
+            message: "The Review patch did not match its persisted diff digest.",
+          });
+        }
+        const facts = yield* store
+          .diffFileFacts(context.worktree, context.checkpointA.sha, context.checkpointB.sha)
+          .pipe(Effect.mapError(toFailure));
+        const files = parseReviewDiff(patch, facts);
+        const target = payload.target;
+        const hasPath = target.oldPath !== null || target.newPath !== null;
+        const hasNoLocation =
+          target.side === null &&
+          target.startLine === null &&
+          target.endLine === null &&
+          target.hunkContextHash === null;
+        const fileExists = files.some(
+          (file) => file.oldPath === target.oldPath && file.newPath === target.newPath,
+        );
+        const lineTargetComplete =
+          target.side !== null &&
+          target.startLine !== null &&
+          target.endLine !== null &&
+          target.hunkContextHash !== null;
+        const targetValid =
+          (!hasPath && hasNoLocation) ||
+          (hasPath && hasNoLocation && fileExists) ||
+          (hasPath &&
+            lineTargetComplete &&
+            lineAnchorExists(files, {
+              oldPath: target.oldPath,
+              newPath: target.newPath,
+              side: target.side,
+              startLine: target.startLine,
+              endLine: target.endLine,
+              hunkContextHash: target.hunkContextHash,
+            }));
+        const body = payload.body.trim();
+        if (!targetValid || body === "") {
+          return yield* new StoreFailure({
+            message:
+              body === ""
+                ? "Review comments cannot be empty."
+                : "The comment anchor is not present in this Review slice.",
+          });
+        }
+        const anchor = new ReviewCommentAnchor({
+          reviewSliceId: context.slice.id,
+          checkpointAId: context.checkpointA.id,
+          checkpointBId: context.checkpointB.id,
+          diffDigest: context.slice.diffDigest,
+          oldPath: target.oldPath,
+          newPath: target.newPath,
+          side: target.side,
+          startLine: target.startLine,
+          endLine: target.endLine,
+          hunkContextHash: target.hunkContextHash,
+          mapping: "anchored",
+        });
+        return yield* comments.create({
+          changeId: params.id,
+          file: target.side === "old" ? target.oldPath : (target.newPath ?? target.oldPath),
+          line: target.startLine,
+          endLine: target.endLine,
+          anchor,
+          authorKind: "reviewer",
+          authorName: user.user.name === "" ? user.user.email : user.user.name,
+          body,
+          state: "open",
+        });
+      }),
+    )
     .handle("diff", ({ params }) =>
       Effect.gen(function* () {
         const changes = yield* SessionChangesRepo;
@@ -1765,25 +2148,6 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
       Effect.gen(function* () {
         const comments = yield* ReviewCommentsRepo;
         return yield* comments.listForChange(params.id);
-      }),
-    )
-    .handle("comment", ({ params, payload }) =>
-      Effect.gen(function* () {
-        const comments = yield* ReviewCommentsRepo;
-        const changes = yield* SessionChangesRepo;
-        const user = yield* CurrentUser;
-        // The change must exist before a comment can anchor to it.
-        yield* changes.byId(params.id).pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-        return yield* comments.create({
-          changeId: params.id,
-          file: payload.file,
-          line: payload.line,
-          endLine: payload.endLine ?? null,
-          authorKind: "reviewer",
-          authorName: user.user.name === "" ? user.user.email : user.user.name,
-          body: payload.body,
-          state: "open",
-        });
       }),
     )
     .handle("commentState", ({ params, payload }) =>
