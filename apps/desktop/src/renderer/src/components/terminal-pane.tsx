@@ -27,6 +27,9 @@ export function TerminalPane({
   tab,
   session,
   process,
+  serviceCount,
+  serviceAttention,
+  onServices,
   onDetach,
   onReview,
 }: {
@@ -35,6 +38,9 @@ export function TerminalPane({
   readonly session: SessionDto | null;
   /** Present for a supporting-shell tab. */
   readonly process: SessionProcessDto | null;
+  readonly serviceCount: number;
+  readonly serviceAttention: boolean;
+  readonly onServices: () => void;
   /** Remove this view without stopping its process. */
   readonly onDetach: () => void;
   /** Enter native Review after the server returns the immutable slice. */
@@ -90,6 +96,11 @@ export function TerminalPane({
             />
             <span className="truncate font-mono text-[12px] text-label">{session.branch}</span>
             <span className="flex-1" />
+            <button type="button" className={quiet} onClick={onServices}>
+              <span className={serviceAttention ? "text-warning" : ""}>
+                Services {serviceCount}
+              </span>
+            </button>
             {(mark.isError || review.isError) && (
               <span className="truncate font-mono text-[11.5px] text-danger">
                 {mark.error instanceof Error
@@ -135,6 +146,11 @@ export function TerminalPane({
               {session === null ? "" : ` · ${session.branch}`}
             </span>
             <span className="flex-1" />
+            <button type="button" className={quiet} onClick={onServices}>
+              <span className={serviceAttention ? "text-warning" : ""}>
+                Services {serviceCount}
+              </span>
+            </button>
             {rename.isError && (
               <span className="truncate font-mono text-[11.5px] text-danger">
                 {rename.error instanceof Error ? rename.error.message : "rename failed"}

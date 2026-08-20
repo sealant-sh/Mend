@@ -6,6 +6,7 @@ import { CommandPalette } from "#/components/command-palette";
 import { InboxRail } from "#/components/inbox";
 import { Launcher } from "#/components/launcher";
 import { ProjectTree } from "#/components/project-tree";
+import { ServicesDrawer } from "#/components/services-drawer";
 import { TabBar } from "#/components/tab-bar";
 import { TerminalPane } from "#/components/terminal-pane";
 import { Titlebar } from "#/components/titlebar";
@@ -18,9 +19,11 @@ import {
   projectDetailQuery,
   projectsQuery,
   queryClient,
+  servicesQuery,
   sessionProcessesQuery,
 } from "#/lib/queries";
 import { markVisited, useVisited } from "#/lib/seen";
+import { serviceFacts, servicesForSession } from "#/lib/services";
 import { terminalFont } from "#/lib/terminal-font";
 import { openShellTab, useWorkbench, workbench } from "#/lib/workbench";
 
@@ -45,9 +48,11 @@ function Main() {
   const layout = useWorkbench();
   const [launcherFor, setLauncherFor] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [servicesFor, setServicesFor] = useState<string | null>(null);
   const [shellError, setShellError] = useState<string | null>(null);
 
   const projects = useQuery(projectsQuery);
+  const serviceViews = useQuery(servicesQuery);
   const details = useQueries({
     queries: (projects.data ?? []).map((project) => projectDetailQuery(project.id)),
   });
@@ -66,6 +71,23 @@ function Main() {
 
   const tree = useMemo(() => buildTree(data), [data]);
   const inbox = useMemo(() => buildInbox(data, visited), [data, visited]);
+  const serviceAttention = useMemo(() => {
+    const map = new Map<
+      string,
+      Array<{
+        readonly name: string;
+        readonly fact: NonNullable<ReturnType<typeof serviceFacts>["attention"]>;
+      }>
+    >();
+    for (const view of serviceViews.data ?? []) {
+      const facts = serviceFacts(view);
+      if (facts.attention === null) continue;
+      const rows = map.get(view.service.sessionId) ?? [];
+      rows.push({ name: facts.name, fact: facts.attention });
+      map.set(view.service.sessionId, rows);
+    }
+    return map;
+  }, [serviceViews.data]);
   const sessions = useMemo(() => {
     const map = new Map<string, SessionDto>();
     for (const session of sessionList) map.set(session.id, session);
@@ -96,6 +118,8 @@ function Main() {
     focusedSessionId === null ? null : (sessions.get(focusedSessionId) ?? null);
   const focusedProcess =
     focusedTab?.kind === "shell" ? (processes.get(focusedTab.processId) ?? null) : null;
+  const focusedServices =
+    focusedSessionId === null ? [] : servicesForSession(serviceViews.data ?? [], focusedSessionId);
 
   // Viewing any tab owned by a settled session clears its unseen completion.
   useEffect(() => {
@@ -201,6 +225,10 @@ function Main() {
       if (row !== undefined) focusRow(row);
     },
     togglePalette: () => setPaletteOpen((value) => !value),
+    toggleServices: () =>
+      setServicesFor((current) =>
+        focusedSessionId === null || current === focusedSessionId ? null : focusedSessionId,
+      ),
     fontBigger: terminalFont.bigger,
     fontSmaller: terminalFont.smaller,
     fontReset: terminalFont.reset,
@@ -210,7 +238,8 @@ function Main() {
   const unauthorized =
     isUnauthorized(projects.error) ||
     details.some((query) => isUnauthorized(query.error)) ||
-    processQueries.some((query) => isUnauthorized(query.error));
+    processQueries.some((query) => isUnauthorized(query.error)) ||
+    isUnauthorized(serviceViews.error);
   if (unauthorized) return <Navigate to="/connect" search={{ reason: "unauthorized" }} />;
 
   return (
@@ -235,11 +264,16 @@ function Main() {
             inbox={inbox}
             focusedSessionId={focusedSessionId}
             now={now}
+            serviceAttention={serviceAttention}
             onFocus={focusRow}
+            onServiceFocus={(row) => {
+              focusRow(row);
+              setServicesFor(row.session.id);
+            }}
           />
         </nav>
 
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-panel">
+        <main className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-panel">
           {focusedProject !== null && (
             <TabBar
               tabs={projectTabs.tabs}
@@ -276,6 +310,9 @@ function Main() {
               tab={focusedTab}
               session={focusedSession}
               process={focusedProcess}
+              serviceCount={focusedServices.length}
+              serviceAttention={focusedServices.some((service) => service.attention !== null)}
+              onServices={() => setServicesFor(focusedSessionId)}
               onDetach={() => {
                 if (focusedProjectId !== null) {
                   workbench.detachTab(focusedProjectId, projectTabs.focused);
@@ -287,6 +324,13 @@ function Main() {
                   params: { changeId, sliceId },
                 });
               }}
+            />
+          )}
+          {focusedSession !== null && servicesFor === focusedSession.id && (
+            <ServicesDrawer
+              session={focusedSession}
+              views={serviceViews.data ?? []}
+              onClose={() => setServicesFor(null)}
             />
           )}
           {shellError !== null && (

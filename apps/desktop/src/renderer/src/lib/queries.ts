@@ -4,7 +4,9 @@ import {
   changeComments,
   isUnauthorized,
   listProjects,
+  listServices,
   listSessionProcesses,
+  listSessionRecipes,
   processOutput,
   projectDetail,
   reviewDiff,
@@ -46,6 +48,17 @@ export const sessionProcessesQuery = (id: string) =>
   queryOptions({
     queryKey: ["session", id, "processes"],
     queryFn: () => listSessionProcesses(id),
+  });
+
+export const servicesQuery = queryOptions({
+  queryKey: ["services"],
+  queryFn: listServices,
+});
+
+export const sessionRecipesQuery = (id: string) =>
+  queryOptions({
+    queryKey: ["session", id, "recipes"],
+    queryFn: () => listSessionRecipes(id),
   });
 
 export const processOutputQuery = (id: string) =>

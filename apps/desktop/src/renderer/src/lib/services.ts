@@ -1,0 +1,154 @@
+import type { ServiceEndpointDto, ServiceViewDto, SessionProcessDto } from "#/lib/api";
+import type { Tone } from "#/lib/words";
+
+export type ServiceAction =
+  | "open"
+  | "copy"
+  | "logs"
+  | "restart"
+  | "stop"
+  | "remove-forward"
+  | "run-again";
+
+export interface ServiceFact {
+  readonly word: string;
+  readonly tone: Tone;
+}
+
+export interface ServiceFacts {
+  readonly view: ServiceViewDto;
+  readonly name: string;
+  readonly process: ServiceFact | null;
+  readonly forward: ServiceFact;
+  readonly target: (ServiceFact & { readonly observedAt: string }) | null;
+  readonly endpoint: ServiceEndpointDto | null;
+  readonly browserUrl: string | null;
+  readonly logAttempt: SessionProcessDto | null;
+  readonly movedFrom: string | null;
+  readonly actions: ReadonlyArray<ServiceAction>;
+  readonly attention: ServiceFact | null;
+}
+
+const currentAttempt = (view: ServiceViewDto): SessionProcessDto | null =>
+  view.service.currentAttemptId === null
+    ? null
+    : (view.attempts.find((attempt) => attempt.id === view.service.currentAttemptId) ?? null);
+
+const latestSupervisedAttempt = (view: ServiceViewDto): SessionProcessDto | null =>
+  view.attempts.findLast(
+    (attempt) => attempt.argv.length > 0 && attempt.sealantSessionId !== null,
+  ) ?? null;
+
+const preferredEndpoint = (view: ServiceViewDto): ServiceEndpointDto | null =>
+  view.endpoints.find((endpoint) => endpoint.scope === "private") ?? view.endpoints[0] ?? null;
+
+const processFact = (attempt: SessionProcessDto | null): ServiceFact | null => {
+  if (attempt === null) return null;
+  const ordinal = attempt.attemptOrdinal === null ? "" : ` · attempt ${attempt.attemptOrdinal}`;
+  switch (attempt.status) {
+    case "running":
+      return { word: `Process running${ordinal}`, tone: "accent" };
+    case "starting":
+      return { word: `Process starting${ordinal}`, tone: "accent" };
+    case "stopped":
+      return { word: `Process stopped${ordinal}`, tone: "hollow" };
+    case "exited":
+      return {
+        word: `Process exited${attempt.exitCode === null ? "" : ` code ${attempt.exitCode}`}${ordinal}`,
+        tone: attempt.exitCode === null || attempt.exitCode === 0 ? "hollow" : "red",
+      };
+    default:
+      return { word: `Process ${attempt.status}${ordinal}`, tone: "hollow" };
+  }
+};
+
+export const serviceFacts = (view: ServiceViewDto): ServiceFacts => {
+  const attempt = currentAttempt(view);
+  const logAttempt = latestSupervisedAttempt(view);
+  const endpoint = preferredEndpoint(view);
+  const bound = view.currentForward?.state === "bound";
+  const forward: ServiceFact =
+    view.currentForward === null
+      ? { word: "Forward absent", tone: "hollow" }
+      : view.currentForward.state === "bound"
+        ? {
+            word: `Forward bound${endpoint === null ? "" : ` to ${endpoint.authority}`}`,
+            tone: "accent",
+          }
+        : view.currentForward.state === "failed"
+          ? {
+              word: `Forward failed${view.currentForward.error === null ? "" : ` · ${view.currentForward.error}`}`,
+              tone: "red",
+            }
+          : { word: `Forward ${view.currentForward.state}`, tone: "hollow" };
+  const observation =
+    view.currentForward !== null && view.latestObservation?.forwardId === view.currentForward.id
+      ? view.latestObservation
+      : null;
+  const target =
+    observation === null
+      ? null
+      : {
+          word:
+            observation.state === "reachable"
+              ? `${view.service.transport.toUpperCase()} accepted on :${view.service.workspacePort}`
+              : `${view.service.transport.toUpperCase()} did not answer on :${view.service.workspacePort}`,
+          tone: observation.state === "reachable" ? ("green" as const) : ("amber" as const),
+          observedAt: observation.lastObservedAt,
+        };
+  const browserUrl =
+    view.endpoints.find((candidate) => candidate.browserUrl !== null)?.browserUrl ?? null;
+  const previousEndpoint =
+    view.previousEndpoints.find((candidate) => candidate.scope === "private") ??
+    view.previousEndpoints[0] ??
+    null;
+  const movedFrom =
+    endpoint !== null &&
+    previousEndpoint !== null &&
+    endpoint.authority !== previousEndpoint.authority
+      ? previousEndpoint.authority
+      : null;
+  const actions: ServiceAction[] = [];
+  if (bound && browserUrl !== null) actions.push("open");
+  if (bound && endpoint !== null) actions.push("copy");
+  if (logAttempt !== null) actions.push("logs");
+  if (attempt !== null && attempt.exitedAt === null && attempt.argv.length > 0) {
+    actions.push("restart", "stop");
+  } else if (view.currentForward?.state === "bound" || view.currentForward?.state === "binding") {
+    actions.push("remove-forward");
+  } else if (logAttempt !== null) {
+    actions.push("run-again");
+  }
+  const attention =
+    view.workspaceTtlRenewalError === null
+      ? view.currentForward?.state === "failed"
+        ? { word: "Forward failed", tone: "red" as const }
+        : attempt?.status === "exited" && attempt.exitCode !== null && attempt.exitCode !== 0
+          ? { word: `Process exited code ${attempt.exitCode}`, tone: "red" as const }
+          : observation?.state === "unreachable"
+            ? { word: "Target stopped answering", tone: "amber" as const }
+            : movedFrom === null
+              ? null
+              : { word: "Endpoint moved", tone: "amber" as const }
+      : { word: "Workspace TTL renewal failed", tone: "amber" as const };
+
+  return {
+    view,
+    name: view.service.name,
+    process: processFact(attempt),
+    forward,
+    target,
+    endpoint,
+    browserUrl,
+    logAttempt,
+    movedFrom,
+    actions,
+    attention,
+  };
+};
+
+export const servicesForSession = (
+  views: ReadonlyArray<ServiceViewDto>,
+  sessionId: string,
+): ReadonlyArray<ServiceFacts> =>
+  views.filter((view) => view.service.sessionId === sessionId).map(serviceFacts);

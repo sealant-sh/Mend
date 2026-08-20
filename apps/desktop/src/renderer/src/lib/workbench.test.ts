@@ -5,6 +5,9 @@ import type { SessionProcessDto } from "./api";
 const shell = (id: string, label: string): SessionProcessDto => ({
   id,
   sessionId: "session-1",
+  serviceId: null,
+  attemptOrdinal: null,
+  launchCorrelationId: null,
   sealantWorkspaceId: "workspace-1",
   sealantSessionId: `pty-${id}`,
   sealantRunId: `run-${id}`,

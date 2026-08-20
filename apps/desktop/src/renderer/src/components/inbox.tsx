@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { toneText } from "#/components/status-dot";
 import type { Inbox, InboxRow } from "#/lib/model";
+import type { ServiceFact } from "#/lib/services";
 import { ago } from "#/lib/words";
 
 /**
@@ -22,14 +23,18 @@ function Row({
   focused,
   now,
   showJumpHints,
+  serviceAttention,
   onFocus,
+  onServiceFocus,
 }: {
   readonly row: InboxRow;
   readonly index: number;
   readonly focused: boolean;
   readonly now: number;
   readonly showJumpHints: boolean;
+  readonly serviceAttention: ReadonlyArray<{ readonly name: string; readonly fact: ServiceFact }>;
   readonly onFocus: () => void;
+  readonly onServiceFocus: () => void;
 }) {
   const slim = row.section === "settled";
   const time = ago(
@@ -78,6 +83,19 @@ function Row({
           </span>
         )}
       </button>
+      {serviceAttention.map(({ name, fact }) => (
+        <button
+          key={`${name}:${fact.word}`}
+          type="button"
+          onClick={onServiceFocus}
+          className="ml-5 flex w-[calc(100%-1.25rem)] items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-[var(--sw-sunken)]"
+        >
+          <span className="min-w-0 flex-1 truncate font-sans text-[11.5px] text-ink-2">{name}</span>
+          <span className={`shrink-0 font-mono text-[10.5px] ${toneText(fact.tone)}`}>
+            {fact.word}
+          </span>
+        </button>
+      ))}
       {showJumpHints && index < 9 && (
         <span
           aria-hidden="true"
@@ -94,12 +112,19 @@ export function InboxRail({
   inbox,
   focusedSessionId,
   now,
+  serviceAttention,
   onFocus,
+  onServiceFocus,
 }: {
   readonly inbox: Inbox;
   readonly focusedSessionId: string | null;
   readonly now: number;
+  readonly serviceAttention: ReadonlyMap<
+    string,
+    ReadonlyArray<{ readonly name: string; readonly fact: ServiceFact }>
+  >;
   readonly onFocus: (row: InboxRow) => void;
+  readonly onServiceFocus: (row: InboxRow) => void;
 }) {
   const [settledExpanded, setSettledExpanded] = useState(true);
   const [settledShown, setSettledShown] = useState(SETTLED_SHOWN);
@@ -149,7 +174,9 @@ export function InboxRail({
               focused={row.session.id === focusedSessionId}
               now={now}
               showJumpHints={jumpHints}
+              serviceAttention={serviceAttention.get(row.session.id) ?? []}
               onFocus={() => onFocus(row)}
+              onServiceFocus={() => onServiceFocus(row)}
             />
           ))}
         </ul>
@@ -173,7 +200,9 @@ export function InboxRail({
                 focused={row.session.id === focusedSessionId}
                 now={now}
                 showJumpHints={jumpHints}
+                serviceAttention={serviceAttention.get(row.session.id) ?? []}
                 onFocus={() => onFocus(row)}
+                onServiceFocus={() => onServiceFocus(row)}
               />
             ))}
           </ul>
