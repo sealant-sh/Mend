@@ -82,6 +82,24 @@ const healthGroup = HttpApiGroup.make("health").add(
   HttpApiEndpoint.get("status", "/health", { success: HealthStatus }),
 );
 
+/**
+ * The machine Mend runs on, as the shell shows it: hostname · platform, and whether a
+ * tailnet address is bound (plan §7.5 — the private-network promise made visible).
+ * "reachable" is an observation about the interface, not a promise about routing.
+ */
+export class MachineView extends Schema.Class<MachineView>("MachineView")({
+  hostname: Schema.String,
+  platform: Schema.String,
+  tailnet: Schema.Struct({
+    status: Schema.Literals(["reachable", "not-detected"]),
+    address: Schema.NullOr(Schema.String),
+  }),
+}) {}
+
+const machineGroup = HttpApiGroup.make("machine")
+  .add(HttpApiEndpoint.get("get", "/machine", { success: MachineView }))
+  .middleware(AuthMiddleware);
+
 /** The settings page's connection check — reports what was observed, never a judgment. */
 const sealantGroup = HttpApiGroup.make("sealant")
   .add(HttpApiEndpoint.get("connection", "/sealant/connection", { success: SealantConnection }))
@@ -1393,6 +1411,7 @@ const devicesGroup = HttpApiGroup.make("devices")
 
 export const MendApi = HttpApi.make("mend")
   .add(healthGroup)
+  .add(machineGroup)
   .add(sealantGroup)
   .add(settingsGroup)
   .add(dotfilesGroup)

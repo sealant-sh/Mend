@@ -1,44 +1,84 @@
+import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 
-import { MendMark } from "#/components/logo";
 import { authClient } from "#/lib/auth-client";
+import { activeSessionsQuery, machineQuery, projectsQuery } from "#/lib/queries";
+import { LIVE_STATES } from "#/lib/workbench-menus";
 
-export function AppShell({ children }: { readonly children: ReactNode }) {
-  const navigate = useNavigate();
-
+/**
+ * The workbench shell: a persistent left sidebar (brand, primary nav, an
+ * optional page-contextual rail, the adopted projects with a liveness dot,
+ * the machine block) beside a left-aligned content column. The sidebar is the
+ * ambient view of the machine — which repos have agents alive, whether this
+ * box is reachable off-box — and stays put while you move between Now, a
+ * session, and a review. Below `lg` it folds into a top strip.
+ *
+ * `projectId` marks the project the page belongs to — a session or review
+ * page is inside a project even though its URL isn't under /projects. `rail`
+ * is the slot for whatever the current page wants at hand (a session's
+ * checkpoints, a review's file list); it renders under the primary nav.
+ */
+export function AppShell({
+  children,
+  rail,
+  projectId,
+}: {
+  readonly children: ReactNode;
+  readonly rail?: ReactNode;
+  readonly projectId?: string | undefined;
+}) {
   return (
-    <div className="min-h-screen">
-      <header className="sticky top-0 z-40 border-b border-border/60 bg-[color-mix(in_oklab,var(--sw-canvas)_82%,transparent)] backdrop-blur-md">
-        <div className="mx-auto flex min-h-14 max-w-[1400px] items-center justify-between gap-3 px-6">
-          <div className="flex items-center gap-8">
-            <Link
-              to="/"
-              className="inline-flex items-baseline gap-2 font-display text-lg font-semibold tracking-[-0.01em] text-foreground no-underline"
-              aria-label="Mend — the queue"
-            >
-              <MendMark className="size-6 self-center" aria-hidden="true" />
-              Mend
-            </Link>
-            <nav className="flex items-center gap-6" aria-label="Primary">
-              <NavItem to="/">Now</NavItem>
-              <NavItem to="/projects">Projects</NavItem>
-              <NavItem to="/settings">Settings</NavItem>
-            </nav>
-          </div>
-          <button
-            type="button"
-            className="font-sans text-sm font-medium text-muted-foreground transition-colors duration-200 hover:text-foreground"
-            onClick={() => {
-              void authClient.signOut().then(() => navigate({ to: "/login" }));
-            }}
-          >
-            Sign out
-          </button>
+    <div className="flex min-h-screen">
+      <aside className="sticky top-0 hidden h-screen w-[248px] shrink-0 flex-col gap-7 overflow-y-auto border-r border-rule bg-panel px-5 py-6 lg:flex">
+        <Brand />
+        <PrimaryNav />
+        {rail === undefined ? null : <div className="flex flex-col gap-2.5">{rail}</div>}
+        <ProjectsBlock currentId={projectId} />
+        <div className="mt-auto flex flex-col gap-5">
+          <MachineBlock />
+          <SignOut />
         </div>
-      </header>
-      <main className="mx-auto max-w-[1400px] px-6 py-10">{children}</main>
+      </aside>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex items-center justify-between gap-4 border-b border-rule bg-panel px-5 py-3 lg:hidden">
+          <Brand compact />
+          <PrimaryNav horizontal />
+          <SignOut />
+        </header>
+        <main className="min-w-0 flex-1 px-6 py-8 lg:px-12 lg:py-12">{children}</main>
+      </div>
     </div>
+  );
+}
+
+function Brand({ compact = false }: { readonly compact?: boolean }) {
+  return (
+    <Link
+      to="/"
+      className={
+        compact ? "flex items-baseline gap-2 no-underline" : "flex flex-col gap-[3px] no-underline"
+      }
+      aria-label="Mend — what needs you"
+    >
+      <span className="font-display text-[21px] leading-none font-medium tracking-[-0.02em] text-foreground">
+        Mend
+      </span>
+      <span className="ev-eyebrow">by sealant</span>
+    </Link>
+  );
+}
+
+function PrimaryNav({ horizontal = false }: { readonly horizontal?: boolean }) {
+  return (
+    <nav
+      className={horizontal ? "flex items-center gap-1" : "flex w-full flex-col gap-0.5"}
+      aria-label="Primary"
+    >
+      <NavItem to="/">Now</NavItem>
+      <NavItem to="/projects">Projects</NavItem>
+      <NavItem to="/settings">Settings</NavItem>
+    </nav>
   );
 }
 
@@ -46,11 +86,103 @@ function NavItem({ to, children }: { readonly to: string; readonly children: Rea
   return (
     <Link
       to={to}
-      className="font-sans text-sm font-medium text-muted-foreground no-underline transition-colors duration-200 hover:text-foreground"
-      activeProps={{ className: "text-foreground" }}
+      className="rounded-[10px] px-3 py-2 font-sans text-[13px] font-medium text-ink-2 no-underline transition-colors duration-200 hover:bg-secondary hover:text-foreground data-[status=active]:bg-wash data-[status=active]:text-info"
       activeOptions={{ exact: to === "/" }}
     >
       {children}
     </Link>
+  );
+}
+
+/**
+ * Every adopted project, with a dot that is filled green while any session in
+ * it is live and hollow otherwise — the "which repos have agents alive right
+ * now" glance, always in view. The current project (the page's, not just the
+ * URL's) takes the same cobalt wash as the active nav item.
+ */
+function ProjectsBlock({ currentId }: { readonly currentId: string | undefined }) {
+  const projects = useQuery(projectsQuery).data ?? [];
+  const active = useQuery(activeSessionsQuery).data ?? [];
+  if (projects.length === 0) return null;
+  const liveProjects = new Set(
+    active.filter((session) => LIVE_STATES.has(session.status)).map((session) => session.projectId),
+  );
+  return (
+    <div className="flex flex-col gap-2.5">
+      <p className="ev-eyebrow">projects</p>
+      <ul className="flex flex-col gap-0.5">
+        {projects.map((project) => {
+          const live = liveProjects.has(project.id);
+          const current = project.id === currentId;
+          return (
+            <li key={project.id}>
+              <Link
+                to="/projects/$projectId"
+                params={{ projectId: project.id }}
+                className={`flex items-center gap-2 rounded-[10px] px-3 py-1.5 font-mono text-[12px] no-underline transition-colors duration-200 ${
+                  current
+                    ? "bg-wash text-info"
+                    : "text-ink-2 hover:bg-secondary hover:text-foreground"
+                }`}
+                aria-current={current ? "page" : undefined}
+                title={live ? `${project.name} · a session is live` : project.name}
+              >
+                <span
+                  className={`size-[5px] shrink-0 rounded-full ${
+                    live ? "bg-success-dot" : "border-[1.5px] border-faint bg-transparent"
+                  }`}
+                  aria-hidden="true"
+                />
+                <span className="truncate">{project.name}</span>
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+/** hostname · platform, and whether a tailnet address is bound (plan §7.5). */
+function MachineBlock() {
+  const machine = useQuery(machineQuery).data;
+  if (machine === undefined) return null;
+  const reachable = machine.tailnet.status === "reachable";
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="ev-eyebrow">machine</p>
+      <p className="truncate font-mono text-[12px] text-ink-2">
+        {machine.hostname} · {machine.platform}
+      </p>
+      <p
+        className={`flex items-center gap-[7px] font-mono text-[11.5px] ${
+          reachable ? "text-success" : "text-ink-2"
+        }`}
+        title={machine.tailnet.address ?? undefined}
+      >
+        <span
+          className={`size-1.5 shrink-0 rounded-full ${
+            reachable ? "bg-success-dot" : "border-[1.5px] border-faint bg-transparent"
+          }`}
+          aria-hidden="true"
+        />
+        {reachable ? "tailnet · reachable" : "tailnet · not detected"}
+      </p>
+    </div>
+  );
+}
+
+function SignOut() {
+  const navigate = useNavigate();
+  return (
+    <button
+      type="button"
+      className="self-start font-sans text-xs font-medium text-muted-foreground transition-colors duration-200 hover:text-foreground"
+      onClick={() => {
+        void authClient.signOut().then(() => navigate({ to: "/login" }));
+      }}
+    >
+      Sign out
+    </button>
   );
 }

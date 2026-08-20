@@ -16,7 +16,16 @@ import {
 import { queryClient } from "#/lib/queries";
 
 /** How each harness launches — mirrors the CLI's map; the server records either way. */
-export const HARNESSES = ["claude", "codex", "opencode"] as const;
+/** Harnesses the web can start; opencode stays CLI-only until it is exercised end to end. */
+export const HARNESSES = ["claude", "codex", "shell"] as const;
+export type Harness = (typeof HARNESSES)[number];
+
+/** What each harness launches — shell is a plain bash in its own recorded worktree. */
+const HARNESS_COMMANDS: Record<Harness, ReadonlyArray<string>> = {
+  claude: ["claude"],
+  codex: ["codex"],
+  shell: ["bash"],
+};
 
 /** Session states with a live process behind them. */
 export const LIVE_STATES: ReadonlySet<string> = new Set(["starting", "running", "waiting", "idle"]);
@@ -29,9 +38,9 @@ type Navigate = UseNavigateResult<string>;
  * ready. The launch promise outlives the navigation (same SPA); a failure
  * settles the session server-side, so the page shows it.
  */
-export const startSession = (navigate: Navigate, projectId: string, harness: string) =>
+export const startSession = (navigate: Navigate, projectId: string, harness: Harness) =>
   createSession(projectId, harness).then((session) => {
-    void launchSession(session.id, [harness])
+    void launchSession(session.id, HARNESS_COMMANDS[harness])
       .catch(() => undefined)
       .finally(() => {
         void queryClient.invalidateQueries({ queryKey: ["session", session.id] });

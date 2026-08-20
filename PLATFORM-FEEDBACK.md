@@ -7,6 +7,29 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-08-20 · 0.19.0 · Nix-family workspace images cannot boot: `sealantd` is not on the base image's PATH
+
+**Implemented at the source** — [sealant#180](https://github.com/sealant-sh/sealant/pull/180)
+(pending review/release): absolute `ENTRYPOINT ["/usr/local/bin/sealantd", "boot"]` +
+`ENV PATH=/usr/local/bin:$PATH` in both render paths. Plan hashes rotate once on upgrade.
+
+- **Needed:** a session workspace built with `os: "nix"` — the option the image picker offers.
+- **Today:** the build succeeds, but the container dies at init:
+  `exec: "sealantd": executable file not found in $PATH`, and the workspace reaches terminal
+  `failed` before ready (Mend surfaces it as a launch failure with no cause). The rendered
+  Containerfile copies the binary to `/usr/local/bin/sealantd` and then sets
+  `ENTRYPOINT ["sealantd", "boot"]` — exec form with a bare name, resolved against the image's
+  `ENV PATH`. `nixos/nix`'s PATH is only the nix profile dirs (no `/usr/local/bin`), and the builder
+  never emits its own `ENV PATH` (Core `packages/workspaces/src/buildkit/buildkit-builder.ts`, both
+  `renderContainerfile` and `renderCustomBaseContainerfile`). Verified against a live-built session
+  image. Fedora/arch/ubuntu bases include `/usr/local/bin`, which is why only nix trips it; a custom
+  base with a nonstandard PATH would hit the same wall.
+- **Suggested:** `ENTRYPOINT ["/usr/local/bin/sealantd", "boot"]` in both render paths, plus
+  `ENV PATH=/usr/local/bin:$PATH` so in-container name lookups also resolve — sealantd's dotfiles
+  manager auto-detection does its own `$PATH` search (`boot/dotfiles.rs which()`), and the docker
+  CLI / socat copies land in `/usr/local/bin` too. A boot smoke test per os-family would have caught
+  this: nix was in the picker but had never booted since the sealantd-PID-1 cutover.
+
 ## 2026-08-14 · 0.17.0 · Dotfiles were SDK-unreachable; archives added as the transport
 
 **Implemented at the source** — sealant-sh/core stack #167 (PRs #163–#166) + sealantd stack #52 (PRs

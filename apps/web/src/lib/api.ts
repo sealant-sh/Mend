@@ -277,6 +277,18 @@ export const moveIssue = (id: string, stage: "triage" | "queued", position: numb
 
 export const sealantConnection = () => request<SealantConnectionDto>("/api/sealant/connection");
 
+/** The machine Mend runs on — hostname · platform, and whether a tailnet address is bound. */
+export interface MachineDto {
+  readonly hostname: string;
+  readonly platform: string;
+  readonly tailnet: {
+    readonly status: "reachable" | "not-detected";
+    readonly address: string | null;
+  };
+}
+
+export const getMachine = () => request<MachineDto>("/api/machine");
+
 // ─── Workbench (MEND-AGENT-WORKBENCH-PLAN.md §5–§7) ─────────────────────────
 
 export type SessionStatusDto =

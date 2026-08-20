@@ -33,6 +33,7 @@ import {
   Unauthorized,
 } from "./contract.ts";
 import { GithubGroupLive } from "./github.ts";
+import { MachineGroupLive } from "./machine.ts";
 import {
   DotfilesGroupLive,
   GitKeysGroupLive,
@@ -392,6 +393,7 @@ export const DevicesGroupLive = HttpApiBuilder.group(MendApi, "devices", (handle
 /** Every group implementation plus the API registration, ready for the boundary. */
 export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
   Layer.provide(HealthGroupLive),
+  Layer.provide(MachineGroupLive),
   Layer.provide(SealantGroupLive),
   Layer.provide(SettingsGroupLive),
   Layer.provide(DotfilesGroupLive),

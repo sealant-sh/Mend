@@ -2,6 +2,15 @@ import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useReducer, useRef, useState } from "react";
 
+import {
+  DotfilesSection,
+  GitAccessSection,
+  MountsSection,
+  ReferencesSection,
+  RemoveProjectSection,
+  ReviewAutomationSection,
+  ServicesSection,
+} from "#/components/project-setup";
 import { AppShell } from "#/components/shell";
 import {
   setProjectWorkspaceImage,
@@ -41,8 +50,12 @@ import {
 import {
   projectDetailQuery,
   projectEnvironmentQuery,
+  projectMountsQuery,
+  projectRecipesQuery,
+  projectReferencesQuery,
   projectSecretsQuery,
   queryClient,
+  referencesQuery,
   settingsQuery,
 } from "#/lib/queries";
 import { copyText } from "#/lib/workbench-menus";
@@ -58,7 +71,7 @@ import {
  * project's sessions build from, and the project's ordinary environment variables. A non-nested
  * route — the project page has no <Outlet>, so `$projectId_.` keeps this a sibling full page.
  */
-export const Route = createFileRoute("/projects/$projectId_/environment")({
+export const Route = createFileRoute("/projects/$projectId_/setup")({
   ssr: false,
   loader: async ({ params }) => {
     await Promise.all([
@@ -66,25 +79,31 @@ export const Route = createFileRoute("/projects/$projectId_/environment")({
       queryClient.ensureQueryData(projectEnvironmentQuery(params.projectId)),
       queryClient.ensureQueryData(projectSecretsQuery(params.projectId)),
       queryClient.ensureQueryData(settingsQuery),
+      queryClient.ensureQueryData(referencesQuery),
+      queryClient.ensureQueryData(projectReferencesQuery(params.projectId)),
+      queryClient.ensureQueryData(projectMountsQuery(params.projectId)),
+      queryClient.ensureQueryData(projectRecipesQuery(params.projectId)),
     ]);
   },
-  component: ProjectEnvironmentPage,
+  component: ProjectSetupPage,
 });
 
-function ProjectEnvironmentPage() {
+function ProjectSetupPage() {
   const { projectId } = Route.useParams();
   const { project } = useSuspenseQuery(projectDetailQuery(projectId)).data;
 
   return (
-    <AppShell>
+    <AppShell projectId={projectId}>
       <div className="mx-auto max-w-[760px]">
-        <p className="ev-eyebrow">project · environment</p>
+        <p className="ev-eyebrow">project · setup</p>
         <h1 className="mt-2 font-display text-3xl font-medium tracking-tight text-foreground">
           {project.name}
         </h1>
         <p className="mt-2 max-w-[64ch] text-sm leading-relaxed text-muted-foreground">
-          Changes apply to new workspace launches, including when you resume a settled session.
-          Running workspaces keep the configuration they started with.
+          How sessions in this project launch — image, variables, secrets, references, mounts,
+          services, dotfiles, git access, review automation. Changes apply to new workspace
+          launches, including when you resume a settled session; running workspaces keep the
+          configuration they started with.
         </p>
         <p className="mt-2">
           <Link
@@ -97,10 +116,26 @@ function ProjectEnvironmentPage() {
         </p>
 
         <div className="mt-8 space-y-6">
-          <VariablesComposer projectId={projectId} />
-          <WorkspaceImagePanel project={project} />
-          <ConfigurationPanel projectId={projectId} />
-          <SecretsPanel projectId={projectId} />
+          <div id="environment" className="scroll-mt-6">
+            <WorkspaceImagePanel project={project} />
+          </div>
+          <div id="variables" className="scroll-mt-6 space-y-6">
+            <VariablesComposer projectId={projectId} />
+            <ConfigurationPanel projectId={projectId} />
+          </div>
+          <div id="secrets" className="scroll-mt-6">
+            <SecretsPanel projectId={projectId} />
+          </div>
+        </div>
+
+        <div className="mt-12 flex flex-col gap-10 border-t border-rule pt-8">
+          <ReferencesSection projectId={projectId} />
+          <MountsSection projectId={projectId} />
+          <ServicesSection projectId={projectId} />
+          <DotfilesSection project={project} />
+          <GitAccessSection project={project} />
+          <ReviewAutomationSection project={project} />
+          <RemoveProjectSection projectId={projectId} />
         </div>
       </div>
     </AppShell>
