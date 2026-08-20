@@ -1,0 +1,199 @@
+# Mend Desktop — brief
+
+The desktop app is a herdr rebuilt as a GUI, with Mend as the engine. Herdr's layout is the part
+worth keeping. Yiannis lives in it all day and its shape is proven: a tree of places on the left,
+tabs across the top, one dominant terminal, an agents list that tells you where to look next. What
+changes is the substance behind each surface. The engine is the Mend server, so every terminal is a
+supervised PTY in a Mend-managed workspace: recorded, worktree-isolated, reviewable.
+
+Herdr itself is not in the stack. No herdr binary, no socket client, no `agent attach`. Mend's
+server already is the multiplexer (workspaces, PTYs, the byte-exact record), and unlike herdr its
+`/api/tty` accepts many clients per PTY, so nothing fights over who renders a terminal. Herdr stays
+Yiannis's terminal tool; this app is its GUI sibling on a different engine.
+
+## How we got here (so nobody rebuilds the wrong thing again)
+
+Two prototypes died before this brief:
+
+1. A tile-grid cockpit from the Figma "Desktop / Cockpit" frame. Wrong working model. Nobody works
+   in six 450px terminals at once; herdr's one-big-terminal with instant switching is how the day
+   actually goes.
+2. A wrapper that mirrored herdr's state over its socket and attached panes with
+   `herdr agent attach --takeover`. Wrong dependency. Herdr is single-client per terminal, so the
+   app and the TUI stole panes from each other, and none of herdr's keybindings existed in the
+   wrapper anyway.
+
+The synthesis: herdr's information architecture, Mend's session engine, native widgets.
+
+## Nouns
+
+| Herdr surface        | Desktop surface                                                       |
+| -------------------- | --------------------------------------------------------------------- |
+| space (dir/worktree) | **project** (adopted repo in the store), sessions nested beneath      |
+| pane                 | **PTY over `/api/tty`** — a mend shell or an agent session's terminal |
+| tab                  | **tab** — one PTY; new tab defaults to a mend shell                   |
+| agents list          | **inbox** — static order, attention by contrast (t3code's model)      |
+| the focused pane     | **the terminal** — one dominant surface, never a grid                 |
+
+Product-language rules from `MEND-AGENT-WORKBENCH-PLAN.md` §5/§16 apply unchanged: status words are
+observations, "recorded/observed" only when a Sealant run stands behind the claim, no verdicts.
+
+## The main screen
+
+Left to right: project tree · (tabs above) the terminal · inbox. The Evidence Review token sheet
+(`@mend/ui`) styles everything; the terminal is the one always-dark surface.
+
+### Project tree (left rail)
+
+Projects from `/api/projects`, each expanding to its sessions (`/api/projects/:id` — every session
+is a branch worktree, which is exactly what herdr's space tree showed). Row = dot + name; session
+rows carry the status word and branch. Selecting a session focuses its terminal; selecting a project
+focuses that project's tabs. The rail foot keeps the counts line ("2 running · 0 waiting · 8
+settled").
+
+### Tabs — every tab is a PTY, the default is a mend shell
+
+A tab bar per project, herdr-style numbered. Two kinds of tab:
+
+- **Shell tab** (the default, `+` / Ctrl+Shift+T): a real shell in a Mend-managed workspace for the
+  project. Mechanics: the project lazily gets a **bench** — one session whose harness is a plain
+  shell — created on the first shell tab; every further shell tab is `POST /sessions/:id/shell` into
+  the bench workspace (verified: no cap, each shell is its own recorded PTY,
+  `packages/sessions/src/engine.ts` `openShell`). Shells are processes, not sessions: they never
+  appear in the tree or the inbox, and the session-cycling keybindings skip them.
+- **Session tab**: an agent session's terminal (claude, codex, a `mend run`). Opened by focusing a
+  session from the tree, the inbox, or the palette; the launcher (below) opens one on creation.
+
+Closing a shell tab ends that shell process. Closing a session tab only detaches the view; the
+session keeps running and stays in the tree/inbox.
+
+Open question, decided for now: bench shells run in the bench session's worktree, not the project's
+main checkout. That is the mend-shell semantic — everything in the app happens inside a supervised
+workspace. If working the main checkout matters later, that's a server feature, not an app hack.
+
+### The launcher (`+` on a project / palette action)
+
+Pick a harness — claude, codex, opencode, or a custom command — and go: `createSession` +
+`launchSession`, terminal opens as a new session tab, session appears in the tree and inbox. This is
+`mend claude` as a button; the CLI and the app produce identical sessions.
+
+### The terminal
+
+One ghostty-web surface riding `/api/tty` (`?session=` for an agent PTY, `?process=` for a shell),
+binary frames both ways, resize as JSON, reconnect on the CLI's backoff ladder. Settled sessions
+replay the record from seq 0 with the existing scrubber (checkpoint ticks, `?from=` seek) instead of
+going dark. All of this exists and survives from the prototypes.
+
+### Inbox (bottom of the left rail, herdr's agents slot)
+
+t3code's sidebar model, copied from the nightly (v0.0.34-nightly.20260819.1133, MIT, clone at
+`~/Developer/refs/t3code` — `apps/web/src/components/Sidebar.tsx` + `Sidebar.logic.ts`). The parts
+worth stealing verbatim:
+
+- **Static order.** The active list sorts by creation time, newest first, and activity NEVER
+  reorders it — a row holds its position from open until settled, so the screen only moves at
+  lifecycle transitions. Their comment says it outright: "Activity NEVER reorders the list."
+- **Attention is contrast, not position.** Rows that need nobody recede (reduced opacity, normal
+  weight); rows that need a human hold full weight. The status slot is one mutually-exclusive word:
+  `input` (amber) > `working` (accent) > `failed` (red) > `done` (green, only while unseen) > a
+  relative timestamp. No dots-as-badges, no counts on rows.
+- **Unseen is client-local.** A session shows `done` when it settled after the last time its
+  terminal was focused. Never-visited counts as read (a fresh install must not light up history).
+  The visit is stamped at the settle time, not `now`, and never moves backwards. Stored in
+  localStorage (`lib/seen.ts`).
+- **Settled is a shelf.** Below the active list, collapsible, ordered by when work ended, paged (10,
+  then +25). The active block and the shelf are flat — projects are the tree's job, not the inbox's.
+- **Jump pills.** Holding Ctrl paints 1..9 pills on the first nine rows; Ctrl+N jumps.
+
+Not copied (yet): pin, snooze/wake, drag-to-reorder pinned, multi-select. Worth revisiting once the
+daily rhythm shows a need.
+
+Shells never appear here. The inbox is about agents that may need you; a shell is you.
+
+## Review
+
+"Review the change" opens **in the app**, not the browser. Same API the web review uses
+(`/api/changes/:id/diff|comments|stats|tour|passes`), same loop: unified diff with 2px edge marks,
+line comments and change-level comments, read/suggest passes, edit-the-instruction send-back to the
+same session. The web app (`apps/web/src/routes/changes.$changeId.tsx`) is the reference
+implementation; port, don't reinvent, and extract shared pieces into a package only when the second
+consumer proves the shape. Until M2 lands, the review button deep-links to the web app so the loop
+is never broken.
+
+## Repo store (projects surface)
+
+The GUI for what `mend adopt` and the web project page do today, same endpoints:
+
+- Adopt a repository (path or URL) into the central store; show store path, default branch, adopted
+  SHA.
+- Per-project settings: git auth mode (ambient / mend-key / bridge), workspace image, dotfiles
+  toggle, environment + secrets, references and mounts, service recipes, automation
+  (autoTour/autoSuggest).
+- Remove a project (the removal report says what would not delete).
+
+Phased after the main screen; nothing here blocks daily use since the CLI covers it.
+
+## Settings (built)
+
+`/settings` (gear in the titlebar, Ctrl+Comma). Everything applies live and persists per machine;
+nothing writes to the server.
+
+- Terminal: font family (validated with the adapter's monospace probe — a proportional face warns
+  that the terminal will fall back) and size (6–32px, also Ctrl+Shift+= / − / 0 anywhere), with a
+  live preview strip on the terminal surface color.
+- Appearance: theme — system / light / dark (same `mend-theme` key and `.dark` contract as the web
+  app; the terminal stays dark either way).
+- Workbench: default harness (listed first in the launcher) and the bench shell command (what a new
+  shell tab runs; applies to newly created benches).
+- Connection: signed-in fact + the shared credential path, Manage → /connect, sign out.
+- Keyboard: the keymap, read-only for now.
+
+Still to come here: automation defaults (autoTour/autoSuggest) once project settings land in M3.
+
+## Keyboard (sane defaults; Ctrl+Shift or Ctrl+digit, so readline never sees them)
+
+One capture-phase listener on the window, so the combos work while the terminal owns focus.
+
+| Keys              | Action                                                                    |
+| ----------------- | ------------------------------------------------------------------------- |
+| Ctrl+Shift+J / K  | next / previous **session** (agents only, skips shells, crosses projects) |
+| Ctrl+Shift+H / L  | previous / next **project**                                               |
+| Ctrl+Shift+T / W  | new shell tab / close tab (Ctrl+T is readline transpose — left alone)     |
+| Ctrl+Tab / +Shift | next / previous tab in the project                                        |
+| Ctrl+1…9          | jump to inbox row N (hold Ctrl to see the pills)                          |
+| Ctrl+Shift+P      | palette (jump to any session; Ctrl+K is readline kill-line — left alone)  |
+| Alt+Space         | summon the window from anywhere (global)                                  |
+
+## What survives, what goes, what's new
+
+Survives from the prototypes: the ghostty terminal component (+ font-ready gate), the replay
+scrubber, the data layer (`lib/api.ts`, queries, SSE invalidation), the connect screen and shared
+credential file, the titlebar with native-feeling window controls, the Wayland scale pin
+(`MEND_DEVICE_SCALE`, default 1 on Linux).
+
+Goes: `src/main/herdr.ts` (socket client), `src/pty-broker/` and `src/main/pty.ts` (node:ffi PTY
+broker — no local PTYs are needed when every terminal is a server attach), the herdr/pty halves of
+the bridge, the tile grid, the cockpit model that merged two sources.
+
+New: project tree rail, per-project tab store (persisted), the bench mechanism, the inbox, the
+launcher, review screen (M2), store/settings screens (M3).
+
+## Milestones
+
+- **M1 — the main screen.** Tree · tabs (bench shells + session tabs) · terminal · inbox · launcher
+  · keybindings · palette. Daily-drivable.
+- **M2 — review in-app.** The full loop including send-back.
+- **M3 — store + settings.** Adopt, project settings, defaults.
+- **M4 — polish.** Notifications on waiting-for-input, summon refinements, keybinding config.
+
+## Decision log
+
+- 2026-08-19 — Herdr is out of the stack; it contributes the UI model only. (Yiannis)
+- 2026-08-19 — Default PTY is a mend shell, not a session; the user chooses when they want an agent.
+  Shells are processes: not in the tree, not in the inbox, skipped by session cycling. (Yiannis)
+- 2026-08-19 — Inbox copies t3code's latest-nightly model: needs-you pinned, then recency; unseen
+  clears on focus. (Yiannis: "copy the latest t3 code inbox thing")
+- 2026-08-19 — Tabs stay; each new tab is a mend shell. (Yiannis)
+- 2026-08-19 — Review, repo store, settings are in-app surfaces, phased M2/M3. (Yiannis)
+- 2026-08-19 — Binds: sane defaults now; must include next/prev project and next/prev session
+  (sessions only). (Yiannis)

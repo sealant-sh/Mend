@@ -1,0 +1,75 @@
+import { useEffect, useSyncExternalStore } from "react";
+
+import { queryClient } from "#/lib/queries";
+
+import type { EventsState, WorkbenchEvent } from "../../../shared/bridge";
+
+/**
+ * The workbench event stream, as main relays it: payloads are pointers
+ * (plan §9.4), so each event invalidates exactly the queries it names and the
+ * cockpit re-reads through the API. `session-progress` fires per record entry
+ * and is deliberately not an invalidation — the terminals carry the live
+ * bytes themselves.
+ */
+export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEvent) => void) => {
+  useEffect(
+    () =>
+      window.mend.events.onEvent((event) => {
+        switch (event.type) {
+          case "project":
+            void queryClient.invalidateQueries({ queryKey: ["projects"] });
+            if (event.projectId !== undefined) {
+              void queryClient.invalidateQueries({ queryKey: ["project", event.projectId] });
+            }
+            break;
+          case "session":
+            if (event.sessionId !== undefined) {
+              void queryClient.invalidateQueries({ queryKey: ["session", event.sessionId] });
+            }
+            if (event.projectId !== undefined) {
+              void queryClient.invalidateQueries({ queryKey: ["project", event.projectId] });
+            } else {
+              void queryClient.invalidateQueries({ queryKey: ["project"] });
+            }
+            break;
+          case "session-process":
+            if (event.sessionId !== undefined) {
+              void queryClient.invalidateQueries({
+                queryKey: ["session", event.sessionId, "processes"],
+              });
+            }
+            break;
+          default:
+            break;
+        }
+        onEvent?.(event);
+      }),
+    [onEvent],
+  );
+};
+
+// ─── the stream's own state, for the titlebar to name ───────────────────────
+
+let state: EventsState = "connecting";
+const listeners = new Set<() => void>();
+let unsubscribe: (() => void) | null = null;
+
+const ensure = () => {
+  if (unsubscribe !== null) return;
+  unsubscribe = window.mend.events.onState((next) => {
+    state = next;
+    for (const listener of listeners) listener();
+  });
+};
+
+export const useEventsState = (): EventsState =>
+  useSyncExternalStore(
+    (listener) => {
+      ensure();
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    () => state,
+  );
