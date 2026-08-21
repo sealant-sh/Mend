@@ -266,17 +266,24 @@ exact snapshot used by that session.
 ### 5.5 Session
 
 A session is one logical supervised coding-agent conversation associated with a project and one
-worktree. At the Sealant layer, it is backed by one or more runs and their durable execution
-records, exactly one active at a time. Resuming a settled session starts a new run whose sequence
-space begins at one; Mend preserves the ordered run membership instead of pretending their sequences
-are global.
+worktree. At the Sealant layer, it is backed by one or more coding-agent runs and their durable
+execution records, exactly one active at a time. Resuming a settled coding-agent run starts a new
+run whose sequence space begins at one; Mend preserves the ordered run membership instead of
+pretending their sequences are global.
+
+A session's current Sealant workspace may also contain independently recorded supporting shell and
+Service processes. They belong to the session because they can observe or mutate its worktree, but
+they are not additional sessions or coding-agent runs. The coding-agent state, workspace state, and
+each supporting process state are independent observations. A completed coding-agent run may leave
+the workspace retained by a shell or Service.
 
 A session contains or references:
 
 - provider and harness type;
 - provider-specific session/thread identifier when available;
-- start and end state;
+- start and end state for each coding-agent run;
 - PTY input and output;
+- supporting shell and Service processes;
 - commands and child processes;
 - file changes;
 - network and source activity;
@@ -284,7 +291,8 @@ A session contains or references:
 - context snapshot;
 - repository state at start and at later checkpoints;
 - generated handoff;
-- current status such as running, waiting, idle, completed, failed, or stopped.
+- coding-agent status such as running, waiting, idle, completed, failed, or stopped;
+- current workspace and supporting-process states.
 
 ### 5.6 Change
 
@@ -304,25 +312,32 @@ exposes one change: its worktree against its base. Because every write in a work
 a supervised workspace, evidence attribution is structural rather than inferred. Landing a change —
 merging the session branch into the project's default branch — belongs to publication.
 
-#### Checkpoints and slices (decided 2026-07-25)
+#### Checkpoints and slices (decided 2026-07-25, amended 2026-08-20)
 
-A checkpoint is a cheap snapshot of the session worktree — a commit to a hidden ref that never
-touches the visible branch — stamped with the exact record pointer current when it was taken. The
-`(ref, Sealant run ID, seq)` tuple joins the two truths: git carries what changed, the record
-carries why. The session-start checkpoint has no run pointer because it predates the first process.
-Checkpoints are taken at session start, after each settled command the record observes, at turn
-boundaries where the adapter can mark them, whenever review opens, and on an explicit user mark.
+A checkpoint is a cheap snapshot of the session worktree: a commit to a hidden ref that never
+touches the visible branch. Git carries what changed; run-aware record positions carry what Mend had
+observed when the checkpoint was taken. The session-start checkpoint has no run position because it
+predates the first process. Checkpoints are taken at session start, after each settled command the
+record observes, at turn boundaries where the adapter can mark them, whenever review opens, and on
+an explicit user mark.
 
-A reviewable slice is any two checkpoints: the diff is `refA..refB`; the evidence beside it is the
-record span between their run-aware pointers. "Review from here to here" is picking two marks.
-Per-turn (per-prompt) review is the special case where both checkpoints are adapter-marked turn
+A session with only a coding-agent run can use the existing `(ref, Sealant run ID, seq)` shape. Once
+supporting processes contribute records, the target shape is the hidden ref plus the latest Mend
+observed position for every recorded process attempt. Mend labels telemetry gaps and never presents
+those positions as an atomic cross-run barrier unless the public SDK supplies one.
+
+A reviewable slice is any two checkpoints. The diff is `refA..refB`; its digest travels with the
+checkpoint IDs and anchors comments to that immutable comparison. The evidence beside it is the set
+of run-aware record spans between their observed positions. "Review from here to here" is picking
+two marks. Per-turn review is the special case where both checkpoints are adapter-marked turn
 boundaries; the generic adapter falls back to command-settle and manual marks. Turn metadata is
 never treated as stronger evidence than the record (§9.2).
 
 ### 5.7 Review comment
 
-A review comment is feedback attached to a file, line, hunk, or the change as a whole. Comments can
-remain notes or be bundled and sent back to an active agent as a follow-up instruction.
+A review comment is feedback attached to a file, line, hunk, or the change as a whole. New comments
+are anchored to a checkpoint pair and diff digest, not a moving worktree. Comments can remain notes
+or be selected for an editable follow-up instruction sent to the same session.
 
 ### 5.8 Verification
 
@@ -402,8 +417,9 @@ The session page combines:
 - context used;
 - sources consulted;
 - checks and artifacts;
-- controls to send input, stop, resume, or open a terminal;
-- development services detected or declared for the session, with authenticated browser links;
+- controls to send input, stop, resume, or open a session-owned supporting terminal;
+- explicitly declared Services, their process and forwarding observations, and browser links only
+  when HTTP or HTTPS was declared;
 - a link to review the resulting change.
 
 The browser or phone may disconnect without terminating the session. Reopening the page resumes from
@@ -588,7 +604,11 @@ Review local diff
 → comments are marked addressed or remain open
 ```
 
-The user should be able to inspect and edit the generated instruction before sending it.
+The user should be able to choose the comments included and inspect and edit the generated
+instruction before sending it. Delivery is complete only after Sealant accepts the new PTY process
+for that exact instruction and Mend persists the new run membership and delivery correlation.
+Retries use an idempotency key and must not start a second run. The first implementation relaunches
+settled coding-agent sessions; sending review input to a live TUI remains a separate later action.
 
 ### Mend reads the change (decided 2026-07-25)
 
@@ -670,21 +690,28 @@ to prove the product.
 
 ## 7.6 Session development services
 
-Mend should treat a development server as a session capability, not a deployment. The first useful
-version should:
+Mend treats a development server as a session capability, not a deployment. A Service is created by
+an explicit recipe or user action. A future typed listener event from the public Sealant SDK may
+produce a factual declaration suggestion, but it never creates or exposes a Service automatically.
+Mend does not inspect container internals to discover listeners.
 
-- detect listening ports in the workspace, while allowing an explicit service declaration when
-  detection is ambiguous;
-- associate each service with the session and worktree that started it;
-- expose an authenticated browser URL through Mend's existing private network boundary;
-- preserve normal browser behavior, including WebSockets and hot reload;
-- show whether the backing process is running, exited, or unreachable;
-- let the user open the same service from desktop or phone;
-- require no public port and never publish a service by default.
+The first useful version should:
 
-The public Sealant SDK currently has no service-discovery or authenticated forwarding surface. Mend
-must not import runtime internals to create one; the required platform capability is tracked in
-`PLATFORM-FEEDBACK.md`.
+- associate each Service with the visible session and worktree it serves;
+- keep the stable Service, each supervised process attempt, the host forward, and target
+  reachability as separate facts;
+- preserve every attempt's Sealant run pointer, output, exit, and timestamps across restart;
+- distinguish `tcp | udp` transport from an optional `http | https` browser scheme;
+- show Open only for a declared browser scheme and Copy endpoint for other transports;
+- preserve normal browser behavior, including WebSockets and hot reload, through a raw per-port byte
+  forward;
+- let the user inspect and control the same Service from desktop or phone;
+- require no public port and never publish or autostart a Service by default.
+
+Raw forwarded ports have no Mend request authentication. They bind to loopback and explicitly
+selected private interfaces; the private network is the access boundary. The UI states this beside
+private-interface exposure. Mend must consume forwarding and any future listener observations only
+through the public Sealant SDK.
 
 ---
 
@@ -1112,7 +1139,8 @@ Work:
 - Add Tailscale detection and reachability checks.
 - Add scoped device pairing and revocation.
 - Support remote session input and terminal access.
-- Surface session development services through authenticated browser URLs.
+- Surface session Services through raw per-port forwards on loopback and explicitly selected private
+  interfaces, with the lack of Mend request authentication stated in the UI.
 - Optimize the unified diff and review comments for touch.
 
 Exit test:
@@ -1278,6 +1306,34 @@ understand the work.
 
 ### Decided
 
+- **2026-08-20: desktop shells belong to visible sessions; hidden benches are retired.** A writable
+  supporting shell runs in the focused coding-agent session's current workspace and contributes to
+  that session's change. If only a project is focused, the shell shortcut opens the session launcher
+  instead of creating hidden work. Shell tab close confirms and stops the process group; an explicit
+  Detach tab action leaves it running. A completed coding-agent run may leave its workspace retained
+  by shells or Services. Resume reuses that retained workspace and preserves those processes; a
+  separate stop-retained-work-and-resume-fresh action names what it will end. Hot workspaces remain
+  prepared capacity for new visible sessions only.
+
+- **2026-08-20: Review is pinned to a checkpoint pair and diff digest.** Opening Review is an
+  idempotent command that creates or reuses the To checkpoint. The diff, comments, evidence, and
+  machine passes read the same immutable comparison. A later worktree edit marks the snapshot stale
+  but never mutates it silently. New comments carry slice-bound anchors, including side and range.
+  Legacy moving-diff comments stay readable and are labeled as such.
+
+- **2026-08-20: follow-up delivery is server-owned and recoverable.** The reviewer selects comments
+  and edits the instruction. Mend stores the selected comment IDs, checkpoint pair, digest,
+  instruction, and idempotency key before launch. Delivery completes only when the new PTY accepts
+  the instruction and Mend persists the run membership and correlation. Failed and interrupted
+  delivery remains retryable; selected comments are not marked sent early.
+
+- **2026-08-20: Services are explicit, session-owned, and privately forwarded.** Recipes and user
+  actions create Services; future public listener events may suggest declarations but never create
+  them. Raw TCP or UDP forwards have no Mend request authentication and bind only to loopback or
+  explicitly selected private interfaces by default. Browser Open requires a separately declared
+  HTTP or HTTPS scheme. Services never autostart. A stable Service retains immutable process-attempt
+  history, forwards, and timestamped target observations.
+
 - **2026-08-20 — Hot sessions: a per-project pool of pre-provisioned workspaces.** Each project
   carries a `hotSessions` count (default 0, the setup page's stepper): Mend keeps that many complete
   session skeletons ready — a pre-generated session id, its worktree and branch, its session socket
@@ -1289,9 +1345,10 @@ understand the work.
   a 10-minute heartbeat re-arms workspace TTLs and heals the rest). The worktree is a bind mount, so
   the claim freshens it to the requested base host-side and the running container sees the reset
   immediately. Skeletons launch with the shell shape — every harness CLI baked, all connected
-  accounts attached — so one pool serves claude, codex, and shell sessions. Resumes stay cold (their
-  worktree is fixed; recorded as platform feedback). Status stays observational: "2 ready · 1
-  warming", never a promise.
+  accounts attached — so one pool serves every supported coding harness. Supporting shells and
+  Services reuse a claimed session workspace and never claim another pool entry. A resume is cold
+  when no retained workspace exists because its worktree path is fixed; a session retained by live
+  leases resumes in place. Status stays observational: "2 ready · 1 warming", never a promise.
 
 - **2026-08-11 — One saved workspace profile, with runtime services distinct from packages.** Mend
   settings own the environment for workspace launches: OS family, portable package names, and
@@ -1341,12 +1398,11 @@ understand the work.
   is an adopting-state project row fed by the existing `mend_events` notify path. The web adopt form
   can reuse the discovery endpoints unchanged.
 
-- **2026-08-01 — Browser access to session development services.** A development server is part of
-  its session, alongside the conversation, terminal, record, and change. Mend will detect or accept
-  declared workspace ports and expose them through authenticated browser URLs on the same private
-  network boundary used by the product. Services are never public by default. The required Sealant
-  SDK capability is tracked in `PLATFORM-FEEDBACK.md`; Mend will not work around it with private
-  runtime imports.
+- **2026-08-01 — Browser access to session development services. Superseded in part 2026-08-20.** A
+  development server remains part of its session, alongside the conversation, terminal, record, and
+  change. The later Service decision replaces automatic detection and authenticated-link language:
+  declarations are explicit, listener events may only suggest them, and raw forwards use the private
+  network rather than Mend request authentication.
 
 - **2026-07-25 — Execution model: central store, no host bind.** Agents never execute against the
   user's pre-existing checkout. Repositories are adopted into a Mend-managed store (bare repo plus
@@ -1368,17 +1424,14 @@ understand the work.
   proposed checks discharge via verification runs. New milestone M2.5; details in §7.3. Revives the
   queue-era brief compiler inside the workbench review surface.
 
-- **2026-08-01 — Dev-server preview: per-port TCP forwards, not an HTTP path proxy.** When a server
-  starts listening inside a session's workspace, Mend allocates a host port (bound to localhost and
-  explicitly selected private interfaces, per §7.5), pumps bytes to the container port over the
-  SDK-exposed forward (§8.1.H), and shows the URL. Raw TCP rather than a path-prefixed HTTP proxy:
-  path prefixes break absolute asset paths, HMR websockets, and cookies on real dev servers, and
-  wildcard subdomains are not available on a LAN/tailnet. Ports are discovered by observation
-  (sealantd listen events) where possible, phrased in product voice ("Listening on 5173 ·
-  observed"). Mobile reaches the same forwarded host port over the tailnet; the app shows a preview
-  entry per session. Accepted trade-off, recorded deliberately: a raw TCP forward cannot enforce
-  Mend auth per-request — acceptable under the private-interfaces-only posture; an auth-gated
-  HTTP-aware mode may layer on later.
+- **2026-08-01 — Dev-server preview: per-port TCP forwards, not an HTTP path proxy; amended
+  2026-08-20.** An explicitly declared Service receives a host port bound to loopback and selected
+  private interfaces. Mend pumps bytes to the workspace port over the SDK forward (§8.1.H). Path
+  prefixes are rejected because they break absolute asset paths, HMR WebSockets, and cookies on real
+  development servers. Raw forwards cannot enforce Mend authentication per request; the UI states
+  that the private network is the access boundary. Transport does not imply browser behavior: HTTP
+  or HTTPS must be declared before Mend shows Open. A typed public listener event may later produce
+  an observed suggestion, never an automatic declaration or forward.
 
 - **2026-08-01 — Per-project extra mounts, read-only, review scope unchanged.** A project may
   declare additional host folders (sibling repos, an uncommitted experiments folder) mounted into

@@ -26,6 +26,44 @@ lifted "Codex inference is not supported yet" 400. Tool-less v1: caller tools st
   (`connected account` / `reconnect`) — a listing (or a structured error code on the inference
   surface) would make the fallback exact.
 
+## 2026-08-20 · 0.19.0 · PTY attachment output has no resumable cursor
+
+- **Needed:** server-authoritative terminal restoration and duplicate-free reconnect. Mend needs to
+  persist the last output position a client rendered as a decimal sequence, then resume from it
+  after tab switches, app restart, or network loss.
+- **Today:** `session.attach({ from })` accepts a starting record sequence, but `attachment.output`
+  emits raw byte chunks with no sequence or cursor. After attachment begins, the client cannot know
+  which durable position a chunk represents. Reusing the old `from` value replays duplicate
+  scrollback; advancing it is guesswork. This also prevents an honest read-only live log stream from
+  sharing the same resume contract.
+- **Suggested:** emit sequence-addressed output frames, for example `{ sequence, data }`, or expose
+  an acknowledged attachment cursor that advances only after complete frames. Include the terminal
+  end position and keep the value bigint-safe at the SDK boundary.
+
+## 2026-08-20 · 0.19.0 · No record-head read or cross-run checkpoint barrier
+
+- **Needed:** a git checkpoint records the latest Mend-observed position for every active
+  coding-agent, shell, and Service attempt. Review can then bound evidence across concurrent runs
+  without attributing a shell write to the coding-agent run.
+- **Today:** `run.record.stream({ from })` and `timeline({ from })` expose resumable reads, but the
+  public SDK has no cheap `record.position()` or workspace-level barrier. Polling each stream around
+  a git snapshot produces several observation times, not one atomic frontier.
+- **Suggested:** first expose the latest durable position for one run. If the platform can provide a
+  workspace barrier, return the run-to-sequence set observed at that barrier. Mend will otherwise
+  store each latest position and label it `latest Mend observed`, never an exact cross-run barrier.
+
+## 2026-08-20 · 0.19.0 · Interactive process launch has no client idempotency key or durable correlation
+
+- **Needed:** follow-up delivery must survive client timeout and Mend restart without starting a
+  second coding-agent run. A retry needs to identify the PTY process created for one exact edited
+  instruction.
+- **Today:** the public interactive-session start path accepts argv but no client idempotency key or
+  caller correlation metadata that can be queried later. Mend's existing `attemptId` is a workspace
+  attempt foreign key, not a client key, and the wire operation carries no idempotency header.
+- **Suggested:** accept a caller idempotency key and correlation metadata when opening an
+  interactive process, persist them with the process and run, and provide lookup by key. Repeating
+  the request should return the same process and run rather than start another one.
+
 ## 2026-08-20 · 0.19.0 · Warm pools must pre-bind everything: no standby workspaces, no re-pointable mounts
 
 - **Needed:** instant session attach. Mend now keeps a per-project pool of ready workspaces ("hot
@@ -69,7 +107,8 @@ lifted "Codex inference is not supported yet" 400. Tool-less v1: caller tools st
 ## 2026-08-14 · 0.17.0 · Dotfiles were SDK-unreachable; archives added as the transport
 
 **Implemented at the source** — sealant-sh/core stack #167 (PRs #163–#166) + sealantd stack #52 (PRs
-#50–#51), pending review/release as 0.18.0.
+
+# 50–#51), pending review/release as 0.18.0.
 
 - **Needed:** the user's own environment (shell, dotfiles) in every session workspace, with private
   repos reachable through the host's own ssh identity (agent, hardware keys) — never a credential in

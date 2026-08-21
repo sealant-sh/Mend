@@ -1,5 +1,8 @@
 # Mend Desktop — brief
 
+> **Amended 2026-08-20:** hidden project benches are retired. The implementation still contains the
+> legacy bench path until the migration described below lands.
+
 The desktop app is a herdr rebuilt as a GUI, with Mend as the engine. Herdr's layout is the part
 worth keeping. Yiannis lives in it all day and its shape is proven: a tree of places on the left,
 tabs across the top, one dominant terminal, an agents list that tells you where to look next. What
@@ -27,13 +30,13 @@ The synthesis: herdr's information architecture, Mend's session engine, native w
 
 ## Nouns
 
-| Herdr surface        | Desktop surface                                                       |
-| -------------------- | --------------------------------------------------------------------- |
-| space (dir/worktree) | **project** (adopted repo in the store), sessions nested beneath      |
-| pane                 | **PTY over `/api/tty`** — a mend shell or an agent session's terminal |
-| tab                  | **tab** — one PTY; new tab defaults to a mend shell                   |
-| agents list          | **inbox** — static order, attention by contrast (t3code's model)      |
-| the focused pane     | **the terminal** — one dominant surface, never a grid                 |
+| Herdr surface        | Desktop surface                                                        |
+| -------------------- | ---------------------------------------------------------------------- |
+| space (dir/worktree) | **project** (adopted repo in the store), sessions nested beneath       |
+| pane                 | **PTY over `/api/tty`**, either the coding agent or a supporting shell |
+| tab                  | **tab**, a view of one session or one supporting process               |
+| agents list          | **inbox**, static order with attention shown through contrast          |
+| the focused pane     | **the terminal**, one dominant surface rather than a terminal grid     |
 
 Product-language rules from `MEND-AGENT-WORKBENCH-PLAN.md` §5/§16 apply unchanged: status words are
 observations, "recorded/observed" only when a Sealant run stands behind the claim, no verdicts.
@@ -51,25 +54,27 @@ rows carry the status word and branch. Selecting a session focuses its terminal;
 focuses that project's tabs. The rail foot keeps the counts line ("2 running · 0 waiting · 8
 settled").
 
-### Tabs — every tab is a PTY, the default is a mend shell
+### Tabs: sessions and their supporting shells
 
 A tab bar per project, herdr-style numbered. Two kinds of tab:
 
-- **Shell tab** (the default, `+` / Ctrl+Shift+T): a real shell in a Mend-managed workspace for the
-  project. Mechanics: the project lazily gets a **bench** — one session whose harness is a plain
-  shell — created on the first shell tab; every further shell tab is `POST /sessions/:id/shell` into
-  the bench workspace (verified: no cap, each shell is its own recorded PTY,
-  `packages/sessions/src/engine.ts` `openShell`). Shells are processes, not sessions: they never
-  appear in the tree or the inbox, and the session-cycling keybindings skip them.
-- **Session tab**: an agent session's terminal (claude, codex, a `mend run`). Opened by focusing a
-  session from the tree, the inbox, or the palette; the launcher (below) opens one on creation.
+- **Session tab:** the coding-agent PTY for a visible session. Focusing a session from the tree,
+  inbox, or palette opens this view.
+- **Shell tab:** an independently recorded supporting shell in the focused session's current
+  workspace. It sees and may mutate that session's worktree, so its work belongs to the same change.
 
-Closing a shell tab ends that shell process. Closing a session tab only detaches the view; the
-session keeps running and stays in the tree/inbox.
+`+` and Ctrl+Shift+T open a named shell when a session is focused. If only the project is focused,
+they open the session launcher instead of creating a hidden worktree. Supporting shells are
+processes, not sessions. They remain out of the tree and inbox, but the owning session exposes them.
 
-Open question, decided for now: bench shells run in the bench session's worktree, not the project's
-main checkout. That is the mend-shell semantic — everything in the app happens inside a supervised
-workspace. If working the main checkout matters later, that's a server feature, not an app hack.
+The tab close button and Ctrl+Shift+W confirm before stopping a live shell process group.
+`Detach tab` is a separate context action that removes only the view. Closing a session tab,
+switching tabs, quitting the app, or losing the network detaches without stopping the coding agent
+or supporting processes.
+
+The server process list is authoritative for shell existence and identity. Local tab state stores
+only layout, focus, and replay position. Shell labels are unique within the session and may be
+renamed.
 
 ### The launcher (`+` on a project / palette action)
 
@@ -79,10 +84,12 @@ Pick a harness — claude, codex, opencode, or a custom command — and go: `cre
 
 ### The terminal
 
-One ghostty-web surface riding `/api/tty` (`?session=` for an agent PTY, `?process=` for a shell),
-binary frames both ways, resize as JSON, reconnect on the CLI's backoff ladder. Settled sessions
-replay the record from seq 0 with the existing scrubber (checkpoint ticks, `?from=` seek) instead of
-going dark. All of this exists and survives from the prototypes.
+One ghostty-web surface rides `/api/tty` (`?session=` for a coding-agent PTY, `?process=` for a
+supporting shell), with binary frames, JSON resize, and reconnect backoff. Live attachment resumes
+from the last acknowledged decimal cursor once the server exposes one. Durable replay after a
+workspace is reaped uses a separate read-only record path; `/api/tty` must not pretend a dead PTY is
+still attachable. The existing scrubber remains UI groundwork, not proof that record-backed replay
+has shipped.
 
 ### Inbox (bottom of the left rail, herdr's agents slot)
 
@@ -143,8 +150,8 @@ nothing writes to the server.
   live preview strip on the terminal surface color.
 - Appearance: theme — system / light / dark (same `mend-theme` key and `.dark` contract as the web
   app; the terminal stays dark either way).
-- Workbench: default harness (listed first in the launcher) and the bench shell command (what a new
-  shell tab runs; applies to newly created benches).
+- Workbench: default harness, listed first in the launcher. Supporting shells follow the focused
+  session workspace's configured login shell.
 - Connection: signed-in fact + the shared credential path, Manage → /connect, sign out.
 - Keyboard: the keymap, read-only for now.
 
@@ -158,7 +165,7 @@ One capture-phase listener on the window, so the combos work while the terminal 
 | ----------------- | ------------------------------------------------------------------------- |
 | Ctrl+Shift+J / K  | next / previous **session** (agents only, skips shells, crosses projects) |
 | Ctrl+Shift+H / L  | previous / next **project**                                               |
-| Ctrl+Shift+T / W  | new shell tab / close tab (Ctrl+T is readline transpose — left alone)     |
+| Ctrl+Shift+T / W  | new shell in focused session / confirm and stop focused shell             |
 | Ctrl+Tab / +Shift | next / previous tab in the project                                        |
 | Ctrl+1…9          | jump to inbox row N (hold Ctrl to see the pills)                          |
 | Ctrl+Shift+P      | palette (jump to any session; Ctrl+K is readline kill-line — left alone)  |
@@ -175,25 +182,41 @@ Goes: `src/main/herdr.ts` (socket client), `src/pty-broker/` and `src/main/pty.t
 broker — no local PTYs are needed when every terminal is a server attach), the herdr/pty halves of
 the bridge, the tile grid, the cockpit model that merged two sources.
 
-New: project tree rail, per-project tab store (persisted), the bench mechanism, the inbox, the
-launcher, review screen (M2), store/settings screens (M3).
+New: project tree rail, server-discovered session and shell tabs, the inbox, the launcher, native
+Review, Services drawer, and store/settings screens. The legacy bench mechanism is removed only
+after its hidden worktrees and changes are surfaced for migration.
 
 ## Milestones
 
-- **M1 — the main screen.** Tree · tabs (bench shells + session tabs) · terminal · inbox · launcher
-  · keybindings · palette. Daily-drivable.
-- **M2 — review in-app.** The full loop including send-back.
-- **M3 — store + settings.** Adopt, project settings, defaults.
-- **M4 — polish.** Notifications on waiting-for-input, summon refinements, keybinding config.
+- **M1: honest ownership.** Tree, visible sessions, session-owned shells, terminal, inbox, launcher,
+  keybindings, legacy-bench migration, and retained-workspace controls.
+- **M2: Review in-app.** Immutable checkpoint-pair diff, P0 controls, comments, minimum evidence,
+  and recoverable send-back.
+- **M3: Services in-app.** Stable Services, attempt history, private forwards, read-only logs, and
+  factual controls beside the owning session.
+- **M4: store, settings, and polish.** Adopt, project settings, notifications, summon refinements,
+  and keybinding configuration.
 
 ## Decision log
 
+- 2026-08-20: hidden project benches are retired. Supporting shells belong to a focused visible
+  session and its change. The old default-shell and per-project bench decisions below are
+  superseded. (Approved desktop ownership plan)
+- 2026-08-20: shell close confirms and stops the process group; Detach tab is the non-destructive
+  alternative. Resume reuses a workspace retained by shells or Services unless the user explicitly
+  chooses to stop retained work and resume fresh. (Approved desktop ownership plan)
+- 2026-08-20: native Review is pinned to checkpoint A, checkpoint B, and a diff digest. It ships
+  with minimum honest evidence and server-owned follow-up delivery. (Approved desktop ownership
+  plan)
+- 2026-08-20: Services stay nested under their owning session. Normal reachable Services do not
+  become standalone inbox rows. (Approved desktop ownership plan)
 - 2026-08-19 — Herdr is out of the stack; it contributes the UI model only. (Yiannis)
-- 2026-08-19 — Default PTY is a mend shell, not a session; the user chooses when they want an agent.
-  Shells are processes: not in the tree, not in the inbox, skipped by session cycling. (Yiannis)
+- 2026-08-19 — Superseded 2026-08-20: Default PTY is a mend shell, not a session; the user chooses
+  when they want an agent. Shells are processes: not in the tree, not in the inbox, skipped by
+  session cycling. (Yiannis)
 - 2026-08-19 — Inbox copies t3code's latest-nightly model: needs-you pinned, then recency; unseen
   clears on focus. (Yiannis: "copy the latest t3 code inbox thing")
-- 2026-08-19 — Tabs stay; each new tab is a mend shell. (Yiannis)
+- 2026-08-19 — Superseded 2026-08-20: Tabs stay; each new tab is a mend shell. (Yiannis)
 - 2026-08-19 — Review, repo store, settings are in-app surfaces, phased M2/M3. (Yiannis)
 - 2026-08-19 — Binds: sane defaults now; must include next/prev project and next/prev session
   (sessions only). (Yiannis)
