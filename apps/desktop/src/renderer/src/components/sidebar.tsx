@@ -10,6 +10,7 @@ import {
   stopSession,
   type ProjectDto,
   type SessionProcessDto,
+  currentAgentProcess,
 } from "#/lib/api";
 import type { InboxRow, TreeProject } from "#/lib/model";
 import { queryClient } from "#/lib/queries";
@@ -123,7 +124,7 @@ function SessionRow({
   // The harness row is the session's own PTY (the session tab); shells are
   // their own tabs. Ended shells leave the tree — the server prunes them from
   // the tab strip for the same reason.
-  const agent = processes.find((process) => process.kind === "agent") ?? null;
+  const agent = currentAgentProcess(processes);
   const shells = processes.filter(
     (process) => process.kind === "shell" && LIVE_PROCESS.has(process.status),
   );

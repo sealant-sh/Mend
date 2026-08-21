@@ -110,8 +110,12 @@ export class SessionsRepo extends Context.Service<
       outcome: SessionOutcome,
       summary: string | null,
     ) => Effect.Effect<void>;
-    /** A delivered follow-up resumes the settled session — same row, same worktree, same change. */
-    readonly reopen: (id: SessionId) => Effect.Effect<void>;
+    /**
+     * Clear `settledAt` and write a live status: `running` when an agent process starts (a
+     * launch, a delivered follow-up, a resume), `idle` when a supporting process rejoins a
+     * settled session's workspace. Same row, same worktree, same change.
+     */
+    readonly reopen: (id: SessionId, status: "running" | "idle") => Effect.Effect<void>;
     readonly setLabel: (id: SessionId, label: string | null) => Effect.Effect<void>;
     /** The auto-namer's write: fills the label only while null; true when the write landed. */
     readonly setLabelIfUnset: (id: SessionId, label: string) => Effect.Effect<boolean>;
@@ -473,10 +477,13 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         yield* notify(id);
       });
 
-      const reopen = Effect.fn("SessionsRepo.reopen")(function* (id: SessionId) {
+      const reopen = Effect.fn("SessionsRepo.reopen")(function* (
+        id: SessionId,
+        status: "running" | "idle",
+      ) {
         yield* db
           .update(agentSessions)
-          .set({ status: "running", settledAt: null, updatedAt: new Date() })
+          .set({ status, settledAt: null, updatedAt: new Date() })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
         yield* notify(id);

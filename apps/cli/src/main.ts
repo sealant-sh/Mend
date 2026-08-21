@@ -17,6 +17,9 @@ import {
   workspaceGlobs,
 } from "./service-init.ts";
 import {
+  agentIsLive,
+  agentOutcome,
+  type AgentProcessLike,
   cwdFacts,
   gitTopLevel,
   HARNESS_COMMANDS,
@@ -106,6 +109,14 @@ interface SessionAnnotationDto {
   readonly openComments: number;
   readonly totalComments: number;
   readonly pendingFollowUp: boolean;
+  /** The session's current agent process; null before the first launch. */
+  readonly currentAgent: AgentProcessLike | null;
+}
+
+/** The slice of /sessions/:id the CLI reads: the row plus the agent process it currently means. */
+interface SessionDetailLiteDto {
+  readonly session: SessionDto;
+  readonly currentAgent: AgentProcessLike | null;
 }
 
 // `$XDG_CONFIG_HOME/mend`, default `~/.config/mend`; a pre-XDG `~/.mend` stays authoritative
@@ -1856,14 +1867,15 @@ const supervisedRun = async (
         say(dim(`  ${event.line}`));
       }
       if (event.type === "session") {
-        const detail = await api<{ readonly session: SessionDto }>(
-          config,
-          "GET",
-          `/sessions/${session.id}`,
-        );
-        if (["completed", "failed", "stopped"].includes(detail.session.status)) {
-          settled = detail.session.status;
-        }
+        const detail = await api<SessionDetailLiteDto>(config, "GET", `/sessions/${session.id}`);
+        // The agent's own end settles the wait: the session fold may read `idle` while a
+        // shell still holds the workspace.
+        const ended =
+          agentOutcome(detail.currentAgent) ??
+          (["completed", "failed", "stopped"].includes(detail.session.status)
+            ? detail.session.status
+            : null);
+        if (ended !== null) settled = ended;
       }
     }
   }
@@ -1931,11 +1943,7 @@ const continueSession = async (config: CliConfig, args: ReadonlyArray<string>) =
     if (followUp === null) return fail(`session ${sessionId} has no pending follow-up`);
   }
 
-  const detail = await api<{ readonly session: SessionDto }>(
-    config,
-    "GET",
-    `/sessions/${sessionId}`,
-  );
+  const detail = await api<SessionDetailLiteDto>(config, "GET", `/sessions/${sessionId}`);
   const session = detail.session;
   say(`${green("✓")} follow-up for session ${dim(session.id.slice(0, 8))} · ${session.branch}`);
   say(dim("  instruction:"));
@@ -1983,6 +1991,14 @@ const continueSession = async (config: CliConfig, args: ReadonlyArray<string>) =
 
 const ACTIVE_STATUSES = LIVE_STATUSES;
 
+/** Whether a listed session's AGENT is live — the annotation carries its current agent process. */
+const agentLiveIn = (detail: ProjectDetailDto, session: SessionDto): boolean =>
+  agentIsLive(
+    session,
+    detail.annotations.find((annotation) => annotation.sessionId === session.id)?.currentAgent ??
+      null,
+  );
+
 /**
  * Sessions are continuous work, not runs: `mend resume` rejoins one on a
  * fresh workspace — saved harness state restored, a claude resume is native
@@ -1999,7 +2015,7 @@ const resumeCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
   const detail = await api<ProjectDetailDto>(config, "GET", `/projects/${project.id}`);
   const match =
     prefix === undefined
-      ? detail.sessions.find((s) => !ACTIVE_STATUSES.has(s.status))
+      ? detail.sessions.find((s) => !agentLiveIn(detail, s))
       : detail.sessions.find((s) => s.id.startsWith(prefix));
   if (match === undefined) {
     return fail(
@@ -2008,7 +2024,7 @@ const resumeCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
         : `no session matches "${prefix}"`,
     );
   }
-  if (ACTIVE_STATUSES.has(match.status)) {
+  if (agentLiveIn(detail, match)) {
     return fail(
       `session ${match.id.slice(0, 8)} is live — attach: mend attach ${match.id.slice(0, 8)}`,
     );
@@ -2044,12 +2060,8 @@ const resumeForRejoin = async (config: CliConfig, sessionId: string, label: stri
     );
     return true;
   } catch (error) {
-    const refreshed = await api<{ readonly session: SessionDto }>(
-      config,
-      "GET",
-      `/sessions/${sessionId}`,
-    );
-    if (ACTIVE_STATUSES.has(refreshed.session.status)) return false;
+    const refreshed = await api<SessionDetailLiteDto>(config, "GET", `/sessions/${sessionId}`);
+    if (agentIsLive(refreshed.session, refreshed.currentAgent)) return false;
     return fail(error instanceof Error ? error.message : String(error));
   }
 };
@@ -2067,7 +2079,7 @@ const rejoinCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
   const eligible = detail.sessions
     .filter((session) => harness === null || session.harness === harness)
     .toSorted((left, right) => right.createdAt.localeCompare(left.createdAt));
-  const newest = eligible.find((session) => ACTIVE_STATUSES.has(session.status)) ?? eligible[0];
+  const newest = eligible.find((session) => agentLiveIn(detail, session)) ?? eligible[0];
   const matches =
     prefix === undefined
       ? newest === undefined
@@ -2089,13 +2101,14 @@ const rejoinCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
 
   const session = matches[0];
   if (session === undefined) return fail("session selection failed");
+  const alreadyLive = agentLiveIn(detail, session);
   say(
-    `${green("✓")} rejoining ${session.harness} · ${dim(session.id.slice(0, 8))} · ${ACTIVE_STATUSES.has(session.status) ? "already live" : "restoring"}`,
+    `${green("✓")} rejoining ${session.harness} · ${dim(session.id.slice(0, 8))} · ${alreadyLive ? "already live" : "restoring"}`,
   );
   say(`${cobalt("  watch")} · ${config.url}/sessions/${session.id}`);
 
   let restored = false;
-  if (!ACTIVE_STATUSES.has(session.status)) {
+  if (!alreadyLive) {
     restored = await resumeForRejoin(
       config,
       session.id,
@@ -2110,12 +2123,8 @@ const rejoinCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
   say("");
   let outcome = await attachTty(config, session.id, session.harness, 0n);
   if (outcome === "unavailable") {
-    const refreshed = await api<{ readonly session: SessionDto }>(
-      config,
-      "GET",
-      `/sessions/${session.id}`,
-    );
-    if (!ACTIVE_STATUSES.has(refreshed.session.status)) {
+    const refreshed = await api<SessionDetailLiteDto>(config, "GET", `/sessions/${session.id}`);
+    if (!agentIsLive(refreshed.session, refreshed.currentAgent)) {
       await resumeForRejoin(
         config,
         session.id,

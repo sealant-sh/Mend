@@ -1,6 +1,6 @@
 # Session Services
 
-> **Status:** Decided architecture, amended 2026-08-20
+> **Status:** Decided architecture, amended 2026-08-21
 >
 > **Date:** 2026-08-12
 >
@@ -53,9 +53,40 @@ operator policy explicitly allows them.
 
 ## The model
 
-A session has one current workspace. The coding agent, supporting shells, and Services share the
-same worktree, dependencies, and network. Their states remain independent: the coding-agent run can
-complete while a shell or Service retains the workspace.
+**A session is a worktree plus its record; everything that interacts with it is a process** (decided
+2026-08-21). A session has one current workspace. Every process in it — the coding agent included —
+is a `session_processes` row with the same lifecycle, one of four kinds:
+
+| kind             | what runs                               | transport today    |
+| ---------------- | --------------------------------------- | ------------------ |
+| `shell`          | the image's login shell in the worktree | PTY → `/api/tty`   |
+| `agent-pty`      | `codex` / `claude` / `opencode` TUI     | PTY → `/api/tty`   |
+| `agent-protocol` | `codex app-server` / claude stream-json | reserved — not yet |
+| `service`        | a recipe command (dev server, db…)      | logs + port        |
+
+A session holds several agent processes over its life — relaunch, follow-up, resume, later a
+protocol one from the phone. "One change per session" is unaffected: the change is worktree vs base.
+Harness native state (the transcript, the provider session id a native resume addresses) is
+harvested **per agent process**; "the session's provider id" means the latest agent's.
+
+**Session status is a fold over live processes, never a property of one process:**
+
+```text
+any agent process live                       → running
+no agent live, shells or Services live       → idle
+nothing live                                 → settled: completed | failed | stopped
+                                                (the last agent process's outcome)
+```
+
+`waiting` stays defined but only a protocol-mode agent can report it. `starting` is a launch without
+a process row yet. Stop ends the agent processes; shells and Services keep their own lifecycle, so a
+stopped agent beside a live shell reads `idle` until the shell ends. Clients that need the agent's
+outcome while a shell holds the workspace read the session's `currentAgent`
+(`SessionDetail.currentAgent`, the list annotation) rather than the fold.
+
+The coding agent, supporting shells, and Services share the same worktree, dependencies, and
+network. Their states remain independent: the coding-agent run can complete while a shell or Service
+retains the workspace.
 
 ```text
 Mend session, durable
@@ -67,7 +98,7 @@ Mend session, durable
 │   └── current forward · host port -> workspace port
 ├── Service · db, adopted port with no process attempt
 └── current workspace, replaceable
-    ├── coding-agent process
+    ├── agent processes (agent-pty today; agent-protocol reserved)
     ├── supporting shell processes
     └── current Service attempts
 ```

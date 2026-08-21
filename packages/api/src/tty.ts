@@ -1,6 +1,7 @@
 import { Auth } from "@mend/auth";
 import { SessionProcessesRepo, SessionsRepo } from "@mend/db";
 import { SessionId, SessionProcessId, type SealantWorkspaceId } from "@mend/domain";
+import { currentAgentProcess } from "@mend/domain/workbench";
 import { SealantClient } from "@mend/sealant";
 import { Effect, Option } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
@@ -25,8 +26,10 @@ import { Socket } from "effect/unstable/socket";
  * Auth: session cookie (browser) or `?token=` (CLI; WebSocket cannot set
  * headers). Addressing stays query-param: `?process=<id>` reaches any
  * workspace process by its plural record (docs/SESSION-SERVICES.md);
- * `?session=<id>` remains the session's agent PTY via the legacy singular
- * pointer. `&from=<seq>` replays either.
+ * `?session=<id>` (legacy) resolves to the session's CURRENT agent process
+ * — the newest live one, else the newest ever — falling back to the row's
+ * mirrored pointer for sessions that predate process rows. `&from=<seq>`
+ * replays either.
  */
 export const TtyRoutes = HttpRouter.use((router) =>
   Effect.gen(function* () {
@@ -78,11 +81,23 @@ export const TtyRoutes = HttpRouter.use((router) =>
           if (Option.isNone(session)) {
             return HttpServerResponse.text("unknown session", { status: 404 });
           }
-          const { sealantWorkspaceId, sealantSessionId } = session.value;
-          if (sealantWorkspaceId === null || sealantSessionId === null) {
+          const agent = currentAgentProcess(yield* processes.listForSession(session.value.id));
+          const resolved =
+            agent !== null && agent.sealantSessionId !== null
+              ? {
+                  sealantWorkspaceId: agent.sealantWorkspaceId,
+                  sealantSessionId: agent.sealantSessionId,
+                }
+              : session.value.sealantWorkspaceId !== null && session.value.sealantSessionId !== null
+                ? {
+                    sealantWorkspaceId: session.value.sealantWorkspaceId,
+                    sealantSessionId: session.value.sealantSessionId,
+                  }
+                : null;
+          if (resolved === null) {
             return HttpServerResponse.text("session has no platform PTY", { status: 409 });
           }
-          target = { sealantWorkspaceId, sealantSessionId };
+          target = resolved;
         } else {
           return HttpServerResponse.text("missing ?process or ?session", { status: 400 });
         }

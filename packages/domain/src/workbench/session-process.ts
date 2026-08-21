@@ -9,12 +9,35 @@ import {
 } from "../ids.ts";
 
 /**
- * What kind of work a workspace process is doing. The agent is one process in
- * the workspace, not its owner (docs/SESSION-SERVICES.md): shells and Services
- * share the same runtime and the same record shape.
+ * What kind of work a workspace process is doing. A session is the worktree
+ * plus its record; everything that interacts with it is a process of one of
+ * these kinds (docs/SESSION-SERVICES.md):
+ *
+ * - `shell`          the image's login shell in the worktree (PTY)
+ * - `agent-pty`      a coding-agent TUI — `codex`, `claude`, `opencode` (PTY)
+ * - `agent-protocol` a protocol-driven agent (`codex app-server`, claude
+ *                    stream-json) — reserved; nothing launches one yet
+ * - `service`        a recipe command: dev server, database (logs + port)
+ *
+ * A session holds several agent processes over its life (relaunch, follow-up,
+ * resume); the change stays one per session because it is worktree vs base.
  */
-export const SessionProcessKind = Schema.Literals(["agent", "shell", "service"]);
+export const SessionProcessKind = Schema.Literals([
+  "shell",
+  "agent-pty",
+  "agent-protocol",
+  "service",
+]);
 export type SessionProcessKind = typeof SessionProcessKind.Type;
+
+/** The kinds whose liveness makes a session `running`. */
+export const AGENT_PROCESS_KINDS: ReadonlySet<SessionProcessKind> = new Set<SessionProcessKind>([
+  "agent-pty",
+  "agent-protocol",
+]);
+
+export const isAgentProcessKind = (kind: SessionProcessKind): boolean =>
+  AGENT_PROCESS_KINDS.has(kind);
 
 /**
  * Observed lifecycle only — never a judgment about the work. `reachable` /
@@ -29,6 +52,10 @@ export const SessionProcessStatus = Schema.Literals([
   "stopped",
 ]);
 export type SessionProcessStatus = typeof SessionProcessStatus.Type;
+
+/** Statuses a live (unended) row can carry; `exitedAt` is the authoritative end marker. */
+export const LIVE_PROCESS_STATUSES: ReadonlySet<SessionProcessStatus> =
+  new Set<SessionProcessStatus>(["starting", "running", "reachable", "unreachable"]);
 
 /**
  * One platform PTY (or supervised process, or adopted Service port) in a
@@ -53,6 +80,16 @@ export class SessionProcess extends Schema.Class<SessionProcess>("SessionProcess
   /** Monotonic within one Service; null for non-Service and legacy projection rows. */
   attemptOrdinal: Schema.NullOr(Schema.Int),
   kind: SessionProcessKind,
+  /**
+   * Agent processes: the adapter that launched this process — `codex` · `claude` · `opencode` ·
+   * `shell` (an open-workbench launch inside an agent session). Null for shells and Services.
+   */
+  harness: Schema.NullOr(Schema.String),
+  /**
+   * Agent processes: the harness's OWN session id, harvested when the process ends (or known
+   * up front for a native resume). Resume addresses the latest agent process's id.
+   */
+  providerSessionId: Schema.NullOr(Schema.String),
   /** Human name for pickers and lists ("claude", "shell", "web"). */
   label: Schema.NullOr(Schema.String),
   argv: Schema.Array(Schema.String),

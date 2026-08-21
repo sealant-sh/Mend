@@ -11,7 +11,7 @@ import {
   type SessionProcessKind,
   type SessionProcessStatus,
 } from "@mend/domain/workbench";
-import { and, asc, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
@@ -33,6 +33,10 @@ export interface NewSessionProcess {
   readonly serviceId?: ServiceId | null;
   readonly attemptOrdinal?: number | null;
   readonly kind: SessionProcessKind;
+  /** Agent processes: the adapter launched (`codex` · `claude` · `opencode` · `shell`). */
+  readonly harness?: string | null;
+  /** Agent processes: known up front only for a native resume; the harvest fills it at exit. */
+  readonly providerSessionId?: string | null;
   readonly label: string | null;
   readonly argv: ReadonlyArray<string>;
   /** Initial observed state; defaults to "running" (the PTY paths). */
@@ -56,6 +60,10 @@ export class SessionProcessesRepo extends Context.Service<
     readonly byId: (id: SessionProcessId) => Effect.Effect<SessionProcess | null>;
     readonly byLaunchCorrelation: (correlationId: string) => Effect.Effect<SessionProcess | null>;
     readonly listForSession: (sessionId: SessionId) => Effect.Effect<ReadonlyArray<SessionProcess>>;
+    /** Every row of several sessions in one read — list surfaces derive `currentAgent` from it. */
+    readonly listForSessions: (
+      sessionIds: ReadonlyArray<SessionId>,
+    ) => Effect.Effect<ReadonlyArray<SessionProcess>>;
     readonly listForService: (serviceId: ServiceId) => Effect.Effect<ReadonlyArray<SessionProcess>>;
     readonly listLiveForWorkspace: (
       workspaceId: SealantWorkspaceId,
@@ -68,6 +76,11 @@ export class SessionProcessesRepo extends Context.Service<
     readonly setStatus: (id: SessionProcessId, status: SessionProcessStatus) => Effect.Effect<void>;
     /** Rename a live supporting process. The engine owns kind and label validation. */
     readonly setLabel: (id: SessionProcessId, label: string) => Effect.Effect<void>;
+    /** The harness's own session id, harvested when an agent process ends. */
+    readonly setProviderSessionId: (
+      id: SessionProcessId,
+      providerSessionId: string,
+    ) => Effect.Effect<void>;
     /** Record the bound host port once the listener exists (Services only). */
     readonly setHostPort: (id: SessionProcessId, hostPort: number) => Effect.Effect<void>;
     /** Point a LIVE row at a fresh platform PTY + run (Service restart keeps identity + URL). */
@@ -81,10 +94,10 @@ export class SessionProcessesRepo extends Context.Service<
       outcome: "exited" | "stopped",
       exitCode: number | null,
     ) => Effect.Effect<void>;
-    /** Reconcile: end every live row for a workspace (optionally one kind). Exit codes unknown. */
+    /** Reconcile: end every live row for a workspace (optionally some kinds). Exit codes unknown. */
     readonly reapLiveForWorkspace: (
       workspaceId: SealantWorkspaceId,
-      kind?: SessionProcessKind,
+      kinds?: ReadonlyArray<SessionProcessKind>,
     ) => Effect.Effect<void>;
   }
 >()("@mend/db/SessionProcessesRepo") {}
@@ -123,6 +136,8 @@ export const SessionProcessesRepoLive: Layer.Layer<
         .values({
           ...input,
           id: input.id ?? SessionProcessId.make(crypto.randomUUID()),
+          harness: input.harness ?? null,
+          providerSessionId: input.providerSessionId ?? null,
           launchCorrelationId: input.launchCorrelationId ?? null,
           serviceId: input.serviceId ?? null,
           attemptOrdinal: input.attemptOrdinal ?? null,
@@ -178,6 +193,19 @@ export const SessionProcessesRepoLive: Layer.Layer<
         .select()
         .from(sessionProcesses)
         .where(eq(sessionProcesses.sessionId, sessionId))
+        .orderBy(asc(sessionProcesses.createdAt))
+        .pipe(Effect.orDie);
+      return rows.map(toSessionProcess);
+    });
+
+    const listForSessions = Effect.fn("SessionProcessesRepo.listForSessions")(function* (
+      sessionIds: ReadonlyArray<SessionId>,
+    ) {
+      if (sessionIds.length === 0) return [];
+      const rows = yield* db
+        .select()
+        .from(sessionProcesses)
+        .where(inArray(sessionProcesses.sessionId, [...sessionIds]))
         .orderBy(asc(sessionProcesses.createdAt))
         .pipe(Effect.orDie);
       return rows.map(toSessionProcess);
@@ -247,6 +275,17 @@ export const SessionProcessesRepoLive: Layer.Layer<
       if (first !== undefined) yield* notify(first.sessionId);
     });
 
+    const setProviderSessionId = Effect.fn("SessionProcessesRepo.setProviderSessionId")(function* (
+      id: SessionProcessId,
+      providerSessionId: string,
+    ) {
+      yield* db
+        .update(sessionProcesses)
+        .set({ providerSessionId, updatedAt: new Date() })
+        .where(eq(sessionProcesses.id, id))
+        .pipe(Effect.orDie);
+    });
+
     const setHostPort = Effect.fn("SessionProcessesRepo.setHostPort")(function* (
       id: SessionProcessId,
       hostPort: number,
@@ -291,7 +330,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
 
     const reapLiveForWorkspace = Effect.fn("SessionProcessesRepo.reapLiveForWorkspace")(function* (
       workspaceId: SealantWorkspaceId,
-      kind?: SessionProcessKind,
+      kinds?: ReadonlyArray<SessionProcessKind>,
     ) {
       const now = new Date();
       const rows = yield* db
@@ -301,7 +340,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
           and(
             eq(sessionProcesses.sealantWorkspaceId, workspaceId),
             isNull(sessionProcesses.exitedAt),
-            ...(kind === undefined ? [] : [eq(sessionProcesses.kind, kind)]),
+            ...(kinds === undefined ? [] : [inArray(sessionProcesses.kind, [...kinds])]),
           ),
         )
         .returning({ sessionId: sessionProcesses.sessionId })
@@ -316,12 +355,14 @@ export const SessionProcessesRepoLive: Layer.Layer<
       byId,
       byLaunchCorrelation,
       listForSession,
+      listForSessions,
       listForService,
       listLiveForWorkspace,
       listLive,
       listRecentServices,
       setStatus,
       setLabel,
+      setProviderSessionId,
       setHostPort,
       setSealantSessionId,
       markExited,

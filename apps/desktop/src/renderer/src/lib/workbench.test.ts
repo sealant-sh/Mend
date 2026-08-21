@@ -12,6 +12,8 @@ const shell = (id: string, label: string): SessionProcessDto => ({
   sealantSessionId: `pty-${id}`,
   sealantRunId: `run-${id}`,
   kind: "shell",
+  harness: null,
+  providerSessionId: null,
   label,
   argv: ["bash"],
   status: "running",

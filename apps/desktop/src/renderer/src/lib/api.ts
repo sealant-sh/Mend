@@ -62,6 +62,8 @@ export interface SessionAnnotationDto {
   readonly openComments: number;
   readonly totalComments: number;
   readonly pendingFollowUp: boolean;
+  /** The session's current agent process; null before the first launch. */
+  readonly currentAgent: SessionProcessDto | null;
 }
 
 export interface ProjectDetailDto {
@@ -96,6 +98,10 @@ export interface SessionDetailDto {
   readonly session: SessionDto;
   readonly checkpoints: ReadonlyArray<CheckpointDto>;
   readonly change: SessionChangeDto | null;
+  /** Every process the session has held, oldest first. */
+  readonly processes: ReadonlyArray<SessionProcessDto>;
+  /** The agent process "the session's agent" means right now; null before the first launch. */
+  readonly currentAgent: SessionProcessDto | null;
 }
 
 export interface ReviewSliceDto {
@@ -231,7 +237,11 @@ export interface DeliverFollowUpInput {
   readonly idempotencyKey: string;
 }
 
-export type SessionProcessKind = "agent" | "shell" | "service";
+/** `agent-protocol` is reserved — nothing launches one yet. */
+export type SessionProcessKind = "shell" | "agent-pty" | "agent-protocol" | "service";
+
+export const isAgentProcessKind = (kind: SessionProcessKind): boolean =>
+  kind === "agent-pty" || kind === "agent-protocol";
 
 /** Observed lifecycle only — never a judgment about the work. */
 export type SessionProcessStatus =
@@ -253,6 +263,10 @@ export interface SessionProcessDto {
   readonly sealantSessionId: string | null;
   readonly sealantRunId: string | null;
   readonly kind: SessionProcessKind;
+  /** Agent processes: `codex` · `claude` · `opencode` · `shell`; null for shells and Services. */
+  readonly harness: string | null;
+  /** Agent processes: the harness's own session id once harvested. */
+  readonly providerSessionId: string | null;
   readonly label: string | null;
   readonly argv: ReadonlyArray<string>;
   readonly status: SessionProcessStatus;
@@ -271,6 +285,55 @@ export const LIVE_PROCESS: ReadonlySet<SessionProcessStatus> = new Set<SessionPr
   "reachable",
   "unreachable",
 ]);
+
+export const isLiveProcess = (process: SessionProcessDto): boolean =>
+  process.exitedAt === null && LIVE_PROCESS.has(process.status);
+
+/** The newest live agent process, else the newest ever — what "the agent" means for a session. */
+export const currentAgentProcess = (
+  processes: ReadonlyArray<SessionProcessDto>,
+): SessionProcessDto | null => {
+  const agents = processes
+    .filter((process) => isAgentProcessKind(process.kind))
+    .toSorted((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+  return agents.findLast(isLiveProcess) ?? agents.at(-1) ?? null;
+};
+
+/** What an ended agent process's exit says about the work; null while it runs. */
+export const agentProcessOutcome = (
+  process: SessionProcessDto,
+): "completed" | "failed" | "stopped" | null => {
+  if (process.exitedAt === null) return null;
+  if (process.status === "stopped") return "stopped";
+  if (process.harness === "shell") return "completed";
+  return process.exitCode === null || process.exitCode === 0 ? "completed" : "failed";
+};
+
+/**
+ * Whether the session's AGENT is live. Session status is a fold over every process (a session
+ * reads `idle` while a shell holds the workspace after its agent ended), so the agent's own row
+ * answers when one exists; `starting` is a launch with no row yet.
+ */
+export const agentIsLive = (session: SessionDto, currentAgent: SessionProcessDto | null): boolean =>
+  currentAgent === null
+    ? LIVE_STATUSES.has(session.status)
+    : session.status === "starting" || isLiveProcess(currentAgent);
+
+/**
+ * The status and end time the inbox shows for a session: its own, except that an `idle` session
+ * whose agent has ended reads as that agent's outcome — shells holding the workspace are you,
+ * not the agent.
+ */
+export const sessionFace = (
+  session: SessionDto,
+  currentAgent: SessionProcessDto | null,
+): { readonly status: SessionStatusDto; readonly endedAt: string | null } => {
+  if (session.status === "idle" && currentAgent !== null) {
+    const outcome = agentProcessOutcome(currentAgent);
+    if (outcome !== null) return { status: outcome, endedAt: currentAgent.exitedAt };
+  }
+  return { status: session.status, endedAt: session.settledAt };
+};
 
 export interface ProcessLogPageDto {
   readonly processId: string;

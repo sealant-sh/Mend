@@ -34,6 +34,7 @@ export * from "./review-slice.ts";
 export * from "./service-recipe.ts";
 export * from "./service.ts";
 export * from "./session.ts";
+export * from "./session-fold.ts";
 export * from "./session-process.ts";
 export * from "./session-run.ts";
 export * from "./tour.ts";

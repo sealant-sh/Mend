@@ -117,6 +117,40 @@ export const LIVE_STATUSES: ReadonlySet<string> = new Set([
   "idle",
 ]);
 
+/** The slice of a process row the CLI reasons about — the session's current agent process. */
+export interface AgentProcessLike {
+  readonly status: string;
+  readonly exitCode: number | null;
+  readonly exitedAt: string | null;
+  readonly harness: string | null;
+  readonly sealantSessionId: string | null;
+}
+
+/**
+ * Whether the session's AGENT is live. Session status is a fold over every process — a session
+ * reads `idle` while a shell holds the workspace after its agent ended — so the agent's own row
+ * answers when one exists; `starting` is a launch with no row yet.
+ */
+export const agentIsLive = (
+  session: { readonly status: string },
+  currentAgent: AgentProcessLike | null,
+): boolean =>
+  currentAgent === null
+    ? LIVE_STATUSES.has(session.status)
+    : session.status === "starting" ||
+      (currentAgent.exitedAt === null &&
+        (currentAgent.status === "starting" || currentAgent.status === "running"));
+
+/** What an ended agent process's exit says about the work; null while it runs. */
+export const agentOutcome = (
+  currentAgent: AgentProcessLike | null,
+): "completed" | "failed" | "stopped" | null => {
+  if (currentAgent === null || currentAgent.exitedAt === null) return null;
+  if (currentAgent.status === "stopped") return "stopped";
+  if (currentAgent.harness === "shell") return "completed";
+  return currentAgent.exitCode === null || currentAgent.exitCode === 0 ? "completed" : "failed";
+};
+
 export interface CwdProjectLike {
   readonly name: string;
   readonly originUrl: string | null;

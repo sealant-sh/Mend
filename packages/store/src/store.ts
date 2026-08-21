@@ -213,6 +213,14 @@ export const sessionStatePathOf = (storePath: string, sessionId: string) =>
   path.join(path.dirname(storePath), "sessions", sessionId);
 
 /**
+ * Where ONE agent process's harvested harness state lives — harness state is per agent
+ * process, not per session (a session holds several over its life). Older sessions kept it at
+ * the session root; readers fall back there.
+ */
+export const processStatePathOf = (storePath: string, sessionId: string, processId: string) =>
+  path.join(sessionStatePathOf(storePath, sessionId), "processes", processId);
+
+/**
  * The central repository store (plan §5.2, §8.1.A): bare clone per project,
  * one git worktree per session, checkpoints as commits on hidden refs that
  * never touch the visible branch. Everything here is host-side plain git —

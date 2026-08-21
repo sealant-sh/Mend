@@ -332,6 +332,13 @@ export class SessionAnnotation extends Schema.Class<SessionAnnotation>("SessionA
   openComments: Schema.Int,
   totalComments: Schema.Int,
   pendingFollowUp: Schema.Boolean,
+  /**
+   * The session's current agent process — newest live, else newest ever; null before the first
+   * launch. List readers need it because session status is a fold over EVERY process: a
+   * session reads `idle` while a shell holds the workspace after its agent ended, and this is
+   * where that agent's outcome lives.
+   */
+  currentAgent: Schema.NullOr(SessionProcess),
 }) {}
 
 export class ProjectDetail extends Schema.Class<ProjectDetail>("ProjectDetail")({
@@ -1136,6 +1143,10 @@ export class SessionDetail extends Schema.Class<SessionDetail>("SessionDetail")(
   session: Session,
   checkpoints: Schema.Array(Checkpoint),
   change: Schema.NullOr(SessionChange),
+  /** Every process the session has held, oldest first — agents, shells, Service attempts. */
+  processes: Schema.Array(SessionProcess),
+  /** The agent process "the session's agent" means right now; null before the first launch. */
+  currentAgent: Schema.NullOr(SessionProcess),
 }) {}
 
 /** The API takes only the human-initiated triggers; the engine owns the rest. */
