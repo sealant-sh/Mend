@@ -845,6 +845,116 @@ const followUpDeliveryLeases = Effect.gen(function* () {
       ADD COLUMN IF NOT EXISTS delivery_lease_expires_at timestamptz`;
 });
 
+/**
+ * Stable Services own declarations; session_processes becomes their append-only attempt ledger;
+ * forwards and target observations retain their own identities and timestamps. Pre-stable Service
+ * rows are discarded: their mutable run, forward, and reachability fields cannot be reconstructed
+ * into honest histories.
+ */
+const stableServices = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS services (
+      id text PRIMARY KEY,
+      session_id text NOT NULL REFERENCES agent_sessions (id) ON DELETE CASCADE,
+      name text NOT NULL,
+      declaration_source text NOT NULL,
+      workspace_port integer NOT NULL,
+      transport text NOT NULL DEFAULT 'tcp',
+      browser_scheme text,
+      bind_addresses jsonb,
+      preferred_host_port integer,
+      current_attempt_id text,
+      current_forward_id text,
+      attempt_history_complete boolean NOT NULL DEFAULT true,
+      forward_history_complete boolean NOT NULL DEFAULT true,
+      observation_history_complete boolean NOT NULL DEFAULT true,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS services_session_created_idx
+      ON services (session_id, created_at)`;
+  yield* sql`
+    ALTER TABLE session_processes
+      ADD COLUMN IF NOT EXISTS service_id text REFERENCES services (id) ON DELETE SET NULL,
+      ADD COLUMN IF NOT EXISTS attempt_ordinal integer`;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS session_processes_service_created_idx
+      ON session_processes (service_id, created_at)`;
+  yield* sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS session_processes_service_ordinal_idx
+      ON session_processes (service_id, attempt_ordinal)
+      WHERE service_id IS NOT NULL AND attempt_ordinal IS NOT NULL`;
+  yield* sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS session_processes_one_live_service_attempt_idx
+      ON session_processes (service_id)
+      WHERE service_id IS NOT NULL AND attempt_ordinal IS NOT NULL AND exited_at IS NULL`;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS service_forwards (
+      id text PRIMARY KEY,
+      service_id text NOT NULL REFERENCES services (id) ON DELETE CASCADE,
+      sealant_workspace_id text NOT NULL,
+      preferred_host_port integer,
+      host_port integer,
+      bound_addresses jsonb,
+      state text NOT NULL DEFAULT 'binding',
+      error text,
+      supersedes_forward_id text REFERENCES service_forwards (id) ON DELETE SET NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      bound_at timestamptz,
+      closed_at timestamptz,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS service_forwards_service_created_idx
+      ON service_forwards (service_id, created_at)`;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS service_forwards_workspace_state_idx
+      ON service_forwards (sealant_workspace_id, state)`;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS service_observations (
+      id text PRIMARY KEY,
+      service_id text NOT NULL REFERENCES services (id) ON DELETE CASCADE,
+      forward_id text NOT NULL REFERENCES service_forwards (id) ON DELETE CASCADE,
+      state text NOT NULL,
+      source text NOT NULL,
+      error text,
+      first_observed_at timestamptz NOT NULL DEFAULT now(),
+      last_observed_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS service_observations_service_observed_idx
+      ON service_observations (service_id, last_observed_at)`;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS service_observations_forward_observed_idx
+      ON service_observations (forward_id, last_observed_at)`;
+
+  yield* sql`
+    DELETE FROM session_processes
+    WHERE kind = 'service'`;
+
+  yield* sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'services_current_attempt_id_fkey'
+      ) THEN
+        ALTER TABLE services
+          ADD CONSTRAINT services_current_attempt_id_fkey
+          FOREIGN KEY (current_attempt_id) REFERENCES session_processes (id) ON DELETE SET NULL;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'services_current_forward_id_fkey'
+      ) THEN
+        ALTER TABLE services
+          ADD CONSTRAINT services_current_forward_id_fkey
+          FOREIGN KEY (current_forward_id) REFERENCES service_forwards (id) ON DELETE SET NULL;
+      END IF;
+    END
+    $$`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -878,4 +988,5 @@ export const migrations = {
   "0029_immutable_review_slices": immutableReviewSlices,
   "0030_recoverable_follow_up_delivery": recoverableFollowUpDelivery,
   "0031_follow_up_delivery_leases": followUpDeliveryLeases,
+  "0032_stable_services": stableServices,
 };

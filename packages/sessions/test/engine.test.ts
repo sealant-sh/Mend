@@ -16,6 +16,9 @@ import {
   ProjectsRepo,
   ReferenceNotFoundError,
   ReferencesRepo,
+  ServiceForwardsRepo,
+  ServiceObservationsRepo,
+  ServicesRepo,
   SessionChangesRepo,
   SessionGitOpsRepo,
   SessionNotFoundError,
@@ -36,6 +39,9 @@ import {
   ProjectId,
   SealantRunId,
   SealantWorkspaceId,
+  ServiceForwardId,
+  ServiceId,
+  ServiceObservationId,
   SessionGitOpId,
   SessionId,
   SessionProcessId,
@@ -52,6 +58,9 @@ import {
   ProjectEnvironmentSnapshot,
   ProjectEnvironmentVariable,
   ProjectSecretsSnapshot,
+  Service,
+  ServiceForward,
+  ServiceObservation,
   Session,
   SessionProcess,
   SessionRun,
@@ -64,6 +73,7 @@ import {
   LegacyBenchReadOnlyError,
   ServiceHost,
   SessionEngine,
+  SessionEngineLive,
   SessionNotLiveError,
   SessionSocketHost,
 } from "@mend/sessions";
@@ -128,19 +138,28 @@ const sealantLaunchLayer = (
   rejectCredentials: (credentials: CreateOptions["credentials"]) => boolean = () => false,
   stopped?: string[],
   spawned?: ReadonlyArray<string>[],
+  rejectWorkspaceLookup: () => boolean = () => false,
 ) => {
-  const pty: InteractiveSession = {
-    id: "pty-1",
-    workspaceId: "workspace-1",
-    runId: "run-1",
-    send: async () => undefined,
-    output: async function* () {},
-    resize: async () => undefined,
-    signal: async () => undefined,
-    status: async () => ({ status: "running", outputHighWater: 0n }),
-    close: async () => undefined,
-    attach: async () => new Promise(() => undefined),
+  let nextPty = 0;
+  const ptys = new Map<string, InteractiveSession>();
+  const openPty = (): InteractiveSession => {
+    nextPty += 1;
+    const pty: InteractiveSession = {
+      id: `pty-${nextPty}`,
+      workspaceId: "workspace-1",
+      runId: `run-${nextPty}`,
+      send: async () => undefined,
+      output: async function* () {},
+      resize: async () => undefined,
+      signal: async () => undefined,
+      status: async () => ({ status: "running", outputHighWater: 0n }),
+      close: async () => undefined,
+      attach: async () => new Promise(() => undefined),
+    };
+    ptys.set(pty.id, pty);
+    return pty;
   };
+  const initialPty = openPty();
   const workspace: Workspace = {
     id: "workspace-1",
     name: "test workspace",
@@ -151,13 +170,13 @@ const sealantLaunchLayer = (
     harness: {
       run: async () => new Promise(() => undefined),
       start: async () => new Promise(() => undefined),
-      session: async () => pty,
+      session: async () => initialPty,
     },
     exec: async () => new Promise(() => undefined),
     sessions: {
-      open: async () => pty,
-      get: async () => pty,
-      list: async () => [pty],
+      open: async () => openPty(),
+      get: async (id) => ptys.get(id) ?? initialPty,
+      list: async () => [...ptys.values()],
     },
     events: async function* () {},
     forward: async () => {
@@ -184,7 +203,17 @@ const sealantLaunchLayer = (
             )
           : Effect.succeed(workspace);
       }),
-    getWorkspace: () => Effect.succeed(workspace),
+    getWorkspace: () =>
+      rejectWorkspaceLookup()
+        ? Effect.fail(
+            new SealantPlatformError({
+              code: "workspace_lookup_failed",
+              status: null,
+              message: "workspace lookup failed",
+              cause: null,
+            }),
+          )
+        : Effect.succeed(workspace),
     getRun: () => Effect.never,
     recordCommands: () => Effect.die("not in test"),
     recordScrollback: () => Effect.die("not in test"),
@@ -195,7 +224,7 @@ const sealantLaunchLayer = (
     openSession: (_workspace, argv) =>
       Effect.sync(() => {
         spawned?.push(argv);
-        return pty;
+        return openPty();
       }),
     forward: () => Effect.die("not in test"),
     stopWorkspace: (target) =>
@@ -203,7 +232,7 @@ const sealantLaunchLayer = (
         stopped?.push(target.id);
       }),
     expireWorkspace: () => Effect.void,
-    getSession: () => Effect.succeed(pty),
+    getSession: (_workspace, id) => Effect.succeed(ptys.get(id) ?? initialPty),
     // Typed failure, not a defect: the settle-path harvest must degrade
     // quietly and still reach the workspace reap.
     exec: () =>
@@ -227,7 +256,7 @@ const sealantLaunchLayer = (
 
 /** Services bind no real sockets in these worlds. */
 const serviceHostStubLayer = Layer.succeed(ServiceHost, {
-  start: () => Effect.succeed(43127),
+  start: () => Effect.succeed({ hostPort: 43127, boundAddresses: ["127.0.0.1"] }),
   stop: () => Effect.void,
   probe: () => Effect.succeed(true),
 });
@@ -292,6 +321,9 @@ interface World {
   readonly sessions: Map<string, Session>;
   readonly sessionRuns: Map<string, SessionRun>;
   readonly processes: Map<string, SessionProcess>;
+  readonly services: Map<string, Service>;
+  readonly serviceForwards: Map<string, ServiceForward>;
+  readonly serviceObservations: Map<string, ServiceObservation>;
   readonly changes: Map<string, Change>;
   readonly checkpoints: Array<Checkpoint>;
 }
@@ -301,6 +333,9 @@ const makeWorld = (): World => ({
   sessions: new Map(),
   sessionRuns: new Map(),
   processes: new Map(),
+  services: new Map(),
+  serviceForwards: new Map(),
+  serviceObservations: new Map(),
   changes: new Map(),
   checkpoints: [],
 });
@@ -328,11 +363,13 @@ const sessionProcessesLayer = (world: World) => {
       Effect.sync(() => {
         const process = new SessionProcess({
           ...input,
-          id: SessionProcessId.make(crypto.randomUUID()),
+          id: input.id ?? SessionProcessId.make(crypto.randomUUID()),
           status: input.status ?? "running",
           exitCode: null,
           sealantRunId: input.sealantRunId ?? null,
           launchCorrelationId: input.launchCorrelationId ?? null,
+          serviceId: input.serviceId ?? null,
+          attemptOrdinal: input.attemptOrdinal ?? null,
           workspacePort: input.workspacePort ?? null,
           protocol: input.protocol ?? "tcp",
           hostPort: input.hostPort ?? null,
@@ -353,6 +390,12 @@ const sessionProcessesLayer = (world: World) => {
     listForSession: (sessionId) =>
       Effect.succeed(
         [...world.processes.values()].filter((process) => process.sessionId === sessionId),
+      ),
+    listForService: (serviceId) =>
+      Effect.succeed(
+        [...world.processes.values()]
+          .filter((process) => process.serviceId === serviceId)
+          .toSorted((left, right) => (left.attemptOrdinal ?? 0) - (right.attemptOrdinal ?? 0)),
       ),
     listLiveForWorkspace: (workspaceId) =>
       Effect.succeed(
@@ -410,6 +453,235 @@ const sessionProcessesLayer = (world: World) => {
       }),
   });
 };
+
+const servicesLayer = (world: World) =>
+  Layer.succeed(ServicesRepo, {
+    create: (input) =>
+      Effect.sync(() => {
+        const service = new Service({
+          id: input.id ?? ServiceId.make(crypto.randomUUID()),
+          sessionId: input.sessionId,
+          name: input.name,
+          declarationSource: input.declarationSource,
+          workspacePort: input.workspacePort,
+          transport: input.transport,
+          browserScheme: input.browserScheme ?? null,
+          bindAddresses: input.bindAddresses ?? null,
+          preferredHostPort: input.preferredHostPort ?? null,
+          currentAttemptId: null,
+          currentForwardId: null,
+          attemptHistoryComplete: input.attemptHistoryComplete ?? true,
+          forwardHistoryComplete: input.forwardHistoryComplete ?? true,
+          observationHistoryComplete: input.observationHistoryComplete ?? true,
+          createdAt: now(),
+          updatedAt: now(),
+        });
+        world.services.set(service.id, service);
+        return service;
+      }),
+    byId: (id) => Effect.succeed(world.services.get(id) ?? null),
+    byReference: (id) =>
+      Effect.succeed(
+        world.services.get(id) ??
+          (() => {
+            const serviceId = world.processes.get(id)?.serviceId;
+            return serviceId === null || serviceId === undefined
+              ? null
+              : (world.services.get(serviceId) ?? null);
+          })(),
+      ),
+    byName: (sessionId, name) =>
+      Effect.succeed(
+        [...world.services.values()]
+          .filter((service) => service.sessionId === sessionId && service.name === name)
+          .at(-1) ?? null,
+      ),
+    listForSession: (sessionId) =>
+      Effect.succeed(
+        [...world.services.values()].filter((service) => service.sessionId === sessionId),
+      ),
+    listAll: () => Effect.succeed([...world.services.values()]),
+    setCurrentAttempt: (id, currentAttemptId) =>
+      Effect.sync(() => {
+        const service = world.services.get(id);
+        if (service !== undefined) {
+          world.services.set(id, new Service({ ...service, currentAttemptId, updatedAt: now() }));
+        }
+      }),
+    setCurrentForward: (id, currentForwardId) =>
+      Effect.sync(() => {
+        const service = world.services.get(id);
+        if (service !== undefined) {
+          world.services.set(id, new Service({ ...service, currentForwardId, updatedAt: now() }));
+        }
+      }),
+    compareAndSetCurrentAttempt: (id, expected, next) =>
+      Effect.sync(() => {
+        const service = world.services.get(id);
+        if (service === undefined || service.currentAttemptId !== expected) return false;
+        world.services.set(
+          id,
+          new Service({ ...service, currentAttemptId: next, updatedAt: now() }),
+        );
+        return true;
+      }),
+    compareAndSetCurrentForward: (id, expected, next) =>
+      Effect.sync(() => {
+        const service = world.services.get(id);
+        if (service === undefined || service.currentForwardId !== expected) return false;
+        world.services.set(
+          id,
+          new Service({ ...service, currentForwardId: next, updatedAt: now() }),
+        );
+        return true;
+      }),
+  });
+
+const serviceForwardsLayer = (world: World) =>
+  Layer.succeed(ServiceForwardsRepo, {
+    create: (input) =>
+      Effect.sync(() => {
+        const forward = new ServiceForward({
+          id: input.id ?? ServiceForwardId.make(crypto.randomUUID()),
+          serviceId: input.serviceId,
+          sealantWorkspaceId: input.sealantWorkspaceId,
+          preferredHostPort: input.preferredHostPort ?? null,
+          hostPort: null,
+          boundAddresses: null,
+          state: "binding",
+          error: null,
+          supersedesForwardId: input.supersedesForwardId ?? null,
+          createdAt: now(),
+          boundAt: null,
+          closedAt: null,
+          updatedAt: now(),
+        });
+        world.serviceForwards.set(forward.id, forward);
+        return forward;
+      }),
+    createAndSelect: (input) =>
+      Effect.sync(() => {
+        const forward = new ServiceForward({
+          id: input.id ?? ServiceForwardId.make(crypto.randomUUID()),
+          serviceId: input.serviceId,
+          sealantWorkspaceId: input.sealantWorkspaceId,
+          preferredHostPort: input.preferredHostPort ?? null,
+          hostPort: null,
+          boundAddresses: null,
+          state: "binding",
+          error: null,
+          supersedesForwardId: input.supersedesForwardId ?? null,
+          createdAt: now(),
+          boundAt: null,
+          closedAt: null,
+          updatedAt: now(),
+        });
+        world.serviceForwards.set(forward.id, forward);
+        const service = world.services.get(input.serviceId);
+        if (service !== undefined) {
+          world.services.set(
+            service.id,
+            new Service({ ...service, currentForwardId: forward.id, updatedAt: now() }),
+          );
+        }
+        return forward;
+      }),
+    byId: (id) => Effect.succeed(world.serviceForwards.get(id) ?? null),
+    listForService: (serviceId) =>
+      Effect.succeed(
+        [...world.serviceForwards.values()].filter((forward) => forward.serviceId === serviceId),
+      ),
+    listOpen: () =>
+      Effect.succeed(
+        [...world.serviceForwards.values()].filter(
+          (forward) => forward.state === "binding" || forward.state === "bound",
+        ),
+      ),
+    markBound: (id, hostPort, boundAddresses) =>
+      Effect.sync(() => {
+        const forward = world.serviceForwards.get(id);
+        if (forward !== undefined) {
+          world.serviceForwards.set(
+            id,
+            new ServiceForward({
+              ...forward,
+              hostPort,
+              boundAddresses,
+              state: "bound",
+              error: null,
+              boundAt: now(),
+              updatedAt: now(),
+            }),
+          );
+        }
+      }),
+    markFailed: (id, error) =>
+      Effect.sync(() => {
+        const forward = world.serviceForwards.get(id);
+        if (forward !== undefined) {
+          world.serviceForwards.set(
+            id,
+            new ServiceForward({
+              ...forward,
+              state: "failed",
+              error,
+              closedAt: now(),
+              updatedAt: now(),
+            }),
+          );
+        }
+      }),
+    markClosed: (id) =>
+      Effect.sync(() => {
+        const forward = world.serviceForwards.get(id);
+        if (forward !== undefined) {
+          world.serviceForwards.set(
+            id,
+            new ServiceForward({
+              ...forward,
+              state: "closed",
+              closedAt: now(),
+              updatedAt: now(),
+            }),
+          );
+        }
+      }),
+  });
+
+const serviceObservationsLayer = (world: World) =>
+  Layer.succeed(ServiceObservationsRepo, {
+    record: (input) =>
+      Effect.sync(() => {
+        const observation = new ServiceObservation({
+          id: ServiceObservationId.make(crypto.randomUUID()),
+          ...input,
+          error: input.error ?? null,
+          firstObservedAt: now(),
+          lastObservedAt: now(),
+        });
+        world.serviceObservations.set(observation.id, observation);
+        return observation;
+      }),
+    latestForService: (serviceId) =>
+      Effect.succeed(
+        [...world.serviceObservations.values()]
+          .filter((observation) => observation.serviceId === serviceId)
+          .at(-1) ?? null,
+      ),
+    listForService: (serviceId) =>
+      Effect.succeed(
+        [...world.serviceObservations.values()].filter(
+          (observation) => observation.serviceId === serviceId,
+        ),
+      ),
+  });
+
+const serviceStateLayer = (world: World) =>
+  Layer.mergeAll(
+    servicesLayer(world),
+    serviceForwardsLayer(world),
+    serviceObservationsLayer(world),
+  );
 
 /** No declared mounts in these worlds. */
 const projectMountsEmptyLayer = Layer.succeed(ProjectMountsRepo, {
@@ -778,7 +1050,7 @@ const withEngine = <A, E>(
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mend-engine-test-"));
   const world = makeWorld();
   const storeLayer = Store.layer.pipe(Layer.provide(StoreConfig.layerFor(path.join(tmp, "store"))));
-  const engineLayer = SessionEngine.layer.pipe(
+  const engineLayer = SessionEngineLive.pipe(
     Layer.provide(storeLayer),
     Layer.provide(options.sealantLayer ?? sealantDeadLayer),
     Layer.provide(settingsLayer(options.workspaceImage)),
@@ -786,6 +1058,7 @@ const withEngine = <A, E>(
     Layer.provide(sessionsLayer(world)),
     Layer.provide(sessionRunsLayer(world)),
     Layer.provide(sessionProcessesLayer(world)),
+    Layer.provide(serviceStateLayer(world)),
     Layer.provide(serviceHostStubLayer),
     Layer.provide(sessionSocketStubLayer),
     Layer.provide(mendKeysStubLayer),
@@ -1005,6 +1278,8 @@ describe("SessionEngine", () => {
             sealantSessionId: "pty-2",
             sealantRunId: null,
             launchCorrelationId: null,
+            serviceId: null,
+            attemptOrdinal: null,
             kind: "shell",
             label: "shell",
             argv: ["bash", "-i"],
@@ -1192,11 +1467,13 @@ describe("SessionEngine", () => {
           yield* engine.launch(session.id, ["codex"]);
 
           const service = yield* engine.addService(session.id, 5432, "db");
-          expect(service.kind).toBe("service");
-          expect(service.sealantSessionId).toBeNull();
-          expect(service.workspacePort).toBe(5432);
-          expect(service.hostPort).toBe(43127);
-          expect(service.status).toBe("reachable");
+          expect(service.service.name).toBe("db");
+          expect(service.service.workspacePort).toBe(5432);
+          expect(service.attempts).toHaveLength(0);
+          expect(service.currentForward?.hostPort).toBe(43127);
+          expect(service.latestObservation?.state).toBe("reachable");
+          const adoptedRestart = yield* engine.restartService(service.service.id).pipe(Effect.flip);
+          expect(adoptedRestart.message).toContain("no recorded command");
 
           // A live name is taken — a second "db" is refused, not duplicated.
           const duplicate = yield* engine.addService(session.id, 5433, "db").pipe(Effect.flip);
@@ -1219,8 +1496,9 @@ describe("SessionEngine", () => {
           const shell = yield* engine.openShell(session.id);
           expect(shell.label).toBe("shell 1");
 
-          const ended = yield* engine.stopService(service.id);
-          expect(ended.status).toBe("stopped");
+          const ended = yield* engine.stopService(service.service.id);
+          expect(ended.service.currentAttemptId).toBeNull();
+          expect(ended.service.currentForwardId).toBeNull();
           expect(stopped).toEqual([]);
           yield* engine.stopShell(shell.id);
           expect(stopped).toEqual(["workspace-1"]);
@@ -1229,7 +1507,52 @@ describe("SessionEngine", () => {
     );
   });
 
-  it("runService supervises a command; restart keeps the row, port, and URL", async () => {
+  it("reuses a workspace retained only by an adopted Service; fresh resume closes it", async () => {
+    const created: CreateOptions[] = [];
+    const stopped: string[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            ownerUserId: null,
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          const view = yield* engine.addService(session.id, 5432, "db");
+          yield* engine.stop(session.id);
+
+          const agentsSettled = () =>
+            [...world.processes.values()]
+              .filter((process) => process.kind === "agent")
+              .every((process) => process.exitedAt !== null);
+          for (let i = 0; i < 200 && !agentsSettled(); i++) {
+            yield* Effect.sleep(Duration.millis(10));
+          }
+
+          yield* engine.resumeSession(session.id, "shell");
+          expect(created).toHaveLength(1);
+          expect(stopped).toEqual([]);
+          expect(world.services.get(view.service.id)?.currentForwardId).not.toBeNull();
+
+          yield* engine.stop(session.id);
+          for (let i = 0; i < 200 && !agentsSettled(); i++) {
+            yield* Effect.sleep(Duration.millis(10));
+          }
+          yield* engine.resumeSession(session.id, "shell", true);
+          expect(created).toHaveLength(2);
+          expect(stopped).toEqual(["workspace-1"]);
+          expect(world.services.get(view.service.id)?.currentForwardId).toBeNull();
+        }),
+      { sealantLayer: sealantLaunchLayer(created, undefined, stopped) },
+    );
+  });
+
+  it("runService restart appends attempts and preserves prior run pointers", async () => {
     const created: CreateOptions[] = [];
     await withEngine(
       (world, tmp) =>
@@ -1246,21 +1569,145 @@ describe("SessionEngine", () => {
           yield* engine.launch(session.id, ["codex"]);
 
           const service = yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web");
-          expect(service.kind).toBe("service");
-          expect(service.sealantSessionId).toBe("pty-1");
-          expect(service.argv).toEqual(["pnpm", "dev"]);
-          expect(service.status).toBe("reachable");
-          expect(service.hostPort).toBe(43127);
+          expect(service.service.name).toBe("web");
+          expect(service.attempts).toHaveLength(1);
+          expect(service.attempts[0]?.sealantSessionId).not.toBeNull();
+          expect(service.attempts[0]?.argv).toEqual(["pnpm", "dev"]);
+          expect(service.attempts[0]?.status).toBe("running");
+          expect(service.currentForward?.hostPort).toBe(43127);
+          expect(service.latestObservation?.state).toBe("reachable");
 
-          const restarted = yield* engine.restartService(service.id);
-          expect(restarted.id).toBe(service.id);
-          expect(restarted.hostPort).toBe(43127);
-          expect(restarted.status).toBe("reachable");
+          const firstAttemptId = service.attempts[0]?.id;
+          const firstRunId = service.attempts[0]?.sealantRunId;
+          const forwardId = service.currentForward?.id;
+          const restarted = yield* engine.restartService(service.service.id);
+          expect(restarted.service.id).toBe(service.service.id);
+          expect(restarted.attempts).toHaveLength(2);
+          expect(restarted.attempts[0]?.id).toBe(firstAttemptId);
+          expect(restarted.attempts[0]?.sealantRunId).toBe(firstRunId);
+          expect(restarted.attempts[0]?.status).toBe("stopped");
+          expect(restarted.attempts[1]?.id).not.toBe(firstAttemptId);
+          expect(restarted.attempts[1]?.sealantRunId).not.toBe(firstRunId);
+          expect(restarted.attempts[1]?.status).toBe("running");
+          expect(restarted.currentForward?.id).toBe(forwardId);
 
-          const stopped = yield* engine.stopService(service.id);
-          expect(stopped.status).toBe("stopped");
+          const stopped = yield* engine.stopService(service.service.id);
+          expect(stopped.service.currentAttemptId).toBeNull();
+          expect(stopped.service.currentForwardId).toBeNull();
+          expect(stopped.attempts.at(-1)?.status).toBe("stopped");
+
+          const rerun = yield* engine.runService(
+            session.id,
+            stopped.attempts.at(-1)?.argv ?? [],
+            stopped.service.workspacePort,
+            stopped.service.name,
+            stopped.service.transport,
+          );
+          expect(rerun.service.id).toBe(service.service.id);
+          expect(rerun.attempts).toHaveLength(3);
+          expect(rerun.service.currentAttemptId).toBe(rerun.attempts.at(-1)?.id);
         }),
       { sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
+  it("stamps server-resolved file recipe provenance", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            ownerUserId: null,
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          const worktree = path.join(tmp, "store", "fixture", "worktrees", session.worktree);
+          fs.writeFileSync(
+            path.join(worktree, "mend.toml"),
+            '[service.web]\ncommand = "pnpm dev"\nport = 3000\n',
+          );
+
+          const service = yield* engine.runServiceRecipe(session.id, "web");
+          expect(service.service.name).toBe("web");
+          expect(service.service.declarationSource).toBe("recipe-file");
+          expect(service.attempts[0]?.argv).toEqual(["sh", "-c", "pnpm dev"]);
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
+  it("keeps a Service live across a transient watcher lookup failure", async () => {
+    const created: CreateOptions[] = [];
+    let workspaceLookups = 0;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            ownerUserId: null,
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          const service = yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web");
+          yield* Effect.sleep(Duration.millis(1_200));
+
+          const attempt = world.processes.get(service.service.currentAttemptId ?? "");
+          expect(attempt?.exitedAt).toBeNull();
+          expect(world.services.get(service.service.id)?.currentForwardId).not.toBeNull();
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created, undefined, undefined, undefined, () => {
+          workspaceLookups += 1;
+          return workspaceLookups === 2;
+        }),
+      },
+    );
+  });
+
+  it("does not append a restart attempt when the workspace lookup fails", async () => {
+    const created: CreateOptions[] = [];
+    let rejectWorkspaceLookup = false;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            ownerUserId: null,
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          const before = yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web");
+          rejectWorkspaceLookup = true;
+          const failure = yield* engine.restartService(before.service.id).pipe(Effect.flip);
+          expect(failure).toBeInstanceOf(SealantPlatformError);
+          const attempts = [...world.processes.values()].filter(
+            (process) => process.serviceId === before.service.id,
+          );
+          expect(attempts).toHaveLength(1);
+          expect(world.services.get(before.service.id)?.currentAttemptId).toBe(attempts[0]?.id);
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          () => rejectWorkspaceLookup,
+        ),
+      },
     );
   });
 
@@ -1674,13 +2121,14 @@ describe("SessionEngine", () => {
     const storeLayer = Store.layer.pipe(
       Layer.provide(StoreConfig.layerFor(path.join(tmp, "store"))),
     );
-    const engineLayer = SessionEngine.layer.pipe(
+    const engineLayer = SessionEngineLive.pipe(
       Layer.provide(storeLayer),
       Layer.provide(sealantDeadLayer),
       Layer.provide(projectsLayer(world)),
       Layer.provide(sessionsLayer(world)),
       Layer.provide(sessionRunsLayer(world)),
       Layer.provide(sessionProcessesLayer(world)),
+      Layer.provide(serviceStateLayer(world)),
       Layer.provide(serviceHostStubLayer),
       Layer.provide(sessionSocketStubLayer),
       Layer.provide(mendKeysStubLayer),

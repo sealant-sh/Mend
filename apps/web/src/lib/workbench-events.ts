@@ -17,6 +17,7 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
     let source: EventSource | null = null;
     let timer: number | null = null;
     let attempt = 0;
+    let openedOnce = false;
     let disposed = false;
 
     const handleMessage = (message: MessageEvent<string>) => {
@@ -42,6 +43,16 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
             void queryClient.invalidateQueries({ queryKey: ["project", event.projectId] });
           }
           break;
+        case "session-process":
+          if (event.sessionId !== undefined) {
+            void queryClient.invalidateQueries({
+              queryKey: ["session", event.sessionId, "services"],
+            });
+            void queryClient.invalidateQueries({
+              queryKey: ["session", event.sessionId, "processes"],
+            });
+          }
+          break;
         case "session-change":
         case "review-comment":
           if (event.changeId !== undefined) {
@@ -65,6 +76,17 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
       next.addEventListener("open", () => {
         if (next !== source) return;
         attempt = 0;
+        if (openedOnce) {
+          // SSE carries pointers, not replay. A reconnect may have missed process/forward/
+          // observation events, so refresh every mounted session's Service facts once.
+          void queryClient.invalidateQueries({
+            predicate: (query) => {
+              const [scope, , kind] = query.queryKey;
+              return scope === "session" && (kind === "services" || kind === "processes");
+            },
+          });
+        }
+        openedOnce = true;
       });
       next.addEventListener("message", handleMessage);
       next.addEventListener("error", () => {

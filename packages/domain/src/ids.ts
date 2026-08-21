@@ -63,6 +63,15 @@ export type ProjectMountId = typeof ProjectMountId.Type;
 export const SessionProcessId = Schema.String.pipe(Schema.brand("SessionProcessId"));
 export type SessionProcessId = typeof SessionProcessId.Type;
 
+export const ServiceId = Schema.String.pipe(Schema.brand("ServiceId"));
+export type ServiceId = typeof ServiceId.Type;
+
+export const ServiceForwardId = Schema.String.pipe(Schema.brand("ServiceForwardId"));
+export type ServiceForwardId = typeof ServiceForwardId.Type;
+
+export const ServiceObservationId = Schema.String.pipe(Schema.brand("ServiceObservationId"));
+export type ServiceObservationId = typeof ServiceObservationId.Type;
+
 export const SessionGitOpId = Schema.String.pipe(Schema.brand("SessionGitOpId"));
 export type SessionGitOpId = typeof SessionGitOpId.Type;
 

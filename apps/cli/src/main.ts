@@ -140,6 +140,14 @@ const fail = (message: string): never => {
   process.exit(1);
 };
 
+const parseMendUrl = (value: string): URL => {
+  try {
+    return new URL(value);
+  } catch {
+    return fail(`"${value}" is not a valid Mend URL`);
+  }
+};
+
 const paint = (code: string) => (text: string) =>
   process.stdout.isTTY ? `[${code}m${text}[0m` : text;
 const dim = paint("2");
@@ -346,7 +354,7 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
       ? String(args[projectFlag + 1])
       : null;
   const dashdash = args.indexOf("--");
-  const custom = dashdash !== -1 ? args.slice(dashdash + 1) : [];
+  const custom = dashdash === -1 ? [] : args.slice(dashdash + 1);
   const argv = harness === "run" ? custom : (HARNESS_COMMANDS[harness] ?? []);
   if (argv.length === 0) {
     return fail(
@@ -402,12 +410,12 @@ const attachTty = async (
   processId?: string,
   options?: { readonly readOnly?: boolean },
 ): Promise<"detached" | "ended" | "unavailable"> => {
-  const url = new URL(`${config.url}/api/tty`);
+  const url = parseMendUrl(`${config.url}/api/tty`);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   // Process addressing reaches any PTY in the workspace (a shell); the
   // session form remains the agent's PTY.
-  if (processId !== undefined) url.searchParams.set("process", processId);
-  else url.searchParams.set("session", sessionId);
+  if (processId === undefined) url.searchParams.set("session", sessionId);
+  else url.searchParams.set("process", processId);
   url.searchParams.set("from", from.toString());
   if (config.token !== null) url.searchParams.set("token", config.token);
 
@@ -581,10 +589,10 @@ const resolveLiveSession = async (
   config: CliConfig,
   prefix: string | undefined,
 ): Promise<SessionDto> => {
-  const sessions = await api<ReadonlyArray<SessionDto>>(config, "GET", "/sessions");
+  const sessions = await api<ReadonlyArray<SessionDto>>(config, "GET", "/sessions?retained=1");
   if (prefix !== undefined) {
     const matches = sessions.filter((s) => s.id.startsWith(prefix));
-    if (matches.length === 0) return fail(`no live session matches "${prefix}"`);
+    if (matches.length === 0) return fail(`no live or retained session matches "${prefix}"`);
     const exact = matches[0];
     if (matches.length > 1 || exact === undefined) {
       return fail(`session prefix "${prefix}" is ambiguous — use more of the id`);
@@ -597,7 +605,7 @@ const resolveLiveSession = async (
     project === undefined ? sessions : sessions.filter((s) => s.projectId === project.id);
   const only = candidates[0];
   if (only === undefined) {
-    return fail("no live session — start one with mend codex|claude|opencode");
+    return fail("no live or retained session — start one with mend codex|claude|opencode");
   }
   if (candidates.length === 1) return only;
   if (process.stdin.isTTY !== true) {
@@ -651,20 +659,87 @@ interface ServiceRecipeDto {
   readonly protocol: "tcp" | "udp";
 }
 
+interface ServiceViewDto {
+  readonly service: {
+    readonly id: string;
+    readonly sessionId: string;
+    readonly name: string;
+    readonly workspacePort: number;
+    readonly transport: "tcp" | "udp";
+    readonly currentAttemptId: string | null;
+  };
+  readonly attempts: ReadonlyArray<{
+    readonly id: string;
+    readonly argv: ReadonlyArray<string>;
+    readonly status: string;
+    readonly exitedAt: string | null;
+    readonly sealantSessionId: string | null;
+  }>;
+  readonly currentForward: {
+    readonly id: string;
+    readonly hostPort: number | null;
+    readonly state: "binding" | "bound" | "closed" | "failed";
+  } | null;
+  readonly latestObservation: {
+    readonly forwardId: string;
+    readonly state: "reachable" | "unreachable";
+  } | null;
+}
+
 interface ServiceDto {
   readonly id: string;
+  readonly processId: string | null;
   readonly sessionId: string;
-  readonly kind: string;
-  readonly label: string | null;
+  readonly label: string;
   readonly status: string;
-  readonly workspacePort: number | null;
+  readonly workspacePort: number;
   readonly hostPort: number | null;
   readonly protocol: "tcp" | "udp";
   readonly sealantSessionId: string | null;
+  readonly attemptExitedAt: string | null;
+  readonly argv: ReadonlyArray<string>;
 }
 
+const flattenService = (view: ServiceViewDto): ServiceDto => {
+  const attempt =
+    view.service.currentAttemptId === null
+      ? null
+      : (view.attempts.find((candidate) => candidate.id === view.service.currentAttemptId) ?? null);
+  const observation =
+    view.currentForward !== null && view.latestObservation?.forwardId === view.currentForward.id
+      ? view.latestObservation
+      : null;
+  return {
+    id: view.service.id,
+    processId: attempt?.id ?? null,
+    sessionId: view.service.sessionId,
+    label: view.service.name,
+    status: observation?.state ?? view.currentForward?.state ?? attempt?.status ?? "stopped",
+    workspacePort: view.service.workspacePort,
+    hostPort: view.currentForward?.hostPort ?? null,
+    protocol: view.service.transport,
+    sealantSessionId: attempt?.sealantSessionId ?? null,
+    attemptExitedAt: attempt?.exitedAt ?? null,
+    argv: attempt?.argv ?? [],
+  };
+};
+
+const fetchServiceViews = (config: CliConfig, all = false) =>
+  api<ReadonlyArray<ServiceViewDto>>(config, "GET", `/services${all ? "?all=1" : ""}`);
+
+const fetchServices = async (config: CliConfig, all = false): Promise<ReadonlyArray<ServiceDto>> =>
+  (await fetchServiceViews(config, all)).map(flattenService);
+
+const mutateService = async (
+  config: CliConfig,
+  method: "POST",
+  endpointPath: string,
+  body?: unknown,
+): Promise<ServiceDto> =>
+  flattenService(await api<ServiceViewDto>(config, method, endpointPath, body));
+
 const serviceUrl = (config: CliConfig, service: ServiceDto): string => {
-  const host = new URL(config.url).hostname || "localhost";
+  const host = parseMendUrl(config.url).hostname || "localhost";
   // A UDP Service has no page to open — the endpoint is the whole fact.
   return service.protocol === "udp"
     ? `${host}:${service.hostPort ?? "?"} (udp)`
@@ -702,7 +777,7 @@ const serviceAdd = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const prefix = positional.find((a) => a !== portRaw);
   const session = await resolveLiveSession(config, prefix);
 
-  const service = await api<ServiceDto>(config, "POST", `/sessions/${session.id}/services`, {
+  const service = await mutateService(config, "POST", `/sessions/${session.id}/services`, {
     port,
     name,
     protocol,
@@ -717,7 +792,7 @@ const serviceAdd = async (config: CliConfig, args: ReadonlyArray<string>) => {
 };
 
 const serviceList = async (config: CliConfig) => {
-  const services = await api<ReadonlyArray<ServiceDto>>(config, "GET", "/services");
+  const services = await fetchServices(config);
   if (services.length === 0) {
     say(dim("no live services — mend service add <port> adopts a listening one"));
     return;
@@ -728,7 +803,7 @@ const serviceList = async (config: CliConfig) => {
 const serviceStop = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const needle = args.find((a) => !a.startsWith("--"));
   if (needle === undefined) return fail("usage: mend service stop <name-or-id-prefix>");
-  const services = await api<ReadonlyArray<ServiceDto>>(config, "GET", "/services");
+  const services = await fetchServices(config);
   const matches = services.filter(
     (service) => service.label === needle || service.id.startsWith(needle),
   );
@@ -737,12 +812,12 @@ const serviceStop = async (config: CliConfig, args: ReadonlyArray<string>) => {
   if (matches.length > 1 || match === undefined) {
     return fail(`"${needle}" is ambiguous — use more of the id`);
   }
-  const stoppedService = await api<ServiceDto>(config, "POST", `/services/${match.id}/stop`);
+  const stoppedService = await mutateService(config, "POST", `/services/${match.id}/stop`);
   say(`${green("✓")} stopped · ${stoppedService.label ?? stoppedService.id.slice(0, 8)}`);
 };
 
 const findLiveService = async (config: CliConfig, needle: string): Promise<ServiceDto> => {
-  const services = await api<ReadonlyArray<ServiceDto>>(config, "GET", "/services");
+  const services = await fetchServices(config);
   const matches = services.filter(
     (service) => service.label === needle || service.id.startsWith(needle),
   );
@@ -787,26 +862,14 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
           : `no recipe named "${name}" — declared: ${known}`,
       );
     }
-    if (recipe.command === null) {
-      // A port-only recipe is an adopt: something else starts the listener.
-      const service = await api<ServiceDto>(config, "POST", `/sessions/${session.id}/services`, {
-        port: recipe.port,
-        name: recipe.name,
-        protocol: recipe.protocol,
-      });
-      say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
-      say(`  ${cobalt(serviceUrl(config, service))}`);
-      return;
-    }
     const service = await withSpinner(
-      recipe.protocol === "udp"
-        ? `starting ${recipe.name} (udp :${recipe.port})…`
-        : `starting ${recipe.name} — waiting for :${recipe.port} to answer…`,
-      api<ServiceDto>(config, "POST", `/sessions/${session.id}/services/run`, {
-        argv: ["sh", "-c", recipe.command],
-        port: recipe.port,
+      recipe.command === null
+        ? `adopting ${recipe.name} on :${recipe.port}…`
+        : recipe.protocol === "udp"
+          ? `starting ${recipe.name} (udp :${recipe.port})…`
+          : `starting ${recipe.name} — waiting for :${recipe.port} to answer…`,
+      mutateService(config, "POST", `/sessions/${session.id}/services/recipe`, {
         name: recipe.name,
-        protocol: recipe.protocol,
       }),
     );
     say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
@@ -818,7 +881,7 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
   if (argv.length === 0) return fail(usage);
   const head = args.slice(0, dashdash);
   const portFlag = head.indexOf("--port");
-  const port = portFlag !== -1 ? Number(head[portFlag + 1]) : Number.NaN;
+  const port = portFlag === -1 ? Number.NaN : Number(head[portFlag + 1]);
   if (!Number.isInteger(port) || port < 1 || port > 65535) return fail(usage);
   const nameFlag = head.indexOf("--name");
   const name =
@@ -833,7 +896,7 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
     protocol === "udp"
       ? `starting ${name ?? argv[0]} (udp :${port})…`
       : `starting ${name ?? argv[0]} — waiting for :${port} to answer…`,
-    api<ServiceDto>(config, "POST", `/sessions/${session.id}/services/run`, {
+    mutateService(config, "POST", `/sessions/${session.id}/services/run`, {
       argv,
       port,
       name,
@@ -853,39 +916,53 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
 const serviceLogs = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const needle = args.find((a) => !a.startsWith("--"));
   if (needle === undefined) return fail("usage: mend service logs <name-or-id-prefix>");
-  const everything = await api<ReadonlyArray<ServiceDto>>(config, "GET", "/services?all=1");
+  const everything = await fetchServiceViews(config, true);
   const matches = everything.filter(
-    (service) => service.label === needle || service.id.startsWith(needle),
+    (view) =>
+      view.service.name === needle ||
+      view.service.id.startsWith(needle) ||
+      view.attempts.some((attempt) => attempt.id.startsWith(needle)),
   );
   if (matches.length === 0) return fail(`no service matches "${needle}"`);
-  // Prefer the live one; otherwise the newest ended one (list is newest-first).
-  const service =
-    matches.find((m) => m.status !== "exited" && m.status !== "stopped") ?? matches[0];
-  if (service === undefined) return fail(`no service matches "${needle}"`);
-  if (service.sealantSessionId === null) {
+  const view =
+    matches.find((candidate) => {
+      const current =
+        candidate.service.currentAttemptId === null
+          ? null
+          : candidate.attempts.find((attempt) => attempt.id === candidate.service.currentAttemptId);
+      return current !== null && current !== undefined && current.exitedAt === null;
+    }) ?? matches[0];
+  if (view === undefined) return fail(`no service matches "${needle}"`);
+  const currentAttempt =
+    view.service.currentAttemptId === null
+      ? null
+      : (view.attempts.find((candidate) => candidate.id === view.service.currentAttemptId) ?? null);
+  const attempt =
+    view.attempts.find((candidate) => candidate.id.startsWith(needle)) ??
+    currentAttempt ??
+    view.attempts.findLast((candidate) => candidate.sealantSessionId !== null) ??
+    null;
+  if (attempt?.sealantSessionId === null || attempt === null) {
     return fail(
       `"${needle}" is an adopted port — no process of Mend's, no logs. mend service run supervises.`,
     );
   }
-  if (service.status === "exited" || service.status === "stopped") {
-    // Post-mortem: print the record, don't attach.
+  const label = view.service.name;
+  if (attempt.exitedAt !== null) {
+    // Post-mortem: print the selected historical attempt's durable record.
     const output = await api<{ readonly text: string }>(
       config,
       "GET",
-      `/processes/${service.id}/output`,
+      `/processes/${attempt.id}/output`,
     );
-    say(dim(`${service.label ?? service.id.slice(0, 8)} · ${service.status} — recorded output:`));
+    say(dim(`${label} · ${attempt.status} — recorded output:`));
     say("");
     process.stdout.write(output.text.endsWith("\n") ? output.text : `${output.text}\n`);
     process.exit(0);
   }
-  say(
-    dim(
-      `following ${service.label ?? service.id.slice(0, 8)} — Ctrl+C detaches, the service keeps running`,
-    ),
-  );
+  say(dim(`following ${label} — Ctrl+C detaches, the service keeps running`));
   say("");
-  const outcome = await attachTty(config, service.sessionId, "service", 0n, service.id, {
+  const outcome = await attachTty(config, view.service.sessionId, "service", 0n, attempt.id, {
     readOnly: true,
   });
   if (outcome === "unavailable") {
@@ -902,7 +979,7 @@ const serviceRestart = async (config: CliConfig, args: ReadonlyArray<string>) =>
   const service = await findLiveService(config, needle);
   const restarted = await withSpinner(
     `restarting ${service.label ?? service.id.slice(0, 8)}…`,
-    api<ServiceDto>(config, "POST", `/services/${service.id}/restart`),
+    mutateService(config, "POST", `/services/${service.id}/restart`),
   );
   say(`${green("✓")} restarted · ${restarted.status}`);
   say(`  ${cobalt(serviceUrl(config, restarted))}`);
@@ -1174,7 +1251,7 @@ const keysShare = async (config: CliConfig) => {
   if (agentSock === undefined || agentSock === "") {
     return fail("SSH_AUTH_SOCK is not set — start (or plug in) your ssh-agent first");
   }
-  const url = new URL(`${config.url}/api/keys/bridge/ws`);
+  const url = parseMendUrl(`${config.url}/api/keys/bridge/ws`);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.searchParams.set("host", os.hostname());
   if (config.token !== null) url.searchParams.set("token", config.token);
@@ -1394,7 +1471,7 @@ const envLoad = async (config: CliConfig, args: ReadonlyArray<string>) => {
   // `--secret` alone sends everything to Secrets; `--secret A,B` only those names (for the
   // ordinary-looking ones that embed credentials, like DATABASE_URL). Routing is by NAME.
   const secretFlag = args.indexOf("--secret");
-  const secretArg = secretFlag !== -1 ? args[secretFlag + 1] : undefined;
+  const secretArg = secretFlag === -1 ? undefined : args[secretFlag + 1];
   const secretNames =
     secretArg !== undefined &&
     !secretArg.startsWith("--") &&
@@ -1700,10 +1777,7 @@ const continueSession = async (config: CliConfig, args: ReadonlyArray<string>) =
 
   let sessionId = explicitSession;
   let followUp: FollowUpDto | null = null;
-  if (sessionId !== null) {
-    followUp = await api<FollowUpDto | null>(config, "GET", `/sessions/${sessionId}/follow-up`);
-    if (followUp === null) return fail(`session ${sessionId} has no pending follow-up`);
-  } else {
+  if (sessionId === null) {
     // Search the cwd's project, newest sessions first.
     const project = await findProject(config, null);
     const detail = await api<ProjectDetailDto>(config, "GET", `/projects/${project.id}`);
@@ -1722,6 +1796,9 @@ const continueSession = async (config: CliConfig, args: ReadonlyArray<string>) =
     if (sessionId === null || followUp === null) {
       return fail("no session with a pending follow-up — send one from the review first");
     }
+  } else {
+    followUp = await api<FollowUpDto | null>(config, "GET", `/sessions/${sessionId}/follow-up`);
+    if (followUp === null) return fail(`session ${sessionId} has no pending follow-up`);
   }
 
   const detail = await api<{ readonly session: SessionDto }>(
@@ -1791,14 +1868,14 @@ const resumeCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
   const project = await findProject(config, null);
   const detail = await api<ProjectDetailDto>(config, "GET", `/projects/${project.id}`);
   const match =
-    prefix !== undefined
-      ? detail.sessions.find((s) => s.id.startsWith(prefix))
-      : detail.sessions.find((s) => !ACTIVE_STATUSES.has(s.status));
+    prefix === undefined
+      ? detail.sessions.find((s) => !ACTIVE_STATUSES.has(s.status))
+      : detail.sessions.find((s) => s.id.startsWith(prefix));
   if (match === undefined) {
     return fail(
-      prefix !== undefined
-        ? `no session matches "${prefix}"`
-        : "no settled session to resume — mend status lists sessions",
+      prefix === undefined
+        ? "no settled session to resume — mend status lists sessions"
+        : `no session matches "${prefix}"`,
     );
   }
   if (ACTIVE_STATUSES.has(match.status)) {

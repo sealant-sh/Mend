@@ -41,6 +41,9 @@ import {
   ReviewCommentsRepoLive,
   ReviewSlicesRepoLive,
   RunsRepoLive,
+  ServiceForwardsRepoLive,
+  ServiceObservationsRepoLive,
+  ServicesRepoLive,
   SessionChangesRepoLive,
   SessionGitOpsRepoLive,
   SessionProcessesRepoLive,
@@ -86,6 +89,7 @@ import {
   FollowUpLauncherLive,
   ServiceHostLive,
   SessionEngine,
+  SessionEngineLive as SessionEngineBaseLive,
   SessionSocketHostLive,
 } from "@mend/sessions";
 import {
@@ -124,6 +128,9 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   HotWorkspacesRepoLive,
   SessionGitOpsRepoLive,
   SessionProcessesRepoLive,
+  ServicesRepoLive,
+  ServiceForwardsRepoLive,
+  ServiceObservationsRepoLive,
   SessionRunsRepoLive,
   CheckpointsRepoLive,
   ProjectsRepoLive,
@@ -171,12 +178,12 @@ const BridgeLive: Layer.Layer<AgentBridge> = AgentBridgeLive.pipe(
   Layer.provide(MendKeysConfigLive),
 );
 const ServiceHostLayer = ServiceHostLive;
-const SessionEngineLive = SessionEngine.layer.pipe(
+const SessionEngineLayer = SessionEngineBaseLive.pipe(
   Layer.provide(ServiceHostLayer),
   Layer.provide(SessionSocketHostLive),
   Layer.provide(DotfilesStoreLayer),
 );
-const FollowUpLauncherLayer = FollowUpLauncherLive.pipe(Layer.provide(SessionEngineLive));
+const FollowUpLauncherLayer = FollowUpLauncherLive.pipe(Layer.provide(SessionEngineLayer));
 const FollowUpDeliveryLayer = FollowUpDeliveryLive.pipe(Layer.provide(FollowUpLauncherLayer));
 
 // ─── better-auth mounted under /api/auth ────────────────────────────────────
@@ -407,7 +414,7 @@ const WorkerLive = Layer.mergeAll(
   ),
   InferenceWorkersLive,
   // Constructing the engine resumes supervision of unsettled sessions.
-  SessionEngineLive,
+  SessionEngineLayer,
   // Pushes to registered phones when a session settles or waits on the user.
   SessionNotifierLive,
   // Queues tour + suggestion passes at settle, per the automation cascade.
@@ -447,7 +454,7 @@ const MainLive = Layer.unwrap(
       // Follow-up delivery owns persistence → process acceptance → correlation.
       Layer.provide(FollowUpDeliveryLayer),
       // The session engine and store serve both the API handlers and the worker.
-      Layer.provide(SessionEngineLive),
+      Layer.provide(SessionEngineLayer),
       Layer.provide(StoreLive),
       // The per-user dotfiles store — the dotfiles API group reads/writes it directly.
       Layer.provide(DotfilesStoreLayer),

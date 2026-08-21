@@ -33,6 +33,9 @@ import type {
   RunStatus,
   SealantRunId,
   SealantWorkspaceId,
+  ServiceForwardId,
+  ServiceId,
+  ServiceObservationId,
   SessionGitOpId,
   SessionId,
   SessionProcessId,
@@ -59,6 +62,12 @@ import type {
   DiffDigest,
   TourStop,
   SessionExtraMount,
+  ServiceBrowserScheme,
+  ServiceDeclarationSource,
+  ServiceForwardState,
+  ServiceObservationSource,
+  ServiceTargetState,
+  ServiceTransport,
   SessionProcessKind,
   SessionProcessStatus,
   SessionDotfiles,
@@ -501,6 +510,32 @@ export const sessionRuns = pgTable(
   ],
 );
 
+export const services = pgTable(
+  "services",
+  {
+    id: text().$type<ServiceId>().primaryKey(),
+    sessionId: text()
+      .$type<SessionId>()
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: "cascade" }),
+    name: text().notNull(),
+    declarationSource: text().$type<ServiceDeclarationSource>().notNull(),
+    workspacePort: integer().notNull(),
+    transport: text().$type<ServiceTransport>().notNull().default("tcp"),
+    browserScheme: text().$type<NonNullable<ServiceBrowserScheme>>(),
+    bindAddresses: jsonb().$type<ReadonlyArray<string>>(),
+    preferredHostPort: integer(),
+    currentAttemptId: text().$type<SessionProcessId>(),
+    currentForwardId: text().$type<ServiceForwardId>(),
+    attemptHistoryComplete: boolean().notNull().default(true),
+    forwardHistoryComplete: boolean().notNull().default(true),
+    observationHistoryComplete: boolean().notNull().default(true),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("services_session_created_idx").on(table.sessionId, table.createdAt)],
+);
+
 export const sessionProcesses = pgTable(
   "session_processes",
   {
@@ -513,6 +548,10 @@ export const sessionProcesses = pgTable(
     sealantSessionId: text(),
     sealantRunId: text().$type<SealantRunId>(),
     launchCorrelationId: text(),
+    serviceId: text()
+      .$type<ServiceId>()
+      .references(() => services.id, { onDelete: "set null" }),
+    attemptOrdinal: integer(),
     kind: text().$type<SessionProcessKind>().notNull(),
     label: text(),
     argv: jsonb()
@@ -530,6 +569,15 @@ export const sessionProcesses = pgTable(
   },
   (table) => [
     index("session_processes_session_idx").on(table.sessionId, table.createdAt),
+    index("session_processes_service_created_idx").on(table.serviceId, table.createdAt),
+    uniqueIndex("session_processes_service_ordinal_idx")
+      .on(table.serviceId, table.attemptOrdinal)
+      .where(sql`${table.serviceId} IS NOT NULL AND ${table.attemptOrdinal} IS NOT NULL`),
+    uniqueIndex("session_processes_one_live_service_attempt_idx")
+      .on(table.serviceId)
+      .where(
+        sql`${table.serviceId} IS NOT NULL AND ${table.attemptOrdinal} IS NOT NULL AND ${table.exitedAt} IS NULL`,
+      ),
     uniqueIndex("session_processes_launch_correlation_idx")
       .on(table.launchCorrelationId)
       .where(sql`${table.launchCorrelationId} IS NOT NULL`),
@@ -537,6 +585,56 @@ export const sessionProcesses = pgTable(
     index("session_processes_live_idx")
       .on(table.sealantWorkspaceId)
       .where(sql`${table.exitedAt} IS NULL`),
+  ],
+);
+
+export const serviceForwards = pgTable(
+  "service_forwards",
+  {
+    id: text().$type<ServiceForwardId>().primaryKey(),
+    serviceId: text()
+      .$type<ServiceId>()
+      .notNull()
+      .references(() => services.id, { onDelete: "cascade" }),
+    sealantWorkspaceId: text().$type<SealantWorkspaceId>().notNull(),
+    preferredHostPort: integer(),
+    hostPort: integer(),
+    boundAddresses: jsonb().$type<ReadonlyArray<string>>(),
+    state: text().$type<ServiceForwardState>().notNull().default("binding"),
+    error: text(),
+    supersedesForwardId: text().$type<ServiceForwardId>(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    boundAt: timestamp({ mode: "date", withTimezone: true }),
+    closedAt: timestamp({ mode: "date", withTimezone: true }),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("service_forwards_service_created_idx").on(table.serviceId, table.createdAt),
+    index("service_forwards_workspace_state_idx").on(table.sealantWorkspaceId, table.state),
+  ],
+);
+
+export const serviceObservations = pgTable(
+  "service_observations",
+  {
+    id: text().$type<ServiceObservationId>().primaryKey(),
+    serviceId: text()
+      .$type<ServiceId>()
+      .notNull()
+      .references(() => services.id, { onDelete: "cascade" }),
+    forwardId: text()
+      .$type<ServiceForwardId>()
+      .notNull()
+      .references(() => serviceForwards.id, { onDelete: "cascade" }),
+    state: text().$type<ServiceTargetState>().notNull(),
+    source: text().$type<ServiceObservationSource>().notNull(),
+    error: text(),
+    firstObservedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    lastObservedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("service_observations_service_observed_idx").on(table.serviceId, table.lastObservedAt),
+    index("service_observations_forward_observed_idx").on(table.forwardId, table.lastObservedAt),
   ],
 );
 

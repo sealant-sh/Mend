@@ -19,6 +19,7 @@ import {
   ReviewSliceId,
   Run,
   RunId,
+  ServiceId,
   SessionId,
   SessionProcessId,
   DotfilesRepository,
@@ -43,6 +44,7 @@ import {
   ReviewComment,
   ReviewSlice,
   ServiceRecipe,
+  ServiceView,
   Session,
   SessionProcess,
 } from "@mend/domain/workbench";
@@ -589,7 +591,7 @@ const projectsGroup = HttpApiGroup.make("projects")
     HttpApiEndpoint.delete("remove", "/projects/:id", {
       params: { id: ProjectId },
       success: RemovalReport,
-      error: NotFound,
+      error: Schema.Union([NotFound, StoreFailure]),
     }),
   )
   .add(
@@ -1083,7 +1085,12 @@ export class ResumeRequest extends Schema.Class<ResumeRequest>("ResumeRequest")(
 }) {}
 
 const sessionsGroup = HttpApiGroup.make("sessions")
-  .add(HttpApiEndpoint.get("listActive", "/sessions", { success: Schema.Array(Session) }))
+  .add(
+    HttpApiEndpoint.get("listActive", "/sessions", {
+      query: { retained: Schema.optional(Schema.String) },
+      success: Schema.Array(Session),
+    }),
+  )
   .add(
     HttpApiEndpoint.post("create", "/projects/:id/sessions", {
       params: { id: ProjectId },
@@ -1144,8 +1151,8 @@ const sessionsGroup = HttpApiGroup.make("sessions")
         name: Schema.NullOr(Schema.String),
         protocol: Schema.optional(Schema.Literals(["tcp", "udp"])),
       }),
-      success: SessionProcess,
-      error: Schema.Union([NotFound, SessionNotLive, StoreFailure]),
+      success: ServiceView,
+      error: [NotFound, SessionNotLive, StoreFailure],
     }),
   )
   .add(
@@ -1159,8 +1166,17 @@ const sessionsGroup = HttpApiGroup.make("sessions")
         name: Schema.NullOr(Schema.String),
         protocol: Schema.optional(Schema.Literals(["tcp", "udp"])),
       }),
-      success: SessionProcess,
-      error: Schema.Union([NotFound, SessionNotLive, StoreFailure]),
+      success: ServiceView,
+      error: [NotFound, SessionNotLive, StoreFailure],
+    }),
+  )
+  .add(
+    // Resolve the declaration on the server so recipe provenance is a trusted fact.
+    HttpApiEndpoint.post("runServiceRecipe", "/sessions/:id/services/recipe", {
+      params: { id: SessionId },
+      payload: Schema.Struct({ name: Schema.String }),
+      success: ServiceView,
+      error: [NotFound, SessionNotLive, StoreFailure],
     }),
   )
   .add(
@@ -1176,7 +1192,7 @@ const sessionsGroup = HttpApiGroup.make("sessions")
     // ?all=1 includes recently ended Services (post-mortem logs address them).
     HttpApiEndpoint.get("listServices", "/services", {
       query: { all: Schema.optional(Schema.String) },
-      success: Schema.Array(SessionProcess),
+      success: Schema.Array(ServiceView),
     }),
   )
   .add(
@@ -1191,15 +1207,15 @@ const sessionsGroup = HttpApiGroup.make("sessions")
   .add(
     // Re-run the recorded command: same row, same host port, same URL.
     HttpApiEndpoint.post("restartService", "/services/:id/restart", {
-      params: { id: SessionProcessId },
-      success: SessionProcess,
-      error: Schema.Union([NotFound, StoreFailure]),
+      params: { id: ServiceId },
+      success: ServiceView,
+      error: [NotFound, StoreFailure],
     }),
   )
   .add(
     HttpApiEndpoint.post("stopService", "/services/:id/stop", {
-      params: { id: SessionProcessId },
-      success: SessionProcess,
+      params: { id: ServiceId },
+      success: ServiceView,
       error: NotFound,
     }),
   )

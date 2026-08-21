@@ -25,7 +25,11 @@ import {
   reviewComments,
   reviewSlices,
   runs,
+  serviceForwards,
+  serviceObservations,
+  services,
   sessionChanges,
+  sessionProcesses,
   sessionRuns,
   settings,
 } from "../src/schema/workbench.ts";
@@ -276,6 +280,43 @@ describe("Mend Drizzle schema", () => {
     expect(config.columns.map((column) => column.name)).toEqual(["key", "value", "updated_at"]);
     expect(config.columns[0]?.primary).toBe(true);
     expect(config.columns[1]?.getSQLType()).toBe("jsonb");
+  });
+
+  it("separates stable Services, attempts, forwards, and observations", () => {
+    expect(
+      [services, sessionProcesses, serviceForwards, serviceObservations].map(
+        (table) => getTableConfig(table).name,
+      ),
+    ).toEqual(["services", "session_processes", "service_forwards", "service_observations"]);
+
+    const serviceConfig = getTableConfig(services);
+    expect(serviceConfig.columns.map((column) => column.name)).toContain("current_attempt_id");
+    expect(serviceConfig.columns.map((column) => column.name)).toContain("current_forward_id");
+    expect(serviceConfig.foreignKeys[0]?.onDelete).toBe("cascade");
+
+    const attemptConfig = getTableConfig(sessionProcesses);
+    expect(attemptConfig.columns.map((column) => column.name)).toContain("service_id");
+    expect(attemptConfig.columns.map((column) => column.name)).toContain("attempt_ordinal");
+    const attemptIndexes = new Map(
+      attemptConfig.indexes.map((index) => [index.config.name, index.config]),
+    );
+    expect(attemptIndexes.get("session_processes_service_ordinal_idx")?.unique).toBe(true);
+    expect(attemptIndexes.get("session_processes_one_live_service_attempt_idx")?.unique).toBe(true);
+    expect(
+      attemptIndexes.get("session_processes_one_live_service_attempt_idx")?.where,
+    ).toBeDefined();
+
+    const forwardConfig = getTableConfig(serviceForwards);
+    expect(forwardConfig.foreignKeys[0]?.onDelete).toBe("cascade");
+    expect(forwardConfig.columns.map((column) => column.name)).toContain("supersedes_forward_id");
+
+    const observationConfig = getTableConfig(serviceObservations);
+    expect(observationConfig.foreignKeys.map((foreignKey) => foreignKey.onDelete)).toEqual([
+      "cascade",
+      "cascade",
+    ]);
+    expect(observationConfig.columns.map((column) => column.name)).toContain("first_observed_at");
+    expect(observationConfig.columns.map((column) => column.name)).toContain("last_observed_at");
   });
 
   it("maps the append-only inference audit record", () => {

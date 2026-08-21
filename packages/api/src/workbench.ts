@@ -18,6 +18,9 @@ import {
   ReferencesRepo,
   ReviewCommentsRepo,
   ReviewSlicesRepo,
+  ServiceForwardsRepo,
+  ServiceObservationsRepo,
+  ServicesRepo,
   SessionChangesRepo,
   SessionProcessesRepo,
   SessionsRepo,
@@ -40,6 +43,7 @@ import {
   resolveAutomation,
   routeDotenvName,
   validateProjectSecretValue,
+  ServiceView,
   type GitAuthMode,
 } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
@@ -336,13 +340,35 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
       Effect.gen(function* () {
         const projects = yield* ProjectsRepo;
         const sessions = yield* SessionsRepo;
+        const services = yield* ServicesRepo;
+        const forwards = yield* ServiceForwardsRepo;
         const engine = yield* SessionEngine;
         const store = yield* Store;
         const project = yield* projects
           .byId(params.id)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-        // Stop everything live first — workspaces die with their sessions.
+        // Stop every Service first. A forward-only adopted Service can retain a settled session's
+        // workspace even though no session_process row is live.
         const projectSessions = yield* sessions.listForProject(params.id);
+        for (const session of projectSessions) {
+          for (const service of yield* services.listForSession(session.id)) {
+            yield* engine.stopService(service.id).pipe(Effect.ignore);
+          }
+        }
+        const projectSessionIds = new Set(projectSessions.map((session) => session.id));
+        let remainingForwardLease = false;
+        for (const forward of yield* forwards.listOpen()) {
+          const service = yield* services.byId(forward.serviceId);
+          if (service !== null && projectSessionIds.has(service.sessionId)) {
+            remainingForwardLease = true;
+            break;
+          }
+        }
+        if (remainingForwardLease) {
+          return yield* new StoreFailure({
+            message: "The project still has live Service forwards. Stop them before removal.",
+          });
+        }
         yield* Effect.forEach(
           projectSessions.filter((session) => LIVE_STATES.has(session.status)),
           (session) => engine.stop(session.id).pipe(Effect.ignore),
@@ -1247,10 +1273,32 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
 
 export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (handlers) =>
   handlers
-    .handle("listActive", () =>
+    .handle("listActive", ({ query }) =>
       Effect.gen(function* () {
         const sessions = yield* SessionsRepo;
-        return yield* sessions.listActive();
+        const active = yield* sessions.listActive();
+        if (query.retained === undefined) return active;
+
+        const ids = new Set(active.map((session) => session.id));
+        const processes = yield* SessionProcessesRepo;
+        for (const process of yield* processes.listLive()) {
+          if (process.kind !== "agent") ids.add(process.sessionId);
+        }
+        const services = yield* ServicesRepo;
+        const forwards = yield* ServiceForwardsRepo;
+        for (const forward of yield* forwards.listOpen()) {
+          const service = yield* services.byId(forward.serviceId);
+          if (service !== null) ids.add(service.sessionId);
+        }
+        const retained = [...active];
+        for (const id of ids) {
+          if (retained.some((session) => session.id === id)) continue;
+          const session = yield* sessions
+            .byId(id)
+            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+          if (session !== null) retained.push(session);
+        }
+        return retained;
       }),
     )
     .handle("create", ({ params, payload }) =>
@@ -1394,6 +1442,28 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           );
       }),
     )
+    .handle("runServiceRecipe", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const engine = yield* SessionEngine;
+        return yield* engine.runServiceRecipe(params.id, payload.name).pipe(
+          Effect.catchTag("SessionNotFoundError", () =>
+            Effect.fail(new NotFound({ id: params.id })),
+          ),
+          Effect.catchTag("LegacyBenchReadOnlyError", () =>
+            Effect.fail(new StoreFailure({ message: "Legacy bench sessions are review-only." })),
+          ),
+          Effect.catchTag("SessionNotLiveError", () =>
+            Effect.fail(new SessionNotLive({ id: params.id })),
+          ),
+          Effect.catchTags({
+            SealantPlatformError: (error) =>
+              Effect.fail(new StoreFailure({ message: error.message })),
+            ServiceBindError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
+            ServiceStartError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
+          }),
+        );
+      }),
+    )
     .handle("listRecipes", ({ params }) =>
       Effect.gen(function* () {
         const sessions = yield* SessionsRepo;
@@ -1418,12 +1488,29 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("listServices", ({ query }) =>
       Effect.gen(function* () {
+        const services = yield* ServicesRepo;
         const processes = yield* SessionProcessesRepo;
-        if (query.all !== undefined) {
-          return yield* processes.listRecentServices();
-        }
-        const live = yield* processes.listLive();
-        return live.filter((process) => process.kind === "service");
+        const forwards = yield* ServiceForwardsRepo;
+        const observations = yield* ServiceObservationsRepo;
+        const rows = yield* services.listAll();
+        const views = yield* Effect.forEach(rows, (service) =>
+          Effect.gen(function* () {
+            const attempts = yield* processes.listForService(service.id);
+            const currentForward =
+              service.currentForwardId === null
+                ? null
+                : yield* forwards.byId(service.currentForwardId);
+            const latestObservation = yield* observations.latestForService(service.id);
+            return new ServiceView({ service, attempts, currentForward, latestObservation });
+          }),
+        );
+        if (query.all !== undefined) return views;
+        return views.filter(
+          (view) =>
+            view.attempts.some((attempt) => attempt.exitedAt === null) ||
+            view.currentForward?.state === "binding" ||
+            view.currentForward?.state === "bound",
+        );
       }),
     )
     .handle("processOutput", ({ params }) =>
@@ -1472,6 +1559,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             SealantPlatformError: (error) =>
               Effect.fail(new StoreFailure({ message: error.message })),
             ServiceStartError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
+            ServiceBindError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
           }),
         );
       }),
@@ -1493,6 +1581,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const sessions = yield* SessionsRepo;
         const projects = yield* ProjectsRepo;
         const processes = yield* SessionProcessesRepo;
+        const services = yield* ServicesRepo;
+        const forwards = yield* ServiceForwardsRepo;
         const store = yield* Store;
         const session = yield* sessions
           .byId(params.id)
@@ -1500,7 +1590,17 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const liveProcesses = (yield* processes.listForSession(params.id)).filter(
           (process) => process.exitedAt === null,
         );
-        if (LIVE_STATES.has(session.status) || liveProcesses.length > 0) {
+        const serviceIds = new Set(
+          (yield* services.listForSession(params.id)).map((service) => service.id),
+        );
+        const liveForwards = (yield* forwards.listOpen()).filter((forward) =>
+          serviceIds.has(forward.serviceId),
+        );
+        if (
+          LIVE_STATES.has(session.status) ||
+          liveProcesses.length > 0 ||
+          liveForwards.length > 0
+        ) {
           return yield* new SessionActive({ id: params.id });
         }
         const project = yield* projects
