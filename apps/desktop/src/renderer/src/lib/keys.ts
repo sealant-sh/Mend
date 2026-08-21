@@ -17,6 +17,8 @@ export interface KeyActions {
   readonly prevTab: () => void;
   readonly jumpInbox: (index: number) => void;
   readonly togglePalette: () => void;
+  /** Ctrl+Shift+B — the next sidebar face (tree ⇄ inbox). */
+  readonly cycleSidebarView: () => void;
   readonly toggleServices: () => void;
   readonly fontBigger: () => void;
   readonly fontSmaller: () => void;
@@ -102,7 +104,9 @@ export const useKeybindings = (actions: KeyActions): void => {
                       ? bound.togglePalette
                       : key === "s"
                         ? bound.toggleServices
-                        : null;
+                        : key === "b"
+                          ? bound.cycleSidebarView
+                          : null;
       if (handler === null) return;
       event.preventDefault();
       event.stopPropagation();

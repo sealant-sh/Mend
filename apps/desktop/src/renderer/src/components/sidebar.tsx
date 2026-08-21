@@ -4,18 +4,25 @@ import { cn } from "@mend/ui/lib/utils";
 import { useEffect, useState } from "react";
 
 import { StatusDot, toneText } from "#/components/status-dot";
-import { removeSession, stopSession, type ProjectDto } from "#/lib/api";
+import {
+  LIVE_PROCESS,
+  removeSession,
+  stopSession,
+  type ProjectDto,
+  type SessionProcessDto,
+} from "#/lib/api";
 import type { InboxRow, TreeProject } from "#/lib/model";
 import { queryClient } from "#/lib/queries";
 import type { ServiceGlance } from "#/lib/services";
-import { ago, statusTone } from "#/lib/words";
+import { ago, statusTone, type Tone } from "#/lib/words";
 
 /**
- * The sidebar as a place tree (BRIEF.md, Solo-style): projects are the
- * top-level rows, the focused one expands into eyebrow'd sections — sessions
- * with their Services glanceable beneath. No cross-project inbox, no settled
- * shelf: settled sessions recede in place. Right-click carries each row's
- * actions; holding Ctrl paints 1..9 jump pills on the visible session rows.
+ * The sidebar's tree face (BRIEF.md, Solo-style): projects are the top-level
+ * rows, any number open at once; each session (one worktree) opens into what
+ * runs in it — the harness process, every live supporting shell, and its
+ * Services — so a shell is never hidden behind a tab that was closed. Settled
+ * sessions recede in place. Right-click carries each row's actions; holding
+ * Ctrl paints 1..9 jump pills on the visible session rows.
  */
 
 function SectionLabel({ title, count }: { readonly title: string; readonly count: string }) {
@@ -30,6 +37,55 @@ function SectionLabel({ title, count }: { readonly title: string; readonly count
   );
 }
 
+const processTone = (process: SessionProcessDto): Tone =>
+  process.status === "running" || process.status === "reachable"
+    ? "accent"
+    : process.status === "unreachable"
+      ? "amber"
+      : process.status === "exited" && process.exitCode !== null && process.exitCode !== 0
+        ? "red"
+        : "hollow";
+
+/** One thing running in a worktree: the harness or a supporting shell. */
+function ChildRow({
+  label,
+  tone,
+  pulse,
+  word,
+  focused,
+  onClick,
+}: {
+  readonly label: string;
+  readonly tone: Tone;
+  readonly pulse: boolean;
+  readonly word: string | null;
+  readonly focused: boolean;
+  readonly onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-current={focused ? "true" : undefined}
+      className={cn(
+        "flex w-full items-center gap-2 py-[3px] pr-3 pl-10 text-left transition-colors",
+        focused ? "bg-wash" : "hover:bg-[var(--sw-sunken)]",
+      )}
+    >
+      <StatusDot tone={tone} size={6} pulse={pulse} />
+      <span
+        className={cn(
+          "min-w-0 flex-1 truncate font-mono text-[12px]",
+          focused ? "text-foreground" : "text-ink-2",
+        )}
+      >
+        {label}
+      </span>
+      {word !== null && <span className="shrink-0 font-mono text-[10.5px] text-faint">{word}</span>}
+    </button>
+  );
+}
+
 function SessionRow({
   row,
   index,
@@ -37,7 +93,10 @@ function SessionRow({
   now,
   showJumpHints,
   services,
+  processes,
+  focusedProcessId,
   onFocus,
+  onOpenShell,
   onServiceFocus,
   onMenu,
   onDelete,
@@ -48,7 +107,12 @@ function SessionRow({
   readonly now: number;
   readonly showJumpHints: boolean;
   readonly services: ReadonlyArray<ServiceGlance>;
+  /** What runs in this worktree: the agent process and its supporting shells. */
+  readonly processes: ReadonlyArray<SessionProcessDto>;
+  /** The shell whose tab is focused, when the focused tab is a shell of this session. */
+  readonly focusedProcessId: string | null;
   readonly onFocus: () => void;
+  readonly onOpenShell: (processId: string) => void;
   readonly onServiceFocus: () => void;
   readonly onMenu: (event: React.MouseEvent) => void;
   /** Present on settled rows only — deletes the session and its worktree. */
@@ -56,6 +120,13 @@ function SessionRow({
 }) {
   const settled = row.section === "settled";
   const time = ago(row.session.settledAt ?? row.session.startedAt ?? row.session.createdAt, now);
+  // The harness row is the session's own PTY (the session tab); shells are
+  // their own tabs. Ended shells leave the tree — the server prunes them from
+  // the tab strip for the same reason.
+  const agent = processes.find((process) => process.kind === "agent") ?? null;
+  const shells = processes.filter(
+    (process) => process.kind === "shell" && LIVE_PROCESS.has(process.status),
+  );
   return (
     <li className="group relative" onContextMenu={onMenu}>
       <button
@@ -95,6 +166,27 @@ function SessionRow({
           {row.slot?.word ?? time ?? ""}
         </span>
       </button>
+      {agent !== null && (
+        <ChildRow
+          label={row.session.harness}
+          tone={processTone(agent)}
+          pulse={agent.status === "running" && !settled}
+          word={agent.status === "exited" || agent.status === "stopped" ? agent.status : null}
+          focused={focused && focusedProcessId === null}
+          onClick={onFocus}
+        />
+      )}
+      {shells.map((shell) => (
+        <ChildRow
+          key={shell.id}
+          label={shell.label ?? "shell"}
+          tone={processTone(shell)}
+          pulse={false}
+          word="shell"
+          focused={focusedProcessId === shell.id}
+          onClick={() => onOpenShell(shell.id)}
+        />
+      ))}
       {services.map((glance) => (
         <button
           key={glance.name}
@@ -147,9 +239,12 @@ export function Sidebar({
   focusedSessionId,
   now,
   serviceGlances,
+  processesBySession,
+  focusedProcessId,
   onToggleProject,
   onLaunch,
   onFocus,
+  onOpenShell,
   onServiceFocus,
 }: {
   readonly tree: ReadonlyArray<TreeProject>;
@@ -161,9 +256,14 @@ export function Sidebar({
   readonly focusedSessionId: string | null;
   readonly now: number;
   readonly serviceGlances: ReadonlyMap<string, ReadonlyArray<ServiceGlance>>;
+  /** Every known process, by session — the tree's children. */
+  readonly processesBySession: ReadonlyMap<string, ReadonlyArray<SessionProcessDto>>;
+  /** The focused shell tab's process, when the focused tab is a shell. */
+  readonly focusedProcessId: string | null;
   readonly onToggleProject: (id: string) => void;
   readonly onLaunch: (projectId: string) => void;
   readonly onFocus: (row: InboxRow) => void;
+  readonly onOpenShell: (row: InboxRow, processId: string) => void;
   readonly onServiceFocus: (row: InboxRow) => void;
 }) {
   const { openMenu, menuElement } = useContextMenu();
@@ -383,7 +483,12 @@ export function Sidebar({
                         now={now}
                         showJumpHints={jumpHints}
                         services={serviceGlances.get(row.session.id) ?? []}
+                        processes={processesBySession.get(row.session.id) ?? []}
+                        focusedProcessId={
+                          row.session.id === focusedSessionId ? focusedProcessId : null
+                        }
                         onFocus={() => onFocus(row)}
+                        onOpenShell={(processId) => onOpenShell(row, processId)}
                         onServiceFocus={() => onServiceFocus(row)}
                         onMenu={(event) => openMenu(event, sessionMenu(row))}
                         onDelete={row.section === "settled" ? () => deleteOne(row) : null}

@@ -350,6 +350,51 @@ export interface ServiceViewDto {
   readonly previousEndpoints: ReadonlyArray<ServiceEndpointDto>;
 }
 
+/** A project's files, flat and sorted — from a session worktree or the default branch's tree. */
+export interface ProjectFileListingDto {
+  readonly source: "worktree" | "branch";
+  readonly label: string;
+  readonly rootPath: string | null;
+  readonly files: ReadonlyArray<string>;
+  readonly truncated: boolean;
+}
+
+/** One pull request as gh reported it — a reference attached to work, never its identity. */
+export interface PullRequestViewDto {
+  readonly number: number;
+  readonly title: string;
+  readonly state: "open" | "closed" | "merged";
+  readonly isDraft: boolean;
+  readonly url: string;
+  readonly headRefName: string;
+  readonly baseRefName: string;
+  readonly author: string | null;
+  readonly reviewDecision: string | null;
+  readonly additions: number;
+  readonly deletions: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly mergedAt: string | null;
+}
+
+export type PullRequestAvailability =
+  | "ok"
+  | "no-origin"
+  | "not-github"
+  | "gh-missing"
+  | "gh-signed-out"
+  | "rate-limited"
+  | "error";
+
+export interface ProjectPullRequestsDto {
+  readonly origin: "none" | "not-github" | "github";
+  readonly repo: string | null;
+  readonly availability: PullRequestAvailability;
+  readonly detail: string | null;
+  readonly pullRequests: ReadonlyArray<PullRequestViewDto>;
+  readonly fetchedAt: string | null;
+}
+
 const decodeProcessLogChunks = (chunks: ReadonlyArray<{ readonly dataBase64: string }>): string => {
   const decoded = chunks.map((chunk) => atob(chunk.dataBase64));
   const byteLength = decoded.reduce((total, chunk) => total + chunk.length, 0);
@@ -472,6 +517,17 @@ export const reviewDiff = (
 
 export const changeComments = (changeId: string) =>
   get<ReadonlyArray<ReviewCommentDto>>(`/api/changes/${changeId}/comments`);
+
+/** `sessionId` roots the listing at that session's live worktree; null reads the default branch. */
+export const projectFiles = (projectId: string, sessionId: string | null) =>
+  get<ProjectFileListingDto>(
+    sessionId === null
+      ? `/api/projects/${projectId}/files`
+      : `/api/projects/${projectId}/files?${new URLSearchParams({ session: sessionId })}`,
+  );
+
+export const projectPullRequests = (projectId: string) =>
+  get<ProjectPullRequestsDto>(`/api/projects/${projectId}/pull-requests`);
 
 export const listServices = () => get<ReadonlyArray<ServiceViewDto>>("/api/services?all=1");
 

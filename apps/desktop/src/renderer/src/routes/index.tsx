@@ -1,9 +1,11 @@
+import { ToggleGroup, ToggleGroupItem } from "@mend/ui/components/ui/toggle-group";
 import { useContextMenu } from "@mend/ui/context-menu";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { createFileRoute, Navigate, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 
 import { CommandPalette } from "#/components/command-palette";
+import { InboxRail } from "#/components/inbox-rail";
 import { Launcher, ProjectPicker, SessionComposer } from "#/components/launcher";
 import { ServicesSheet } from "#/components/services-sheet";
 import { Sidebar } from "#/components/sidebar";
@@ -12,8 +14,9 @@ import { TerminalPane } from "#/components/terminal-pane";
 import { Titlebar } from "#/components/titlebar";
 import { isUnauthorized, stopShell, type SessionDto, type SessionProcessDto } from "#/lib/api";
 import { useWorkbenchEvents } from "#/lib/events";
+import { useInboxShelves } from "#/lib/inbox-shelves";
 import { useKeybindings } from "#/lib/keys";
-import { buildInbox, buildTree, type InboxRow } from "#/lib/model";
+import { buildInbox, buildTree, scopeInbox, visibleInboxRows, type InboxRow } from "#/lib/model";
 import { useNow } from "#/lib/now";
 import {
   projectDetailQuery,
@@ -24,11 +27,25 @@ import {
 } from "#/lib/queries";
 import { markVisited, useVisited } from "#/lib/seen";
 import { serviceGlance, servicesForSession, type ServiceGlance } from "#/lib/services";
+import { sidebarView, useSidebarView } from "#/lib/sidebar-view";
+import {
+  clampSidebarWidth,
+  initialSidebarWidth,
+  readStoredSidebarWidth,
+  storeSidebarWidth,
+} from "#/lib/sidebar-width";
+import { nextWakeAt, useSnoozes } from "#/lib/snooze";
 import { terminalFont } from "#/lib/terminal-font";
 import { openShellTab, useWorkbench, workbench } from "#/lib/workbench";
 
 const focusRow = (row: InboxRow) => {
   workbench.openSession(row.session.projectId, row.session.id);
+};
+
+/** Narrow the inbox face to one project and make it the composer's target too. */
+const scopeProject = (projectId: string | null) => {
+  sidebarView.focusProject(projectId);
+  if (projectId !== null) workbench.focusProject(projectId);
 };
 
 /** Which project trees are open — any number at once; remembered per machine. */
@@ -64,6 +81,14 @@ function Main() {
   const [servicesFor, setServicesFor] = useState<string | null>(null);
   /** null = nothing stored yet; the focused project's tree opens by default. */
   const [expandedStored, setExpandedStored] = useState<ReadonlyArray<string> | null>(readExpanded);
+  const face = useSidebarView();
+  const shelves = useInboxShelves();
+  const snoozes = useSnoozes();
+  /** Bumped exactly at the next snooze wake so the shelf re-partitions on time. */
+  const [wakeTick, setWakeTick] = useState(0);
+  const [railWidth, setRailWidth] = useState(() =>
+    initialSidebarWidth(readStoredSidebarWidth(), window.innerWidth),
+  );
   const tabMenu = useContextMenu();
   const [terminalFocusRequest, setTerminalFocusRequest] = useState(0);
   const [shellError, setShellError] = useState<string | null>(null);
@@ -91,8 +116,27 @@ function Main() {
   });
 
   const tree = useMemo(() => buildTree(data), [data]);
-  /** Global order for the palette; per-project rows for the sidebar tree. */
-  const inbox = useMemo(() => buildInbox(data, visited), [data, visited]);
+  /** Global order for the palette and the inbox face; per-project rows for the tree. */
+  const inbox = useMemo(
+    () => buildInbox(data, visited, snoozes, now),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- wakeTick re-partitions at a wake boundary
+    [data, visited, snoozes, now, wakeTick],
+  );
+  const scopedInbox = useMemo(
+    () => scopeInbox(inbox, face.inboxProjectId),
+    [inbox, face.inboxProjectId],
+  );
+  // Arm a precise timer for the next wake (clamped to the 32-bit setTimeout
+  // ceiling) — the minute tick alone would leave a snoozed row up to a minute late.
+  useEffect(() => {
+    const at = nextWakeAt(snoozes, Date.now());
+    if (at === null) return;
+    const timer = window.setTimeout(
+      () => setWakeTick((tick) => tick + 1),
+      Math.min(Math.max(at - Date.now(), 0) + 50, 2_147_483_647),
+    );
+    return () => window.clearTimeout(timer);
+  }, [snoozes, wakeTick]);
   const rowsByProject = useMemo(() => {
     const map = new Map<string, ReadonlyArray<InboxRow>>();
     for (const entry of data) {
@@ -122,6 +166,15 @@ function Main() {
     }
     return map;
   }, [processQueries]);
+  const processesBySession = useMemo(() => {
+    const map = new Map<string, Array<SessionProcessDto>>();
+    for (const process of processes.values()) {
+      const rows = map.get(process.sessionId) ?? [];
+      rows.push(process);
+      map.set(process.sessionId, rows);
+    }
+    return map;
+  }, [processes]);
 
   // The focused project defaults to the first one the server lists.
   const focusedProjectId =
@@ -274,15 +327,46 @@ function Main() {
     }
   };
 
-  // Session cycling and jump pills walk the visible rows of every open tree,
-  // in tree order — the same order the sidebar numbers them.
+  // Session cycling and jump pills walk whatever the rail renders, in the
+  // order it numbers them: the open trees' rows on the tree face, the
+  // rendered inbox rows (active · open snoozed · paged settled) on the inbox face.
   const visibleRows = useMemo(
     () =>
-      tree.flatMap((entry) =>
-        expandedIds.has(entry.project.id) ? (rowsByProject.get(entry.project.id) ?? []) : [],
-      ),
-    [tree, expandedIds, rowsByProject],
+      face.view === "tree"
+        ? tree.flatMap((entry) =>
+            expandedIds.has(entry.project.id) ? (rowsByProject.get(entry.project.id) ?? []) : [],
+          )
+        : visibleInboxRows(scopedInbox, shelves, focusedSessionId),
+    [face.view, tree, expandedIds, rowsByProject, scopedInbox, shelves, focusedSessionId],
   );
+  const sessionsByProject = useMemo(
+    () => new Map(data.map((entry) => [entry.project.id, entry.sessions])),
+    [data],
+  );
+
+  // The rail resizes by dragging its edge (t3's width contract, lib/sidebar-width.ts);
+  // double-clicking the edge forgets the stored width.
+  const startRailDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = railWidth;
+    let latest = startWidth;
+    const move = (pointer: PointerEvent) => {
+      latest = clampSidebarWidth(startWidth + pointer.clientX - startX, window.innerWidth);
+      setRailWidth(latest);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      storeSidebarWidth(latest);
+    };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
   const moveSession = (delta: number) => {
     if (visibleRows.length === 0) return;
     const index = visibleRows.findIndex((row) => row.session.id === focusedSessionId);
@@ -315,6 +399,7 @@ function Main() {
       if (row !== undefined) focusRow(row);
     },
     togglePalette: () => setPaletteOpen((value) => !value),
+    cycleSidebarView: sidebarView.cycle,
     toggleServices: () => {
       if (focusedSessionId === null) return;
       if (servicesFor === focusedSessionId) closeServices();
@@ -346,23 +431,93 @@ function Main() {
       <div className="flex min-h-0 flex-1">
         <nav
           aria-label="Projects and sessions"
-          className="flex h-full w-[272px] shrink-0 flex-col overflow-hidden border-r border-rule bg-canvas dark:border-[var(--sw-rule)] dark:bg-[color-mix(in_oklab,var(--sw-panel)_92%,white)]"
+          style={{ width: `${railWidth}px` }}
+          className="relative flex h-full shrink-0 flex-col overflow-hidden border-r border-rule bg-canvas dark:border-[var(--sw-rule)] dark:bg-[color-mix(in_oklab,var(--sw-panel)_92%,white)]"
         >
-          <Sidebar
-            tree={tree}
-            rowsByProject={rowsByProject}
-            expandedIds={expandedIds}
-            focusedProjectId={focusedProjectId}
-            focusedSessionId={focusedSessionId}
-            now={now}
-            serviceGlances={serviceGlances}
-            onToggleProject={toggleProject}
-            onLaunch={(projectId) => setLauncherFor(projectId)}
-            onFocus={focusRow}
-            onServiceFocus={(row) => {
-              focusRow(row);
-              setServicesFor(row.session.id);
+          <div className="flex items-center gap-1 px-2 pt-2 pb-1">
+            <ToggleGroup
+              value={[face.view]}
+              onValueChange={(value: ReadonlyArray<string>) => {
+                if (value[0] === "tree" || value[0] === "inbox") sidebarView.setView(value[0]);
+              }}
+              size="sm"
+              spacing={0}
+              aria-label="Sidebar face"
+              title="Ctrl+Shift+B"
+              className="rounded-lg bg-[var(--sw-sunken)] p-[2px]"
+            >
+              {(["tree", "inbox"] as const).map((candidate) => (
+                <ToggleGroupItem
+                  key={candidate}
+                  value={candidate}
+                  className="h-6 rounded-md px-2 font-sans text-[12px] font-medium text-muted-foreground aria-pressed:bg-panel aria-pressed:text-foreground aria-pressed:shadow-xs data-[state=on]:bg-panel data-[state=on]:text-foreground data-[state=on]:shadow-xs"
+                >
+                  {candidate}
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
+            <span className="flex-1" />
+            {details.every((query) => query.isSuccess) && (
+              <span className="pr-1 font-mono text-[10.5px] text-faint">
+                {inbox.active.length} live · {inbox.settled.length} settled
+              </span>
+            )}
+          </div>
+          {face.view === "inbox" ? (
+            <InboxRail
+              projects={data.map((entry) => entry.project)}
+              inbox={scopedInbox}
+              visibleRows={visibleRows}
+              shelves={shelves}
+              scopeProjectId={face.inboxProjectId}
+              subView={face.subView}
+              focusedSessionId={focusedSessionId}
+              focusedSession={focusedSession}
+              sessionsByProject={sessionsByProject}
+              serviceViews={serviceViews.data ?? []}
+              now={now}
+              onFocus={focusRow}
+              onServiceFocus={(sessionId) => {
+                const session = sessions.get(sessionId);
+                if (session !== undefined) workbench.openSession(session.projectId, session.id);
+                setServicesFor(sessionId);
+              }}
+              onLaunch={(projectId) => setLauncherFor(projectId)}
+              onScope={scopeProject}
+            />
+          ) : (
+            <Sidebar
+              tree={tree}
+              rowsByProject={rowsByProject}
+              expandedIds={expandedIds}
+              focusedProjectId={focusedProjectId}
+              focusedSessionId={focusedSessionId}
+              now={now}
+              serviceGlances={serviceGlances}
+              processesBySession={processesBySession}
+              focusedProcessId={focusedTab?.kind === "shell" ? focusedTab.processId : null}
+              onToggleProject={toggleProject}
+              onLaunch={(projectId) => setLauncherFor(projectId)}
+              onFocus={focusRow}
+              onOpenShell={(row, processId) =>
+                workbench.openShell(row.session.projectId, row.session.id, processId)
+              }
+              onServiceFocus={(row) => {
+                focusRow(row);
+                setServicesFor(row.session.id);
+              }}
+            />
+          )}
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize sidebar"
+            onPointerDown={startRailDrag}
+            onDoubleClick={() => {
+              storeSidebarWidth(null);
+              setRailWidth(initialSidebarWidth(null, window.innerWidth));
             }}
+            className="absolute inset-y-0 right-0 z-10 w-1.5 cursor-col-resize hover:bg-[color-mix(in_oklab,var(--sw-accent)_35%,transparent)]"
           />
         </nav>
 
