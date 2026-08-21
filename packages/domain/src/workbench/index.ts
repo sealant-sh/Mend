@@ -29,6 +29,7 @@ export * from "./project-environment.ts";
 export * from "./project-secret.ts";
 export * from "./reference.ts";
 export * from "./review-comment.ts";
+export * from "./review-slice.ts";
 export * from "./service-recipe.ts";
 export * from "./session.ts";
 export * from "./session-process.ts";

@@ -25,6 +25,7 @@ export class CheckpointsRepo extends Context.Service<
   CheckpointsRepo,
   {
     readonly create: (checkpoint: NewCheckpoint) => Effect.Effect<Checkpoint>;
+    readonly byId: (id: CheckpointId) => Effect.Effect<Checkpoint | null>;
     readonly listForSession: (sessionId: SessionId) => Effect.Effect<ReadonlyArray<Checkpoint>>;
     readonly latestForSession: (sessionId: SessionId) => Effect.Effect<Checkpoint | null>;
     /** Next checkpoint index = count; the engine serializes per-session snapshots. */
@@ -47,6 +48,16 @@ export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = 
         .pipe(Effect.orDie);
       if (created === undefined) return yield* Effect.die("checkpoint insert returned no row");
       return toCheckpoint(created);
+    });
+
+    const byId = Effect.fn("CheckpointsRepo.byId")(function* (id: CheckpointId) {
+      const [row] = yield* db
+        .select()
+        .from(checkpoints)
+        .where(eq(checkpoints.id, id))
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row === undefined ? null : toCheckpoint(row);
     });
 
     const listForSession = Effect.fn("CheckpointsRepo.listForSession")(function* (
@@ -85,6 +96,6 @@ export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = 
       return row?.value ?? 0;
     });
 
-    return { create, listForSession, latestForSession, countForSession };
+    return { create, byId, listForSession, latestForSession, countForSession };
   }),
 );

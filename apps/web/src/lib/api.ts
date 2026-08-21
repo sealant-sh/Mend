@@ -418,11 +418,80 @@ export interface ChangeDiffDto {
   readonly files: ReadonlyArray<ChangedFileDto>;
 }
 
+export interface ReviewSliceDto {
+  readonly id: string;
+  readonly changeId: string;
+  readonly checkpointAId: string;
+  readonly checkpointBId: string;
+  readonly diffDigest: string;
+  readonly createdAt: string;
+}
+
+export interface OpenReviewDto {
+  readonly slice: ReviewSliceDto;
+  readonly checkpointA: CheckpointDto;
+  readonly checkpointB: CheckpointDto;
+  readonly reused: boolean;
+}
+
+export interface ReviewDiffHunkDto {
+  readonly header: string;
+  readonly oldStart: number;
+  readonly oldLines: number;
+  readonly newStart: number;
+  readonly newLines: number;
+  readonly contextHash: string;
+  readonly patch: string;
+}
+
+export interface ReviewDiffFileDto {
+  readonly oldPath: string | null;
+  readonly newPath: string | null;
+  readonly status:
+    | "added"
+    | "modified"
+    | "deleted"
+    | "renamed"
+    | "copied"
+    | "type-changed"
+    | "unmerged"
+    | "unknown";
+  readonly additions: number;
+  readonly deletions: number;
+  readonly binary: boolean;
+  readonly patch: string;
+  readonly hunks: ReadonlyArray<ReviewDiffHunkDto>;
+}
+
+export interface ReviewDiffDto {
+  readonly change: SessionChangeDto;
+  readonly slice: ReviewSliceDto;
+  readonly checkpointA: CheckpointDto;
+  readonly checkpointB: CheckpointDto;
+  readonly patch: string;
+  readonly files: ReadonlyArray<ReviewDiffFileDto>;
+  readonly worktreeChangedSinceSnapshot: boolean;
+}
+
 /** A finding's link into the session record; sequence is a decimal string. */
 export interface RecordLinkDto {
   readonly sealantRunId: string;
   readonly sequence: string;
   readonly excerpt: string;
+}
+
+export interface ReviewCommentAnchorDto {
+  readonly reviewSliceId: string;
+  readonly checkpointAId: string;
+  readonly checkpointBId: string;
+  readonly diffDigest: string;
+  readonly oldPath: string | null;
+  readonly newPath: string | null;
+  readonly side: "old" | "new" | null;
+  readonly startLine: number | null;
+  readonly endLine: number | null;
+  readonly hunkContextHash: string | null;
+  readonly mapping: "anchored" | "moved" | "not-found";
 }
 
 export interface ReviewCommentDto {
@@ -431,6 +500,8 @@ export interface ReviewCommentDto {
   readonly file: string | null;
   readonly line: number | null;
   readonly endLine: number | null;
+  /** Null marks a comment created by the retired live-diff contract. */
+  readonly anchor: ReviewCommentAnchorDto | null;
   readonly authorKind: "reviewer" | "mend";
   readonly authorName: string;
   readonly body: string;
@@ -886,6 +957,12 @@ export const checkpointSession = (id: string, trigger: "review-open" | "user-mar
 
 export const changeDiff = (id: string) => request<ChangeDiffDto>(`/api/changes/${id}/diff`);
 
+export const openReview = (id: string, idempotencyKey: string) =>
+  post<OpenReviewDto>(`/api/changes/${id}/reviews/open`, { idempotencyKey });
+
+export const reviewDiff = (id: string, sliceId: string) =>
+  request<ReviewDiffDto>(`/api/changes/${id}/reviews/${sliceId}/diff`);
+
 /** One workspace process — agent, shell, or Service (docs/SESSION-SERVICES.md). */
 export interface SessionProcessDto {
   readonly id: string;
@@ -988,36 +1065,62 @@ export const serviceEndpoint = (service: SessionProcessDto) =>
 export const changeComments = (id: string) =>
   request<ReadonlyArray<ReviewCommentDto>>(`/api/changes/${id}/comments`);
 
-export const postChangeComment = (
-  id: string,
-  input: {
-    readonly file: string | null;
-    readonly line: number | null;
-    readonly endLine?: number | null;
-    readonly body: string;
-  },
-) => post<ReviewCommentDto>(`/api/changes/${id}/comments`, input);
+export interface SliceCommentTargetDto {
+  readonly oldPath: string | null;
+  readonly newPath: string | null;
+  readonly side: "old" | "new" | null;
+  readonly startLine: number | null;
+  readonly endLine: number | null;
+  readonly hunkContextHash: string | null;
+}
+
+export const postSliceReviewComment = (
+  changeId: string,
+  sliceId: string,
+  target: SliceCommentTargetDto,
+  body: string,
+) =>
+  post<ReviewCommentDto>(`/api/changes/${changeId}/reviews/${sliceId}/comments`, {
+    target,
+    body,
+  });
 
 export interface FollowUpDto {
   readonly id: string;
   readonly sessionId: string;
   readonly changeId: string;
+  readonly reviewSliceId: string | null;
+  readonly checkpointAId: string | null;
+  readonly checkpointBId: string | null;
+  readonly diffDigest: string | null;
+  readonly commentIds: ReadonlyArray<string>;
+  readonly idempotencyKey: string | null;
   readonly instruction: string;
-  readonly status: "pending" | "delivered" | "superseded";
+  readonly status: "pending" | "delivering" | "delivered" | "delivery_failed" | "superseded";
+  readonly deliveryProcessId: string | null;
+  readonly deliverySealantRunId: string | null;
+  readonly deliveryError: string | null;
+  readonly deliveryStartedAt: string | null;
   readonly createdAt: string;
   readonly deliveredAt: string | null;
 }
 
-/** The review bundle, exactly as edited in the send dialog. */
-export const createFollowUp = (sessionId: string, instruction: string) =>
-  post<FollowUpDto>(`/api/sessions/${sessionId}/follow-up`, { instruction });
+export interface DeliverFollowUpInput {
+  readonly reviewSliceId: string;
+  readonly checkpointAId: string;
+  readonly checkpointBId: string;
+  readonly diffDigest: string;
+  readonly commentIds: ReadonlyArray<string>;
+  readonly instruction: string;
+  readonly idempotencyKey: string;
+}
 
 export const pendingFollowUp = (sessionId: string) =>
   request<FollowUpDto | null>(`/api/sessions/${sessionId}/follow-up`);
 
-/** Marks the pending follow-up delivered and reopens the session. */
-export const deliverFollowUp = (sessionId: string) =>
-  post<FollowUpDto>(`/api/sessions/${sessionId}/follow-up/deliver`, {});
+/** Persist, launch, correlate, and finalize one Review bundle. Same key = same run. */
+export const deliverFollowUp = (sessionId: string, input: DeliverFollowUpInput) =>
+  post<FollowUpDto>(`/api/sessions/${sessionId}/follow-up/deliver`, input);
 
 /** A reviewer's disposition on an existing comment (draft is machine-only). */
 export const setCommentState = (

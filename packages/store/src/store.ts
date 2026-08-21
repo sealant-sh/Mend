@@ -74,6 +74,104 @@ export interface ChangedFile {
   readonly deletions: number;
 }
 
+export type DiffFileStatus =
+  | "added"
+  | "modified"
+  | "deleted"
+  | "renamed"
+  | "copied"
+  | "type-changed"
+  | "unmerged"
+  | "unknown";
+
+/** Git facts for one file in an immutable commit range. */
+export interface DiffFileFact {
+  readonly oldPath: string | null;
+  readonly newPath: string | null;
+  readonly status: DiffFileStatus;
+  readonly additions: number;
+  readonly deletions: number;
+  readonly binary: boolean;
+}
+
+interface NumstatEntry {
+  readonly additions: number;
+  readonly deletions: number;
+  readonly binary: boolean;
+}
+
+const statusOf = (token: string): DiffFileStatus => {
+  switch (token[0]) {
+    case "A":
+      return "added";
+    case "M":
+      return "modified";
+    case "D":
+      return "deleted";
+    case "R":
+      return "renamed";
+    case "C":
+      return "copied";
+    case "T":
+      return "type-changed";
+    case "U":
+      return "unmerged";
+    default:
+      return "unknown";
+  }
+};
+
+const parseNumstat = (raw: string): ReadonlyArray<NumstatEntry> => {
+  const entries: Array<NumstatEntry> = [];
+  let cursor = 0;
+  while (cursor < raw.length) {
+    const firstTab = raw.indexOf("\t", cursor);
+    const secondTab = raw.indexOf("\t", firstTab + 1);
+    if (firstTab < 0 || secondTab < 0) break;
+    const added = raw.slice(cursor, firstTab);
+    const deleted = raw.slice(firstTab + 1, secondTab);
+    cursor = secondTab + 1;
+    if (raw[cursor] === "\0") {
+      cursor += 1;
+      cursor = raw.indexOf("\0", cursor) + 1;
+      cursor = raw.indexOf("\0", cursor) + 1;
+    } else {
+      const terminator = raw.indexOf("\0", cursor);
+      cursor = terminator < 0 ? raw.length : terminator + 1;
+    }
+    entries.push({
+      additions: added === "-" ? 0 : Number(added),
+      deletions: deleted === "-" ? 0 : Number(deleted),
+      binary: added === "-" || deleted === "-",
+    });
+  }
+  return entries;
+};
+
+const parseNameStatus = (
+  raw: string,
+  numstat: ReadonlyArray<NumstatEntry>,
+): ReadonlyArray<DiffFileFact> => {
+  const tokens = raw.split("\0");
+  const files: Array<DiffFileFact> = [];
+  let cursor = 0;
+  while (cursor < tokens.length && tokens[cursor] !== "") {
+    const statusToken = tokens[cursor++] ?? "";
+    const status = statusOf(statusToken);
+    const firstPath = tokens[cursor++] ?? "";
+    const hasTwoPaths = status === "renamed" || status === "copied";
+    const secondPath = hasTwoPaths ? (tokens[cursor++] ?? "") : firstPath;
+    const counts = numstat[files.length] ?? { additions: 0, deletions: 0, binary: false };
+    files.push({
+      oldPath: status === "added" ? null : firstPath,
+      newPath: status === "deleted" ? null : secondPath,
+      status,
+      ...counts,
+    });
+  }
+  return files;
+};
+
 const sha = (value: string) => Sha.make(value);
 
 /** Untracked paths — invisible to `git diff <base>` but part of the change. */
@@ -169,15 +267,35 @@ export class Store extends Context.Service<
       parent: Sha | null,
     ) => Effect.Effect<CheckpointSnapshot, GitError>;
     /** Unified diff between two commits (a checkpoint slice: `refA..refB`). */
-    readonly diffRange: (dir: string, a: string, b: string) => Effect.Effect<string, GitError>;
+    readonly diffRange: (
+      dir: string,
+      a: string,
+      b: string,
+      options?: {
+        readonly ignoreWhitespace?: boolean;
+        readonly contextLines?: number;
+      },
+    ) => Effect.Effect<string, GitError>;
     /** Unified diff of the live worktree against a base commit. */
     readonly diffWorktree: (worktreePath: string, base: string) => Effect.Effect<string, GitError>;
+    /** Compare the full current worktree tree, including untracked files, to one commit tree. */
+    readonly worktreeMatchesCommit: (
+      worktreePath: string,
+      commit: string,
+    ) => Effect.Effect<boolean, GitError>;
     /** Per-file +/− counts for a range (`--numstat`); binary files count as 0/0. */
     readonly changedFiles: (
       dir: string,
       a: string,
       b: string | null,
     ) => Effect.Effect<ReadonlyArray<ChangedFile>, GitError>;
+    /** Rename-aware file facts for an immutable commit range. */
+    readonly diffFileFacts: (
+      dir: string,
+      a: string,
+      b: string,
+      options?: { readonly ignoreWhitespace?: boolean },
+    ) => Effect.Effect<ReadonlyArray<DiffFileFact>, GitError>;
     readonly headSha: (dir: string) => Effect.Effect<Sha, GitError>;
     /**
      * Clone `source` shallow into `_references/<name>` as read-only source
@@ -338,8 +456,37 @@ export class Store extends Context.Service<
         );
       });
 
-      const diffRange = Effect.fn("Store.diffRange")(function* (dir: string, a: string, b: string) {
-        return yield* git(["diff", a, b], dir);
+      const diffRange = Effect.fn("Store.diffRange")(function* (
+        dir: string,
+        a: string,
+        b: string,
+        options?: {
+          readonly ignoreWhitespace?: boolean;
+          readonly contextLines?: number;
+        },
+      ) {
+        const args = ["diff", "--find-renames"];
+        if (options?.ignoreWhitespace === true) args.push("--ignore-all-space");
+        if (options?.contextLines !== undefined) args.push(`--unified=${options.contextLines}`);
+        args.push(a, b);
+        return yield* git(args, dir);
+      });
+
+      const worktreeMatchesCommit = Effect.fn("Store.worktreeMatchesCommit")(function* (
+        worktreePath: string,
+        commit: string,
+      ) {
+        const tmpIndex = path.join(
+          os.tmpdir(),
+          `mend-tree-compare-${process.pid}-${crypto.randomUUID()}`,
+        );
+        const currentTree = yield* Effect.gen(function* () {
+          const env = { GIT_INDEX_FILE: tmpIndex };
+          yield* git(["add", "-A"], worktreePath, env);
+          return yield* git(["write-tree"], worktreePath, env);
+        }).pipe(Effect.ensuring(Effect.sync(() => fs.rmSync(tmpIndex, { force: true }))));
+        const expectedTree = yield* git(["rev-parse", `${commit}^{tree}`], worktreePath);
+        return currentTree === expectedTree;
       });
 
       /**
@@ -424,6 +571,20 @@ export class Store extends Context.Service<
           : [...tracked, ...additions];
       });
 
+      const diffFileFacts = Effect.fn("Store.diffFileFacts")(function* (
+        dir: string,
+        a: string,
+        b: string,
+        options?: { readonly ignoreWhitespace?: boolean },
+      ) {
+        const whitespace = options?.ignoreWhitespace === true ? ["--ignore-all-space"] : [];
+        const [names, counts] = yield* Effect.all([
+          git(["diff", "--name-status", "-z", "--find-renames", ...whitespace, a, b], dir),
+          git(["diff", "--numstat", "-z", "--find-renames", ...whitespace, a, b], dir),
+        ]);
+        return parseNameStatus(names, parseNumstat(counts));
+      });
+
       const headSha = Effect.fn("Store.headSha")(function* (dir: string) {
         const head = yield* git(["rev-parse", "HEAD"], dir);
         return sha(head);
@@ -493,7 +654,9 @@ export class Store extends Context.Service<
         checkpoint,
         diffRange,
         diffWorktree,
+        worktreeMatchesCommit,
         changedFiles,
+        diffFileFacts,
         headSha,
       };
     }),

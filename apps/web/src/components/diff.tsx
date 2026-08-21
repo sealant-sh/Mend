@@ -5,10 +5,10 @@ import {
   type SelectedLineRange,
 } from "@pierre/diffs";
 import { FileDiff } from "@pierre/diffs/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { CommentStateActions, EvidenceLines, SuggestionBlock } from "#/components/comment-state";
-import { postChangeComment, type ReviewCommentDto } from "#/lib/api";
+import { postSliceReviewComment, type ReviewCommentDto, type ReviewDiffFileDto } from "#/lib/api";
 import { queryClient } from "#/lib/queries";
 
 /**
@@ -40,6 +40,10 @@ interface CommentAnchor {
   readonly file: string;
   readonly line: number;
   readonly endLine: number | null;
+  readonly oldPath: string | null;
+  readonly newPath: string | null;
+  readonly side: "new";
+  readonly hunkContextHash: string;
 }
 
 /**
@@ -135,6 +139,8 @@ export function WorkbenchDiff({
   changeId,
   comments,
   stats,
+  reviewSliceId,
+  reviewFiles,
   focus,
   tourMarker = null,
   tourNav = null,
@@ -143,6 +149,8 @@ export function WorkbenchDiff({
   readonly changeId: string;
   readonly comments: ReadonlyArray<ReviewCommentDto>;
   readonly stats: ReadonlyArray<FileStat>;
+  readonly reviewSliceId: string;
+  readonly reviewFiles: ReadonlyArray<ReviewDiffFileDto>;
   /** Sidebar navigation: expand + scroll to this file (nonce re-triggers). */
   readonly focus?: { readonly path: string; readonly nonce: number } | null;
   /** The composed tour's active stop — renders its circle inline in the diff. */
@@ -158,6 +166,34 @@ export function WorkbenchDiff({
   } | null>(null);
   const files = useMemo(() => parsePatchFiles(diff).flatMap((patch) => patch.files), [diff]);
   const statOf = useMemo(() => new Map(stats.map((stat) => [stat.path, stat])), [stats]);
+  const reviewFileOf = useMemo(
+    () => new Map(reviewFiles.map((file) => [file.newPath ?? file.oldPath ?? "", file])),
+    [reviewFiles],
+  );
+  const anchorFor = useCallback(
+    (file: string, line: number, endLine: number | null): CommentAnchor | null => {
+      const reviewFile = reviewFileOf.get(file);
+      if (reviewFile === undefined) return null;
+      const finalLine = endLine ?? line;
+      const hunk = reviewFile.hunks.find(
+        (candidate) =>
+          candidate.newLines > 0 &&
+          line >= candidate.newStart &&
+          finalLine <= candidate.newStart + candidate.newLines - 1,
+      );
+      if (hunk === undefined) return null;
+      return {
+        file,
+        line,
+        endLine,
+        oldPath: reviewFile.oldPath,
+        newPath: reviewFile.newPath,
+        side: "new",
+        hunkContextHash: hunk.contextHash,
+      };
+    },
+    [reviewFileOf],
+  );
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sectionsRef = useRef(new Map<string, HTMLElement>());
   const dragRef = useRef<{
@@ -179,16 +215,14 @@ export function WorkbenchDiff({
       }
       const span = draggedLineSpan(origin.wrapper, origin.y, event.clientY);
       if (span === null) return;
+      const anchor = anchorFor(origin.file, span.start, span.end > span.start ? span.end : null);
+      if (anchor === null) return;
       setSelection({ file: origin.file, start: span.start, end: span.end });
-      setComposer({
-        file: origin.file,
-        line: span.start,
-        endLine: span.end > span.start ? span.end : null,
-      });
+      setComposer(anchor);
     };
     window.addEventListener("mouseup", onWindowMouseUp);
     return () => window.removeEventListener("mouseup", onWindowMouseUp);
-  }, []);
+  }, [anchorFor]);
   // NOTE on consistency: during a TEXT drag nothing re-renders (a mid-drag
   // React render destroys the browser's in-progress selection — learned the
   // hard way), so the drag paints natively; on release the span is computed
@@ -397,20 +431,20 @@ export function WorkbenchDiff({
                           range.start <= range.end
                             ? [range.start, range.end]
                             : [range.end, range.start];
+                        const anchor = anchorFor(file.name, start, end > start ? end : null);
+                        if (anchor === null) return;
                         setSelection({ file: file.name, start, end });
-                        setComposer({
-                          file: file.name,
-                          line: start,
-                          endLine: end > start ? end : null,
-                        });
+                        setComposer(anchor);
                       },
                       onLineNumberClick: (props) => {
+                        const anchor = anchorFor(file.name, props.lineNumber, null);
+                        if (anchor === null) return;
                         setSelection({
                           file: file.name,
                           start: props.lineNumber,
                           end: props.lineNumber,
                         });
-                        setComposer({ file: file.name, line: props.lineNumber, endLine: null });
+                        setComposer(anchor);
                       },
                     }}
                     renderAnnotation={(annotation) =>
@@ -421,6 +455,7 @@ export function WorkbenchDiff({
                       ) : (
                         <InlineComposer
                           changeId={changeId}
+                          reviewSliceId={reviewSliceId}
                           anchor={annotation.metadata.anchor}
                           onDone={() => {
                             setComposer(null);
@@ -521,10 +556,12 @@ function InlineComment({ comment }: { readonly comment: ReviewCommentDto }) {
 
 function InlineComposer({
   changeId,
+  reviewSliceId,
   anchor,
   onDone,
 }: {
   readonly changeId: string;
+  readonly reviewSliceId: string;
   readonly anchor: CommentAnchor;
   readonly onDone: () => void;
 }) {
@@ -534,12 +571,19 @@ function InlineComposer({
   const submit = () => {
     if (body.trim() === "") return;
     setPending(true);
-    void postChangeComment(changeId, {
-      file: anchor.file,
-      line: anchor.line,
-      endLine: anchor.endLine,
-      body: body.trim(),
-    })
+    void postSliceReviewComment(
+      changeId,
+      reviewSliceId,
+      {
+        oldPath: anchor.oldPath,
+        newPath: anchor.newPath,
+        side: anchor.side,
+        startLine: anchor.line,
+        endLine: anchor.endLine ?? anchor.line,
+        hunkContextHash: anchor.hunkContextHash,
+      },
+      body.trim(),
+    )
       .then(() => queryClient.invalidateQueries({ queryKey: ["change", changeId] }))
       .then(onDone)
       .finally(() => setPending(false));

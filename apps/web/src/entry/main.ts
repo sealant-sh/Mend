@@ -39,6 +39,7 @@ import {
   PushDevicesRepoLive,
   ReferencesRepoLive,
   ReviewCommentsRepoLive,
+  ReviewSlicesRepoLive,
   RunsRepoLive,
   SessionChangesRepoLive,
   SessionGitOpsRepoLive,
@@ -56,7 +57,7 @@ import {
   ChangeSuggester,
   ChangeSuggesterLive,
   ComposeTourJob,
-  InferenceError,
+  type InferenceError,
   CommentRouter,
   CompileBriefJob,
   FailureSummarizer,
@@ -80,16 +81,22 @@ import {
   startRunToolLayer,
 } from "@mend/jobs";
 import { SealantClientLiveFromEnv } from "@mend/sealant";
-import { ServiceHostLive, SessionEngine, SessionSocketHostLive } from "@mend/sessions";
 import {
-  AgentBridge,
+  FollowUpDeliveryLive,
+  FollowUpLauncherLive,
+  ServiceHostLive,
+  SessionEngine,
+  SessionSocketHostLive,
+} from "@mend/sessions";
+import {
+  type AgentBridge,
   AgentBridgeLive,
-  DotfilesStore,
+  type DotfilesStore,
   DotfilesStoreLive,
-  MendKeys,
+  type MendKeys,
   MendKeysConfigLive,
   MendKeysLive,
-  SecretCipher,
+  type SecretCipher,
   SecretCipherLive,
   Store,
   StoreConfig,
@@ -128,6 +135,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   InferenceCallsRepoLive,
   FollowUpsRepoLive,
   ReviewCommentsRepoLive,
+  ReviewSlicesRepoLive,
   SessionChangesRepoLive,
   PushDevicesRepoLive,
   ChangeToursRepoLive,
@@ -168,6 +176,8 @@ const SessionEngineLive = SessionEngine.layer.pipe(
   Layer.provide(SessionSocketHostLive),
   Layer.provide(DotfilesStoreLayer),
 );
+const FollowUpLauncherLayer = FollowUpLauncherLive.pipe(Layer.provide(SessionEngineLive));
+const FollowUpDeliveryLayer = FollowUpDeliveryLive.pipe(Layer.provide(FollowUpLauncherLayer));
 
 // ─── better-auth mounted under /api/auth ────────────────────────────────────
 const AuthRoutes = HttpRouter.use((router) =>
@@ -434,6 +444,8 @@ const MainLive = Layer.unwrap(
     return parts.pipe(
       // Shared by the API (enqueue on comment) and the workers (one instance).
       Layer.provide(JobRunner.pgBossLayer),
+      // Follow-up delivery owns persistence → process acceptance → correlation.
+      Layer.provide(FollowUpDeliveryLayer),
       // The session engine and store serve both the API handlers and the worker.
       Layer.provide(SessionEngineLive),
       Layer.provide(StoreLive),

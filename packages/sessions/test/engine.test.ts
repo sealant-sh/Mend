@@ -61,6 +61,7 @@ import {
 import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import {
   HarnessStateNotFoundError,
+  LegacyBenchReadOnlyError,
   ServiceHost,
   SessionEngine,
   SessionNotLiveError,
@@ -331,6 +332,7 @@ const sessionProcessesLayer = (world: World) => {
           status: input.status ?? "running",
           exitCode: null,
           sealantRunId: input.sealantRunId ?? null,
+          launchCorrelationId: input.launchCorrelationId ?? null,
           workspacePort: input.workspacePort ?? null,
           protocol: input.protocol ?? "tcp",
           hostPort: input.hostPort ?? null,
@@ -342,6 +344,12 @@ const sessionProcessesLayer = (world: World) => {
         return process;
       }),
     byId: (id) => Effect.succeed(world.processes.get(id) ?? null),
+    byLaunchCorrelation: (correlationId) =>
+      Effect.succeed(
+        [...world.processes.values()].find(
+          (process) => process.launchCorrelationId === correlationId,
+        ) ?? null,
+      ),
     listForSession: (sessionId) =>
       Effect.succeed(
         [...world.processes.values()].filter((process) => process.sessionId === sessionId),
@@ -359,6 +367,13 @@ const sessionProcessesLayer = (world: World) => {
         const process = world.processes.get(id);
         if (process !== undefined && process.exitedAt === null) {
           world.processes.set(id, new SessionProcess({ ...process, status, updatedAt: now() }));
+        }
+      }),
+    setLabel: (id, label) =>
+      Effect.sync(() => {
+        const process = world.processes.get(id);
+        if (process !== undefined && process.exitedAt === null) {
+          world.processes.set(id, new SessionProcess({ ...process, label, updatedAt: now() }));
         }
       }),
     setHostPort: (id, hostPort) =>
@@ -689,6 +704,8 @@ const checkpointsLayer = (world: World) =>
         world.checkpoints.push(checkpoint);
         return checkpoint;
       }),
+    byId: (id) =>
+      Effect.succeed(world.checkpoints.find((checkpoint) => checkpoint.id === id) ?? null),
     listForSession: (sessionId) =>
       Effect.succeed(world.checkpoints.filter((c) => c.sessionId === sessionId)),
     latestForSession: (sessionId) =>
@@ -836,6 +853,29 @@ describe("SessionEngine", () => {
     );
   });
 
+  it("keeps a legacy bench review-only", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "shell",
+            label: "bench",
+            ownerUserId: null,
+            base: null,
+          });
+
+          const error = yield* engine.launch(session.id, ["bash"]).pipe(Effect.flip);
+          expect(error).toBeInstanceOf(LegacyBenchReadOnlyError);
+          expect(created).toEqual([]);
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
   it("launches a shell session in the image's configured login shell", async () => {
     const created: CreateOptions[] = [];
     const spawned: ReadonlyArray<string>[] = [];
@@ -940,7 +980,7 @@ describe("SessionEngine", () => {
     );
   });
 
-  it("defers the workspace stop while a shell lease is live", async () => {
+  it("delivers the exact follow-up in a workspace retained by a shell lease", async () => {
     const created: CreateOptions[] = [];
     const stopped: string[] = [];
     await withEngine(
@@ -964,6 +1004,7 @@ describe("SessionEngine", () => {
             sealantWorkspaceId: SealantWorkspaceId.make("workspace-1"),
             sealantSessionId: "pty-2",
             sealantRunId: null,
+            launchCorrelationId: null,
             kind: "shell",
             label: "shell",
             argv: ["bash", "-i"],
@@ -990,8 +1031,37 @@ describe("SessionEngine", () => {
 
           expect(agentExited()).toBe(true);
           expect(stopped).toEqual([]);
-          const live = [...world.processes.values()].filter((process) => process.exitedAt === null);
-          expect(live.map((process) => process.kind)).toEqual(["shell"]);
+          const retained = [...world.processes.values()].filter(
+            (process) => process.exitedAt === null,
+          );
+          expect(retained.map((process) => process.kind)).toEqual(["shell"]);
+
+          const instruction =
+            "  Address exactly the selected Review comments.\nKeep trailing bytes.  ";
+          const resumed = yield* engine.launchFollowUp(
+            session.id,
+            instruction,
+            "follow-up:delivery-1",
+          );
+          expect(resumed.status).toBe("running");
+          expect(created).toHaveLength(1);
+          expect(stopped).toEqual([]);
+          const afterResume = [...world.processes.values()].filter(
+            (process) => process.exitedAt === null,
+          );
+          expect(afterResume.map((process) => process.kind).toSorted()).toEqual(["agent", "shell"]);
+          const deliveryProcess = afterResume.find(
+            (process) => process.launchCorrelationId === "follow-up:delivery-1",
+          );
+          const transportArgv = deliveryProcess?.argv ?? [];
+          expect(transportArgv.slice(0, 2)).toEqual(["sh", "-c"]);
+          expect(transportArgv[2]).toContain(
+            "exec codex --dangerously-bypass-approvals-and-sandbox",
+          );
+          expect(Buffer.from(transportArgv.slice(4).join(""), "base64").toString("utf8")).toBe(
+            instruction,
+          );
+          expect(deliveryProcess?.sealantRunId).not.toBeNull();
         }),
       { sealantLayer: sealantLaunchLayer(created, undefined, stopped) },
     );
@@ -1022,6 +1092,25 @@ describe("SessionEngine", () => {
           expect(stopped).toEqual(["workspace-1"]);
           const live = [...world.processes.values()].filter((process) => process.exitedAt === null);
           expect(live).toEqual([]);
+
+          const settledBeforeRetry = world.sessions.get(session.id);
+          const failure = yield* engine
+            .launchFollowUp(
+              session.id,
+              "This launch cannot restore missing native state.",
+              "follow-up:missing-state",
+            )
+            .pipe(Effect.flip);
+          expect(failure).toBeInstanceOf(HarnessStateNotFoundError);
+          const settledAfterRetry = world.sessions.get(session.id);
+          expect(settledAfterRetry?.status).toBe(settledBeforeRetry?.status);
+          expect(settledAfterRetry?.settledAt).toEqual(settledBeforeRetry?.settledAt);
+          expect(created).toHaveLength(1);
+          expect(
+            [...world.processes.values()].some(
+              (process) => process.launchCorrelationId === "follow-up:missing-state",
+            ),
+          ).toBe(false);
         }),
       { sealantLayer: sealantLaunchLayer(created, undefined, stopped) },
     );
@@ -1043,18 +1132,30 @@ describe("SessionEngine", () => {
           });
           yield* engine.launch(session.id, ["codex"]);
 
-          const shell = yield* engine.openShell(session.id);
-          expect(shell.kind).toBe("shell");
-          expect(shell.status).toBe("running");
-          expect(shell.sealantWorkspaceId).toBe("workspace-1");
-          const live = [...world.processes.values()].filter((p) => p.exitedAt === null);
-          expect(live.map((p) => p.kind).toSorted()).toEqual(["agent", "shell"]);
+          const first = yield* engine.openShell(session.id);
+          const second = yield* engine.openShell(session.id);
+          expect(first.kind).toBe("shell");
+          expect(first.label).toBe("shell 1");
+          expect(second.label).toBe("shell 2");
+          expect(first.sealantWorkspaceId).toBe("workspace-1");
+
+          const renamed = yield* engine.renameShell(first.id, "tests");
+          expect(renamed.label).toBe("tests");
+          const duplicate = yield* engine.renameShell(second.id, "tests").pipe(Effect.flip);
+          expect(duplicate.message).toContain("already exists");
+
+          const stopped = yield* engine.stopShell(first.id);
+          expect(stopped.status).toBe("stopped");
+          const stoppedAgain = yield* engine.stopShell(first.id);
+          expect(stoppedAgain.status).toBe("stopped");
+          const live = [...world.processes.values()].filter((process) => process.exitedAt === null);
+          expect(live.map((process) => process.kind).toSorted()).toEqual(["agent", "shell"]);
         }),
       { sealantLayer: sealantLaunchLayer(created) },
     );
   });
 
-  it("openShell refuses a settled session", async () => {
+  it("openShell refuses a session that has no workspace", async () => {
     await withEngine((world, tmp) =>
       Effect.gen(function* () {
         const project = yield* setup(tmp, world);
@@ -1113,9 +1214,15 @@ describe("SessionEngine", () => {
           expect(agentExited()).toBe(true);
           expect(stopped).toEqual([]);
 
-          // Ending the Service ends the last lease; the workspace goes.
+          // A completed coding-agent run may open another supporting process
+          // while the Service retains the reachable workspace.
+          const shell = yield* engine.openShell(session.id);
+          expect(shell.label).toBe("shell 1");
+
           const ended = yield* engine.stopService(service.id);
           expect(ended.status).toBe("stopped");
+          expect(stopped).toEqual([]);
+          yield* engine.stopShell(shell.id);
           expect(stopped).toEqual(["workspace-1"]);
         }),
       { sealantLayer: sealantLaunchLayer(created, undefined, stopped) },
@@ -1299,7 +1406,7 @@ describe("SessionEngine", () => {
           for (let i = 0; i < 200 && !agentExited(); i++) {
             yield* Effect.sleep(Duration.millis(10));
           }
-          yield* engine.resumeSession(session.id, "shell");
+          yield* engine.resumeSession(session.id, "shell", true);
           expect(created).toHaveLength(2);
           expect(created[1]?.env).toEqual({ APP_MODE: "prod", NEW_VAR: "1" });
           expect(created[1]?.secretEnv).toEqual({ API_KEY: "new" });

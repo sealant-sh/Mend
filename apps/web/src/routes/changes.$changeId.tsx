@@ -9,19 +9,21 @@ import { FollowUpBanner } from "#/components/follow-up";
 import { AppShell } from "#/components/shell";
 import {
   composeTour,
-  createFollowUp,
-  postChangeComment,
+  deliverFollowUp,
+  postSliceReviewComment,
   readChange,
   suggestChange,
   type ChangePassDto,
   type ChangeTourDto,
   type ReviewCommentDto,
+  type ReviewDiffDto,
   type SessionChangeDto,
 } from "#/lib/api";
 import {
   changeCommentsQuery,
-  changeDiffQuery,
   changePassesQuery,
+  openReviewQuery,
+  reviewDiffQuery,
   changeTourQuery,
   pendingFollowUpQuery,
   queryClient,
@@ -29,17 +31,29 @@ import {
 } from "#/lib/queries";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 
+const reviewOpenKey = (changeId: string): string => {
+  const storageKey = `mend.review.${changeId}.open-key`;
+  const current = sessionStorage.getItem(storageKey);
+  if (current !== null) return current;
+  const created = crypto.randomUUID();
+  sessionStorage.setItem(storageKey, created);
+  return created;
+};
+
 export const Route = createFileRoute("/changes/$changeId")({
   ssr: false,
   loader: async ({ params }) => {
+    const key = reviewOpenKey(params.changeId);
+    const opened = await queryClient.ensureQueryData(openReviewQuery(params.changeId, key));
     await Promise.all([
-      queryClient.ensureQueryData(changeDiffQuery(params.changeId)),
+      queryClient.ensureQueryData(reviewDiffQuery(params.changeId, opened.slice.id)),
       queryClient.ensureQueryData(changeCommentsQuery(params.changeId)),
       // The tour is composed at settle (automation cascade) — load it with
       // the page so the description heads the review instead of arriving late.
       queryClient.ensureQueryData(changeTourQuery(params.changeId)),
       queryClient.ensureQueryData(changePassesQuery(params.changeId)),
     ]);
+    return { sliceId: opened.slice.id };
   },
   component: ChangePage,
 });
@@ -53,7 +67,14 @@ export const Route = createFileRoute("/changes/$changeId")({
  */
 function ChangePage() {
   const { changeId } = Route.useParams();
-  const { change, diff, files } = useSuspenseQuery(changeDiffQuery(changeId)).data;
+  const { sliceId } = Route.useLoaderData();
+  const review = useSuspenseQuery(reviewDiffQuery(changeId, sliceId)).data;
+  const { change, patch: diff } = review;
+  const files = review.files.map((file) => ({
+    path: file.newPath ?? file.oldPath ?? "unknown path",
+    additions: file.additions,
+    deletions: file.deletions,
+  }));
   const comments = useSuspenseQuery(changeCommentsQuery(changeId)).data;
   const followUp = useSuspenseQuery(pendingFollowUpQuery(change.sessionId)).data;
   const sessionDetail = useQuery(sessionDetailQuery(change.sessionId)).data;
@@ -175,7 +196,8 @@ function ChangePage() {
           </div>
         </div>
         <p className="mt-2 font-mono text-xs text-faint">
-          worktree vs {change.baseSha.slice(0, 12)} · {files.length} file
+          {review.checkpointA.sha.slice(0, 12)} → {review.checkpointB.sha.slice(0, 12)} ·{" "}
+          {files.length} file
           {files.length === 1 ? "" : "s"} · +{additions} −{deletions} · {openUnsent.length} open
           comment{openUnsent.length === 1 ? "" : "s"} ·{" "}
           <Link
@@ -186,6 +208,11 @@ function ChangePage() {
             session
           </Link>
         </p>
+        {review.worktreeChangedSinceSnapshot && (
+          <p className="mt-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 font-mono text-xs text-warning">
+            Worktree changed since this review snapshot. This patch remains pinned.
+          </p>
+        )}
         <PassOutcomes passes={passes} />
         <FollowUpBanner sessionId={change.sessionId} followUp={followUp} />
 
@@ -235,7 +262,7 @@ function ChangePage() {
                 ))
               )}
             </div>
-            <ChangeComments changeId={changeId} comments={comments} />
+            <ChangeComments changeId={changeId} sliceId={sliceId} comments={comments} />
           </section>
 
           <div className="min-w-0">
@@ -244,6 +271,8 @@ function ChangePage() {
               changeId={changeId}
               comments={comments}
               stats={files}
+              reviewSliceId={sliceId}
+              reviewFiles={review.files}
               focus={focusFile}
               tourMarker={tourMarker}
               tourNav={tourNav}
@@ -255,6 +284,7 @@ function ChangePage() {
       {sendOpen && (
         <SendReviewDialog
           change={change}
+          review={review}
           comments={openUnsent}
           onClose={() => setSendOpen(false)}
         />
@@ -585,9 +615,11 @@ function ReadChangeButton({
 
 function ChangeComments({
   changeId,
+  sliceId,
   comments,
 }: {
   readonly changeId: string;
+  readonly sliceId: string;
   readonly comments: ReadonlyArray<ReviewCommentDto>;
 }) {
   const [body, setBody] = useState("");
@@ -597,7 +629,19 @@ function ChangeComments({
   const submit = () => {
     if (body.trim() === "") return;
     setPending(true);
-    void postChangeComment(changeId, { file: null, line: null, body: body.trim() })
+    void postSliceReviewComment(
+      changeId,
+      sliceId,
+      {
+        oldPath: null,
+        newPath: null,
+        side: null,
+        startLine: null,
+        endLine: null,
+        hunkContextHash: null,
+      },
+      body.trim(),
+    )
       .then(() => {
         setBody("");
         return queryClient.invalidateQueries({ queryKey: ["change", changeId] });
@@ -681,27 +725,70 @@ Address each point using your own judgment about how. Check your work with the r
 /** The plan's rule (§7.3): the user inspects and edits the instruction before sending. */
 function SendReviewDialog({
   change,
+  review,
   comments,
   onClose,
 }: {
   readonly change: SessionChangeDto;
+  readonly review: ReviewDiffDto;
   readonly comments: ReadonlyArray<ReviewCommentDto>;
   readonly onClose: () => void;
 }) {
+  const [selected, setSelected] = useState<ReadonlySet<string>>(
+    () => new Set(comments.map((comment) => comment.id)),
+  );
   const [instruction, setInstruction] = useState(() => assembleInstruction(change, comments));
+  const [idempotencyKey, setIdempotencyKey] = useState(
+    () => `web-follow-up:${change.id}:${crypto.randomUUID()}`,
+  );
   const [pending, setPending] = useState(false);
-  const [sent, setSent] = useState(false);
+  const [result, setResult] = useState<
+    "delivering" | "delivered" | "pending" | "delivery_failed" | null
+  >(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const resetDeliveryKey = () => {
+    setIdempotencyKey(`web-follow-up:${change.id}:${crypto.randomUUID()}`);
+    setResult(null);
+    setError(null);
+  };
+
+  const select = (commentId: string, checked: boolean) => {
+    const next = new Set(selected);
+    if (checked) next.add(commentId);
+    else next.delete(commentId);
+    setSelected(next);
+    resetDeliveryKey();
+    setInstruction(
+      assembleInstruction(
+        change,
+        comments.filter((comment) => next.has(comment.id)),
+      ),
+    );
+  };
 
   const send = () => {
     setPending(true);
-    void createFollowUp(change.sessionId, instruction)
-      .then(() => {
-        setSent(true);
+    setError(null);
+    void deliverFollowUp(change.sessionId, {
+      reviewSliceId: review.slice.id,
+      checkpointAId: review.checkpointA.id,
+      checkpointBId: review.checkpointB.id,
+      diffDigest: review.slice.diffDigest,
+      commentIds: comments
+        .filter((comment) => selected.has(comment.id))
+        .map((comment) => comment.id),
+      instruction,
+      idempotencyKey,
+    })
+      .then((followUp) => {
+        setResult(followUp.status === "superseded" ? "delivery_failed" : followUp.status);
         return Promise.all([
           queryClient.invalidateQueries({ queryKey: ["change", change.id] }),
           queryClient.invalidateQueries({ queryKey: ["session", change.sessionId] }),
         ]);
       })
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
       .finally(() => setPending(false));
   };
 
@@ -715,17 +802,15 @@ function SendReviewDialog({
         className="mt-16 w-full max-w-[640px] rounded-2xl bg-background p-6 shadow-lg"
         onClick={(event) => event.stopPropagation()}
       >
-        {sent ? (
+        {result === "delivered" || result === "pending" ? (
           <>
             <p className="font-sans text-base font-medium text-foreground">
-              Follow-up saved for the session
+              {result === "delivered" ? "Follow-up delivered" : "Follow-up saved pending"}
             </p>
             <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-              Deliver it with the <span className="font-medium">Deliver &amp; relaunch</span> button
-              on this page or the session page (or{" "}
-              <span className="font-mono text-xs text-ink-2">mend continue</span> from a terminal).
-              The comments in the bundle are marked sent; they stay open until the work addresses
-              them.
+              {result === "delivered"
+                ? "Mend persisted the new run and marked only the selected comments sent."
+                : "The session became active before launch. The same bundle remains pending and can be retried after it settles."}
             </p>
             <div className="mt-4 flex justify-end">
               <button
@@ -743,20 +828,52 @@ function SendReviewDialog({
               Send review to the session
             </p>
             <p className="mt-1 font-mono text-[11px] text-faint">
-              assembled from {comments.length} comment{comments.length === 1 ? "" : "s"} · resumes{" "}
-              {change.branch}
+              {selected.size} of {comments.length} comments selected · resumes {change.branch}
             </p>
+            <div className="mt-4 max-h-40 space-y-2 overflow-auto border-y border-rule-faint py-2">
+              {comments.map((comment) => (
+                <label key={comment.id} className="flex cursor-pointer items-start gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={selected.has(comment.id)}
+                    className="mt-0.5 accent-[var(--sw-accent)]"
+                    onChange={(event) => select(comment.id, event.target.checked)}
+                  />
+                  <span className="leading-relaxed text-ink-2">
+                    <span className="font-mono text-[10.5px] text-label">
+                      {comment.file ?? "whole change"}
+                      {comment.line === null ? "" : `:${comment.line}`}
+                    </span>{" "}
+                    · {comment.body}
+                  </span>
+                </label>
+              ))}
+            </div>
             <p className="mt-4 text-xs font-medium text-label">Instruction — edit before sending</p>
             <textarea
               value={instruction}
-              onChange={(event) => setInstruction(event.target.value)}
-              rows={14}
+              onChange={(event) => {
+                resetDeliveryKey();
+                setInstruction(event.target.value);
+              }}
+              rows={12}
               className="mt-2 w-full resize-y rounded-xl border border-input bg-card px-4 py-3 font-sans text-[13.5px] leading-relaxed text-ink-2"
             />
             <p className="mt-2 font-mono text-[10.5px] text-faint">
-              assembled mechanically from your comments; edit freely — what you send is verbatim
-              what the session receives
+              persisted before launch; what you send is verbatim what the session receives
             </p>
+            {result === "delivering" && (
+              <p className="mt-2 font-mono text-xs text-warning">
+                delivery accepted for processing · check the same bundle to reconcile membership
+              </p>
+            )}
+            {result === "delivery_failed" && (
+              <p className="mt-2 font-mono text-xs text-warning">
+                delivery failed before membership finalized · retry uses the same key unless you
+                edit
+              </p>
+            )}
+            {error !== null && <p className="mt-2 font-mono text-xs text-warning">{error}</p>}
             <div className="mt-4 flex justify-end gap-3">
               <button
                 type="button"
@@ -767,11 +884,17 @@ function SendReviewDialog({
               </button>
               <button
                 type="button"
-                disabled={pending || instruction.trim() === ""}
+                disabled={pending || selected.size === 0 || instruction.trim() === ""}
                 onClick={send}
                 className="rounded-xl bg-primary px-4 py-2 font-sans text-sm font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-opacity disabled:opacity-50"
               >
-                {pending ? "Sending…" : "Send to session"}
+                {pending
+                  ? "Delivering…"
+                  : result === "delivering"
+                    ? "Check delivery"
+                    : result === "delivery_failed"
+                      ? "Retry delivery"
+                      : "Deliver to session"}
               </button>
             </div>
           </>

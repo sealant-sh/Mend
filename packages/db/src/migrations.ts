@@ -783,6 +783,68 @@ const autoName = Effect.gen(function* () {
       ADD COLUMN auto_name text NOT NULL DEFAULT 'inherit'`;
 });
 
+/**
+ * Immutable Review comparisons and slice-bound comment anchors. Existing comments retain a null
+ * anchor and render as legacy live-diff comments; no checkpoint pair is invented for them.
+ */
+const immutableReviewSlices = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS review_slices (
+      id text PRIMARY KEY,
+      change_id text NOT NULL REFERENCES session_changes (id) ON DELETE CASCADE,
+      checkpoint_a_id text NOT NULL REFERENCES checkpoints (id) ON DELETE CASCADE,
+      checkpoint_b_id text NOT NULL REFERENCES checkpoints (id) ON DELETE CASCADE,
+      diff_digest text NOT NULL,
+      idempotency_key text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS review_slices_change_key_idx
+      ON review_slices (change_id, idempotency_key)`;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS review_slices_change_created_idx
+      ON review_slices (change_id, created_at)`;
+  yield* sql`ALTER TABLE review_comments ADD COLUMN IF NOT EXISTS anchor jsonb`;
+});
+
+/** Durable, idempotent Review delivery with process-level launch correlation. */
+const recoverableFollowUpDelivery = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE session_processes
+      ADD COLUMN IF NOT EXISTS launch_correlation_id text`;
+  yield* sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS session_processes_launch_correlation_idx
+      ON session_processes (launch_correlation_id)
+      WHERE launch_correlation_id IS NOT NULL`;
+  yield* sql`
+    ALTER TABLE follow_ups
+      ADD COLUMN IF NOT EXISTS review_slice_id text REFERENCES review_slices(id) ON DELETE SET NULL,
+      ADD COLUMN IF NOT EXISTS checkpoint_a_id text REFERENCES checkpoints(id) ON DELETE SET NULL,
+      ADD COLUMN IF NOT EXISTS checkpoint_b_id text REFERENCES checkpoints(id) ON DELETE SET NULL,
+      ADD COLUMN IF NOT EXISTS diff_digest text,
+      ADD COLUMN IF NOT EXISTS comment_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
+      ADD COLUMN IF NOT EXISTS idempotency_key text,
+      ADD COLUMN IF NOT EXISTS delivery_process_id text REFERENCES session_processes(id) ON DELETE SET NULL,
+      ADD COLUMN IF NOT EXISTS delivery_sealant_run_id text,
+      ADD COLUMN IF NOT EXISTS delivery_error text,
+      ADD COLUMN IF NOT EXISTS delivery_started_at timestamptz`;
+  yield* sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS follow_ups_session_key_idx
+      ON follow_ups (session_id, idempotency_key)
+      WHERE idempotency_key IS NOT NULL`;
+});
+
+/** A live launch renews this lease; expiry is evidence of server loss, not merely elapsed time. */
+const followUpDeliveryLeases = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE follow_ups
+      ADD COLUMN IF NOT EXISTS delivery_attempt_id text,
+      ADD COLUMN IF NOT EXISTS delivery_lease_expires_at timestamptz`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -813,4 +875,7 @@ export const migrations = {
   "0026_project_secrets": projectSecretsMigration,
   "0027_hot_sessions": hotSessions,
   "0028_auto_name": autoName,
+  "0029_immutable_review_slices": immutableReviewSlices,
+  "0030_recoverable_follow_up_delivery": recoverableFollowUpDelivery,
+  "0031_follow_up_delivery_leases": followUpDeliveryLeases,
 };

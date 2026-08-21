@@ -98,6 +98,10 @@ export const relations = defineRelations(schema, (r) => ({
     }),
     tour: r.one.changeTours({ from: r.sessionChanges.id, to: r.changeTours.changeId }),
     passes: r.many.changePasses({ from: r.sessionChanges.id, to: r.changePasses.changeId }),
+    reviewSlices: r.many.reviewSlices({
+      from: r.sessionChanges.id,
+      to: r.reviewSlices.changeId,
+    }),
   },
   followUps: {
     session: r.one.agentSessions({ from: r.followUps.sessionId, to: r.agentSessions.id }),
@@ -119,6 +123,17 @@ export const relations = defineRelations(schema, (r) => ({
   },
   changePasses: {
     change: r.one.sessionChanges({ from: r.changePasses.changeId, to: r.sessionChanges.id }),
+  },
+  reviewSlices: {
+    change: r.one.sessionChanges({ from: r.reviewSlices.changeId, to: r.sessionChanges.id }),
+    checkpointA: r.one.checkpoints({
+      from: r.reviewSlices.checkpointAId,
+      to: r.checkpoints.id,
+    }),
+    checkpointB: r.one.checkpoints({
+      from: r.reviewSlices.checkpointBId,
+      to: r.checkpoints.id,
+    }),
   },
   checkpoints: {
     session: r.one.agentSessions({ from: r.checkpoints.sessionId, to: r.agentSessions.id }),

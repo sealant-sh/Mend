@@ -5,6 +5,8 @@ import {
   listSessionRecipes,
   changeComments,
   changeDiff,
+  openReview,
+  reviewDiff,
   changePasses,
   changeStats,
   changeTour,
@@ -143,6 +145,19 @@ export const changeDiffQuery = (id: string) =>
   queryOptions({
     queryKey: ["change", id, "diff"],
     queryFn: () => changeDiff(id),
+  });
+
+export const openReviewQuery = (id: string, idempotencyKey: string) =>
+  queryOptions({
+    queryKey: ["change", id, "review-open", idempotencyKey],
+    queryFn: () => openReview(id, idempotencyKey),
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+
+export const reviewDiffQuery = (id: string, sliceId: string) =>
+  queryOptions({
+    queryKey: ["change", id, "review", sliceId, "diff"],
+    queryFn: () => reviewDiff(id, sliceId),
   });
 
 export const changeCommentsQuery = (id: string) =>
