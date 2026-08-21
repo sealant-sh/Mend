@@ -1,8 +1,8 @@
+import { useContextMenu } from "@mend/ui/context-menu";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
-import { useContextMenu } from "#/components/context-menu";
 import { GitKeyCard } from "#/components/git-key-card";
 import { AppShell } from "#/components/shell";
 import { adoptProject, initGitKey, type GitAuthModeDto, type GitKeyDto } from "#/lib/api";

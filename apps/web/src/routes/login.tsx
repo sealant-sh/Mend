@@ -1,3 +1,6 @@
+import { Button } from "@mend/ui/components/ui/button";
+import { Input } from "@mend/ui/components/ui/input";
+import { Label } from "@mend/ui/components/ui/label";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
@@ -81,24 +84,22 @@ function LoginPage() {
                 {error}
               </p>
             )}
-            <button
-              type="submit"
-              disabled={pending}
-              className="inline-flex min-h-10 w-full items-center justify-center rounded-xl bg-primary px-4 font-sans text-sm font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-[transform,background-color] duration-200 hover:-translate-y-0.5 hover:bg-[var(--primary-hover)] disabled:pointer-events-none disabled:opacity-60"
-            >
+            <Button type="submit" size="lg" disabled={pending} className="w-full">
               {pending ? "One moment…" : mode === "sign-in" ? "Sign in" : "Create account"}
-            </button>
+            </Button>
           </form>
-          <button
+          <Button
             type="button"
-            className="mt-5 font-sans text-[13px] text-muted-foreground transition-colors duration-200 hover:text-foreground"
+            variant="ghost"
+            size="sm"
+            className="mt-5"
             onClick={() => {
               setMode(mode === "sign-in" ? "sign-up" : "sign-in");
               setError(null);
             }}
           >
             {mode === "sign-in" ? "New instance? Create an account" : "Have an account? Sign in"}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -120,17 +121,21 @@ function Field({
   readonly autoComplete: string;
   readonly required?: boolean;
 }) {
+  const id = `login-${label.toLowerCase()}`;
   return (
-    <label className="block">
-      <span className="mb-1.5 block font-sans text-xs font-medium text-label">{label}</span>
-      <input
-        className="w-full rounded-lg border border-input bg-background px-3 py-2 font-sans text-sm outline-none transition-colors duration-150 focus:border-[var(--sw-accent)]"
+    <div>
+      <Label htmlFor={id} className="mb-1.5 block">
+        {label}
+      </Label>
+      <Input
+        id={id}
+        className="h-10 bg-background"
         type={type}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         autoComplete={autoComplete}
         {...(required === true ? { required: true } : {})}
       />
-    </label>
+    </div>
   );
 }

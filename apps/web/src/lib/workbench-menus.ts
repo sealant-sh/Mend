@@ -1,6 +1,6 @@
+import type { ContextMenuEntry, ContextMenuSpec } from "@mend/ui/context-menu";
 import type { UseNavigateResult } from "@tanstack/react-router";
 
-import type { ContextMenuEntry, ContextMenuSpec } from "#/components/context-menu";
 import {
   checkpointSession,
   createSession,
