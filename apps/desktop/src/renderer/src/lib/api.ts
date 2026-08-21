@@ -246,6 +246,9 @@ export type SessionProcessStatus =
 export interface SessionProcessDto {
   readonly id: string;
   readonly sessionId: string;
+  readonly serviceId: string | null;
+  readonly attemptOrdinal: number | null;
+  readonly launchCorrelationId: string | null;
   readonly sealantWorkspaceId: string;
   readonly sealantSessionId: string | null;
   readonly sealantRunId: string | null;
@@ -269,13 +272,82 @@ export const LIVE_PROCESS: ReadonlySet<SessionProcessStatus> = new Set<SessionPr
   "unreachable",
 ]);
 
-interface ProcessLogPageDto {
+export interface ProcessLogPageDto {
+  readonly processId: string;
+  readonly sealantSessionId: string;
+  readonly sealantRunId: string | null;
   readonly requestedFrom: string;
+  readonly firstSequence: string | null;
+  readonly lastSequence: string | null;
   readonly nextFrom: string;
+  readonly status: "exited" | "failed" | "running" | "starting";
   readonly chunks: ReadonlyArray<{
     readonly sequence: string;
     readonly dataBase64: string;
   }>;
+  readonly telemetryLoss: "unknown";
+  readonly telemetryNote: string;
+}
+
+export interface ServiceRecipeDto {
+  readonly name: string;
+  readonly command: string | null;
+  readonly port: number;
+  readonly protocol: "tcp" | "udp";
+  readonly browserScheme: "http" | "https" | null;
+  readonly shadowedBy: "file" | "project" | null;
+  readonly source: "file" | "project";
+}
+
+export interface ServiceEndpointDto {
+  readonly address: string;
+  readonly authority: string;
+  readonly hostPort: number;
+  readonly transport: "tcp" | "udp";
+  readonly scope: "loopback" | "private";
+  readonly browserUrl: string | null;
+  readonly mendAuthentication: "none";
+}
+
+export interface ServiceViewDto {
+  readonly service: {
+    readonly id: string;
+    readonly sessionId: string;
+    readonly name: string;
+    readonly declarationSource: string;
+    readonly workspacePort: number;
+    readonly transport: "tcp" | "udp";
+    readonly browserScheme: "http" | "https" | null;
+    readonly currentAttemptId: string | null;
+    readonly currentForwardId: string | null;
+    readonly attemptHistoryComplete: boolean;
+  };
+  readonly attempts: ReadonlyArray<SessionProcessDto>;
+  readonly currentForward: {
+    readonly id: string;
+    readonly hostPort: number | null;
+    readonly state: "binding" | "bound" | "closed" | "failed";
+    readonly error: string | null;
+  } | null;
+  readonly previousForward: {
+    readonly id: string;
+    readonly hostPort: number | null;
+    readonly state: "binding" | "bound" | "closed" | "failed";
+    readonly error: string | null;
+  } | null;
+  readonly latestObservation: {
+    readonly forwardId: string;
+    readonly state: "reachable" | "unreachable";
+    readonly source: "probe" | "connection" | "udp-reply" | "legacy";
+    readonly error: string | null;
+    readonly lastObservedAt: string;
+  } | null;
+  readonly workspaceExpiresAt: string | null;
+  readonly workspaceTtlRenewedAt: string | null;
+  readonly workspaceTtlRenewalFailedAt: string | null;
+  readonly workspaceTtlRenewalError: string | null;
+  readonly endpoints: ReadonlyArray<ServiceEndpointDto>;
+  readonly previousEndpoints: ReadonlyArray<ServiceEndpointDto>;
 }
 
 const decodeProcessLogChunks = (chunks: ReadonlyArray<{ readonly dataBase64: string }>): string => {
@@ -352,12 +424,19 @@ export const sessionDetail = (id: string) => get<SessionDetailDto>(`/api/session
 export const listSessionProcesses = (id: string) =>
   get<ReadonlyArray<SessionProcessDto>>(`/api/sessions/${id}/processes`);
 
+export const processLogPage = (
+  id: string,
+  options: { readonly from: string; readonly limit: string },
+) => {
+  const query = new URLSearchParams(options);
+  return get<ProcessLogPageDto>(`/api/processes/${id}/logs?${query}`);
+};
+
 export const processOutput = async (id: string): Promise<{ readonly text: string }> => {
   const chunks: Array<{ readonly dataBase64: string }> = [];
   let from = "0";
   for (let pageNumber = 0; pageNumber < 128; pageNumber += 1) {
-    const query = new URLSearchParams({ from, limit: "1000" });
-    const page = await get<ProcessLogPageDto>(`/api/processes/${id}/logs?${query}`);
+    const page = await processLogPage(id, { from, limit: "1000" });
     chunks.push(...page.chunks);
     if (page.chunks.length === 0 || page.nextFrom === from) {
       return { text: decodeProcessLogChunks(chunks) };
@@ -382,10 +461,45 @@ export const reviewDiff = (
 export const changeComments = (changeId: string) =>
   get<ReadonlyArray<ReviewCommentDto>>(`/api/changes/${changeId}/comments`);
 
+export const listServices = () => get<ReadonlyArray<ServiceViewDto>>("/api/services?all=1");
+
+export const listSessionRecipes = (sessionId: string) =>
+  get<ReadonlyArray<ServiceRecipeDto>>(`/api/sessions/${sessionId}/recipes`);
+
 // ─── writes ─────────────────────────────────────────────────────────────────
 
 export const createSession = (projectId: string, harness: string, label: string | null) =>
   post<SessionDto>(`/api/projects/${projectId}/sessions`, { harness, label, base: null });
+
+export const runServiceRecipe = (sessionId: string, name: string) =>
+  post<ServiceViewDto>(`/api/sessions/${sessionId}/services/recipe`, { name });
+
+export const runService = (
+  sessionId: string,
+  input: {
+    readonly argv: ReadonlyArray<string>;
+    readonly port: number;
+    readonly name: string | null;
+    readonly protocol: "tcp" | "udp";
+    readonly browserScheme: "http" | "https" | null;
+  },
+) => post<ServiceViewDto>(`/api/sessions/${sessionId}/services/run`, input);
+
+export const addService = (
+  sessionId: string,
+  input: {
+    readonly port: number;
+    readonly name: string | null;
+    readonly protocol: "tcp" | "udp";
+    readonly browserScheme: "http" | "https" | null;
+  },
+) => post<ServiceViewDto>(`/api/sessions/${sessionId}/services`, input);
+
+export const restartService = (serviceId: string) =>
+  post<ServiceViewDto>(`/api/services/${serviceId}/restart`, {});
+
+export const stopService = (serviceId: string) =>
+  post<ServiceViewDto>(`/api/services/${serviceId}/stop`, {});
 
 /** Launch runs `argv` supervised in the session's fresh workspace. */
 export const launchSession = (id: string, argv: ReadonlyArray<string>) =>
@@ -440,3 +554,13 @@ export const renameShell = (id: string, label: string) =>
   post<SessionProcessDto>(`/api/processes/${id}/label`, { label });
 
 export const stopSession = (id: string) => post<SessionDto>(`/api/sessions/${id}/stop`, {});
+
+/** The outcome of a destructive removal — what went, what would not delete. */
+export interface RemovalReportDto {
+  readonly removed: boolean;
+  readonly leftover: string | null;
+}
+
+/** Settled sessions only — a live one answers 409. Takes the worktree with it. */
+export const removeSession = (id: string) =>
+  request<RemovalReportDto>("DELETE", `/api/sessions/${id}`);

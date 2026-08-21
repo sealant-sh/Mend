@@ -1,6 +1,6 @@
+import { Button } from "@mend/ui/components/ui/button";
 import { useState } from "react";
 
-import { Button } from "#/components/button";
 import { createSession, launchArgv, launchSession, type SessionDto } from "#/lib/api";
 import { useAppSettings } from "#/lib/app-settings";
 import { queryClient } from "#/lib/queries";
@@ -95,7 +95,7 @@ export function Launcher({
           </p>
         )}
         <div className="flex justify-end border-t border-rule px-3 py-2">
-          <Button variant="ghost" disabled={pending !== null} onClick={onClose}>
+          <Button type="button" variant="ghost" disabled={pending !== null} onClick={onClose}>
             Cancel
           </Button>
         </div>

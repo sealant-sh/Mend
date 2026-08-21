@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { processOutput } from "#/lib/api";
+import { processLogPage, processOutput, stopService } from "#/lib/api";
 
 import type { ApiRequest, MendBridge } from "../../../shared/bridge";
 
@@ -76,5 +76,49 @@ describe("desktop process logs", () => {
       "/api/processes/process-1/logs?from=2&limit=1000",
       "/api/processes/process-1/logs?from=3&limit=1000",
     ]);
+  });
+
+  it("preserves decimal log sequences above Number precision", async () => {
+    const nextFrom = "900719925474099312345";
+    Object.defineProperty(window, "mend", {
+      configurable: true,
+      value: bridgeWith(async () => ({
+        status: 200,
+        ok: true,
+        body: {
+          processId: "process-1",
+          sealantSessionId: "pty-1",
+          sealantRunId: "run-1",
+          requestedFrom: "900719925474099312344",
+          firstSequence: "900719925474099312344",
+          lastSequence: "900719925474099312344",
+          nextFrom,
+          status: "running",
+          chunks: [],
+          telemetryLoss: "unknown",
+          telemetryNote: "range loss unknown",
+        },
+      })),
+    });
+
+    const page = await processLogPage("process-1", {
+      from: "900719925474099312344",
+      limit: "1000",
+    });
+    expect(page.nextFrom).toBe(nextFrom);
+  });
+
+  it("uses Service stop for an adopted Service's Remove forward action", async () => {
+    const requests: ApiRequest[] = [];
+    Object.defineProperty(window, "mend", {
+      configurable: true,
+      value: bridgeWith(async (input) => {
+        requests.push(input);
+        return { status: 200, ok: true, body: {} };
+      }),
+    });
+
+    await stopService("service-1");
+    expect(requests).toEqual([{ method: "POST", path: "/api/services/service-1/stop", body: {} }]);
   });
 });

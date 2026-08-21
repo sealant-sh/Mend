@@ -1,3 +1,7 @@
+import { Button, buttonVariants } from "@mend/ui/components/ui/button";
+import { Input } from "@mend/ui/components/ui/input";
+import { ToggleGroup, ToggleGroupItem } from "@mend/ui/components/ui/toggle-group";
+import { cn } from "@mend/ui/lib/utils";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState, type ReactNode } from "react";
 
@@ -51,6 +55,10 @@ function RowShell({
   );
 }
 
+/**
+ * A pick-one control composed from the ui ToggleGroup; re-clicking the active
+ * option is ignored so a setting always has a value.
+ */
 function Segmented<T extends string>({
   value,
   options,
@@ -61,28 +69,26 @@ function Segmented<T extends string>({
   readonly onChange: (next: T) => void;
 }) {
   return (
-    <div className="flex rounded-xl border border-rule bg-background p-0.5">
+    <ToggleGroup
+      value={[value]}
+      onValueChange={(next: string[]) => {
+        const picked = next[0];
+        if (picked !== undefined && options.includes(picked as T)) onChange(picked as T);
+      }}
+      className="flex rounded-xl border border-rule bg-background p-0.5"
+    >
       {options.map((option) => (
-        <button
+        <ToggleGroupItem
           key={option}
-          type="button"
-          onClick={() => onChange(option)}
-          aria-pressed={option === value}
-          className={`rounded-[10px] px-3 py-1 font-sans text-[13px] ${
-            option === value
-              ? "bg-panel font-medium text-foreground shadow-xs"
-              : "text-muted-foreground hover:text-foreground"
-          }`}
+          value={option}
+          className="rounded-[10px] px-3 py-1 text-[13px] font-normal text-muted-foreground hover:bg-transparent hover:text-foreground aria-pressed:bg-panel aria-pressed:font-medium aria-pressed:text-foreground aria-pressed:shadow-xs data-[state=on]:bg-panel"
         >
           {option}
-        </button>
+        </ToggleGroupItem>
       ))}
-    </div>
+    </ToggleGroup>
   );
 }
-
-const input =
-  "rounded-xl border border-[var(--sw-rule)] bg-background px-3 py-1.5 font-mono text-[13px] text-foreground outline-none placeholder:text-faint focus:border-[var(--sw-accent)]";
 
 function TerminalSection() {
   const font = useTerminalFont();
@@ -102,8 +108,8 @@ function TerminalSection() {
             : "measures as proportional — the terminal will fall back to its default stack"
         }
       >
-        <input
-          className={`${input} w-64 ${monospace ? "" : "border-[var(--sw-amber)]"}`}
+        <Input
+          className={`w-64 font-mono text-[13px] ${monospace ? "" : "border-[var(--sw-amber)]"}`}
           value={familyDraft}
           onChange={(event) => setFamilyDraft(event.target.value)}
           onBlur={commitFamily}
@@ -116,33 +122,33 @@ function TerminalSection() {
         {!committed && <span className="font-sans text-[12px] text-label">enter to apply</span>}
       </RowShell>
       <RowShell label="Font size" hint="6–32px · Ctrl+Shift+= / − / 0 from anywhere">
-        <button
+        <Button
           type="button"
+          variant="outline"
+          size="icon-sm"
           aria-label="Smaller"
           onClick={terminalFont.smaller}
-          className="grid size-7 place-items-center rounded-lg border border-rule bg-background font-mono text-[14px] text-muted-foreground hover:text-foreground"
+          className="font-mono"
         >
           −
-        </button>
+        </Button>
         <span className="w-10 text-center font-mono text-[13.5px] text-foreground">
           {font.size}px
         </span>
-        <button
+        <Button
           type="button"
+          variant="outline"
+          size="icon-sm"
           aria-label="Bigger"
           onClick={terminalFont.bigger}
-          className="grid size-7 place-items-center rounded-lg border border-rule bg-background font-mono text-[14px] text-muted-foreground hover:text-foreground"
+          className="font-mono"
         >
           +
-        </button>
+        </Button>
         {font.size !== DEFAULT_SIZE && (
-          <button
-            type="button"
-            onClick={terminalFont.reset}
-            className="ml-1 font-sans text-[12px] text-label hover:text-foreground"
-          >
+          <Button type="button" variant="ghost" size="sm" onClick={terminalFont.reset}>
             reset
-          </button>
+          </Button>
         )}
       </RowShell>
       <div className="border-t border-rule bg-term px-4 py-3">
@@ -224,25 +230,22 @@ function Settings() {
                   : `${connection.url} · credential shared with the mend CLI at ${connection.configPath}`
               }
             >
-              <Link
-                to="/connect"
-                className="rounded-xl border border-rule bg-background px-3 py-1.5 font-sans text-[13px] text-foreground hover:bg-[var(--sw-sunken)]"
-              >
+              <Link to="/connect" className={cn(buttonVariants({ variant: "outline" }))}>
                 Manage
               </Link>
               {connection?.signedIn === true && (
-                <button
+                <Button
                   type="button"
+                  variant="destructive"
                   onClick={() => {
                     void window.mend.connection.signOut().then(() => {
                       queryClient.clear();
                       return null;
                     });
                   }}
-                  className="font-sans text-[13px] text-muted-foreground hover:text-danger"
                 >
                   Sign out
-                </button>
+                </Button>
               )}
             </RowShell>
           </Section>

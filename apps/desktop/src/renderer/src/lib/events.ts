@@ -33,6 +33,7 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEvent) => void) =>
             }
             break;
           case "session-process":
+            void queryClient.invalidateQueries({ queryKey: ["services"] });
             if (event.sessionId !== undefined) {
               void queryClient.invalidateQueries({
                 queryKey: ["session", event.sessionId, "processes"],

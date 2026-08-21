@@ -11,7 +11,14 @@ import { queryClient } from "#/lib/queries";
 
 export type Tab =
   | { readonly kind: "session"; readonly sessionId: string }
-  | { readonly kind: "shell"; readonly sessionId: string; readonly processId: string };
+  | { readonly kind: "shell"; readonly sessionId: string; readonly processId: string }
+  /** Read-only durable output of one process; outlives the process itself. */
+  | {
+      readonly kind: "logs";
+      readonly sessionId: string;
+      readonly processId: string;
+      readonly name: string;
+    };
 
 export interface ProjectTabs {
   readonly tabs: ReadonlyArray<Tab>;
@@ -37,6 +44,14 @@ const parseTab = (value: unknown): Tab | null => {
   if (value.kind === "session") return { kind: "session", sessionId: value.sessionId };
   if (value.kind === "shell" && typeof value.processId === "string") {
     return { kind: "shell", sessionId: value.sessionId, processId: value.processId };
+  }
+  if (value.kind === "logs" && typeof value.processId === "string") {
+    return {
+      kind: "logs",
+      sessionId: value.sessionId,
+      processId: value.processId,
+      name: typeof value.name === "string" ? value.name : "logs",
+    };
   }
   // Legacy bench tabs used a null process id for the hidden session's primary PTY.
   return null;
@@ -108,7 +123,11 @@ const tabsOf = (projectId: string): ProjectTabs =>
   state.byProject[projectId] ?? { tabs: [], focused: 0 };
 
 const tabKey = (tab: Tab): string =>
-  tab.kind === "session" ? `s:${tab.sessionId}` : `p:${tab.processId}`;
+  tab.kind === "session"
+    ? `s:${tab.sessionId}`
+    : tab.kind === "shell"
+      ? `p:${tab.processId}`
+      : `l:${tab.processId}`;
 
 const withTabs = (projectId: string, next: ProjectTabs): WorkbenchState => ({
   ...state,
@@ -152,6 +171,11 @@ export const workbench = {
     addOrRaise(projectId, { kind: "shell", sessionId, processId });
   },
 
+  /** Open or raise the read-only durable logs of one process. */
+  openLogs: (projectId: string, sessionId: string, processId: string, name: string) => {
+    addOrRaise(projectId, { kind: "logs", sessionId, processId, name });
+  },
+
   /** Detach one view without changing its server-owned process. */
   detachTab: (projectId: string, index: number) => {
     const current = tabsOf(projectId);
@@ -179,7 +203,9 @@ export const workbench = {
     const current = tabsOf(projectId);
     let tabs = current.tabs.filter((tab) => {
       if (!knownSessions.has(tab.sessionId)) return false;
-      return tab.kind === "session" || liveById.has(tab.processId);
+      // Logs read the durable record, so the tab outlives its process.
+      if (tab.kind === "session" || tab.kind === "logs") return true;
+      return liveById.has(tab.processId);
     });
     if (!hydratedProjects.has(projectId)) {
       hydratedProjects.add(projectId);

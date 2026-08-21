@@ -1,3 +1,5 @@
+import { Button } from "@mend/ui/components/ui/button";
+
 import type { SessionDto, SessionProcessDto } from "#/lib/api";
 import { sessionTitle } from "#/lib/words";
 import type { Tab } from "#/lib/workbench";
@@ -15,6 +17,7 @@ export function TabBar({
   onFocus,
   onClose,
   onNewShell,
+  onTabMenu,
 }: {
   readonly tabs: ReadonlyArray<Tab>;
   readonly focused: number;
@@ -24,9 +27,11 @@ export function TabBar({
   readonly onFocus: (index: number) => void;
   readonly onClose: (index: number) => void;
   readonly onNewShell: () => void;
+  readonly onTabMenu: (index: number, event: React.MouseEvent) => void;
 }) {
   const title = (tab: Tab): string => {
     if (tab.kind === "shell") return processes.get(tab.processId)?.label ?? "shell";
+    if (tab.kind === "logs") return `${tab.name} · logs`;
     const session = sessions.get(tab.sessionId);
     return session === undefined ? "session" : sessionTitle(session);
   };
@@ -36,7 +41,14 @@ export function TabBar({
         const active = index === focused;
         return (
           <div
-            key={tab.kind === "session" ? `s:${tab.sessionId}` : `p:${tab.processId}`}
+            key={
+              tab.kind === "session"
+                ? `s:${tab.sessionId}`
+                : tab.kind === "shell"
+                  ? `p:${tab.processId}`
+                  : `l:${tab.processId}`
+            }
+            onContextMenu={(event) => onTabMenu(index, event)}
             className={`group/tab flex h-7 max-w-[220px] min-w-0 items-center gap-1.5 rounded-md pr-1 pl-2.5 ${
               active
                 ? "bg-panel text-foreground shadow-xs ring-1 ring-[var(--sw-soft-rule)]"
@@ -51,27 +63,37 @@ export function TabBar({
               <span className="font-mono text-[11.5px] text-faint">{index + 1}</span>
               <span className="truncate font-sans text-[13px]">{title(tab)}</span>
             </button>
-            <button
+            <Button
               type="button"
+              variant="ghost"
+              size="icon-xs"
               aria-label={`Close tab ${index + 1}`}
-              title={tab.kind === "shell" ? "Stop shell" : "Detach session tab"}
+              title={
+                tab.kind === "shell"
+                  ? "Stop shell"
+                  : tab.kind === "logs"
+                    ? "Close logs"
+                    : "Detach session tab"
+              }
               onClick={() => onClose(index)}
-              className="grid size-4 shrink-0 place-items-center rounded font-mono text-[12px] leading-none text-label opacity-0 transition-opacity group-hover/tab:opacity-100 hover:bg-[var(--sw-sunken)] hover:text-foreground focus-visible:opacity-100"
+              className="size-4 shrink-0 rounded font-mono text-[12px] text-label opacity-0 transition-opacity group-hover/tab:opacity-100 focus-visible:opacity-100"
             >
               ×
-            </button>
+            </Button>
           </div>
         );
       })}
-      <button
+      <Button
         type="button"
+        variant="ghost"
+        size="icon-sm"
         onClick={onNewShell}
         disabled={opening}
         title="New shell in focused session (Ctrl+Shift+T)"
-        className="grid h-7 w-7 shrink-0 place-items-center rounded-md font-mono text-[15px] leading-none text-label hover:bg-[var(--sw-sunken)] hover:text-foreground disabled:opacity-50"
+        className="shrink-0 rounded-md font-mono text-[15px] text-label"
       >
         {opening ? "…" : "+"}
-      </button>
+      </Button>
     </div>
   );
 }

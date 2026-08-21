@@ -17,6 +17,7 @@ export interface KeyActions {
   readonly prevTab: () => void;
   readonly jumpInbox: (index: number) => void;
   readonly togglePalette: () => void;
+  readonly toggleServices: () => void;
   readonly fontBigger: () => void;
   readonly fontSmaller: () => void;
   readonly fontReset: () => void;
@@ -99,7 +100,9 @@ export const useKeybindings = (actions: KeyActions): void => {
                     ? bound.closeTab
                     : key === "p"
                       ? bound.togglePalette
-                      : null;
+                      : key === "s"
+                        ? bound.toggleServices
+                        : null;
       if (handler === null) return;
       event.preventDefault();
       event.stopPropagation();

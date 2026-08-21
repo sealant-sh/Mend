@@ -44,6 +44,7 @@ export function TtyTerminal({
   from = "0",
   dim = false,
   focus = false,
+  focusRequest = 0,
   onState,
 }: {
   readonly target: TtyTarget;
@@ -52,6 +53,8 @@ export function TtyTerminal({
   /** Settled sessions read at 55% — the bytes are history, not a live shell. */
   readonly dim?: boolean;
   readonly focus?: boolean;
+  /** Increment to return keyboard focus without remounting or resetting the terminal. */
+  readonly focusRequest?: number;
   readonly onState?: (state: WireState) => void;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -68,6 +71,10 @@ export function TtyTerminal({
   useEffect(() => {
     void surfaceRef.current?.setFont(font);
   }, [font]);
+
+  useEffect(() => {
+    if (focusRequest > 0) surfaceRef.current?.focus();
+  }, [focusRequest]);
 
   useEffect(() => {
     const host = hostRef.current;
