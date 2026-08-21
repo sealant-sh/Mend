@@ -17,6 +17,7 @@ import {
   workspaceGlobs,
 } from "./service-init.ts";
 import {
+  cwdFacts,
   gitTopLevel,
   HARNESS_COMMANDS,
   LIVE_STATUSES,
@@ -329,7 +330,7 @@ const findProject = async (config: CliConfig, explicit: string | null, adoptCwd 
     return named;
   }
   const cwd = process.cwd();
-  const project = matchProjectByCwd(projects, cwd);
+  const project = matchProjectByCwd(projects, cwdFacts(cwd));
   if (project !== undefined) return project;
   if (!adoptCwd) {
     return fail(
@@ -374,6 +375,11 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
   }
 
   const project = await findProject(config, parsed.project, true);
+  // Say which project the cwd resolved to before anything is created — a
+  // wrong guess should be visible here, not discovered in the tree later.
+  say(
+    `${green("✓")} project ${project.name} ${dim(`· ${project.defaultBranch}${parsed.project === null ? " · from cwd" : ""}`)}`,
+  );
   const session = await api<SessionDto>(config, "POST", `/projects/${project.id}/sessions`, {
     harness,
     label: null,
@@ -622,7 +628,7 @@ const resolveLiveSession = async (
     return exact;
   }
   const projects = await api<ReadonlyArray<ProjectDto>>(config, "GET", "/projects");
-  const project = matchProjectByCwd(projects, process.cwd());
+  const project = matchProjectByCwd(projects, cwdFacts(process.cwd()));
   const candidates =
     project === undefined ? sessions : sessions.filter((s) => s.projectId === project.id);
   const only = candidates[0];
@@ -2139,13 +2145,17 @@ const projectsCommand = async (config: CliConfig) => {
   }
   const nameWidth = Math.max(...projects.map((p) => p.name.length));
   const branchWidth = Math.max(...projects.map((p) => p.defaultBranch.length));
+  // The cwd's project is marked — the same resolution mend claude|shell use.
+  const here = matchProjectByCwd(projects, cwdFacts(process.cwd()));
   for (const project of projects) {
     const live = liveByProject.get(project.id) ?? 0;
     const liveLabel = live > 0 ? green(`${live} live`) : dim("—");
+    const marker = project.id === here?.id ? cobalt("▸ ") : "  ";
     say(
-      `${project.name.padEnd(nameWidth)}  ${dim(project.defaultBranch.padEnd(branchWidth))}  ${liveLabel}  ${dim(project.storePath)}`,
+      `${marker}${project.name.padEnd(nameWidth)}  ${dim(project.defaultBranch.padEnd(branchWidth))}  ${liveLabel}  ${dim(project.storePath)}`,
     );
   }
+  if (here !== undefined) say(dim(`  ▸ ${here.name} is the cwd's project`));
 };
 
 interface SessionRow {

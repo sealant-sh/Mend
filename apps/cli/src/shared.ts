@@ -122,14 +122,75 @@ export interface CwdProjectLike {
   readonly originUrl: string | null;
 }
 
-/** The cwd's adopted project: adopted-from-here first, then a basename match. */
+/**
+ * A git remote URL reduced to `host/owner/name` so https, ssh, scp-style, and
+ * `.git` spellings of the same repository compare equal. Null for anything
+ * that is not a URL-ish remote (a local path stays a path).
+ */
+export const normalizeRemoteUrl = (raw: string | null): string | null => {
+  if (raw === null) return null;
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+  const scp = /^(?:[^@\s/]+@)?([^:/\s]+):(?!\/)(.+)$/.exec(trimmed);
+  const url = /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/]+@)?([^/\s:]+)(?::\d+)?\/(.+)$/i.exec(trimmed);
+  const parts = url ?? scp;
+  if (parts === null) return null;
+  const [, host, rest] = parts;
+  if (host === undefined || rest === undefined) return null;
+  const repoPath = rest.replace(/\/+$/, "").replace(/\.git$/i, "");
+  return `${host.toLowerCase()}/${repoPath.toLowerCase()}`;
+};
+
+/** What the cwd says about itself — the inputs the project matcher needs. */
+export interface CwdFacts {
+  readonly cwd: string;
+  /** `git rev-parse --show-toplevel`, or null outside a repository. */
+  readonly repoRoot: string | null;
+  /** `git remote get-url origin`, or null when there is none. */
+  readonly originUrl: string | null;
+}
+
+/**
+ * The cwd's adopted project, in order: a project adopted from this very
+ * path; a project whose origin is the same remote as the cwd repo's origin
+ * (normalized, so a GitHub-adopted project matches a clone of it anywhere);
+ * a project named like the repository root (through the same normalization
+ * adopt uses, so a checkout called "Mend" matches the project "mend").
+ */
 export const matchProjectByCwd = <P extends CwdProjectLike>(
   projects: ReadonlyArray<P>,
-  cwd: string,
+  facts: CwdFacts,
 ): P | undefined => {
-  const byOrigin = projects.find((p) => p.originUrl !== null && cwd.startsWith(p.originUrl));
-  const byName = projects.find((p) => p.name === path.basename(cwd));
-  return byOrigin ?? byName;
+  const root = facts.repoRoot ?? facts.cwd;
+  const byPath = projects.find(
+    (p) =>
+      p.originUrl !== null &&
+      !p.originUrl.includes("://") &&
+      (root === p.originUrl ||
+        facts.cwd === p.originUrl ||
+        facts.cwd.startsWith(`${p.originUrl}/`)),
+  );
+  if (byPath !== undefined) return byPath;
+  const remote = normalizeRemoteUrl(facts.originUrl);
+  const byRemote =
+    remote === null ? undefined : projects.find((p) => normalizeRemoteUrl(p.originUrl) === remote);
+  if (byRemote !== undefined) return byRemote;
+  const name = normalizeProjectName(path.basename(root));
+  return projects.find((p) => p.name === name);
+};
+
+/** Read the cwd's facts from git once; callers pass them to the matcher. */
+export const cwdFacts = (cwd: string): CwdFacts => ({
+  cwd,
+  repoRoot: gitTopLevel(cwd),
+  originUrl: gitOriginUrl(cwd),
+});
+
+/** The cwd repo's origin remote, or null when there is no repo or no origin. */
+export const gitOriginUrl = (cwd: string): string | null => {
+  const result = spawnSync("git", ["remote", "get-url", "origin"], { cwd, encoding: "utf8" });
+  const out = result.status === 0 ? result.stdout.trim() : "";
+  return out === "" ? null : out;
 };
 
 /** The repository root of `cwd`, or null when it is not inside a git repo. */
