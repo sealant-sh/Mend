@@ -21,7 +21,7 @@
     "no-underscore-dangle": [
       "error",
       {
-        "allow": ["_splat", "_values"]
+        "allow": ["_splat", "_tag", "_values"]
       }
     ]
   },

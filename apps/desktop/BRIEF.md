@@ -78,9 +78,15 @@ renamed.
 
 ### The launcher (`+` on a project / palette action)
 
-Pick a harness — claude, codex, opencode, or a custom command — and go: `createSession` +
-`launchSession`, terminal opens as a new session tab, session appears in the tree and inbox. This is
-`mend claude` as a button; the CLI and the app produce identical sessions.
+The same composer the web app starts sessions with: type the session's first message, pick harness
+(claude, codex, opencode), model, and settings (thinking, codex speed, permissions, base ref) from
+the pill row, and go. Choices are sticky per project + harness (`mend-composer-prefs`); the Settings
+default harness is what a project starts on until it picks its own. `createSession` +
+`launchSessionStart` — the server composes harness argv from the structured start and seeds
+auto-naming from the prompt — then the terminal opens as a new session tab and the session appears
+in the tree and inbox. An empty prompt is `mend claude` as a button; the CLI and the app produce
+identical sessions. The same composer fills the terminal pane inline whenever the focused project
+has no tabs open, so an empty cockpit starts with a prompt, not a hint.
 
 ### The terminal
 
@@ -150,8 +156,8 @@ nothing writes to the server.
   live preview strip on the terminal surface color.
 - Appearance: theme — system / light / dark (same `mend-theme` key and `.dark` contract as the web
   app; the terminal stays dark either way).
-- Workbench: default harness, listed first in the launcher. Supporting shells follow the focused
-  session workspace's configured login shell.
+- Workbench: default harness, what a project's composer starts with. Supporting shells follow the
+  focused session workspace's configured login shell.
 - Connection: signed-in fact + the shared credential path, Manage → /connect, sign out.
 - Keyboard: the keymap, read-only for now.
 

@@ -206,7 +206,10 @@ function Settings() {
           </Section>
 
           <Section title="Workbench">
-            <RowShell label="Default harness" hint="listed first in the launcher">
+            <RowShell
+              label="Default harness"
+              hint="what a project's composer starts with until it picks its own"
+            >
               <Segmented
                 value={settings.defaultHarness}
                 options={HARNESSES}

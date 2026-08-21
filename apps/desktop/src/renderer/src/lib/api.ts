@@ -379,12 +379,24 @@ export class ApiError extends Error {
 export const isUnauthorized = (error: unknown): boolean =>
   error instanceof ApiError && error.status === 401;
 
+/** Tagged errors the contract returns without a sentence of their own. */
+const TAGGED: Readonly<Record<string, string>> = {
+  SessionActive:
+    "the session is still active — it has a live process (a supporting shell, a Service) or an unsettled status; stop those first",
+  NotFound: "not found",
+};
+
 const describe = (body: unknown): string | null => {
   if (typeof body === "string" && body !== "") return body;
   if (typeof body === "object" && body !== null) {
-    const record = body as { readonly message?: unknown; readonly error?: unknown };
+    const record = body as {
+      readonly message?: unknown;
+      readonly error?: unknown;
+      readonly _tag?: unknown;
+    };
     if (typeof record.message === "string") return record.message;
     if (typeof record.error === "string") return record.error;
+    if (typeof record._tag === "string") return TAGGED[record._tag] ?? record._tag;
   }
   return null;
 };
@@ -468,8 +480,12 @@ export const listSessionRecipes = (sessionId: string) =>
 
 // ─── writes ─────────────────────────────────────────────────────────────────
 
-export const createSession = (projectId: string, harness: string, label: string | null) =>
-  post<SessionDto>(`/api/projects/${projectId}/sessions`, { harness, label, base: null });
+export const createSession = (
+  projectId: string,
+  harness: string,
+  label: string | null,
+  base: string | null = null,
+) => post<SessionDto>(`/api/projects/${projectId}/sessions`, { harness, label, base });
 
 export const runServiceRecipe = (sessionId: string, name: string) =>
   post<ServiceViewDto>(`/api/sessions/${sessionId}/services/recipe`, { name });
@@ -505,17 +521,18 @@ export const stopService = (serviceId: string) =>
 export const launchSession = (id: string, argv: ReadonlyArray<string>) =>
   post<SessionDto>(`/api/sessions/${id}/launch`, { argv });
 
-/** The opening argv per harness — the same table the CLI uses. */
-export const launchArgv = (harness: string): ReadonlyArray<string> =>
-  harness === "codex"
-    ? ["codex"]
-    : harness === "claude"
-      ? ["claude"]
-      : harness === "opencode"
-        ? ["opencode"]
-        : harness === "shell"
-          ? ["bash", "-l"]
-          : [harness];
+/** A composed start — the server turns this into the harness's own argv. */
+export interface LaunchStartDto {
+  readonly prompt?: string;
+  readonly model?: string;
+  readonly effort?: string;
+  readonly permissionMode?: string;
+  readonly speed?: string;
+}
+
+/** Launch with a structured start; the typed prompt opens the harness and seeds auto-naming. */
+export const launchSessionStart = (id: string, start: LaunchStartDto) =>
+  post<SessionDto>(`/api/sessions/${id}/launch`, start);
 
 export const checkpointSession = (id: string, trigger: "review-open" | "user-mark") =>
   post<CheckpointDto>(`/api/sessions/${id}/checkpoints`, { trigger });
