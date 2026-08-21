@@ -986,6 +986,8 @@ export interface ServiceRecipeDto {
   readonly command: string | null;
   readonly port: number;
   readonly protocol: "tcp" | "udp";
+  readonly browserScheme: "http" | "https" | null;
+  readonly shadowedBy: "file" | "project" | null;
   /** "file" = the repo's mend.toml (read-only here); "project" = declared on this machine. */
   readonly source: "file" | "project";
 }
@@ -1001,6 +1003,7 @@ export const addProjectRecipe = async (
     readonly command: string | null;
     readonly port: number;
     readonly protocol: "tcp" | "udp";
+    readonly browserScheme: "http" | "https" | null;
   },
 ): Promise<ServiceRecipeDto> => {
   const response = await fetch(`/api/projects/${projectId}/service-recipes`, {
@@ -1068,11 +1071,28 @@ export interface ServiceObservationDto {
   readonly lastObservedAt: string;
 }
 
+export interface ServiceEndpointDto {
+  readonly address: string;
+  readonly authority: string;
+  readonly hostPort: number;
+  readonly transport: "tcp" | "udp";
+  readonly scope: "loopback" | "private";
+  readonly browserUrl: string | null;
+  readonly mendAuthentication: "none";
+}
+
 export interface ServiceViewDto {
   readonly service: StableServiceDto;
   readonly attempts: ReadonlyArray<SessionProcessDto>;
   readonly currentForward: ServiceForwardDto | null;
+  readonly previousForward: ServiceForwardDto | null;
   readonly latestObservation: ServiceObservationDto | null;
+  readonly workspaceExpiresAt: string | null;
+  readonly workspaceTtlRenewedAt: string | null;
+  readonly workspaceTtlRenewalFailedAt: string | null;
+  readonly workspaceTtlRenewalError: string | null;
+  readonly endpoints: ReadonlyArray<ServiceEndpointDto>;
+  readonly previousEndpoints: ReadonlyArray<ServiceEndpointDto>;
 }
 
 export const listServices = (all = false) =>
@@ -1088,12 +1108,18 @@ export const runService = (
     port: number;
     name: string | null;
     protocol?: "tcp" | "udp";
+    browserScheme?: "http" | "https" | null;
   },
 ) => post<ServiceViewDto>(`/api/sessions/${sessionId}/services/run`, input);
 
 export const addService = (
   sessionId: string,
-  input: { port: number; name: string | null; protocol?: "tcp" | "udp" },
+  input: {
+    port: number;
+    name: string | null;
+    protocol?: "tcp" | "udp";
+    browserScheme?: "http" | "https" | null;
+  },
 ) => post<ServiceViewDto>(`/api/sessions/${sessionId}/services`, input);
 
 export const restartService = (id: string) =>
@@ -1101,19 +1127,15 @@ export const restartService = (id: string) =>
 
 export const stopService = (id: string) => post<ServiceViewDto>(`/api/services/${id}/stop`, {});
 
-/** Temporary browser projection; Step 9 makes the declared scheme authoritative. */
-export const serviceUrl = (view: ServiceViewDto) =>
-  view.currentForward?.hostPort === null ||
-  view.currentForward?.hostPort === undefined ||
-  view.service.transport === "udp"
-    ? null
-    : `${view.service.browserScheme ?? "http"}://${window.location.hostname}:${view.currentForward.hostPort}`;
+const preferredEndpoint = (view: ServiceViewDto): ServiceEndpointDto | null =>
+  view.endpoints.find((endpoint) => endpoint.scope === "private") ?? view.endpoints[0] ?? null;
 
-/** What a client would connect to — the copyable fact, any protocol. */
-export const serviceEndpoint = (view: ServiceViewDto) =>
-  view.currentForward?.hostPort === null || view.currentForward?.hostPort === undefined
-    ? null
-    : `${window.location.hostname}:${view.currentForward.hostPort}`;
+/** Browser behavior is declared by the Service and resolved by the server. */
+export const serviceUrl = (view: ServiceViewDto) =>
+  view.endpoints.find((endpoint) => endpoint.browserUrl !== null)?.browserUrl ?? null;
+
+/** What a client would connect to, exactly as the server bound it. */
+export const serviceEndpoint = (view: ServiceViewDto) => preferredEndpoint(view)?.authority ?? null;
 
 export const changeComments = (id: string) =>
   request<ReadonlyArray<ReviewCommentDto>>(`/api/changes/${id}/comments`);

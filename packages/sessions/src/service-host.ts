@@ -1,6 +1,7 @@
 import * as dgram from "node:dgram";
 import { once } from "node:events";
 import * as net from "node:net";
+import * as os from "node:os";
 
 import { ServiceForwardsRepo, ServiceObservationsRepo } from "@mend/db";
 import type { SealantWorkspaceId, ServiceForwardId, ServiceId } from "@mend/domain";
@@ -43,6 +44,11 @@ export class ServiceBindError extends Schema.TaggedErrorClass<ServiceBindError>(
   },
 ) {}
 
+class ServiceHostPortInUse extends Schema.TaggedErrorClass<ServiceHostPortInUse>()(
+  "ServiceHostPortInUse",
+  { port: Schema.Int },
+) {}
+
 export interface ServiceStartInput {
   readonly serviceId: ServiceId;
   readonly forwardId: ServiceForwardId;
@@ -50,6 +56,8 @@ export interface ServiceStartInput {
   readonly workspacePort: number;
   /** Declared transport; UDP binds a datagram socket and relays flows. */
   readonly protocol: "tcp" | "udp";
+  /** Effective operator policy snapshot; validated again so stale interfaces fail closed. */
+  readonly bindAddresses: ReadonlyArray<string>;
   /** Reconciliation passes the recorded port so restarts keep URLs stable. */
   readonly preferredHostPort?: number;
 }
@@ -62,6 +70,8 @@ export interface ServiceHostBinding {
 export class ServiceHost extends Context.Service<
   ServiceHost,
   {
+    /** Resolve and validate the operator-selected policy before persisting a Service. */
+    readonly bindAddresses: () => Effect.Effect<ReadonlyArray<string>, ServiceBindError>;
     /** Bind the listener(s) and start pumping; resolves with the exact host binding. */
     readonly start: (
       input: ServiceStartInput,
@@ -76,11 +86,96 @@ export class ServiceHost extends Context.Service<
   }
 >()("@mend/sessions/ServiceHost") {}
 
-const bindHosts = (): ReadonlyArray<string> =>
-  (process.env["MEND_SERVICE_HOSTS"] ?? "127.0.0.1")
-    .split(",")
-    .map((host) => host.trim())
-    .filter((host) => host !== "");
+export type ServiceBindPolicyResult =
+  | { readonly ok: true; readonly addresses: ReadonlyArray<string> }
+  | { readonly ok: false; readonly message: string };
+
+const addressWithoutScope = (address: string): string => address.split("%")[0] ?? address;
+const normalizedAddress = (address: string): string => addressWithoutScope(address).toLowerCase();
+
+const isLoopbackAddress = (address: string): boolean => {
+  const normalized = normalizedAddress(address);
+  if (normalized === "::1") return true;
+  if (net.isIP(normalized) !== 4) return false;
+  return Number(normalized.split(".")[0]) === 127;
+};
+
+const isPrivateAddress = (address: string): boolean => {
+  const normalized = normalizedAddress(address);
+  const family = net.isIP(normalized);
+  if (family === 4) {
+    const parts = normalized.split(".").map(Number);
+    const first = parts[0] ?? -1;
+    const second = parts[1] ?? -1;
+    return (
+      first === 10 ||
+      (first === 172 && second >= 16 && second <= 31) ||
+      (first === 192 && second === 168) ||
+      (first === 100 && second >= 64 && second <= 127)
+    );
+  }
+  if (family !== 6) return false;
+  const first = Number.parseInt(normalized.split(":")[0] ?? "", 16);
+  return (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80;
+};
+
+const localInterfaceAddresses = (): ReadonlySet<string> =>
+  new Set(
+    Object.values(os.networkInterfaces())
+      .flatMap((entries) => entries ?? [])
+      .map((entry) => normalizedAddress(entry.address)),
+  );
+
+/** Validate the complete list before any socket opens. One unsafe or stale address rejects all. */
+export const validateServiceBindAddresses = (
+  requested: ReadonlyArray<string>,
+  assigned: ReadonlySet<string> = localInterfaceAddresses(),
+): ServiceBindPolicyResult => {
+  if (requested.length === 0) {
+    return { ok: false, message: "Service bind policy contains no addresses." };
+  }
+  const seen = new Set<string>();
+  const addresses: string[] = [];
+  for (const raw of requested) {
+    const address = raw.trim();
+    const normalized = normalizedAddress(address);
+    if (address === "" || net.isIP(addressWithoutScope(address)) === 0) {
+      return { ok: false, message: `Service bind address "${raw}" is not a literal IP address.` };
+    }
+    if (normalized === "0.0.0.0" || normalized === "::") {
+      return { ok: false, message: `Wildcard Service bind address "${address}" is not allowed.` };
+    }
+    if (!isLoopbackAddress(address) && !isPrivateAddress(address)) {
+      return { ok: false, message: `Public Service bind address "${address}" is not allowed.` };
+    }
+    if (!isLoopbackAddress(address) && !assigned.has(normalized)) {
+      return {
+        ok: false,
+        message: `Service bind address "${address}" is not assigned to this machine.`,
+      };
+    }
+    if (seen.has(normalized)) {
+      return { ok: false, message: `Service bind address "${address}" is duplicated.` };
+    }
+    seen.add(normalized);
+    addresses.push(address);
+  }
+  return { ok: true, addresses };
+};
+
+const validatedBindAddresses = (
+  requested: ReadonlyArray<string>,
+): Effect.Effect<ReadonlyArray<string>, ServiceBindError> => {
+  const result = validateServiceBindAddresses(requested);
+  return result.ok
+    ? Effect.succeed(result.addresses)
+    : Effect.fail(new ServiceBindError({ message: result.message }));
+};
+
+const configuredBindAddresses = (): Effect.Effect<ReadonlyArray<string>, ServiceBindError> =>
+  validatedBindAddresses(
+    (process.env["MEND_SERVICE_HOSTS"] ?? "127.0.0.1").split(",").map((address) => address.trim()),
+  );
 
 const portRange = (): { readonly min: number; readonly max: number } => {
   const min = Number(process.env["MEND_SERVICE_PORT_MIN"] ?? "43100");
@@ -99,6 +194,27 @@ const listenOnce = (host: string, port: number): Promise<net.Server> =>
       resolve(server);
     });
   });
+
+const errorCode = (cause: unknown): string | null =>
+  typeof cause === "object" && cause !== null && "code" in cause && typeof cause.code === "string"
+    ? cause.code
+    : null;
+
+const errorMessage = (cause: unknown): string =>
+  cause instanceof Error ? cause.message : String(cause);
+
+const closeServer = (server: net.Server): Promise<void> =>
+  new Promise((resolve) => server.close(() => resolve()));
+
+const closeDatagram = (socket: dgram.Socket): Promise<void> =>
+  new Promise((resolve) => socket.close(() => resolve()));
+
+const serverAddress = (server: net.Server): string | null => {
+  const address = server.address();
+  return address === null || typeof address === "string" ? null : address.address;
+};
+
+const datagramAddress = (socket: dgram.Socket): string => socket.address().address;
 
 /** Copy bytes both ways between an accepted socket and a forward pipe until either side ends. */
 const pump = (socket: net.Socket, forward: WorkspaceForward): void => {
@@ -253,11 +369,15 @@ export const ServiceHostLive: Layer.Layer<
         Effect.catch(() => Effect.succeed(false)),
       );
 
+    const bindAddresses = Effect.fn("ServiceHost.bindAddresses")(function* () {
+      return yield* configuredBindAddresses();
+    });
+
     const start = Effect.fn("ServiceHost.start")(function* (input: ServiceStartInput) {
       if (input.protocol === "udp") {
         return yield* startUdp(input);
       }
-      const hosts = bindHosts();
+      const hosts = yield* validatedBindAddresses(input.bindAddresses);
       const { min, max } = portRange();
       const candidates = input.preferredHostPort === undefined ? [] : [input.preferredHostPort];
       for (let port = min; port <= max; port++) {
@@ -298,21 +418,23 @@ export const ServiceHostLive: Layer.Layer<
               }
               return servers;
             } catch (cause) {
-              for (const server of servers) {
-                server.close();
-              }
+              await Promise.all(servers.map(closeServer));
               throw cause;
             }
           },
-          catch: () => new Error(`port ${port} is taken`),
-        }).pipe(Effect.option);
+          catch: (cause) =>
+            errorCode(cause) === "EADDRINUSE"
+              ? new ServiceHostPortInUse({ port })
+              : new ServiceBindError({
+                  message: `Could not bind Service port ${port}: ${errorMessage(cause)}`,
+                }),
+        }).pipe(Effect.catchTag("ServiceHostPortInUse", () => Effect.succeed(null)));
 
       for (const port of candidates) {
-        const bound = yield* bindAll(port);
-        if (Option.isNone(bound)) {
+        const servers = yield* bindAll(port);
+        if (servers === null) {
           continue;
         }
-        const servers = bound.value;
         for (const server of servers) {
           server.on("connection", onConnection);
         }
@@ -343,7 +465,10 @@ export const ServiceHostLive: Layer.Layer<
           sockets: new Set(),
           lastStatus: null,
         });
-        return { hostPort: port, boundAddresses: hosts };
+        return {
+          hostPort: port,
+          boundAddresses: servers.map(serverAddress).filter((address) => address !== null),
+        };
       }
 
       return yield* new ServiceBindError({
@@ -368,7 +493,7 @@ export const ServiceHostLive: Layer.Layer<
       );
 
     const startUdp = Effect.fn("ServiceHost.startUdp")(function* (input: ServiceStartInput) {
-      const hosts = bindHosts();
+      const hosts = yield* validatedBindAddresses(input.bindAddresses);
       const { min, max } = portRange();
       const candidates = input.preferredHostPort === undefined ? [] : [input.preferredHostPort];
       for (let port = min; port <= max; port++) {
@@ -442,21 +567,23 @@ export const ServiceHostLive: Layer.Layer<
               }
               return sockets;
             } catch (cause) {
-              for (const socket of sockets) {
-                socket.close();
-              }
+              await Promise.all(sockets.map(closeDatagram));
               throw cause;
             }
           },
-          catch: () => new Error(`port ${port} is taken`),
-        }).pipe(Effect.option);
+          catch: (cause) =>
+            errorCode(cause) === "EADDRINUSE"
+              ? new ServiceHostPortInUse({ port })
+              : new ServiceBindError({
+                  message: `Could not bind UDP Service port ${port}: ${errorMessage(cause)}`,
+                }),
+        }).pipe(Effect.catchTag("ServiceHostPortInUse", () => Effect.succeed(null)));
 
       for (const port of candidates) {
-        const bound = yield* bindAllUdp(port);
-        if (Option.isNone(bound)) {
+        const sockets = yield* bindAllUdp(port);
+        if (sockets === null) {
           continue;
         }
-        const sockets = bound.value;
         for (const socket of sockets) {
           socket.on("message", (data, peer) => {
             const entry = active.get(input.serviceId);
@@ -521,7 +648,7 @@ export const ServiceHostLive: Layer.Layer<
           sockets: new Set(),
           lastStatus: null,
         });
-        return { hostPort: port, boundAddresses: hosts };
+        return { hostPort: port, boundAddresses: sockets.map(datagramAddress) };
       }
 
       return yield* new ServiceBindError({
@@ -533,6 +660,6 @@ export const ServiceHostLive: Layer.Layer<
       yield* Effect.sync(() => stopSync(serviceId));
     });
 
-    return { start, stop, probe };
+    return { bindAddresses, start, stop, probe };
   }),
 );

@@ -577,6 +577,13 @@ export function ServicesSection({ projectId }: { readonly projectId: string }) {
     const command = String(data.get("command") ?? "").trim();
     const port = Number(String(data.get("port") ?? "").trim());
     const protocol = data.get("udp") === "on" ? ("udp" as const) : ("tcp" as const);
+    const requestedScheme = String(data.get("browserScheme") ?? "");
+    const browserScheme =
+      protocol === "udp" || requestedScheme === ""
+        ? null
+        : requestedScheme === "https"
+          ? ("https" as const)
+          : ("http" as const);
     if (name === "" || !Number.isInteger(port)) return;
     setBusy("add");
     setAddError(null);
@@ -585,6 +592,7 @@ export function ServicesSection({ projectId }: { readonly projectId: string }) {
       command: command === "" ? null : command,
       port,
       protocol,
+      browserScheme,
     })
       .then(async () => {
         await invalidate();
@@ -628,6 +636,7 @@ export function ServicesSection({ projectId }: { readonly projectId: string }) {
             <p className="mt-1 truncate font-mono text-[11px] text-faint">
               {recipe.command ?? "adopt"} · :{recipe.port}
               {recipe.protocol === "udp" ? "/udp" : ""}
+              {recipe.browserScheme === null ? "" : ` · ${recipe.browserScheme}`}
             </p>
           </div>
         ))}
@@ -658,6 +667,16 @@ export function ServicesSection({ projectId }: { readonly projectId: string }) {
                   placeholder="port (3000)"
                   className="w-28 rounded-lg border border-input bg-background px-2.5 py-1.5 font-mono text-xs text-foreground placeholder:text-faint"
                 />
+                <select
+                  name="browserScheme"
+                  aria-label="Browser behavior"
+                  defaultValue=""
+                  className="rounded-lg border border-input bg-background px-2 py-1.5 font-mono text-[11px] text-muted-foreground"
+                >
+                  <option value="">raw</option>
+                  <option value="http">http</option>
+                  <option value="https">https</option>
+                </select>
                 <label className="flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
                   <input
                     type="checkbox"

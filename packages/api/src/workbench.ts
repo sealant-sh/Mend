@@ -41,6 +41,7 @@ import {
   formatProjectEnvironmentIssue,
   parseDotenv,
   resolveAutomation,
+  resolveServiceEndpoints,
   routeDotenvName,
   validateProjectSecretValue,
   ServiceView,
@@ -69,7 +70,7 @@ import {
   type DiffFileFact,
   type GitError,
 } from "@mend/store";
-import { Effect, Option, Result, Stream } from "effect";
+import { Effect, Option, Result } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import {
@@ -91,6 +92,7 @@ import {
   ProjectHotSessionsStatus,
   ProjectSecretMutationResult,
   ProjectWorkspaceImageSaveResult,
+  ProcessLogPage,
   DotfilesSnapshotFileView,
   DotfilesSnapshotView,
   DotfilesView,
@@ -1153,13 +1155,21 @@ export const ProjectRecipesGroupLive = HttpApiBuilder.group(MendApi, "projectRec
           return yield* new StoreFailure({ message: `Port out of range: ${payload.port}` });
         }
         const command = payload.command?.trim();
+        const protocol = payload.protocol ?? "tcp";
+        const browserScheme = payload.browserScheme ?? null;
+        if (protocol === "udp" && browserScheme !== null) {
+          return yield* new StoreFailure({
+            message: "UDP Services cannot declare an HTTP or HTTPS browser scheme.",
+          });
+        }
         return yield* recipes
           .create({
             projectId: params.id,
             name: payload.name,
             command: command === undefined || command === "" ? null : command,
             port: payload.port,
-            protocol: payload.protocol ?? "tcp",
+            protocol,
+            browserScheme,
           })
           .pipe(
             Effect.catchTag("RecipeNameTakenError", () =>
@@ -1396,7 +1406,13 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
       Effect.gen(function* () {
         const engine = yield* SessionEngine;
         return yield* engine
-          .addService(params.id, payload.port, payload.name, payload.protocol)
+          .addService(
+            params.id,
+            payload.port,
+            payload.name,
+            payload.protocol,
+            payload.browserScheme,
+          )
           .pipe(
             Effect.catchTag("SessionNotFoundError", () =>
               Effect.fail(new NotFound({ id: params.id })),
@@ -1420,7 +1436,14 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
       Effect.gen(function* () {
         const engine = yield* SessionEngine;
         return yield* engine
-          .runService(params.id, payload.argv, payload.port, payload.name, payload.protocol)
+          .runService(
+            params.id,
+            payload.argv,
+            payload.port,
+            payload.name,
+            payload.protocol,
+            payload.browserScheme,
+          )
           .pipe(
             Effect.catchTag("SessionNotFoundError", () =>
               Effect.fail(new NotFound({ id: params.id })),
@@ -1489,6 +1512,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     .handle("listServices", ({ query }) =>
       Effect.gen(function* () {
         const services = yield* ServicesRepo;
+        const sessions = yield* SessionsRepo;
         const processes = yield* SessionProcessesRepo;
         const forwards = yield* ServiceForwardsRepo;
         const observations = yield* ServiceObservationsRepo;
@@ -1500,8 +1524,25 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
               service.currentForwardId === null
                 ? null
                 : yield* forwards.byId(service.currentForwardId);
+            const previousForward =
+              currentForward === null || currentForward.supersedesForwardId === null
+                ? null
+                : yield* forwards.byId(currentForward.supersedesForwardId);
             const latestObservation = yield* observations.latestForService(service.id);
-            return new ServiceView({ service, attempts, currentForward, latestObservation });
+            const session = yield* sessions.byId(service.sessionId).pipe(Effect.orDie);
+            return new ServiceView({
+              service,
+              attempts,
+              currentForward,
+              previousForward,
+              latestObservation,
+              workspaceExpiresAt: session.workspaceExpiresAt,
+              workspaceTtlRenewedAt: session.workspaceTtlRenewedAt,
+              workspaceTtlRenewalFailedAt: session.workspaceTtlRenewalFailedAt,
+              workspaceTtlRenewalError: session.workspaceTtlRenewalError,
+              endpoints: resolveServiceEndpoints(service, currentForward),
+              previousEndpoints: resolveServiceEndpoints(service, previousForward),
+            });
           }),
         );
         if (query.all !== undefined) return views;
@@ -1513,39 +1554,43 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         );
       }),
     )
-    .handle("processOutput", ({ params }) =>
+    .handle("processLogs", ({ params, query }) =>
       Effect.gen(function* () {
         const processes = yield* SessionProcessesRepo;
         const sealant = yield* SealantClient;
         const row = yield* processes.byId(params.id);
         if (row === null) return yield* new NotFound({ id: params.id });
-        if (row.sealantRunId === null) {
+        if (row.sealantSessionId === null) {
           return yield* new StoreFailure({
-            message: "This process predates run pointers — its record exists but is unaddressed.",
+            message:
+              "This process has no interactive-session pointer, so its PTY logs are unaddressed.",
           });
         }
-        const run = yield* sealant
-          .getRun(row.sealantRunId)
-          .pipe(Effect.mapError((error) => new StoreFailure({ message: error.message })));
-        // The record's process id: the first timeline entry that carries one.
-        const entries = yield* sealant.recordTimeline(run).pipe(
-          Stream.take(200),
-          Stream.runCollect,
-          Effect.mapError((error) => new StoreFailure({ message: error.message })),
-        );
-        const processId =
-          [...entries].map((entry) => entry.processId).find((id) => id != null) ?? null;
-        if (processId === null) {
-          return yield* new StoreFailure({
-            message: "The record has no process entries to read output from.",
-          });
+        const from = query.from ?? "0";
+        const limit = query.limit ?? "256";
+        if (!/^(0|[1-9]\d*)$/.test(from)) {
+          return yield* new StoreFailure({ message: `Invalid decimal log cursor: ${from}` });
         }
-        const bytes = yield* sealant
-          .recordScrollback(run, processId, "pty")
+        if (!/^[1-9]\d*$/.test(limit) || BigInt(limit) > 1_000n) {
+          return yield* new StoreFailure({ message: `Invalid log page limit: ${limit}` });
+        }
+        const page = yield* sealant
+          .sessionOutput(row.sealantSessionId, { from, limit })
           .pipe(Effect.mapError((error) => new StoreFailure({ message: error.message })));
-        // Bounded: the tail is the useful part of a big log.
-        const text = new TextDecoder().decode(bytes);
-        return { text: text.length > 200_000 ? text.slice(-200_000) : text };
+        return new ProcessLogPage({
+          processId: row.id,
+          sealantSessionId: row.sealantSessionId,
+          sealantRunId: row.sealantRunId,
+          requestedFrom: from,
+          firstSequence: page.chunks[0]?.sequence ?? null,
+          lastSequence: page.chunks.at(-1)?.sequence ?? null,
+          nextFrom: page.nextFrom,
+          status: page.status,
+          chunks: page.chunks,
+          telemetryLoss: "unknown" as const,
+          telemetryNote:
+            "Sealant does not report retained-range loss for interactive-session output.",
+        });
       }),
     )
     .handle("restartService", ({ params }) =>

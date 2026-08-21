@@ -70,6 +70,20 @@ export class SessionsRepo extends Context.Service<
       sealantRunId: SealantRunId,
       workspaceId: SealantWorkspaceId,
     ) => Effect.Effect<void>;
+    /** Persist the platform-returned expiry only if this is still the session's workspace. */
+    readonly recordWorkspaceTtlRenewal: (
+      id: SessionId,
+      workspaceId: SealantWorkspaceId,
+      expiresAt: Date | null,
+      renewedAt: Date,
+    ) => Effect.Effect<void>;
+    /** Preserve the last known expiry while recording a failed renewal for the same workspace. */
+    readonly recordWorkspaceTtlRenewalFailure: (
+      id: SessionId,
+      workspaceId: SealantWorkspaceId,
+      error: string,
+      failedAt: Date,
+    ) => Effect.Effect<void>;
     /** The PTY session id — how a client reattaches to the live terminal. */
     readonly setSealantSessionId: (id: SessionId, sealantSessionId: string) => Effect.Effect<void>;
     /** The image this session actually launched with — stamped at launch, a recorded fact. */
@@ -224,11 +238,54 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .set({
             sealantRunId,
             sealantWorkspaceId: workspaceId,
+            workspaceExpiresAt: null,
+            workspaceTtlRenewedAt: null,
+            workspaceTtlRenewalFailedAt: null,
+            workspaceTtlRenewalError: null,
             lastSeenSequence: 0n,
             updatedAt: new Date(),
           })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
+      });
+
+      const recordWorkspaceTtlRenewal = Effect.fn("SessionsRepo.recordWorkspaceTtlRenewal")(
+        function* (
+          id: SessionId,
+          workspaceId: SealantWorkspaceId,
+          expiresAt: Date | null,
+          renewedAt: Date,
+        ) {
+          const rows = yield* db
+            .update(agentSessions)
+            .set({
+              workspaceExpiresAt: expiresAt,
+              workspaceTtlRenewedAt: renewedAt,
+              workspaceTtlRenewalFailedAt: null,
+              workspaceTtlRenewalError: null,
+              updatedAt: renewedAt,
+            })
+            .where(and(eq(agentSessions.id, id), eq(agentSessions.sealantWorkspaceId, workspaceId)))
+            .returning({ id: agentSessions.id })
+            .pipe(Effect.orDie);
+          if (rows.length > 0) yield* notify(id);
+        },
+      );
+
+      const recordWorkspaceTtlRenewalFailure = Effect.fn(
+        "SessionsRepo.recordWorkspaceTtlRenewalFailure",
+      )(function* (id: SessionId, workspaceId: SealantWorkspaceId, error: string, failedAt: Date) {
+        const rows = yield* db
+          .update(agentSessions)
+          .set({
+            workspaceTtlRenewalFailedAt: failedAt,
+            workspaceTtlRenewalError: error,
+            updatedAt: failedAt,
+          })
+          .where(and(eq(agentSessions.id, id), eq(agentSessions.sealantWorkspaceId, workspaceId)))
+          .returning({ id: agentSessions.id })
+          .pipe(Effect.orDie);
+        if (rows.length > 0) yield* notify(id);
       });
 
       const setSealantSessionId = Effect.fn("SessionsRepo.setSealantSessionId")(function* (
@@ -433,6 +490,8 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         listUnsettled,
         listRecentlySettled,
         setSealantIds,
+        recordWorkspaceTtlRenewal,
+        recordWorkspaceTtlRenewalFailure,
         setSealantSessionId,
         setWorkspaceImage,
         setDotfiles,

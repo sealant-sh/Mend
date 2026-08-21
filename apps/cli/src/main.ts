@@ -233,7 +233,11 @@ const request = async <T>(
     }
     throw new Error(message);
   }
-  return JSON.parse(text) as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(`${method} ${route} returned invalid JSON from ${config.url}`);
+  }
 };
 
 /** The same call for one-shot commands: any failure prints and exits. */
@@ -657,6 +661,16 @@ interface ServiceRecipeDto {
   readonly command: string | null;
   readonly port: number;
   readonly protocol: "tcp" | "udp";
+  readonly browserScheme: "http" | "https" | null;
+  readonly shadowedBy: "file" | "project" | null;
+}
+
+interface ServiceEndpointDto {
+  readonly authority: string;
+  readonly hostPort: number;
+  readonly scope: "loopback" | "private";
+  readonly browserUrl: string | null;
+  readonly mendAuthentication: "none";
 }
 
 interface ServiceViewDto {
@@ -684,6 +698,28 @@ interface ServiceViewDto {
     readonly forwardId: string;
     readonly state: "reachable" | "unreachable";
   } | null;
+  readonly workspaceExpiresAt: string | null;
+  readonly workspaceTtlRenewedAt: string | null;
+  readonly workspaceTtlRenewalFailedAt: string | null;
+  readonly workspaceTtlRenewalError: string | null;
+  readonly endpoints: ReadonlyArray<ServiceEndpointDto>;
+}
+
+interface ProcessLogPageDto {
+  readonly processId: string;
+  readonly sealantSessionId: string;
+  readonly sealantRunId: string | null;
+  readonly requestedFrom: string;
+  readonly firstSequence: string | null;
+  readonly lastSequence: string | null;
+  readonly nextFrom: string;
+  readonly status: "exited" | "failed" | "running" | "starting";
+  readonly chunks: ReadonlyArray<{
+    readonly sequence: string;
+    readonly dataBase64: string;
+  }>;
+  readonly telemetryLoss: "unknown";
+  readonly telemetryNote: string;
 }
 
 interface ServiceDto {
@@ -694,10 +730,18 @@ interface ServiceDto {
   readonly status: string;
   readonly workspacePort: number;
   readonly hostPort: number | null;
+  readonly authority: string | null;
+  readonly browserUrl: string | null;
+  readonly exposureScope: "loopback" | "private" | null;
+  readonly mendAuthentication: "none" | null;
   readonly protocol: "tcp" | "udp";
   readonly sealantSessionId: string | null;
   readonly attemptExitedAt: string | null;
   readonly argv: ReadonlyArray<string>;
+  readonly workspaceExpiresAt: string | null;
+  readonly workspaceTtlRenewedAt: string | null;
+  readonly workspaceTtlRenewalFailedAt: string | null;
+  readonly workspaceTtlRenewalError: string | null;
 }
 
 const flattenService = (view: ServiceViewDto): ServiceDto => {
@@ -709,6 +753,10 @@ const flattenService = (view: ServiceViewDto): ServiceDto => {
     view.currentForward !== null && view.latestObservation?.forwardId === view.currentForward.id
       ? view.latestObservation
       : null;
+  const endpoint =
+    view.endpoints.find((candidate) => candidate.scope === "private") ?? view.endpoints[0] ?? null;
+  const browserUrl =
+    view.endpoints.find((candidate) => candidate.browserUrl !== null)?.browserUrl ?? null;
   return {
     id: view.service.id,
     processId: attempt?.id ?? null,
@@ -716,11 +764,19 @@ const flattenService = (view: ServiceViewDto): ServiceDto => {
     label: view.service.name,
     status: observation?.state ?? view.currentForward?.state ?? attempt?.status ?? "stopped",
     workspacePort: view.service.workspacePort,
-    hostPort: view.currentForward?.hostPort ?? null,
+    hostPort: endpoint?.hostPort ?? null,
+    authority: endpoint?.authority ?? null,
+    browserUrl,
+    exposureScope: endpoint?.scope ?? null,
+    mendAuthentication: endpoint?.mendAuthentication ?? null,
     protocol: view.service.transport,
     sealantSessionId: attempt?.sealantSessionId ?? null,
     attemptExitedAt: attempt?.exitedAt ?? null,
     argv: attempt?.argv ?? [],
+    workspaceExpiresAt: view.workspaceExpiresAt,
+    workspaceTtlRenewedAt: view.workspaceTtlRenewedAt,
+    workspaceTtlRenewalFailedAt: view.workspaceTtlRenewalFailedAt,
+    workspaceTtlRenewalError: view.workspaceTtlRenewalError,
   };
 };
 
@@ -738,19 +794,43 @@ const mutateService = async (
 ): Promise<ServiceDto> =>
   flattenService(await api<ServiceViewDto>(config, method, endpointPath, body));
 
-const serviceUrl = (config: CliConfig, service: ServiceDto): string => {
-  const host = parseMendUrl(config.url).hostname || "localhost";
-  // A UDP Service has no page to open — the endpoint is the whole fact.
-  return service.protocol === "udp"
-    ? `${host}:${service.hostPort ?? "?"} (udp)`
-    : `http://${host}:${service.hostPort ?? "?"}`;
+const serviceUrl = (service: ServiceDto): string =>
+  service.browserUrl ??
+  (service.authority === null
+    ? "unbound"
+    : `${service.authority}${service.protocol === "udp" ? " (udp)" : ""}`);
+
+const serviceExposure = (service: ServiceDto): string => {
+  if (service.exposureScope === null) return "";
+  if (service.exposureScope === "private") {
+    return "No Mend sign-in protects this port. Anyone who can reach this private address can connect.";
+  }
+  return `Loopback only · Mend auth: ${service.mendAuthentication ?? "unknown"}`;
 };
 
-const printService = (config: CliConfig, service: ServiceDto) => {
-  const status = service.status === "reachable" ? green(service.status) : amber(service.status);
+const printWorkspaceTtlFailure = (service: ServiceDto): void => {
+  if (service.workspaceTtlRenewalError === null) return;
+  say(amber(`  workspace TTL renewal failed · ${service.workspaceTtlRenewalError}`));
   say(
-    `${(service.label ?? service.id.slice(0, 8)).padEnd(12)}  ${dim(`:${service.workspacePort ?? "?"}${service.protocol === "udp" ? "/udp" : ""} →`)} ${serviceUrl(config, service)}  ${status}  ${dim(service.id.slice(0, 8))}`,
+    dim(
+      `  last renewed ${service.workspaceTtlRenewedAt ?? "unknown"} · known expiry ${service.workspaceExpiresAt ?? "unknown"} · failed ${service.workspaceTtlRenewalFailedAt ?? "unknown"}`,
+    ),
   );
+};
+
+const printServiceEndpoint = (service: ServiceDto): void => {
+  const exposure = serviceExposure(service);
+  say(`  ${cobalt(serviceUrl(service))}${exposure === "" ? "" : `  ${dim(exposure)}`}`);
+  printWorkspaceTtlFailure(service);
+};
+
+const printService = (service: ServiceDto) => {
+  const status = service.status === "reachable" ? green(service.status) : amber(service.status);
+  const exposure = serviceExposure(service);
+  say(
+    `${(service.label ?? service.id.slice(0, 8)).padEnd(12)}  ${dim(`:${service.workspacePort ?? "?"}${service.protocol === "udp" ? "/udp" : ""} →`)} ${serviceUrl(service)}  ${status}  ${dim(service.id.slice(0, 8))}${exposure === "" ? "" : `  ${dim(exposure)}`}`,
+  );
+  printWorkspaceTtlFailure(service);
 };
 
 /**
@@ -763,12 +843,19 @@ const serviceAdd = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const name =
     nameFlag !== -1 && args[nameFlag + 1] !== undefined ? String(args[nameFlag + 1]) : null;
   const protocol = args.includes("--udp") ? ("udp" as const) : ("tcp" as const);
+  const http = args.includes("--http");
+  const https = args.includes("--https");
+  if (http && https) return fail("Choose either --http or --https, not both.");
+  const browserScheme = https ? ("https" as const) : http ? ("http" as const) : null;
+  if (protocol === "udp" && browserScheme !== null) {
+    return fail("UDP Services cannot use --http or --https");
+  }
   const positional = args.filter(
     (a, i) => !a.startsWith("--") && (nameFlag === -1 || i !== nameFlag + 1),
   );
   const portRaw = positional.find((a) => /^\d+$/.test(a));
   if (portRaw === undefined) {
-    return fail("usage: mend service add [session] <port> [--name <n>] [--udp]");
+    return fail("usage: mend service add [session] <port> [--name <n>] [--udp] [--http|--https]");
   }
   const port = Number(portRaw);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -781,9 +868,10 @@ const serviceAdd = async (config: CliConfig, args: ReadonlyArray<string>) => {
     port,
     name,
     protocol,
+    browserScheme,
   });
   say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
-  say(`  ${cobalt(serviceUrl(config, service))}`);
+  printServiceEndpoint(service);
   if (protocol === "udp") {
     say(dim(`  udp — a reply is the only reachability signal; silence just relays`));
   } else if (service.status !== "reachable") {
@@ -797,7 +885,7 @@ const serviceList = async (config: CliConfig) => {
     say(dim("no live services — mend service add <port> adopts a listening one"));
     return;
   }
-  for (const service of services) printService(config, service);
+  for (const service of services) printService(service);
 };
 
 const serviceStop = async (config: CliConfig, args: ReadonlyArray<string>) => {
@@ -838,7 +926,7 @@ const findLiveService = async (config: CliConfig, needle: string): Promise<Servi
 const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const dashdash = args.indexOf("--");
   const usage =
-    "usage: mend service run [session] --port <port> [--name <n>] [--udp] -- <command...>\n" +
+    "usage: mend service run [session] --port <port> [--name <n>] [--udp] [--http|--https] -- <command...>\n" +
     "       mend service run [session] <name>          (a declared recipe)";
   // No explicit command = a DECLARED Service: resolve the name against the
   // session worktree's mend.toml and start (or adopt) its recipe.
@@ -873,7 +961,7 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
       }),
     );
     say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
-    say(`  ${cobalt(serviceUrl(config, service))}`);
+    printServiceEndpoint(service);
     say(dim(`  logs: mend service logs ${service.label ?? service.id.slice(0, 8)}`));
     return;
   }
@@ -887,6 +975,11 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const name =
     nameFlag !== -1 && head[nameFlag + 1] !== undefined ? String(head[nameFlag + 1]) : null;
   const protocol = head.includes("--udp") ? ("udp" as const) : ("tcp" as const);
+  const http = head.includes("--http");
+  const https = head.includes("--https");
+  if (http && https) return fail(usage);
+  const browserScheme = https ? ("https" as const) : http ? ("http" as const) : null;
+  if (protocol === "udp" && browserScheme !== null) return fail(usage);
   const prefix = head.find(
     (a, i) => !a.startsWith("--") && i !== portFlag + 1 && i !== nameFlag + 1,
   );
@@ -901,21 +994,24 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
       port,
       name,
       protocol,
+      browserScheme,
     }),
   );
   say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
-  say(`  ${cobalt(serviceUrl(config, service))}`);
+  printServiceEndpoint(service);
   say(dim(`  logs: mend service logs ${service.label ?? service.id.slice(0, 8)}`));
 };
 
-/**
- * Watch a supervised Service's output: record replay, then live tail. A DEAD
- * Service still answers — its record outlives the process — printed once
- * instead of followed.
- */
+/** Read sequence-addressed PTY output without attaching an input-capable terminal. */
 const serviceLogs = async (config: CliConfig, args: ReadonlyArray<string>) => {
-  const needle = args.find((a) => !a.startsWith("--"));
-  if (needle === undefined) return fail("usage: mend service logs <name-or-id-prefix>");
+  const fromFlag = args.indexOf("--from");
+  const from = fromFlag === -1 ? "0" : args[fromFlag + 1];
+  const needle = args.find(
+    (argument, index) => !argument.startsWith("--") && index !== fromFlag + 1,
+  );
+  if (needle === undefined || from === undefined || !/^(0|[1-9]\d*)$/.test(from)) {
+    return fail("usage: mend service logs <name-or-id-prefix> [--from <decimal-sequence>]");
+  }
   const everything = await fetchServiceViews(config, true);
   const matches = everything.filter(
     (view) =>
@@ -948,29 +1044,39 @@ const serviceLogs = async (config: CliConfig, args: ReadonlyArray<string>) => {
     );
   }
   const label = view.service.name;
-  if (attempt.exitedAt !== null) {
-    // Post-mortem: print the selected historical attempt's durable record.
-    const output = await api<{ readonly text: string }>(
+  say(
+    dim(
+      attempt.exitedAt === null
+        ? `following ${label} from sequence ${from} — Ctrl+C detaches, the Service keeps running`
+        : `${label} · ${attempt.status} — recorded output from sequence ${from}`,
+    ),
+  );
+  say("");
+
+  let cursor = from;
+  let telemetryReported = false;
+  for (;;) {
+    const page = await api<ProcessLogPageDto>(
       config,
       "GET",
-      `/processes/${attempt.id}/output`,
+      `/processes/${attempt.id}/logs?from=${encodeURIComponent(cursor)}&limit=256`,
     );
-    say(dim(`${label} · ${attempt.status} — recorded output:`));
-    say("");
-    process.stdout.write(output.text.endsWith("\n") ? output.text : `${output.text}\n`);
-    process.exit(0);
+    if (!telemetryReported) {
+      say(dim(`telemetry loss: ${page.telemetryLoss} · ${page.telemetryNote}`));
+      telemetryReported = true;
+    }
+    for (const chunk of page.chunks) {
+      process.stdout.write(Buffer.from(chunk.dataBase64, "base64"));
+    }
+    const advanced = page.nextFrom !== cursor;
+    cursor = page.nextFrom;
+    const ended = page.status === "exited" || page.status === "failed";
+    if (ended && !advanced) break;
+    if (!advanced) await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  say(dim(`following ${label} — Ctrl+C detaches, the service keeps running`));
+
   say("");
-  const outcome = await attachTty(config, view.service.sessionId, "service", 0n, attempt.id, {
-    readOnly: true,
-  });
-  if (outcome === "unavailable") {
-    return fail(`tty attach unavailable: could not connect to ${config.url}`);
-  }
-  say("");
-  say(dim("stream ended"));
-  process.exit(0);
+  say(dim(`stream ended · next sequence ${cursor}`));
 };
 
 const serviceRestart = async (config: CliConfig, args: ReadonlyArray<string>) => {
@@ -982,7 +1088,7 @@ const serviceRestart = async (config: CliConfig, args: ReadonlyArray<string>) =>
     mutateService(config, "POST", `/services/${service.id}/restart`),
   );
   say(`${green("✓")} restarted · ${restarted.status}`);
-  say(`  ${cobalt(serviceUrl(config, restarted))}`);
+  printServiceEndpoint(restarted);
 };
 
 /**

@@ -1,11 +1,14 @@
+import { SealantRunId, SessionProcessId } from "@mend/domain";
+import { Schema } from "effect";
 import { HttpApi } from "effect/unstable/httpapi";
 import { describe, expect, it } from "vitest";
 
-import { MendApi } from "./contract.ts";
+import { MendApi, ProcessLogPage } from "./contract.ts";
 
 const typedEndpointNames = new Set([
   "followUpDeliver",
   "openReview",
+  "processLogs",
   "reviewDiff",
   "renameShell",
   "sliceComment",
@@ -32,5 +35,27 @@ describe("typed HTTP error contracts", () => {
         false,
       );
     }
+  });
+
+  it("encodes a process-log response as the endpoint's class schema", () => {
+    const page = new ProcessLogPage({
+      processId: SessionProcessId.make("process-1"),
+      sealantSessionId: "pty-1",
+      sealantRunId: SealantRunId.make("run-1"),
+      requestedFrom: "0",
+      firstSequence: "1",
+      lastSequence: "1",
+      nextFrom: "2",
+      status: "running",
+      chunks: [{ sequence: "1", dataBase64: "aGVsbG8=" }],
+      telemetryLoss: "unknown",
+      telemetryNote: "Sealant does not report retained-range loss for interactive-session output.",
+    });
+
+    expect(Schema.encodeUnknownSync(ProcessLogPage)(page)).toMatchObject({
+      processId: "process-1",
+      nextFrom: "2",
+      telemetryLoss: "unknown",
+    });
   });
 });

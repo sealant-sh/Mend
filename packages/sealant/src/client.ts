@@ -19,18 +19,30 @@ import { Sealant, SealantApiError, SealantError } from "@sealant/sdk";
 import type { Harness } from "@sealant/sdk";
 import {
   createRunOp,
+  expireWorkspaceOp,
+  getSessionOutputOp,
   inferenceRespondOp,
   listWorkspacesOp,
   resolveInternalConfig,
   SealantApiClient,
   sealantApiClientLayer,
 } from "@sealant/sdk/effect";
-import { Clock, Config, Effect, Layer, Option, Redacted, Stream } from "effect";
+import { Clock, type Config, Effect, Layer, Option, Redacted, Stream } from "effect";
 import * as Context from "effect/Context";
 
 import { SealantEnv } from "./config.ts";
 import { SealantConnection } from "./connection.ts";
 import { SealantPlatformError } from "./errors.ts";
+
+export interface SessionOutputPage {
+  readonly sessionId: string;
+  readonly chunks: ReadonlyArray<{
+    readonly sequence: string;
+    readonly dataBase64: string;
+  }>;
+  readonly nextFrom: string;
+  readonly status: "exited" | "failed" | "running" | "starting";
+}
 
 export interface WorkspacePackageResolution {
   readonly requested: string;
@@ -109,15 +121,20 @@ export class SealantClient extends Context.Service<
     /** Reattach to a PTY session by id — works from any workspace handle. */
     /** Stop the workspace: remove its container, settle it "stopped". */
     readonly stopWorkspace: (workspace: Workspace) => Effect.Effect<void, SealantPlatformError>;
-    /** Re-arm the workspace's TTL (`in` like `"12h"`) so the platform reaper leaves it alone. */
+    /** Re-arm the workspace TTL and return the platform's exact resulting expiry. */
     readonly expireWorkspace: (
-      workspace: Workspace,
-      inDuration: string,
-    ) => Effect.Effect<void, SealantPlatformError>;
+      workspaceId: string,
+      ttlSeconds: number,
+    ) => Effect.Effect<Date | null, SealantPlatformError>;
     readonly getSession: (
       workspace: Workspace,
       sessionId: string,
     ) => Effect.Effect<InteractiveSession, SealantPlatformError>;
+    /** Sequence-addressed, read-only PTY output. Cursors remain decimal strings. */
+    readonly sessionOutput: (
+      sessionId: string,
+      options: { readonly from: string; readonly limit: string },
+    ) => Effect.Effect<SessionOutputPage, SealantPlatformError>;
     /**
      * Deterministic check run (0.5.0): commands executed verbatim, recorded
      * into a run record like any process. The exit code is a check datum, not
@@ -270,12 +287,36 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantEnv> = 
     );
 
     const expireWorkspace = Effect.fn("SealantClient.expireWorkspace")(
-      (workspace: Workspace, inDuration: string) =>
-        wrap(() => workspace.expire({ in: inDuration })),
+      (workspaceId: string, ttlSeconds: number) =>
+        expireWorkspaceOp(workspaceId, { ownerUserId, ttlSeconds }).pipe(
+          Effect.provideContext(apiContext),
+          Effect.mapError(toPlatformError),
+          Effect.flatMap(({ expiresAt }) => {
+            if (expiresAt === null) return Effect.succeed(null);
+            return Effect.try({
+              try: () => {
+                const parsed = new Date(expiresAt);
+                if (Number.isNaN(parsed.getTime())) {
+                  throw new Error(`Sealant returned an invalid workspace expiry: ${expiresAt}`);
+                }
+                return parsed;
+              },
+              catch: toPlatformError,
+            });
+          }),
+        ),
     );
 
     const getSession = Effect.fn("SealantClient.getSession")(
       (workspace: Workspace, sessionId: string) => wrap(() => workspace.sessions.get(sessionId)),
+    );
+
+    const sessionOutput = Effect.fn("SealantClient.sessionOutput")(
+      (sessionId: string, options: { readonly from: string; readonly limit: string }) =>
+        getSessionOutputOp(sessionId, { ownerUserId, ...options }).pipe(
+          Effect.provideContext(apiContext),
+          Effect.mapError(toPlatformError),
+        ),
     );
 
     // No idempotency on this path: `attemptId` is a workspace-attempt FK,
@@ -469,6 +510,7 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantEnv> = 
       stopWorkspace,
       expireWorkspace,
       getSession,
+      sessionOutput,
       exec,
       diffCommits,
       inferenceRespond,

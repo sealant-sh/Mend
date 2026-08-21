@@ -46,7 +46,12 @@ export const mergeRecipes = (
   project: ReadonlyArray<ServiceRecipe>,
 ): ReadonlyArray<ServiceRecipe> => {
   const fileNames = new Set(file.map((recipe) => recipe.name));
-  return [...file, ...project.filter((recipe) => !fileNames.has(recipe.name))];
+  return [
+    ...file,
+    ...project.map((recipe) =>
+      fileNames.has(recipe.name) ? new ServiceRecipe({ ...recipe, shadowedBy: "file" }) : recipe,
+    ),
+  ];
 };
 
 /** Read and validate the worktree's declared Services. Missing file = none. */
@@ -121,13 +126,28 @@ export const readServiceRecipes = (
           message: `[service.${name}].protocol must be "tcp" or "udp" when present.`,
         });
       }
+      const browserScheme = entry["browserScheme"];
+      if (browserScheme !== undefined && browserScheme !== "http" && browserScheme !== "https") {
+        return yield* new RecipeFileError({
+          path: filePath,
+          message: `[service.${name}].browserScheme must be "http" or "https" when present.`,
+        });
+      }
+      if (protocol === "udp" && browserScheme !== undefined) {
+        return yield* new RecipeFileError({
+          path: filePath,
+          message: `[service.${name}] cannot declare browserScheme for UDP.`,
+        });
+      }
       recipes.push(
         new ServiceRecipe({
           name,
           command: command === undefined ? null : command.trim(),
           port,
           protocol: protocol ?? "tcp",
+          browserScheme: browserScheme ?? null,
           source: "file",
+          shadowedBy: null,
         }),
       );
     }

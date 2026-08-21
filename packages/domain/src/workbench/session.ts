@@ -76,6 +76,14 @@ export class Session extends Schema.Class<Session>("Session")({
   sealantWorkspaceId: Schema.NullOr(SealantWorkspaceId),
   /** Latest platform interactive PTY session id — the live reattach handle. */
   sealantSessionId: Schema.NullOr(Schema.String),
+  /** Platform-returned expiry for the current workspace after the last successful TTL renewal. */
+  workspaceExpiresAt: Schema.NullOr(Schema.Date),
+  /** When Mend last successfully renewed the current workspace. */
+  workspaceTtlRenewedAt: Schema.NullOr(Schema.Date),
+  /** When the latest renewal attempt failed; null after the next success. */
+  workspaceTtlRenewalFailedAt: Schema.NullOr(Schema.Date),
+  /** Latest renewal failure for the current workspace; null after the next success. */
+  workspaceTtlRenewalError: Schema.NullOr(Schema.String),
   /** The image this session actually launched with; null before launch (or pre-column rows). */
   workspaceImage: Schema.NullOr(WorkspaceImage),
   /** The dotfiles this session actually launched with; null before launch (or none applied). */

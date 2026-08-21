@@ -2,7 +2,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { readServiceRecipes, RecipeFileError } from "@mend/sessions";
+import { ServiceRecipe } from "@mend/domain/workbench";
+import { mergeRecipes, readServiceRecipes, RecipeFileError } from "@mend/sessions";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -13,6 +14,17 @@ const worktreeWith = (toml: string | null): string => {
   }
   return dir;
 };
+
+const makeRecipe = (source: "file" | "project") =>
+  new ServiceRecipe({
+    name: "web",
+    command: "pnpm dev",
+    port: 3000,
+    protocol: "tcp",
+    browserScheme: "http",
+    source,
+    shadowedBy: null,
+  });
 
 describe("readServiceRecipes", () => {
   it("reads a udp recipe and defaults protocol to tcp", async () => {
@@ -31,6 +43,31 @@ describe("readServiceRecipes", () => {
     const recipes = await Effect.runPromise(readServiceRecipes(worktree));
     expect(recipes.find((r) => r.name === "game")?.protocol).toBe("udp");
     expect(recipes.find((r) => r.name === "web")?.protocol).toBe("tcp");
+  });
+
+  it("reads an explicit browser scheme without inferring one for raw TCP", async () => {
+    const worktree = worktreeWith(
+      [
+        "[service.web]",
+        "port = 3000",
+        'browserScheme = "https"',
+        "",
+        "[service.raw]",
+        "port = 9000",
+      ].join("\n"),
+    );
+    const recipes = await Effect.runPromise(readServiceRecipes(worktree));
+    expect(recipes.find((recipe) => recipe.name === "web")?.browserScheme).toBe("https");
+    expect(recipes.find((recipe) => recipe.name === "raw")?.browserScheme).toBeNull();
+  });
+
+  it("refuses browser behavior for UDP", async () => {
+    const worktree = worktreeWith(
+      ["[service.game]", "port = 34197", 'protocol = "udp"', 'browserScheme = "http"'].join("\n"),
+    );
+    await expect(Effect.runPromise(readServiceRecipes(worktree))).rejects.toThrow(
+      /cannot declare browserScheme for UDP/,
+    );
   });
 
   it("refuses a protocol that is neither tcp nor udp", async () => {
@@ -84,5 +121,14 @@ port = 5432
       readServiceRecipes(worktreeWith(`[service."Web App"]\nport = 3000\n`)).pipe(Effect.flip),
     );
     expect(error.message).toContain("not a usable Service name");
+  });
+});
+
+describe("mergeRecipes", () => {
+  it("keeps a colliding project declaration visible but marks the file declaration authoritative", () => {
+    expect(mergeRecipes([makeRecipe("file")], [makeRecipe("project")])).toMatchObject([
+      { source: "file", shadowedBy: null },
+      { source: "project", shadowedBy: "file" },
+    ]);
   });
 });
