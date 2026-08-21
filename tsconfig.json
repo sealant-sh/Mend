@@ -3,6 +3,7 @@
   "files": [],
   "references": [
     { "path": "./apps/marketing" },
+    { "path": "./apps/vscode" },
     { "path": "./apps/web" },
     { "path": "./packages/api" },
     { "path": "./packages/auth" },

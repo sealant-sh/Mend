@@ -1,0 +1,11 @@
+{
+  "extends": "@mend/typescript/core.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "verbatimModuleSyntax": false,
+    "rootDir": "src",
+    "types": ["node", "vscode"]
+  },
+  "include": ["src/**/*.ts"]
+}

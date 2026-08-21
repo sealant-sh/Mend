@@ -1,0 +1,197 @@
+{
+  "name": "mend",
+  "displayName": "Mend",
+  "version": "0.1.0",
+  "description": "Open and steer Mend coding-agent sessions from VS Code.",
+  "categories": [
+    "Other",
+    "SCM Providers"
+  ],
+  "keywords": [
+    "agents",
+    "claude",
+    "codex",
+    "mend",
+    "worktrees"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sealant-sh/Mend.git",
+    "directory": "apps/vscode"
+  },
+  "publisher": "sealant-sh",
+  "files": [
+    "dist",
+    "resources",
+    "README.md",
+    "LICENSE"
+  ],
+  "main": "./dist/extension.js",
+  "scripts": {
+    "build": "tsgo -p tsconfig.build.json",
+    "lint": "oxlint . --no-error-on-unmatched-pattern",
+    "package": "vsce package --no-dependencies",
+    "typecheck": "tsgo -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@mend/typescript": "workspace:*",
+    "@types/node": "catalog:",
+    "@types/vscode": "^1.100.0",
+    "@vscode/vsce": "^3.9.2",
+    "typescript": "catalog:"
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "mend",
+          "title": "Mend",
+          "icon": "resources/mend.svg"
+        }
+      ]
+    },
+    "views": {
+      "mend": [
+        {
+          "id": "mend.sessions",
+          "name": "Projects and sessions"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "mend.sessions",
+        "contents": "Nothing adopted yet.\n[Adopt a project…](command:mend.adoptProject)",
+        "when": "mend.hasProjects == false"
+      }
+    ],
+    "commands": [
+      {
+        "command": "mend.refresh",
+        "title": "Mend: Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "mend.toggleAllProjects",
+        "title": "Mend: Toggle current project scope",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "mend.connect",
+        "title": "Mend: Connect to server"
+      },
+      {
+        "command": "mend.adoptProject",
+        "title": "Mend: Adopt a project…"
+      },
+      {
+        "command": "mend.openWorktree",
+        "title": "Mend: Open worktree",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "mend.openInMend",
+        "title": "Mend: Open in Mend",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "mend.copyWorktreePath",
+        "title": "Mend: Copy worktree path"
+      },
+      {
+        "command": "mend.stopSession",
+        "title": "Mend: Stop session"
+      },
+      {
+        "command": "mend.newSession",
+        "title": "Mend: New session…"
+      },
+      {
+        "command": "mend.newManualWorktree",
+        "title": "Mend: New worktree without an agent…"
+      },
+      {
+        "command": "mend.showQuickPick",
+        "title": "Mend: Show project sessions"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "mend.refresh",
+          "when": "view == mend.sessions",
+          "group": "navigation"
+        },
+        {
+          "command": "mend.adoptProject",
+          "when": "view == mend.sessions",
+          "group": "navigation"
+        },
+        {
+          "command": "mend.toggleAllProjects",
+          "when": "view == mend.sessions && mend.hasWorkspaceProject",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "mend.openWorktree",
+          "when": "view == mend.sessions && viewItem =~ /^mend\\.session/",
+          "group": "inline@1"
+        },
+        {
+          "command": "mend.openInMend",
+          "when": "view == mend.sessions && viewItem =~ /^mend\\.session/",
+          "group": "inline@2"
+        },
+        {
+          "command": "mend.newSession",
+          "when": "view == mend.sessions && viewItem == mend.project",
+          "group": "navigation@1"
+        },
+        {
+          "command": "mend.newManualWorktree",
+          "when": "view == mend.sessions && viewItem == mend.project",
+          "group": "navigation@2"
+        },
+        {
+          "command": "mend.stopSession",
+          "when": "view == mend.sessions && viewItem == mend.session.live",
+          "group": "2_session@1"
+        },
+        {
+          "command": "mend.copyWorktreePath",
+          "when": "view == mend.sessions && viewItem =~ /^mend\\.session/",
+          "group": "2_session@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Mend",
+      "properties": {
+        "mend.serverUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Mend server URL. Empty uses the Mend CLI configuration, then http://localhost:3105."
+        },
+        "mend.remoteSshHost": {
+          "type": "string",
+          "default": "",
+          "description": "Existing ~/.ssh/config host alias used to open worktrees on a remote Mend machine."
+        }
+      }
+    }
+  },
+  "activationEvents": [
+    "onStartupFinished",
+    "onUri"
+  ],
+  "extensionKind": [
+    "ui",
+    "workspace"
+  ],
+  "engines": {
+    "vscode": "^1.100.0"
+  }
+}
