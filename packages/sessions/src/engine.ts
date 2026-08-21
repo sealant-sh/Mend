@@ -2110,8 +2110,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           argv: shapedArgv,
         });
         yield* renewWorkspaceLease(sessionId, agentProcess.sealantWorkspaceId);
-        if (launchCorrelationId !== null) yield* sessions.reopen(sessionId);
-        yield* sessions.setStatus(sessionId, "running");
+        // Always reopen, not only for follow-ups: a plain launch on a row that
+        // already settled (a failed first attempt retried) must clear
+        // settled_at, or the first-settle-wins guard ignores this run's exit
+        // and the row reads "running" forever — unstoppable and undeletable.
+        yield* sessions.reopen(sessionId);
         yield* forkSupervision(sessionId, sealantRunId);
 
         // The coding-agent run settles independently; supporting-process leases own retention.
@@ -2249,8 +2252,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             argv: shapedArgv,
           });
           yield* renewWorkspaceLease(sessionId, agentProcess.sealantWorkspaceId);
-          if (launchCorrelationId !== null) yield* sessions.reopen(sessionId);
-          yield* sessions.setStatus(sessionId, "running");
+          // See launchInternal: reopen unconditionally so a retried row settles again.
+          yield* sessions.reopen(sessionId);
           yield* forkSupervision(sessionId, sealantRunId);
           yield* forkAgentPtyWatcher(sessionId, pty, sealantRunId, agentProcess, interactiveShell);
           return yield* sessions.byId(sessionId);
@@ -2444,6 +2447,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* sessionRuns.settle(activeRun.sealantRunId, "stopped", null);
         }
         yield* sessions.settle(sessionId, "stopped", null);
+        // A row that already carries settled_at but still reads active (rows
+        // launched before reopen-on-launch) is a no-op for first-settle-wins;
+        // a user stop must still land, so force the status.
+        const afterSettle = yield* sessions.byId(sessionId);
+        if (ACTIVE_STATUSES.has(afterSettle.status)) {
+          yield* Effect.logWarning("session engine: stop healed an active-but-settled row").pipe(
+            Effect.annotateLogs({ sessionId, settledAt: String(afterSettle.settledAt) }),
+          );
+          yield* sessions.setStatus(sessionId, "stopped");
+        }
         yield* tryCheckpoint(session, "user-mark", {
           sealantRunId: activeRun?.sealantRunId ?? null,
           sequence: activeRun?.lastSeenSequence ?? 0n,
