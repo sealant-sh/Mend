@@ -8,14 +8,12 @@ import {
  * Session status is a fold over live processes, never a property of one
  * process (docs/SESSION-SERVICES.md, decided 2026-08-21):
  *
- *   any agent process live                      → `running`
+ *   pending request on a live protocol agent    → `waiting`
+ *   any other agent process live                → `running`
  *   no agent live, shells or Services live      → `idle`
  *   nothing live                                → settled (from the last agent outcome)
- *
- * `waiting` is not produced here: only a protocol-mode agent can report that
- * it asked for input, and nothing launches one yet.
  */
-export type SessionLiveness = "running" | "idle" | "settled";
+export type SessionLiveness = "waiting" | "running" | "idle" | "settled";
 
 /** A row still counts as a workspace lease until the engine records its end. */
 export const isLiveProcess = (process: SessionProcess): boolean =>
@@ -24,13 +22,24 @@ export const isLiveProcess = (process: SessionProcess): boolean =>
 export const isLiveAgentProcess = (process: SessionProcess): boolean =>
   isAgentProcessKind(process.kind) && isLiveProcess(process);
 
-export const foldSessionLiveness = (processes: ReadonlyArray<SessionProcess>): SessionLiveness => {
+export const foldSessionLiveness = (
+  processes: ReadonlyArray<SessionProcess>,
+  hasPendingAgentRequest = false,
+): SessionLiveness => {
   let supporting = false;
+  let agent = false;
+  let protocolAgent = false;
   for (const process of processes) {
     if (!isLiveProcess(process)) continue;
-    if (isAgentProcessKind(process.kind)) return "running";
-    supporting = true;
+    if (isAgentProcessKind(process.kind)) {
+      agent = true;
+      if (process.kind === "agent-protocol") protocolAgent = true;
+    } else {
+      supporting = true;
+    }
   }
+  if (protocolAgent && hasPendingAgentRequest) return "waiting";
+  if (agent) return "running";
   return supporting ? "idle" : "settled";
 };
 

@@ -1015,6 +1015,103 @@ const sessionProcessKinds = Effect.gen(function* () {
       )`;
 });
 
+/** Structured protocol conversation with replay-stable item identity and resumable output. */
+const agentConversation = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE session_processes
+      ADD COLUMN IF NOT EXISTS protocol_output_seq bigint NOT NULL DEFAULT 0`;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS agent_turns (
+      id text PRIMARY KEY,
+      session_id text NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      process_id text NOT NULL REFERENCES session_processes(id) ON DELETE CASCADE,
+      ordinal integer NOT NULL,
+      author text,
+      input text NOT NULL,
+      status text NOT NULL DEFAULT 'queued',
+      provider_turn_id text,
+      launch_correlation_id text,
+      error text,
+      usage jsonb,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      started_at timestamptz,
+      ended_at timestamptz,
+      UNIQUE (session_id, ordinal)
+    )`;
+  yield* sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS agent_turns_session_provider_key
+      ON agent_turns (session_id, provider_turn_id)
+      WHERE provider_turn_id IS NOT NULL`;
+  yield* sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS agent_turns_session_correlation_key
+      ON agent_turns (session_id, launch_correlation_id)
+      WHERE launch_correlation_id IS NOT NULL`;
+  yield* sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS agent_turns_one_running_process_idx
+      ON agent_turns (process_id) WHERE status = 'running'`;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS agent_turns_session_created_idx
+      ON agent_turns (session_id, ordinal)`;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS agent_turns_process_status_idx
+      ON agent_turns (process_id, status, ordinal)`;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS agent_items (
+      id text PRIMARY KEY,
+      session_id text NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      process_id text NOT NULL REFERENCES session_processes(id) ON DELETE CASCADE,
+      turn_id text NOT NULL REFERENCES agent_turns(id) ON DELETE CASCADE,
+      seq integer NOT NULL,
+      provider_item_id text NOT NULL,
+      provider_output_process_id text NOT NULL,
+      provider_output_seq bigint NOT NULL,
+      provider_event_index integer NOT NULL,
+      kind text NOT NULL,
+      status text NOT NULL,
+      title text,
+      text text,
+      data jsonb,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE (session_id, seq),
+      UNIQUE (session_id, provider_item_id)
+    )`;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS agent_items_session_seq_idx
+      ON agent_items (session_id, seq)`;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS agent_items_turn_seq_idx
+      ON agent_items (turn_id, seq)`;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS agent_requests (
+      id text PRIMARY KEY,
+      session_id text NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      process_id text NOT NULL REFERENCES session_processes(id) ON DELETE CASCADE,
+      turn_id text NOT NULL REFERENCES agent_turns(id) ON DELETE CASCADE,
+      kind text NOT NULL,
+      provider_request_id text NOT NULL,
+      provider_item_id text,
+      title text,
+      detail jsonb,
+      questions jsonb,
+      status text NOT NULL DEFAULT 'pending',
+      decision text,
+      decided_by text,
+      answers jsonb,
+      response_delivery text NOT NULL DEFAULT 'none',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      decided_at timestamptz,
+      UNIQUE (process_id, provider_request_id)
+    )`;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS agent_requests_session_status_idx
+      ON agent_requests (session_id, status, created_at)`;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS agent_requests_process_status_idx
+      ON agent_requests (process_id, status)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -1052,4 +1149,5 @@ export const migrations = {
   "0033_service_access_policy": serviceAccessPolicy,
   "0034_workspace_ttl_renewal": workspaceTtlRenewal,
   "0035_session_process_kinds": sessionProcessKinds,
+  "0036_agent_conversation": agentConversation,
 };

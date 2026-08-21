@@ -60,6 +60,12 @@ export const MendEvent = Schema.Union([
     projectId: Schema.String,
   }),
   Schema.Struct({
+    // A protocol turn, item, or request changed; clients re-read by cursor.
+    type: Schema.Literals(["agent-conversation"]),
+    sessionId: Schema.String,
+    projectId: Schema.String,
+  }),
+  Schema.Struct({
     type: Schema.Literals(["session-change"]),
     changeId: Schema.String,
     sessionId: Schema.String,

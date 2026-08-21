@@ -5,6 +5,7 @@ import type {
   InferenceRespondOptions,
   InferenceResponse,
   InteractiveSession,
+  SessionOptions,
   Run,
   RunCommand,
   RunFileChange,
@@ -103,6 +104,7 @@ export class SealantClient extends Context.Service<
     readonly openSession: (
       workspace: Workspace,
       argv: ReadonlyArray<string>,
+      options?: SessionOptions,
     ) => Effect.Effect<InteractiveSession, SealantPlatformError>;
     /**
      * A raw TCP byte pipe — or a UDP datagram pipe, where one WS frame is
@@ -263,8 +265,8 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantEnv> = 
     const waitRun = Effect.fn("SealantClient.waitRun")((run: Run) => wrap(() => run.wait()));
 
     const openSession = Effect.fn("SealantClient.openSession")(
-      (workspace: Workspace, argv: ReadonlyArray<string>) =>
-        wrap(() => workspace.sessions.open(argv)),
+      (workspace: Workspace, argv: ReadonlyArray<string>, options?: SessionOptions) =>
+        wrap(() => workspace.sessions.open(argv, options)),
     );
 
     const forward = Effect.fn("SealantClient.forward")(

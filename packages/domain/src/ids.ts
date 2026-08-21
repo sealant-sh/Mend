@@ -63,6 +63,18 @@ export type ProjectMountId = typeof ProjectMountId.Type;
 export const SessionProcessId = Schema.String.pipe(Schema.brand("SessionProcessId"));
 export type SessionProcessId = typeof SessionProcessId.Type;
 
+/** One turn in a protocol-mode conversation: a user input and the agent's response to it. */
+export const AgentTurnId = Schema.String.pipe(Schema.brand("AgentTurnId"));
+export type AgentTurnId = typeof AgentTurnId.Type;
+
+/** One item within a turn — assistant text, a tool call, a file change, a plan. */
+export const AgentItemId = Schema.String.pipe(Schema.brand("AgentItemId"));
+export type AgentItemId = typeof AgentItemId.Type;
+
+/** One pending agent→human request — an approval or a user-input question — awaiting a decision. */
+export const AgentRequestId = Schema.String.pipe(Schema.brand("AgentRequestId"));
+export type AgentRequestId = typeof AgentRequestId.Type;
+
 export const ServiceId = Schema.String.pipe(Schema.brand("ServiceId"));
 export type ServiceId = typeof ServiceId.Type;
 

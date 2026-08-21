@@ -69,6 +69,16 @@ export const relations = defineRelations(schema, (r) => ({
       to: r.contextSnapshots.id,
     }),
     runs: r.many.sessionRuns({ from: r.agentSessions.id, to: r.sessionRuns.sessionId }),
+    processes: r.many.sessionProcesses({
+      from: r.agentSessions.id,
+      to: r.sessionProcesses.sessionId,
+    }),
+    agentTurns: r.many.agentTurns({ from: r.agentSessions.id, to: r.agentTurns.sessionId }),
+    agentItems: r.many.agentItems({ from: r.agentSessions.id, to: r.agentItems.sessionId }),
+    agentRequests: r.many.agentRequests({
+      from: r.agentSessions.id,
+      to: r.agentRequests.sessionId,
+    }),
     change: r.one.sessionChanges({ from: r.agentSessions.id, to: r.sessionChanges.sessionId }),
     checkpoints: r.many.checkpoints({
       from: r.agentSessions.id,
@@ -80,6 +90,37 @@ export const relations = defineRelations(schema, (r) => ({
       to: r.reviewComments.sentToSessionId,
     }),
     changeTours: r.many.changeTours({ from: r.agentSessions.id, to: r.changeTours.sessionId }),
+  },
+  sessionProcesses: {
+    session: r.one.agentSessions({
+      from: r.sessionProcesses.sessionId,
+      to: r.agentSessions.id,
+    }),
+    turns: r.many.agentTurns({ from: r.sessionProcesses.id, to: r.agentTurns.processId }),
+    items: r.many.agentItems({ from: r.sessionProcesses.id, to: r.agentItems.processId }),
+    requests: r.many.agentRequests({
+      from: r.sessionProcesses.id,
+      to: r.agentRequests.processId,
+    }),
+  },
+  agentTurns: {
+    session: r.one.agentSessions({ from: r.agentTurns.sessionId, to: r.agentSessions.id }),
+    process: r.one.sessionProcesses({ from: r.agentTurns.processId, to: r.sessionProcesses.id }),
+    items: r.many.agentItems({ from: r.agentTurns.id, to: r.agentItems.turnId }),
+    requests: r.many.agentRequests({ from: r.agentTurns.id, to: r.agentRequests.turnId }),
+  },
+  agentItems: {
+    session: r.one.agentSessions({ from: r.agentItems.sessionId, to: r.agentSessions.id }),
+    process: r.one.sessionProcesses({ from: r.agentItems.processId, to: r.sessionProcesses.id }),
+    turn: r.one.agentTurns({ from: r.agentItems.turnId, to: r.agentTurns.id }),
+  },
+  agentRequests: {
+    session: r.one.agentSessions({ from: r.agentRequests.sessionId, to: r.agentSessions.id }),
+    process: r.one.sessionProcesses({
+      from: r.agentRequests.processId,
+      to: r.sessionProcesses.id,
+    }),
+    turn: r.one.agentTurns({ from: r.agentRequests.turnId, to: r.agentTurns.id }),
   },
   sessionRuns: {
     session: r.one.agentSessions({ from: r.sessionRuns.sessionId, to: r.agentSessions.id }),

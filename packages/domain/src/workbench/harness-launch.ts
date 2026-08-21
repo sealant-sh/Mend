@@ -73,6 +73,7 @@ export const PROMPTABLE_HARNESSES: ReadonlySet<string> = new Set(["claude", "cod
 
 /** A structured start; every field optional — all-absent composes the bare harness. */
 export interface LaunchStart {
+  readonly mode?: "pty" | "protocol" | undefined;
   readonly prompt?: string | undefined;
   readonly model?: string | undefined;
   readonly effort?: EffortLevel | undefined;
@@ -123,5 +124,51 @@ export const composeLaunchArgv = (harness: string, start: LaunchStart): Readonly
       return ["bash"];
     default:
       return [harness];
+  }
+};
+
+/** A harness has no supported structured byte protocol in Mend. */
+export class ProtocolHarnessUnsupportedError extends Error {
+  readonly _tag = "ProtocolHarnessUnsupportedError" as const;
+
+  constructor(readonly harness: string) {
+    super(`Harness "${harness}" does not support protocol mode.`);
+  }
+}
+
+/** Compose the long-lived protocol process argv. Model and effort stay on provider turns. */
+export const composeProtocolArgv = (
+  harness: string,
+  start: LaunchStart,
+  providerSessionId?: string,
+): ReadonlyArray<string> | ProtocolHarnessUnsupportedError => {
+  const model = trimmed(start.model);
+  switch (harness) {
+    case "codex":
+      return ["codex", "app-server"];
+    case "claude": {
+      const argv = [
+        "claude",
+        "--print",
+        "--verbose",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--include-partial-messages",
+        "--permission-prompt-tool",
+        "stdio",
+      ];
+      if (providerSessionId === undefined) argv.push("--session-id", crypto.randomUUID());
+      else argv.push("--resume", providerSessionId);
+      if (model !== null) argv.push("--model", model);
+      if (start.effort !== undefined) argv.push("--effort", start.effort);
+      if (start.permissionMode !== "ask") {
+        argv.push("--permission-mode", "bypassPermissions");
+      }
+      return argv;
+    }
+    default:
+      return new ProtocolHarnessUnsupportedError(harness);
   }
 };

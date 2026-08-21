@@ -2,7 +2,10 @@ import { getTableConfig } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
 
 import {
+  agentItems,
+  agentRequests,
   agentSessions,
+  agentTurns,
   briefComments,
   briefVersions,
   briefs,
@@ -158,6 +161,44 @@ describe("Mend Drizzle schema", () => {
       "created_at",
       "updated_at",
     ]);
+  });
+
+  it("maps replay-stable protocol conversations and resumable item cursors", () => {
+    expect(sessionProcesses.protocolOutputSeq.getSQLType()).toBe("bigint");
+
+    expect(
+      [agentTurns, agentItems, agentRequests].map((table) => getTableConfig(table).name),
+    ).toEqual(["agent_turns", "agent_items", "agent_requests"]);
+    const itemConfig = getTableConfig(agentItems);
+    expect(itemConfig.uniqueConstraints.map((constraint) => constraint.name).toSorted()).toEqual([
+      "agent_items_session_provider_key",
+      "agent_items_session_seq_key",
+    ]);
+    expect(itemConfig.indexes.map((index) => index.config.name)).toEqual([
+      "agent_items_session_seq_idx",
+      "agent_items_turn_seq_idx",
+    ]);
+    expect(itemConfig.foreignKeys.map((foreignKey) => foreignKey.onDelete)).toEqual([
+      "cascade",
+      "cascade",
+      "cascade",
+    ]);
+
+    const turnIndexes = new Map(
+      getTableConfig(agentTurns).indexes.map((index) => [index.config.name, index.config]),
+    );
+    expect(turnIndexes.get("agent_turns_session_provider_key")?.unique).toBe(true);
+    expect(turnIndexes.get("agent_turns_one_running_process_idx")?.unique).toBe(true);
+    expect(turnIndexes.get("agent_turns_one_running_process_idx")?.where).toBeDefined();
+
+    const requestConfig = getTableConfig(agentRequests);
+    expect(requestConfig.uniqueConstraints.map((constraint) => constraint.name)).toEqual([
+      "agent_requests_process_provider_key",
+    ]);
+    expect(agentRequests.detail.getSQLType()).toBe("jsonb");
+    expect(agentRequests.questions.getSQLType()).toBe("jsonb");
+    expect(agentRequests.answers.getSQLType()).toBe("jsonb");
+    expect(agentRequests.responseDelivery.default).toBe("none");
   });
 
   it("preserves run-local bigint cursors and the one-active-run invariant", () => {

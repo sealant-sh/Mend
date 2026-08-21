@@ -1,8 +1,8 @@
 {
-  "name": "@mend/sessions",
+  "name": "@mend/agent-protocol",
   "version": "0.0.0",
   "private": true,
-  "description": "The workbench session engine: worktree provisioning, run supervision with crash-resume, checkpointing",
+  "description": "Structured stdio protocol adapters for Codex and Claude Code",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
@@ -13,14 +13,8 @@
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@mend/agent-protocol": "workspace:*",
-    "@mend/db": "workspace:*",
     "@mend/domain": "workspace:*",
-    "@mend/sealant": "workspace:*",
-    "@mend/store": "workspace:*",
-    "@sealant/sdk": "catalog:",
-    "effect": "catalog:",
-    "smol-toml": "1.4.2"
+    "effect": "catalog:"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",

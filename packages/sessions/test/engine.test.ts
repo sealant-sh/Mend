@@ -5,6 +5,7 @@ import * as path from "node:path";
 
 import { describe, expect, it } from "@effect/vitest";
 import {
+  AgentConversationRepo,
   CheckpointsRepo,
   HotWorkspacesRepo,
   ProjectNotFoundError,
@@ -33,6 +34,7 @@ import {
   type NewSessionRun,
 } from "@mend/db";
 import {
+  AgentTurnId,
   ChangeId,
   CheckpointId,
   ProjectEnvironmentVariableId,
@@ -51,6 +53,7 @@ import {
   type DotfilesRepository,
 } from "@mend/domain";
 import {
+  AgentTurn,
   Change,
   Checkpoint,
   HotWorkspace,
@@ -71,6 +74,7 @@ import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import {
   HarnessStateNotFoundError,
   LegacyBenchReadOnlyError,
+  ProtocolHost,
   ServiceHost,
   SessionEngine,
   SessionEngineLive,
@@ -89,6 +93,7 @@ import type {
   CreateOptions,
   InteractiveSession,
   InteractiveSessionStatus,
+  SessionOptions,
   Workspace,
 } from "@sealant/sdk";
 import { Duration, Effect, Layer, Schedule, Stream } from "effect";
@@ -152,15 +157,17 @@ const sealantLaunchLayer = (
     Effect.succeed(new Date("2030-01-01T00:00:00.000Z")),
   /** Per-PTY observed state a test flips to simulate an exit the watcher must notice. */
   ptyStates?: Map<string, InteractiveSessionStatus>,
+  openedOptions?: SessionOptions[],
 ) => {
   let nextPty = 0;
   const ptys = new Map<string, InteractiveSession>();
-  const openPty = (): InteractiveSession => {
+  const openPty = (mode: "pty" | "pipe" = "pty"): InteractiveSession => {
     nextPty += 1;
     const pty: InteractiveSession = {
       id: `pty-${nextPty}`,
       workspaceId: "workspace-1",
       runId: `run-${nextPty}`,
+      mode,
       send: async () => undefined,
       output: async function* () {},
       resize: async () => undefined,
@@ -187,7 +194,10 @@ const sealantLaunchLayer = (
     },
     exec: async () => new Promise(() => undefined),
     sessions: {
-      open: async () => openPty(),
+      open: async (_argv, options) => {
+        if (options !== undefined) openedOptions?.push(options);
+        return openPty(options?.mode ?? "pty");
+      },
       get: async (id) => ptys.get(id) ?? initialPty,
       list: async () => [...ptys.values()],
     },
@@ -235,10 +245,11 @@ const sealantLaunchLayer = (
     startHarness: () => Effect.die("not in test"),
     startHarnessInWorkspace: () => Effect.die("not in test"),
     waitRun: () => Effect.die("not in test"),
-    openSession: (_workspace, argv) =>
+    openSession: (_workspace, argv, options) =>
       Effect.sync(() => {
         spawned?.push(argv);
-        return openPty();
+        if (options !== undefined) openedOptions?.push(options);
+        return openPty(options?.mode ?? "pty");
       }),
     forward: () => Effect.die("not in test"),
     stopWorkspace: (target) =>
@@ -267,6 +278,78 @@ const sealantLaunchLayer = (
     resolveWorkspacePackage: () => Effect.die("not in test"),
   });
 };
+
+/** PTY-only engine tests never persist structured conversations. */
+const agentConversationStubLayer = Layer.succeed(AgentConversationRepo, {
+  submitTurn: () => Effect.die("not in test"),
+  byTurnId: () => Effect.succeed(null),
+  byLaunchCorrelation: () => Effect.succeed(null),
+  byProviderTurnId: () => Effect.succeed(null),
+  listTurns: () => Effect.succeed([]),
+  claimNextTurn: () => Effect.succeed(null),
+  setProviderTurnId: () => Effect.die("not in test"),
+  bindRunningProviderTurn: () => Effect.succeed(null),
+  failTurn: () => Effect.die("not in test"),
+  completeTurn: () => Effect.succeed(null),
+  upsertItem: () => Effect.die("not in test"),
+  listItems: () => Effect.succeed([]),
+  openRequest: () => Effect.die("not in test"),
+  byRequestId: () => Effect.succeed(null),
+  listRequests: () => Effect.succeed([]),
+  hasPendingRequests: () => Effect.succeed(false),
+  prepareRequestResponse: () => Effect.die("not in test"),
+  completeRequestResponse: () => Effect.die("not in test"),
+  failRequestResponse: () => Effect.void,
+  resolveRequest: () => Effect.die("not in test"),
+  resolveProviderRequest: () => Effect.void,
+  cancelOpenForTurn: () => Effect.void,
+  cancelOpenForProcess: () => Effect.void,
+  protocolCursor: () => Effect.succeed({ nextSequence: 0n }),
+  saveProtocolCursor: () => Effect.void,
+});
+
+const protocolHostStubLayer = Layer.succeed(ProtocolHost, {
+  attach: () => Effect.die("not in test"),
+  submitTurn: () => Effect.die("not in test"),
+  interruptTurn: () => Effect.die("not in test"),
+  respondRequest: () => Effect.die("not in test"),
+  detach: () => Effect.void,
+  has: () => Effect.succeed(false),
+});
+
+const recordingProtocolHostLayer = (
+  attached: Array<{ readonly process: SessionProcess; readonly mode: string }>,
+  submitted: string[],
+) =>
+  Layer.succeed(ProtocolHost, {
+    attach: (input) =>
+      Effect.sync(() => {
+        attached.push({ process: input.process, mode: input.pipe.mode });
+      }),
+    submitTurn: (sessionId, input, author) =>
+      Effect.sync(() => {
+        submitted.push(input);
+        return new AgentTurn({
+          id: AgentTurnId.make(`turn-${submitted.length}`),
+          sessionId,
+          processId: attached.at(-1)?.process.id ?? SessionProcessId.make("missing-process"),
+          ordinal: submitted.length - 1,
+          author,
+          input,
+          status: "queued",
+          providerTurnId: null,
+          error: null,
+          usage: null,
+          createdAt: now(),
+          startedAt: null,
+          endedAt: null,
+        });
+      }),
+    interruptTurn: () => Effect.void,
+    respondRequest: () => Effect.die("not in test"),
+    detach: () => Effect.void,
+    has: () => Effect.succeed(true),
+  });
 
 /** Services bind no real sockets in these worlds. */
 const serviceHostStubLayer = Layer.succeed(ServiceHost, {
@@ -1098,6 +1181,7 @@ const withEngine = <A, E>(
   work: (world: World, tmp: string) => Effect.Effect<A, E, SessionEngine | Store>,
   options: {
     readonly sealantLayer?: Layer.Layer<SealantClient>;
+    readonly protocolHostLayer?: Layer.Layer<ProtocolHost>;
     readonly hotWorkspacesLayer?: Layer.Layer<HotWorkspacesRepo>;
     readonly workspaceImage?: typeof defaultSettings.workspaceImage;
     readonly environment?: () => {
@@ -1124,7 +1208,13 @@ const withEngine = <A, E>(
     Layer.provide(sessionsLayer(world)),
     Layer.provide(sessionRunsLayer(world)),
     Layer.provide(sessionProcessesLayer(world)),
-    Layer.provide(serviceStateLayer(world)),
+    Layer.provide(
+      Layer.mergeAll(
+        agentConversationStubLayer,
+        options.protocolHostLayer ?? protocolHostStubLayer,
+        serviceStateLayer(world),
+      ),
+    ),
     Layer.provide(serviceHostStubLayer),
     Layer.provide(sessionSocketStubLayer),
     Layer.provide(mendKeysStubLayer),
@@ -1188,6 +1278,147 @@ describe("SessionEngine", () => {
           shell: "bash",
           services: { docker: true },
         },
+      },
+    );
+  });
+
+  it("launches a protocol agent through a pipe and records an agent-protocol process", async () => {
+    const created: CreateOptions[] = [];
+    const spawned: ReadonlyArray<string>[] = [];
+    const openedOptions: SessionOptions[] = [];
+    const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
+    const submitted: string[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            ownerUserId: null,
+            base: null,
+          });
+
+          yield* engine.launchProtocol(
+            session.id,
+            {
+              mode: "protocol",
+              prompt: "inspect replay",
+              model: "gpt-test",
+              effort: "high",
+              permissionMode: "ask",
+            },
+            "user-1",
+          );
+
+          expect(openedOptions).toEqual([{ mode: "pipe" }]);
+          expect(spawned[0]?.slice(-2)).toEqual(["codex", "app-server"]);
+          expect(attached).toHaveLength(1);
+          expect(attached[0]?.mode).toBe("pipe");
+          expect(attached[0]?.process.kind).toBe("agent-protocol");
+          expect(attached[0]?.process.argv).toEqual(["codex", "app-server"]);
+          expect(submitted).toEqual(["inspect replay"]);
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          spawned,
+          undefined,
+          undefined,
+          undefined,
+          openedOptions,
+        ),
+        protocolHostLayer: recordingProtocolHostLayer(attached, submitted),
+      },
+    );
+  });
+
+  it("launches Claude stream-json with one provider session id", async () => {
+    const created: CreateOptions[] = [];
+    const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
+    const submitted: string[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            ownerUserId: null,
+            base: null,
+          });
+
+          yield* engine.launchProtocol(
+            session.id,
+            { mode: "protocol", permissionMode: "bypass" },
+            "user-1",
+          );
+
+          const process = attached[0]?.process;
+          const sessionFlag = process?.argv.indexOf("--session-id") ?? -1;
+          expect(process?.kind).toBe("agent-protocol");
+          expect(process?.argv).toContain("stream-json");
+          expect(process?.providerSessionId).toBe(process?.argv.at(sessionFlag + 1));
+          expect(attached[0]?.mode).toBe("pipe");
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        protocolHostLayer: recordingProtocolHostLayer(attached, submitted),
+      },
+    );
+  });
+
+  it("settles and reaps a protocol process when adapter initialization fails", async () => {
+    const created: CreateOptions[] = [];
+    const failingHost = Layer.succeed(ProtocolHost, {
+      attach: () =>
+        Effect.fail(
+          new SealantPlatformError({
+            code: "protocol-init-failed",
+            status: null,
+            message: "initialize failed",
+            cause: null,
+          }),
+        ),
+      submitTurn: () => Effect.die("not in test"),
+      interruptTurn: () => Effect.die("not in test"),
+      respondRequest: () => Effect.die("not in test"),
+      detach: () => Effect.void,
+      has: () => Effect.succeed(false),
+    });
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            ownerUserId: null,
+            base: null,
+          });
+
+          const error = yield* engine
+            .launchProtocol(session.id, { mode: "protocol", permissionMode: "ask" }, "user-1")
+            .pipe(Effect.flip);
+          expect(error).toBeInstanceOf(SealantPlatformError);
+          const process = [...world.processes.values()].find(
+            (candidate) => candidate.kind === "agent-protocol",
+          );
+          expect(process?.exitedAt).not.toBeNull();
+          expect(world.sessions.get(session.id)?.status).toBe("failed");
+          expect([...world.sessionRuns.values()].at(-1)?.status).toBe("failed");
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        protocolHostLayer: failingHost,
       },
     );
   });
@@ -2592,7 +2823,9 @@ describe("SessionEngine", () => {
       Layer.provide(sessionsLayer(world)),
       Layer.provide(sessionRunsLayer(world)),
       Layer.provide(sessionProcessesLayer(world)),
-      Layer.provide(serviceStateLayer(world)),
+      Layer.provide(
+        Layer.mergeAll(agentConversationStubLayer, protocolHostStubLayer, serviceStateLayer(world)),
+      ),
       Layer.provide(serviceHostStubLayer),
       Layer.provide(sessionSocketStubLayer),
       Layer.provide(mendKeysStubLayer),

@@ -1,6 +1,8 @@
 import type { AuthSession } from "@mend/auth";
 import { NewIssue, QueueMove } from "@mend/db";
 import {
+  AgentRequestId,
+  AgentTurnId,
   Brief,
   BriefComment,
   BriefVersion,
@@ -27,6 +29,12 @@ import {
   WorkspaceImage,
 } from "@mend/domain";
 import {
+  AgentApprovalDecision,
+  AgentInputAnswers,
+  AgentItem,
+  AgentLaunchMode,
+  AgentRequest,
+  AgentTurn,
   AutomationChoice,
   EFFORT_LEVELS,
   PERMISSION_MODES,
@@ -1134,6 +1142,8 @@ const projectRecipesGroup = HttpApiGroup.make("projectRecipes")
 /** Provisioning a session: the worktree exists after this; launching is separate. */
 export class NewWorkbenchSession extends Schema.Class<NewWorkbenchSession>("NewWorkbenchSession")({
   harness: Schema.String,
+  /** Intended agent launch shape; omitted keeps the PTY default. */
+  mode: Schema.optional(AgentLaunchMode),
   label: Schema.NullOr(Schema.String),
   /** Branch or sha to base the worktree on; null = the project's default branch. */
   base: Schema.NullOr(Schema.String),
@@ -1173,6 +1183,8 @@ export class DeliverFollowUpRequest extends Schema.Class<DeliverFollowUpRequest>
  * composes the harness argv from it in one place (`composeLaunchArgv`).
  */
 export class LaunchRequest extends Schema.Class<LaunchRequest>("LaunchRequest")({
+  /** Omitted keeps the existing PTY launch shape. */
+  mode: Schema.optional(AgentLaunchMode),
   argv: Schema.optional(Schema.Array(Schema.String)),
   /** The typed first message; rides the harness argv and seeds auto-naming. */
   prompt: Schema.optional(Schema.String),
@@ -1183,6 +1195,34 @@ export class LaunchRequest extends Schema.Class<LaunchRequest>("LaunchRequest")(
   /** `fast` = priority processing where the harness supports it (codex). */
   speed: Schema.optional(Schema.Literals(SPEED_MODES)),
 }) {}
+
+/** Submit one authored input to the live protocol process. */
+export class SubmitAgentTurnRequest extends Schema.Class<SubmitAgentTurnRequest>(
+  "SubmitAgentTurnRequest",
+)({
+  input: Schema.String,
+}) {}
+
+/** A live protocol process is required for this operation. */
+export class ProtocolSessionNotLive extends Schema.TaggedErrorClass<ProtocolSessionNotLive>()(
+  "ProtocolSessionNotLive",
+  { processId: Schema.String },
+  { httpApiStatus: 409 },
+) {}
+
+/** The request already has an observed answer or cancellation. */
+export class AgentRequestResolved extends Schema.TaggedErrorClass<AgentRequestResolved>()(
+  "AgentRequestResolved",
+  { requestId: Schema.String },
+  { httpApiStatus: 409 },
+) {}
+
+/** Approval and structured-input responses are disjoint on the wire. */
+export const RespondAgentRequest = Schema.Union([
+  Schema.Struct({ decision: AgentApprovalDecision }),
+  Schema.Struct({ answers: AgentInputAnswers }),
+]);
+export type RespondAgentRequest = typeof RespondAgentRequest.Type;
 
 /** One conversation event of the canonical session record (chat surfaces render these). */
 export class TranscriptEvent extends Schema.Class<TranscriptEvent>("TranscriptEvent")({
@@ -1232,6 +1272,51 @@ const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       success: SessionDetail,
       error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("submitTurn", "/sessions/:id/turns", {
+      params: { id: SessionId },
+      payload: SubmitAgentTurnRequest,
+      success: AgentTurn,
+      error: [NotFound, ProtocolSessionNotLive],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("interruptTurn", "/turns/:id/interrupt", {
+      params: { id: AgentTurnId },
+      error: [NotFound, ProtocolSessionNotLive],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("listTurns", "/sessions/:id/turns", {
+      params: { id: SessionId },
+      success: Schema.Array(AgentTurn),
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("listItems", "/sessions/:id/items", {
+      params: { id: SessionId },
+      query: { after: Schema.optional(Schema.String), limit: Schema.optional(Schema.String) },
+      success: Schema.Array(AgentItem),
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("listAgentRequests", "/sessions/:id/requests", {
+      params: { id: SessionId },
+      query: { pending: Schema.optional(Schema.String) },
+      success: Schema.Array(AgentRequest),
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("respondAgentRequest", "/requests/:id/respond", {
+      params: { id: AgentRequestId },
+      payload: RespondAgentRequest,
+      success: AgentRequest,
+      error: [NotFound, ProtocolSessionNotLive, AgentRequestResolved],
     }),
   )
   .add(

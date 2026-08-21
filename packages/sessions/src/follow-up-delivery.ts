@@ -1,4 +1,5 @@
 import {
+  AgentConversationRepo,
   FollowUpsRepo,
   type FollowUpDeliveryAttempt,
   ReviewCommentsRepo,
@@ -117,6 +118,7 @@ const launchDecision = (attempt: FollowUpDeliveryAttempt): DeliveryDecision => {
 export const FollowUpDeliveryLive: Layer.Layer<
   FollowUpDelivery,
   never,
+  | AgentConversationRepo
   | FollowUpsRepo
   | ReviewCommentsRepo
   | ReviewSlicesRepo
@@ -127,6 +129,7 @@ export const FollowUpDeliveryLive: Layer.Layer<
 > = Layer.effect(
   FollowUpDelivery,
   Effect.gen(function* () {
+    const conversations = yield* AgentConversationRepo;
     const followUps = yield* FollowUpsRepo;
     const comments = yield* ReviewCommentsRepo;
     const slices = yield* ReviewSlicesRepo;
@@ -166,6 +169,22 @@ export const FollowUpDeliveryLive: Layer.Layer<
           if (current === null) return yield* missingFollowUp(claimed.sessionId);
           const delivered = yield* finalizeCorrelated(current);
           if (delivered !== null) return delivered;
+          if (Result.isSuccess(launchResult)) {
+            const turn = yield* conversations.byLaunchCorrelation(
+              current.sessionId,
+              `follow-up:${current.id}`,
+            );
+            const correlatedProcess = turn === null ? null : yield* processes.byId(turn.processId);
+            if (correlatedProcess !== null && correlatedProcess.sealantRunId !== null) {
+              const reconciled = yield* followUps.reconcileDelivered(
+                current.id,
+                correlatedProcess.id,
+                correlatedProcess.sealantRunId,
+              );
+              yield* comments.markSelectedSent(current.commentIds, current.sessionId);
+              return reconciled;
+            }
+          }
           if (current.status !== "delivering") return current;
           const currentAttempt = yield* followUps.attemptForFollowUp(current.id);
           if (currentAttempt?.attemptId !== attemptId) return current;
@@ -297,9 +316,12 @@ export const FollowUpDeliveryLive: Layer.Layer<
 
           const sessionProcesses = yield* processes.listForSession(input.sessionId);
           const hasLiveAgent = sessionProcesses.some(isLiveAgentProcess);
+          const liveProtocol = sessionProcesses.find(
+            (process) => process.kind === "agent-protocol" && isLiveAgentProcess(process),
+          );
           const observedActive =
             session.settledAt === null && ACTIVE_SESSION_STATUSES.has(session.status);
-          if (hasLiveAgent || observedActive) {
+          if ((hasLiveAgent || observedActive) && liveProtocol === undefined) {
             const pending =
               followUp.status === "pending" ? followUp : yield* followUps.markPending(followUp.id);
             return returnDecision(pending);

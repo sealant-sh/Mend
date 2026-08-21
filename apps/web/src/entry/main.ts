@@ -14,6 +14,7 @@ import {
 } from "@mend/api";
 import { Auth } from "@mend/auth";
 import {
+  AgentConversationRepoLive,
   BriefCommentsRepoLive,
   BriefsRepoLive,
   ChangePassesRepo,
@@ -87,6 +88,7 @@ import { SealantClientLiveFromEnv } from "@mend/sealant";
 import {
   FollowUpDeliveryLive,
   FollowUpLauncherLive,
+  ProtocolHostLive,
   ServiceHostLive,
   SessionEngine,
   SessionEngineLive as SessionEngineBaseLive,
@@ -124,6 +126,7 @@ const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..
 
 // ─── Data: Postgres, migrated before anything reads it ─────────────────────
 const DrizzleRepositoriesLive = Layer.mergeAll(
+  AgentConversationRepoLive,
   UserDotfilesRepoLive,
   HotWorkspacesRepoLive,
   SessionGitOpsRepoLive,
@@ -178,7 +181,9 @@ const BridgeLive: Layer.Layer<AgentBridge> = AgentBridgeLive.pipe(
   Layer.provide(MendKeysConfigLive),
 );
 const ServiceHostLayer = ServiceHostLive;
+const ProtocolHostLayer = ProtocolHostLive;
 const SessionEngineLayer = SessionEngineBaseLive.pipe(
+  Layer.provide(ProtocolHostLayer),
   Layer.provide(ServiceHostLayer),
   Layer.provide(SessionSocketHostLive),
   Layer.provide(DotfilesStoreLayer),

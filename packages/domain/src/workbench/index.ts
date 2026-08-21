@@ -16,6 +16,7 @@
  * Lives on a subpath while the queue-era model retires; promotes to the root
  * barrel when `issue.ts` and friends go (docs/M0-INVENTORY.md).
  */
+export * from "./agent-protocol.ts";
 export * from "./change.ts";
 export * from "./checkpoint.ts";
 export * from "./context.ts";

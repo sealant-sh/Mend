@@ -1,4 +1,7 @@
 import type {
+  AgentItemId,
+  AgentRequestId,
+  AgentTurnId,
   BriefCommentId,
   BriefDocument,
   EvidencePointer,
@@ -44,6 +47,15 @@ import type {
   WorkspaceImage,
 } from "@mend/domain";
 import type {
+  AgentApprovalDecision,
+  AgentInputAnswers,
+  AgentInputQuestion,
+  AgentItemKind,
+  AgentItemStatus,
+  AgentRequestKind,
+  AgentRequestStatus,
+  AgentTurnStatus,
+  AgentTurnUsage,
   AutomationChoice,
   CheckpointTrigger,
   ContextItem,
@@ -559,6 +571,8 @@ export const sessionProcesses = pgTable(
     kind: text().$type<SessionProcessKind>().notNull(),
     harness: text(),
     providerSessionId: text(),
+    /** Next pipe-output sequence after the last newline-boundary projection. */
+    protocolOutputSeq: bigint({ mode: "bigint" }).notNull().default(0n),
     label: text(),
     argv: jsonb()
       .$type<ReadonlyArray<string>>()
@@ -591,6 +605,126 @@ export const sessionProcesses = pgTable(
     index("session_processes_live_idx")
       .on(table.sealantWorkspaceId)
       .where(sql`${table.exitedAt} IS NULL`),
+  ],
+);
+
+export const agentTurns = pgTable(
+  "agent_turns",
+  {
+    id: text().$type<AgentTurnId>().primaryKey(),
+    sessionId: text()
+      .$type<SessionId>()
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: "cascade" }),
+    processId: text()
+      .$type<SessionProcessId>()
+      .notNull()
+      .references(() => sessionProcesses.id, { onDelete: "cascade" }),
+    ordinal: integer().notNull(),
+    author: text(),
+    input: text().notNull(),
+    status: text().$type<AgentTurnStatus>().notNull().default("queued"),
+    providerTurnId: text(),
+    /** Idempotency correlation for a system-authored follow-up turn. */
+    launchCorrelationId: text(),
+    error: text(),
+    usage: jsonb().$type<AgentTurnUsage>(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    startedAt: timestamp({ mode: "date", withTimezone: true }),
+    endedAt: timestamp({ mode: "date", withTimezone: true }),
+  },
+  (table) => [
+    unique("agent_turns_session_ordinal_key").on(table.sessionId, table.ordinal),
+    uniqueIndex("agent_turns_session_provider_key")
+      .on(table.sessionId, table.providerTurnId)
+      .where(sql`${table.providerTurnId} IS NOT NULL`),
+    uniqueIndex("agent_turns_session_correlation_key")
+      .on(table.sessionId, table.launchCorrelationId)
+      .where(sql`${table.launchCorrelationId} IS NOT NULL`),
+    uniqueIndex("agent_turns_one_running_process_idx")
+      .on(table.processId)
+      .where(sql`${table.status} = 'running'`),
+    index("agent_turns_session_created_idx").on(table.sessionId, table.ordinal),
+    index("agent_turns_process_status_idx").on(table.processId, table.status, table.ordinal),
+  ],
+);
+
+export const agentItems = pgTable(
+  "agent_items",
+  {
+    id: text().$type<AgentItemId>().primaryKey(),
+    sessionId: text()
+      .$type<SessionId>()
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: "cascade" }),
+    processId: text()
+      .$type<SessionProcessId>()
+      .notNull()
+      .references(() => sessionProcesses.id, { onDelete: "cascade" }),
+    turnId: text()
+      .$type<AgentTurnId>()
+      .notNull()
+      .references(() => agentTurns.id, { onDelete: "cascade" }),
+    seq: integer().notNull(),
+    providerItemId: text().notNull(),
+    /** Pipe output position of the latest applied provider event for replay deduplication. */
+    providerOutputProcessId: text().$type<SessionProcessId>().notNull(),
+    providerOutputSeq: bigint({ mode: "bigint" }).notNull(),
+    providerEventIndex: integer().notNull(),
+    kind: text().$type<AgentItemKind>().notNull(),
+    status: text().$type<AgentItemStatus>().notNull(),
+    title: text(),
+    text: text(),
+    data: jsonb().$type<unknown>(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("agent_items_session_seq_key").on(table.sessionId, table.seq),
+    unique("agent_items_session_provider_key").on(table.sessionId, table.providerItemId),
+    index("agent_items_session_seq_idx").on(table.sessionId, table.seq),
+    index("agent_items_turn_seq_idx").on(table.turnId, table.seq),
+  ],
+);
+
+export const agentRequests = pgTable(
+  "agent_requests",
+  {
+    id: text().$type<AgentRequestId>().primaryKey(),
+    sessionId: text()
+      .$type<SessionId>()
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: "cascade" }),
+    processId: text()
+      .$type<SessionProcessId>()
+      .notNull()
+      .references(() => sessionProcesses.id, { onDelete: "cascade" }),
+    turnId: text()
+      .$type<AgentTurnId>()
+      .notNull()
+      .references(() => agentTurns.id, { onDelete: "cascade" }),
+    kind: text().$type<AgentRequestKind>().notNull(),
+    providerRequestId: text().notNull(),
+    providerItemId: text(),
+    title: text(),
+    detail: jsonb().$type<unknown>(),
+    questions: jsonb().$type<ReadonlyArray<AgentInputQuestion>>(),
+    status: text().$type<AgentRequestStatus>().notNull().default("pending"),
+    decision: text().$type<AgentApprovalDecision>(),
+    decidedBy: text(),
+    answers: jsonb().$type<AgentInputAnswers>(),
+    /** Internal delivery state for crash-safe provider responses. */
+    responseDelivery: text()
+      .$type<"none" | "sending" | "delivered" | "failed">()
+      .notNull()
+      .default("none"),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    decidedAt: timestamp({ mode: "date", withTimezone: true }),
+  },
+  (table) => [
+    unique("agent_requests_process_provider_key").on(table.processId, table.providerRequestId),
+    index("agent_requests_session_status_idx").on(table.sessionId, table.status, table.createdAt),
+    index("agent_requests_process_status_idx").on(table.processId, table.status),
   ],
 );
 
@@ -866,6 +1000,9 @@ export const reviewSlices = pgTable(
   ],
 );
 
+export type AgentTurnRow = typeof agentTurns.$inferSelect;
+export type AgentItemRow = typeof agentItems.$inferSelect;
+export type AgentRequestRow = typeof agentRequests.$inferSelect;
 export type ProjectRow = typeof projects.$inferSelect;
 export type IssueRow = typeof issues.$inferSelect;
 export type ChangeRow = typeof changes.$inferSelect;
