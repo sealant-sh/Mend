@@ -39,6 +39,8 @@ import {
   PROMPTABLE_HARNESSES,
   ReviewCommentAnchor,
   composeLaunchArgv,
+  currentAgentProcess,
+  isAgentProcessKind,
   type ReviewSlice,
   formatProjectEnvironmentIssue,
   parseDotenv,
@@ -353,10 +355,25 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         const projectSessions = yield* sessions.listForProject(params.id);
         const annotations = yield* changes.annotationsForProject(params.id);
+        // One read for every session's processes; `currentAgent` is derived per session.
+        const processes = yield* SessionProcessesRepo;
+        const rows = yield* processes.listForSessions(projectSessions.map((session) => session.id));
+        const bySession = new Map<string, Array<(typeof rows)[number]>>();
+        for (const row of rows) {
+          const list = bySession.get(row.sessionId);
+          if (list === undefined) bySession.set(row.sessionId, [row]);
+          else list.push(row);
+        }
         return new ProjectDetail({
           project,
           sessions: projectSessions,
-          annotations: annotations.map((row) => new SessionAnnotation(row)),
+          annotations: annotations.map(
+            (row) =>
+              new SessionAnnotation({
+                ...row,
+                currentAgent: currentAgentProcess(bySession.get(row.sessionId) ?? []),
+              }),
+          ),
         });
       }),
     )
@@ -1390,7 +1407,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const ids = new Set(active.map((session) => session.id));
         const processes = yield* SessionProcessesRepo;
         for (const process of yield* processes.listLive()) {
-          if (process.kind !== "agent") ids.add(process.sessionId);
+          if (!isAgentProcessKind(process.kind)) ids.add(process.sessionId);
         }
         const services = yield* ServicesRepo;
         const forwards = yield* ServiceForwardsRepo;
@@ -1443,7 +1460,15 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         const sessionCheckpoints = yield* checkpoints.listForSession(params.id);
         const change = yield* changes.bySession(params.id);
-        return new SessionDetail({ session, checkpoints: sessionCheckpoints, change });
+        const processes = yield* SessionProcessesRepo;
+        const rows = yield* processes.listForSession(params.id);
+        return new SessionDetail({
+          session,
+          checkpoints: sessionCheckpoints,
+          change,
+          processes: rows,
+          currentAgent: currentAgentProcess(rows),
+        });
       }),
     )
     .handle("listProcesses", ({ params }) =>

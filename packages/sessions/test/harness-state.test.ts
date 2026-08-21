@@ -6,6 +6,7 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   HarnessStateInvalidError,
   HarnessStateNotFoundError,
+  locateHarnessState,
   readHarnessStateManifest,
 } from "@mend/sessions";
 import { Effect } from "effect";
@@ -74,6 +75,59 @@ describe("readHarnessStateManifest", () => {
       );
 
       expect(error).toBeInstanceOf(HarnessStateInvalidError);
+    });
+  });
+});
+
+const manifest = (harness: string, providerSessionId: string) =>
+  JSON.stringify({ harness, providerSessionId, capturedAt: "2026-08-21T12:00:00.000Z" });
+
+describe("locateHarnessState", () => {
+  it("prefers the newest agent process capture over the legacy session-root one", async () => {
+    await withStateDir(async (sessionDir) => {
+      const older = path.join(sessionDir, "processes", "proc-older");
+      const newer = path.join(sessionDir, "processes", "proc-newer");
+      await fs.mkdir(older, { recursive: true });
+      await fs.mkdir(newer, { recursive: true });
+      await fs.writeFile(path.join(sessionDir, "manifest.json"), manifest("codex", "legacy"));
+      await fs.writeFile(path.join(older, "manifest.json"), manifest("codex", "older"));
+      await fs.writeFile(path.join(newer, "manifest.json"), manifest("claude", "newer"));
+
+      const located = await Effect.runPromise(
+        locateHarnessState(sessionDir, [newer, older], "session-1"),
+      );
+      expect(located.stateDir).toBe(newer);
+      expect(located.manifest.harness).toBe("claude");
+      expect(located.manifest.providerSessionId).toBe("newer");
+    });
+  });
+
+  it("skips agent processes that never harvested and falls back to the session root", async () => {
+    await withStateDir(async (sessionDir) => {
+      const empty = path.join(sessionDir, "processes", "proc-empty");
+      const missing = path.join(sessionDir, "processes", "proc-missing");
+      await fs.mkdir(empty, { recursive: true });
+      await fs.writeFile(path.join(sessionDir, "manifest.json"), manifest("codex", "legacy"));
+
+      const located = await Effect.runPromise(
+        locateHarnessState(sessionDir, [empty, missing], "session-1"),
+      );
+      expect(located.stateDir).toBe(sessionDir);
+      expect(located.manifest.providerSessionId).toBe("legacy");
+    });
+  });
+
+  it("reports not-found against the session root when nothing was ever captured", async () => {
+    await withStateDir(async (sessionDir) => {
+      const outcome = await Effect.runPromise(
+        locateHarnessState(
+          sessionDir,
+          [path.join(sessionDir, "processes", "proc-1")],
+          "session-1",
+        ).pipe(Effect.flip),
+      );
+      expect(outcome).toBeInstanceOf(HarnessStateNotFoundError);
+      expect(outcome.path).toBe(path.join(sessionDir, "manifest.json"));
     });
   });
 });

@@ -277,6 +277,13 @@ they are not additional sessions or coding-agent runs. The coding-agent state, w
 each supporting process state are independent observations. A completed coding-agent run may leave
 the workspace retained by a shell or Service.
 
+Concretely (decided 2026-08-21, `docs/SESSION-SERVICES.md` "The model"): the session is the worktree
+plus its record, and everything that interacts with it is a process of one kind — `shell`,
+`agent-pty`, `agent-protocol` (reserved), `service` — with one lifecycle. A session holds several
+agent processes over its life; harness native state is harvested per agent process. Session status
+is a fold over live processes: any agent live → `running`; shells or Services only → `idle`; nothing
+live → settled from the last agent's outcome.
+
 A session contains or references:
 
 - provider and harness type;
@@ -1353,6 +1360,20 @@ understand the work.
   when no retained workspace exists because its worktree path is fixed; a session retained by live
   leases resumes in place. Status stays observational: "2 ready · 1 warming", never a promise.
 
+- **2026-08-21 — Sessions are worktrees; everything else is a process.** The engine's data model and
+  status logic treated "the session" as "the agent PTY" (`sessions.sealant_session_id`, one watcher
+  settling the row). Protocol-mode agents and multiplayer both need the session to be the worktree
+  plus its record, with every way of interacting with it a process kind sharing one lifecycle.
+  Decided: `session_processes.kind` ∈ `shell | agent-pty | agent-protocol | service`; agent rows
+  carry `harness` and `provider_session_id`; harness state is harvested per agent process under
+  `sessions/<id>/processes/<process-id>/` (older session-root captures still read); session status
+  is a fold over live processes (agent live → running; supporting only → idle; nothing → settled
+  from the last agent outcome), so the same per-process watcher ends agents, shells, and Service
+  attempts; stop ends agent processes only; follow-ups and resumes are refused while an agent is
+  live, not while shells hold the workspace. The API exposes `processes[]` and `currentAgent` on the
+  session detail (and `currentAgent` on list annotations); the singular `sealantSessionId` stays as
+  a mirror of the current agent's PTY until list readers migrate. `waiting` is reserved for protocol
+  mode. Nothing here builds protocol mode.
 - **2026-08-11 — One saved workspace profile, with runtime services distinct from packages.** Mend
   settings own the environment for workspace launches: OS family, portable package names, and
   explicit services. The initial profile is Arch with pnpm, Python + uv, mise for managed Node and

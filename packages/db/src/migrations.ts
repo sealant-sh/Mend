@@ -974,6 +974,47 @@ const workspaceTtlRenewal = Effect.gen(function* () {
       ADD COLUMN IF NOT EXISTS workspace_ttl_renewal_error text`;
 });
 
+/**
+ * Sessions are worktrees; everything else is a process (decided 2026-08-21). The agent stops
+ * being a special row: its kind names the transport (`agent-pty` today, `agent-protocol`
+ * reserved), it carries the harness that launched it, and the provider session id a native
+ * resume addresses lives on the process, not the session. Existing `agent` rows become
+ * `agent-pty`; the harness is read off the recorded argv (the login-shell launches of an agent
+ * session read as `shell`), falling back to the label the launch stamped (= the session harness
+ * at the time). The session's provider id moves onto its newest agent process.
+ */
+const sessionProcessKinds = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE session_processes
+      ADD COLUMN IF NOT EXISTS harness text,
+      ADD COLUMN IF NOT EXISTS provider_session_id text`;
+  yield* sql`UPDATE session_processes SET kind = 'agent-pty' WHERE kind = 'agent'`;
+  yield* sql`
+    UPDATE session_processes
+    SET harness = CASE
+      WHEN argv ? 'claude' THEN 'claude'
+      WHEN argv ? 'codex' THEN 'codex'
+      WHEN argv ? 'opencode' THEN 'opencode'
+      WHEN argv->>0 IN ('bash', 'zsh', 'fish', 'sh') AND NOT (argv ? '-c') THEN 'shell'
+      ELSE label
+    END
+    WHERE kind = 'agent-pty' AND harness IS NULL`;
+  yield* sql`
+    UPDATE session_processes AS p
+    SET provider_session_id = s.provider_session_id
+    FROM agent_sessions AS s
+    WHERE p.session_id = s.id
+      AND p.kind = 'agent-pty'
+      AND s.provider_session_id IS NOT NULL
+      AND p.id = (
+        SELECT q.id FROM session_processes AS q
+        WHERE q.session_id = p.session_id AND q.kind = 'agent-pty'
+        ORDER BY q.created_at DESC, q.id DESC
+        LIMIT 1
+      )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -1010,4 +1051,5 @@ export const migrations = {
   "0032_stable_services": stableServices,
   "0033_service_access_policy": serviceAccessPolicy,
   "0034_workspace_ttl_renewal": workspaceTtlRenewal,
+  "0035_session_process_kinds": sessionProcessKinds,
 };

@@ -107,6 +107,7 @@ function Main() {
       (projects.data ?? []).map((project, index) => ({
         project,
         sessions: details[index]?.data?.sessions ?? [],
+        annotations: details[index]?.data?.annotations ?? [],
       })),
     [projects.data, details],
   );

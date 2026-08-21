@@ -347,6 +347,8 @@ export interface SessionAnnotationDto {
   readonly openComments: number;
   readonly totalComments: number;
   readonly pendingFollowUp: boolean;
+  /** The session's current agent process; null before the first launch. */
+  readonly currentAgent: SessionProcessDto | null;
 }
 
 export interface ProjectDetailDto {
@@ -404,7 +406,30 @@ export interface SessionDetailDto {
   readonly session: SessionDto;
   readonly checkpoints: ReadonlyArray<CheckpointDto>;
   readonly change: SessionChangeDto | null;
+  /** Every process the session has held, oldest first. */
+  readonly processes: ReadonlyArray<SessionProcessDto>;
+  /** The agent process "the session's agent" means right now; null before the first launch. */
+  readonly currentAgent: SessionProcessDto | null;
 }
+
+/**
+ * Whether the session's AGENT is live. Session status is a fold over every process — a session
+ * reads `idle` while a shell holds the workspace after its agent ended — so the agent's own row
+ * answers when one exists; `starting` is a launch with no row yet.
+ */
+const LIVE_SESSION_STATUSES: ReadonlySet<SessionStatusDto> = new Set<SessionStatusDto>([
+  "starting",
+  "running",
+  "waiting",
+  "idle",
+]);
+
+export const agentIsLive = (session: SessionDto, currentAgent: SessionProcessDto | null): boolean =>
+  currentAgent === null
+    ? LIVE_SESSION_STATUSES.has(session.status)
+    : session.status === "starting" ||
+      (currentAgent.exitedAt === null &&
+        (currentAgent.status === "starting" || currentAgent.status === "running"));
 
 export interface ChangedFileDto {
   readonly path: string;
@@ -982,7 +1007,12 @@ export interface SessionProcessDto {
   readonly sessionId: string;
   readonly serviceId: string | null;
   readonly attemptOrdinal: number | null;
+  /** `shell` · `agent-pty` · `agent-protocol` (reserved) · `service`. */
   readonly kind: string;
+  /** The platform PTY id — the attach handle; null for adopted Services. */
+  readonly sealantSessionId: string | null;
+  /** Agent processes: the harness launched; null for shells and Services. */
+  readonly harness: string | null;
   readonly label: string | null;
   readonly argv: ReadonlyArray<string>;
   readonly status: string;

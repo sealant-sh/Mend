@@ -13,6 +13,8 @@ const attempt = (patch: Partial<SessionProcessDto> = {}): SessionProcessDto => (
   sealantSessionId: "pty-1",
   sealantRunId: "run-1",
   kind: "service",
+  harness: null,
+  providerSessionId: null,
   label: "web",
   argv: ["pnpm", "dev"],
   status: "running",

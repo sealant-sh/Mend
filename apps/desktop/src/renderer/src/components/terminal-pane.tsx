@@ -15,10 +15,11 @@ import {
   stopSession,
   type SessionDto,
   type SessionProcessDto,
+  agentIsLive,
 } from "#/lib/api";
 import { queryClient, sessionDetailQuery } from "#/lib/queries";
 import { reviewOpenKey, takeReplayCursor } from "#/lib/review";
-import { isLive, statusTone, statusWord } from "#/lib/words";
+import { statusTone, statusWord } from "#/lib/words";
 import type { Tab } from "#/lib/workbench";
 
 /** The header-strip action, composed from the ui Button at cockpit scale. */
@@ -104,7 +105,11 @@ export function TerminalPane({
     },
   });
 
-  const live = session !== null && isLive(session);
+  // The agent's own liveness, not the session fold: a shell holding the workspace keeps the
+  // session `idle`, but this pane shows the AGENT's PTY — ended means replay and resume.
+  const currentAgent = detail.data?.currentAgent ?? null;
+  const live = session !== null && agentIsLive(session, currentAgent);
+  const agentPty = currentAgent?.sealantSessionId ?? session?.sealantSessionId ?? null;
   const change = detail.data?.change ?? null;
   const review = useMutation({
     mutationFn: (changeId: string) => openReview(changeId, reviewOpenKey(changeId)),
@@ -219,7 +224,7 @@ export function TerminalPane({
       <div className="relative flex min-h-0 flex-1 flex-col bg-term">
         {tab.kind === "logs" ? (
           <LogsView processId={tab.processId} />
-        ) : isSessionTab && session !== null && session.sealantSessionId === null && live ? (
+        ) : isSessionTab && session !== null && agentPty === null && live ? (
           <p className="pointer-events-none absolute right-3 bottom-2 font-mono text-[11.5px] text-term-faint">
             provisioning workspace — the terminal attaches the moment the PTY is live (a first
             launch can take minutes)…
@@ -228,7 +233,7 @@ export function TerminalPane({
           <TtyTerminal
             // The PTY handle is the attach identity: a session that was provisioning
             // (or one `mend continue` reopened) needs a fresh connection, not a retry.
-            key={isSessionTab ? (session?.sealantSessionId ?? "none") : tab.processId}
+            key={isSessionTab ? (agentPty ?? "none") : tab.processId}
             target={
               tab.kind === "shell"
                 ? { kind: "process", id: tab.processId }

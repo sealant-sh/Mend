@@ -16,6 +16,7 @@ import {
   SessionChangesRepo,
   SessionGitOpsRepo,
   type SessionNotFoundError,
+  type SessionOutcome,
   ProjectServiceRecipesRepo,
   SessionProcessesRepo,
   SessionRunsRepo,
@@ -44,6 +45,14 @@ import type {
   SessionRun,
 } from "@mend/domain/workbench";
 import {
+  AGENT_PROCESS_KINDS,
+  agentProcessesOf,
+  currentAgentProcess,
+  foldSessionLiveness,
+  isAgentProcessKind,
+  isLiveAgentProcess,
+  isLiveProcess,
+  agentProcessOutcome,
   type ServiceBrowserScheme,
   type ServiceDeclarationSource,
   resolveServiceEndpoints,
@@ -60,6 +69,7 @@ import {
   NO_SIGNER_MESSAGE,
   SecretCipher,
   Store,
+  processStatePathOf,
   sessionStatePathOf,
   sshTransportArgs,
   worktreePathOf,
@@ -82,7 +92,8 @@ import {
   extractTranscript,
   nativeResumeArgv,
   type HarnessStateManifest,
-  readHarnessStateManifest,
+  type LocatedHarnessState,
+  locateHarnessState,
 } from "./harness-state.ts";
 import { hotFingerprint, type HotFingerprintInputs } from "./hot-pool.ts";
 import {
@@ -417,7 +428,11 @@ export class SessionEngine extends Context.Service<
       sessionId: SessionId,
       trigger: CheckpointTrigger,
     ) => Effect.Effect<Checkpoint, SessionNotFoundError | ProjectNotFoundError | GitError>;
-    /** The user's stop: settle the row; the platform stop follows when the SDK ships it. */
+    /**
+     * The user's stop: end every live agent process (close its PTY, settle its run). Shells and
+     * Services keep their own lifecycle — the session reads `idle` while they hold the workspace
+     * and settles `stopped` when the last one ends.
+     */
     readonly stop: (sessionId: SessionId) => Effect.Effect<void, SessionNotFoundError>;
     /**
      * The second pane (docs/SESSION-SERVICES.md): a shell PTY in the
@@ -725,11 +740,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const summary =
           settled.result.summary ??
           (outcome === "failed" ? `harness exited with code ${settled.result.exitCode}` : null);
+        // The run ended, so the agent process recording it ended too. The PTY watcher races
+        // this path; whichever observes the end first records it, and the other finds the row
+        // already ended.
+        const agentProcess = yield* agentProcessForRun(session.id, sessionRun.sealantRunId);
+        if (agentProcess !== null) {
+          const ended = yield* endAgentProcess(agentProcess, {
+            how: "exited",
+            exitCode: typeof settled.result.exitCode === "number" ? settled.result.exitCode : null,
+            outcome,
+            summary,
+          });
+          if (ended) yield* finishAgentProcess(agentProcess, "turn-boundary");
+          return;
+        }
+        // No process row of our own (a run attached from outside): the run record is the
+        // only evidence, and the fold settles the session from it.
         yield* sessionRuns.settle(sessionRun.sealantRunId, outcome, summary);
-        yield* sessions.settle(session.id, outcome, summary);
-
-        // The settle boundary is a turn boundary: snapshot, then let the
-        // change row's head follow the snapshot.
+        yield* reconcileSession(session.id, { sweep: false });
         const current = yield* sessions.byId(session.id).pipe(Effect.orElseSucceed(() => session));
         const currentRun = yield* sessionRuns.bySealantRunId(sessionRun.sealantRunId);
         yield* tryCheckpoint(current, "turn-boundary", {
@@ -739,6 +767,42 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* refreshChangeHead(current).pipe(Effect.ignore);
         yield* sweepWorkspace(session.id);
       });
+
+      /** The agent process whose record is this run, if the launch recorded one. */
+      const agentProcessForRun = Effect.fn("SessionEngine.agentProcessForRun")(function* (
+        sessionId: SessionId,
+        sealantRunId: SealantRunId,
+      ) {
+        const rows = yield* processes.listForSession(sessionId);
+        return (
+          rows.find(
+            (process) => isAgentProcessKind(process.kind) && process.sealantRunId === sealantRunId,
+          ) ?? null
+        );
+      });
+
+      /**
+       * Supervision lost the run for good (the control plane says it no longer exists, or the
+       * supervisor died): record the failure on the process that carried it, or on the bare run
+       * when no process row exists.
+       */
+      const failRun = (sessionId: SessionId, sealantRunId: SealantRunId, message: string) =>
+        Effect.gen(function* () {
+          const agentProcess = yield* agentProcessForRun(sessionId, sealantRunId);
+          if (agentProcess !== null) {
+            const ended = yield* endAgentProcess(agentProcess, {
+              how: "exited",
+              exitCode: null,
+              outcome: "failed",
+              summary: message,
+            });
+            if (ended) yield* finishAgentProcess(agentProcess, "turn-boundary");
+            return;
+          }
+          yield* sessionRuns.settle(sealantRunId, "failed", message);
+          yield* reconcileSession(sessionId, { sweep: false });
+          yield* sweepWorkspace(sessionId);
+        }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void));
 
       /** Supervise a session's run for as long as this process lives. */
       const superviseExisting = (sessionId: SessionId, sealantRunId: SealantRunId) =>
@@ -767,15 +831,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             schedule: SUPERVISE_RETRY,
           }),
           Effect.catchTag("SealantPlatformError", (error) =>
-            sessions
-              .settle(sessionId, "failed", error.message)
-              .pipe(Effect.andThen(sweepWorkspace(sessionId))),
+            failRun(sessionId, sealantRunId, error.message),
           ),
           Effect.catchTag("SessionNotFoundError", () => Effect.void),
           Effect.catchDefect((defect) =>
-            sessions
-              .settle(sessionId, "failed", `supervision died: ${String(defect)}`)
-              .pipe(Effect.andThen(sweepWorkspace(sessionId))),
+            failRun(sessionId, sealantRunId, `supervision died: ${String(defect)}`),
           ),
         );
 
@@ -900,20 +960,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // ─── the harness session store (automatic; see harness-state.ts) ──────
 
       /**
-       * Pull the harness's raw native state out of the still-warm workspace
-       * into the central store, plus the primary transcript and the provider
-       * session id a native resume needs. Runs at every settle; must never
-       * break a settle path (callers go through `tryHarvest`).
+       * Pull ONE agent process's raw native harness state out of the still-warm workspace into
+       * the central store, plus the primary transcript and the provider session id a native
+       * resume needs. Harness state is per agent process: each capture lands in that process's
+       * own directory, and the session-level "latest" view (`harnessStateFor`) reads the newest.
+       * Runs when the process ends; must never break that path (callers go through
+       * `tryHarvest`).
        */
       const harvestHarnessState = Effect.fn("SessionEngine.harvestHarnessState")(function* (
-        sessionId: SessionId,
+        agentProcess: SessionProcess,
       ) {
+        const harness = agentProcess.harness;
+        const shape = harness === null ? undefined : HARNESS_STATE[harness];
+        if (harness === null || shape === undefined) return;
+        const sessionId = agentProcess.sessionId;
         const session = yield* sessions.byId(sessionId);
-        const shape = HARNESS_STATE[session.harness];
-        if (shape === undefined || session.sealantWorkspaceId === null) return;
         const project = yield* projects.byId(session.projectId);
-        const stateDir = sessionStatePathOf(project.storePath, session.id);
-        const workspace = yield* sealant.getWorkspace(session.sealantWorkspaceId);
+        const stateDir = processStatePathOf(project.storePath, session.id, agentProcess.id);
+        const workspace = yield* sealant.getWorkspace(agentProcess.sealantWorkspaceId);
 
         yield* Effect.tryPromise({
           try: () => fs.mkdir(stateDir, { recursive: true }),
@@ -953,11 +1017,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (pack.exitCode !== 0 || pack.stdout.trim() === "") {
           return yield* new HarnessStateCommandError({
             sessionId,
-            harness: session.harness,
+            harness: harness,
             operation: "capture-archive",
             exitCode: pack.exitCode,
             stderr: pack.stderr,
-            message: `Could not capture ${session.harness} state for session ${sessionId}.`,
+            message: `Could not capture ${harness} state for session ${sessionId}.`,
           });
         }
         const archivePath = path.join(stateDir, "harness-state.tar.gz");
@@ -968,7 +1032,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               sessionId,
               operation: "write-archive",
               path: archivePath,
-              message: `Could not save ${session.harness} state for session ${sessionId}.`,
+              message: `Could not save ${harness} state for session ${sessionId}.`,
               cause,
             }),
         });
@@ -977,42 +1041,39 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const transcriptFile = located.stdout.trim().split("\n")[0] ?? "";
         let providerSessionId: string | null = null;
         if (
-          (session.harness === "claude" || session.harness === "codex") &&
+          (harness === "claude" || harness === "codex") &&
           (located.exitCode !== 0 || transcriptFile === "")
         ) {
           return yield* new HarnessStateCommandError({
             sessionId,
-            harness: session.harness,
+            harness: harness,
             operation: "locate-transcript",
             exitCode: located.exitCode,
             stderr: located.stderr,
-            message: `Captured ${session.harness} state but could not locate its transcript for session ${sessionId}.`,
+            message: `Captured ${harness} state but could not locate its transcript for session ${sessionId}.`,
           });
         }
         if (located.exitCode === 0 && transcriptFile !== "") {
           providerSessionId = shape.providerSessionId(transcriptFile);
-          if (
-            (session.harness === "claude" || session.harness === "codex") &&
-            providerSessionId === null
-          ) {
+          if ((harness === "claude" || harness === "codex") && providerSessionId === null) {
             return yield* new HarnessStateCommandError({
               sessionId,
-              harness: session.harness,
+              harness: harness,
               operation: "identify-session",
               exitCode: 0,
               stderr: "",
-              message: `Could not identify the native ${session.harness} session in ${transcriptFile}.`,
+              message: `Could not identify the native ${harness} session in ${transcriptFile}.`,
             });
           }
           const native = yield* sealant.exec(workspace, ["cat", transcriptFile]);
           if (native.exitCode !== 0 || native.stdout === "") {
             return yield* new HarnessStateCommandError({
               sessionId,
-              harness: session.harness,
+              harness: harness,
               operation: "read-transcript",
               exitCode: native.exitCode,
               stderr: native.stderr,
-              message: `Could not read the ${session.harness} transcript for session ${sessionId}.`,
+              message: `Could not read the ${harness} transcript for session ${sessionId}.`,
             });
           }
           const transcriptPath = path.join(stateDir, "transcript.native");
@@ -1023,13 +1084,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 sessionId,
                 operation: "write-transcript",
                 path: transcriptPath,
-                message: `Could not save the ${session.harness} transcript for session ${sessionId}.`,
+                message: `Could not save the ${harness} transcript for session ${sessionId}.`,
                 cause,
               }),
           });
           // The harness-agnostic record IS the durable artifact; native
           // files are views. Adapters re-emit any supported harness from it.
-          const canonical = ingestNativeSession(session.harness, native.stdout, "/workspace/repo");
+          const canonical = ingestNativeSession(harness, native.stdout, "/workspace/repo");
           if (canonical !== null) {
             const canonicalPath = path.join(stateDir, "session.canonical.json");
             yield* Effect.tryPromise({
@@ -1047,7 +1108,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
 
         const manifest: HarnessStateManifest = {
-          harness: session.harness,
+          harness: harness,
           providerSessionId,
           capturedAt: new Date().toISOString(),
         };
@@ -1063,6 +1124,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }),
         });
         if (providerSessionId !== null) {
+          yield* processes.setProviderSessionId(agentProcess.id, providerSessionId);
+          // The session-level mirror: what "the session's provider id" means is the latest
+          // agent process's.
           yield* sessions.setProviderSessionId(session.id, providerSessionId);
         }
       });
@@ -1209,14 +1273,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
 
       /**
-       * The settle-path variant: every caller is the tail of an agent settle,
-       * so the agent's own process record ends here before the lease check.
+       * The settle-path variant: every caller is the tail of a session settle, so no agent row
+       * can still be live in the workspace — end any straggler before the lease check.
        */
       const stopWorkspaceQuietly = (sessionId: SessionId, options?: { readonly force?: boolean }) =>
         Effect.gen(function* () {
           const session = yield* sessions.byId(sessionId);
           if (session.sealantWorkspaceId === null) return;
-          yield* processes.reapLiveForWorkspace(session.sealantWorkspaceId, "agent");
+          yield* processes.reapLiveForWorkspace(session.sealantWorkspaceId, [
+            ...AGENT_PROCESS_KINDS,
+          ]);
         }).pipe(
           Effect.catch((error) =>
             Effect.logWarning("session engine: agent process reap failed").pipe(
@@ -1226,18 +1292,234 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.andThen(stopWorkspaceIfUnleased(sessionId, options)),
         );
 
-      const tryHarvest = (sessionId: SessionId) =>
-        harvestHarnessState(sessionId).pipe(
+      const tryHarvest = (agentProcess: SessionProcess) =>
+        harvestHarnessState(agentProcess).pipe(
           Effect.catch((error) =>
             Effect.logWarning("session engine: harness-state harvest failed").pipe(
+              Effect.annotateLogs({
+                sessionId: agentProcess.sessionId,
+                processId: agentProcess.id,
+                error: String(error),
+              }),
+            ),
+          ),
+        );
+
+      /**
+       * A late harvest for the session's newest agent process when its capture never landed
+       * (the fiber that should have harvested died with the last process) — only while the
+       * workspace it ran in is still the session's current one.
+       */
+      const harvestLatestIfMissing = (sessionId: SessionId) =>
+        Effect.gen(function* () {
+          const session = yield* sessions.byId(sessionId);
+          const agent = currentAgentProcess(yield* processes.listForSession(sessionId));
+          if (agent === null || agent.sealantWorkspaceId !== session.sealantWorkspaceId) return;
+          const project = yield* projects.byId(session.projectId);
+          const manifestPath = path.join(
+            processStatePathOf(project.storePath, sessionId, agent.id),
+            "manifest.json",
+          );
+          const captured = yield* Effect.promise(() =>
+            fs.access(manifestPath).then(
+              () => true,
+              () => false,
+            ),
+          );
+          if (!captured) yield* tryHarvest(agent);
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("session engine: late harvest skipped").pipe(
               Effect.annotateLogs({ sessionId, error: String(error) }),
             ),
           ),
         );
 
-      /** The tail of every settle path: harvest, then reap. Both halves quiet. */
+      /** The tail of a settle without a process of its own: late harvest, then reap. Both quiet. */
       const sweepWorkspace = (sessionId: SessionId) =>
-        tryHarvest(sessionId).pipe(Effect.andThen(stopWorkspaceQuietly(sessionId)));
+        harvestLatestIfMissing(sessionId).pipe(Effect.andThen(stopWorkspaceQuietly(sessionId)));
+
+      /**
+       * The session's harness state as one "latest" view over per-process captures: the newest
+       * agent process with a committed manifest, else the pre-2026-08-21 session-root capture.
+       */
+      const harnessStateFor = Effect.fn("SessionEngine.harnessStateFor")(function* (
+        session: Session,
+      ) {
+        const project = yield* projects.byId(session.projectId);
+        const agents = agentProcessesOf(yield* processes.listForSession(session.id));
+        const processDirs = agents
+          .toReversed()
+          .map((agent) => processStatePathOf(project.storePath, session.id, agent.id));
+        return yield* locateHarnessState(
+          sessionStatePathOf(project.storePath, session.id),
+          processDirs,
+          session.id,
+        );
+      });
+
+      /**
+       * The settled status of a session whose processes have all ended: what the last agent
+       * run reported, else what the last agent process's exit says, else `completed` (nothing
+       * ever ran — the caller names the outcome it wants in that case).
+       */
+      const settledOutcomeOf = Effect.fn("SessionEngine.settledOutcomeOf")(function* (
+        sessionId: SessionId,
+        rows: ReadonlyArray<SessionProcess>,
+      ): Effect.fn.Return<{ readonly outcome: SessionOutcome; readonly summary: string | null }> {
+        const latestRun = yield* sessionRuns.latestForSession(sessionId);
+        if (
+          latestRun !== null &&
+          (latestRun.status === "completed" ||
+            latestRun.status === "failed" ||
+            latestRun.status === "stopped")
+        ) {
+          return { outcome: latestRun.status, summary: latestRun.summary };
+        }
+        const agent = currentAgentProcess(rows);
+        const outcome = agent === null ? null : agentProcessOutcome(agent);
+        if (agent !== null && outcome !== null) {
+          return {
+            outcome,
+            summary: agent.exitCode === null ? null : `exited with code ${agent.exitCode}`,
+          };
+        }
+        return { outcome: "completed", summary: null };
+      });
+
+      /**
+       * Session status is a FOLD over live processes (decided 2026-08-21), never a property of
+       * one process: any agent live → `running`; no agent but shells or Services live → `idle`;
+       * nothing live → settled from the last agent outcome. Idempotent — every path that ends
+       * or starts a process comes through here. `sweep` additionally releases the workspace
+       * once nothing is live (lease-checked: an open Service forward still retains it).
+       */
+      const reconcileSession = Effect.fn("SessionEngine.reconcileSession")(function* (
+        sessionId: SessionId,
+        options: { readonly sweep: boolean },
+      ) {
+        const session = yield* sessions.byId(sessionId);
+        const rows = yield* processes.listForSession(sessionId);
+        const liveness = foldSessionLiveness(rows);
+        if (liveness === "running") {
+          if (session.settledAt !== null) yield* sessions.reopen(sessionId, "running");
+          else if (session.status !== "running" && session.status !== "waiting") {
+            yield* sessions.setStatus(sessionId, "running");
+          }
+          return liveness;
+        }
+        if (liveness === "idle") {
+          if (session.settledAt !== null) yield* sessions.reopen(sessionId, "idle");
+          else if (session.status !== "idle") yield* sessions.setStatus(sessionId, "idle");
+          return liveness;
+        }
+        if (session.settledAt === null) {
+          // A run supervised without a process row of its own (attachRun) is live work.
+          const activeRun = yield* sessionRuns.activeForSession(sessionId);
+          const orphanRunLive =
+            activeRun !== null &&
+            !rows.some((process) => process.sealantRunId === activeRun.sealantRunId);
+          // A session that never reached a process is a launch in flight, not settled work.
+          const launchInFlight =
+            session.status === "starting" &&
+            !rows.some((process) => isAgentProcessKind(process.kind));
+          if (orphanRunLive || launchInFlight) return liveness;
+          const { outcome, summary } = yield* settledOutcomeOf(sessionId, rows);
+          yield* sessions.settle(sessionId, outcome, summary);
+        }
+        if (options.sweep) yield* stopWorkspaceIfUnleased(sessionId);
+        return liveness;
+      });
+
+      /** Ids whose end this process is recording — the run-wait and PTY watchers race. */
+      const endingAgentProcesses = new Set<string>();
+
+      /**
+       * Record an agent process's end: the row, its run, and the session fold — synchronously,
+       * so a caller's next read sees the new status. True when THIS call recorded it; false
+       * when another observer already had. The slow tail is `finishAgentProcess`.
+       */
+      const endAgentProcess = Effect.fn("SessionEngine.endAgentProcess")(function* (
+        agentProcess: SessionProcess,
+        end: {
+          readonly how: "exited" | "stopped";
+          readonly exitCode: number | null;
+          readonly outcome: SessionOutcome;
+          readonly summary: string | null;
+        },
+      ) {
+        if (endingAgentProcesses.has(agentProcess.id)) return false;
+        const current = yield* processes.byId(agentProcess.id);
+        if (current === null || current.exitedAt !== null) return false;
+        endingAgentProcesses.add(agentProcess.id);
+        yield* processes.markExited(agentProcess.id, end.how, end.exitCode);
+        if (agentProcess.sealantRunId !== null) {
+          yield* sessionRuns.settle(agentProcess.sealantRunId, end.outcome, end.summary);
+        }
+        yield* reconcileSession(agentProcess.sessionId, { sweep: false });
+        return true;
+      });
+
+      /**
+       * The tail of an agent process's end: harvest its harness state while the workspace is
+       * still warm, snapshot the worktree (the end of an agent process is a turn boundary), then
+       * let the fold release the workspace if nothing else holds it. `trigger` null skips the
+       * snapshot (the caller took its own).
+       */
+      const finishAgentProcess = (
+        agentProcess: SessionProcess,
+        trigger: CheckpointTrigger | null,
+      ) =>
+        Effect.gen(function* () {
+          yield* tryHarvest(agentProcess);
+          if (trigger !== null) {
+            const session = yield* sessions.byId(agentProcess.sessionId);
+            const run =
+              agentProcess.sealantRunId === null
+                ? null
+                : yield* sessionRuns.bySealantRunId(agentProcess.sealantRunId);
+            yield* tryCheckpoint(session, trigger, {
+              sealantRunId: agentProcess.sealantRunId,
+              sequence: run?.lastSeenSequence ?? 0n,
+            });
+            yield* refreshChangeHead(session).pipe(Effect.ignore);
+          }
+          yield* reconcileSession(agentProcess.sessionId, { sweep: true });
+        }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void));
+
+      /**
+       * Any process's observed end, by kind: an agent process settles its run and the session
+       * fold; a shell or Service attempt releases its lease (and a Service closes its forward).
+       * Exit code null = the platform reported none (0.13.1 drops it on a clean exit) — for an
+       * agent that reads as `completed`, and an open-workbench shell's exit never judges the work.
+       */
+      const endProcess = (
+        ended: SessionProcess,
+        how: "exited" | "stopped",
+        exitCode: number | null,
+      ) =>
+        isAgentProcessKind(ended.kind)
+          ? Effect.gen(function* () {
+              const outcome =
+                ended.harness === "shell" || exitCode === null || exitCode === 0
+                  ? "completed"
+                  : "failed";
+              const recorded = yield* endAgentProcess(ended, {
+                how,
+                exitCode,
+                outcome,
+                summary: exitCode === null ? null : `exited with code ${exitCode}`,
+              });
+              if (recorded) yield* finishAgentProcess(ended, "turn-boundary");
+            }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void))
+          : closeCurrentServiceForward(ended).pipe(
+              Effect.andThen(processes.markExited(ended.id, how, exitCode)),
+              Effect.andThen(
+                reconcileSession(ended.sessionId, { sweep: true }).pipe(
+                  Effect.catchTag("SessionNotFoundError", () => Effect.void),
+                ),
+              ),
+            );
 
       const closeCurrentServiceForward = Effect.fn("SessionEngine.closeCurrentServiceForward")(
         (process: SessionProcess) =>
@@ -1260,12 +1542,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       );
 
       /**
-       * A shell's or supervised Service's lifecycle is its own: poll the PTY
-       * until it ends, record the observed exit, then release its workspace
-       * lease (and, for a Service, close its host listener). Mirrors watchPty
-       * — a status error is blindness, not an exit — but a blind stretch
-       * checks the workspace itself, because a reaped container will never
-       * answer for its PTYs again.
+       * Every PTY-backed process has the same watcher, whatever its kind: poll the PTY until it
+       * ends, record the observed exit, and let `endProcess` do what the kind requires — an
+       * agent settles its run and the session fold, a shell or Service releases its lease. A
+       * status error is blindness, not an exit — but a blind stretch checks the workspace
+       * itself, because a reaped container will never answer for its PTYs again.
        */
       const watchProcess = (shellProcess: SessionProcess) =>
         Effect.gen(function* () {
@@ -1302,12 +1583,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   workspaceStatus !== "running" &&
                   workspaceStatus !== "ready"
                 ) {
-                  yield* closeCurrentServiceForward(shellProcess);
-                  yield* processes.markExited(shellProcess.id, "exited", null);
+                  yield* endProcess(shellProcess, "exited", null);
                   return;
                 }
-                yield* Effect.logWarning("session engine: shell status unreachable").pipe(
-                  Effect.annotateLogs({ processId: shellProcess.id, blindPolls }),
+                yield* Effect.logWarning("session engine: process status unreachable").pipe(
+                  Effect.annotateLogs({
+                    processId: shellProcess.id,
+                    kind: shellProcess.kind,
+                    blindPolls,
+                  }),
                 );
               }
               continue;
@@ -1324,9 +1608,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ) {
               return;
             }
-            yield* closeCurrentServiceForward(shellProcess);
-            yield* processes.markExited(shellProcess.id, "exited", status.exitCode ?? null);
-            yield* stopWorkspaceIfUnleased(shellProcess.sessionId);
+            yield* endProcess(shellProcess, "exited", status.exitCode ?? null);
             return;
           }
         }).pipe(
@@ -1338,10 +1620,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }),
           Effect.catchTag("SealantPlatformError", (error) =>
             runIsGone(error)
-              ? closeCurrentServiceForward(shellProcess).pipe(
-                  Effect.andThen(processes.markExited(shellProcess.id, "exited", null)),
-                  Effect.andThen(stopWorkspaceIfUnleased(shellProcess.sessionId)),
-                )
+              ? endProcess(shellProcess, "exited", null)
               : Effect.logWarning(
                   "session engine: process watcher stopped without exit evidence",
                 ).pipe(Effect.annotateLogs({ processId: shellProcess.id, error: error.message })),
@@ -1765,78 +2044,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       };
 
-      /** Settle one coding-agent run from its PTY without owning the workspace lifetime. */
-      const forkAgentPtyWatcher = (
-        sessionId: SessionId,
-        pty: {
-          readonly status: () => Promise<{ readonly status: string; readonly exitCode?: number }>;
-        },
-        sealantRunId: SealantRunId,
-        agentProcess: SessionProcess,
-        interactiveShell: boolean,
-      ) =>
-        Effect.forkIn(
-          Effect.gen(function* () {
-            let blindPolls = 0;
-            for (;;) {
-              yield* Effect.sleep("2 seconds");
-              const status = yield* Effect.tryPromise({
-                try: () => pty.status(),
-                catch: (cause) =>
-                  new SealantPlatformError({
-                    code: "session_status_failed",
-                    status: null,
-                    message: "session status failed",
-                    cause,
-                  }),
-              }).pipe(Effect.catchTag("SealantPlatformError", () => Effect.succeed(null)));
-              if (status === null) {
-                blindPolls += 1;
-                if (blindPolls % 30 === 0) {
-                  yield* Effect.logWarning("session engine: pty status unreachable").pipe(
-                    Effect.annotateLogs({ sessionId, blindPolls }),
-                  );
-                }
-                continue;
-              }
-              blindPolls = 0;
-              if (status.status === "running" || status.status === "starting") continue;
-              const current = yield* sessions.byId(sessionId);
-              if (current.settledAt !== null) return;
-              const outcome =
-                interactiveShell || status.exitCode === undefined || status.exitCode === 0
-                  ? "completed"
-                  : "failed";
-              yield* processes.markExited(agentProcess.id, "exited", status.exitCode ?? null);
-              yield* sessionRuns.settle(
-                sealantRunId,
-                outcome,
-                status.exitCode === undefined ? null : `exited with code ${status.exitCode}`,
-              );
-              yield* sessions.settle(
-                sessionId,
-                outcome,
-                status.exitCode === undefined ? null : `exited with code ${status.exitCode}`,
-              );
-              const settled = yield* sessions.byId(sessionId);
-              const settledRun = yield* sessionRuns.bySealantRunId(sealantRunId);
-              yield* tryCheckpoint(settled, "turn-boundary", {
-                sealantRunId,
-                sequence: settledRun?.lastSeenSequence ?? 0n,
-              });
-              yield* refreshChangeHead(settled).pipe(Effect.ignore);
-              yield* sweepWorkspace(sessionId);
-              return;
-            }
-          }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void)),
-          scope,
-        );
-
       const launchInternal = Effect.fn("SessionEngine.launchInternal")(function* (
         sessionId: SessionId,
         argv: ReadonlyArray<string>,
         nativeImport: ConvertedNativeSession | null,
-        manifestOverride?: HarnessStateManifest | null,
+        stateOverride?: LocatedHarnessState | null,
         launchCorrelationId: string | null = null,
       ) {
         const session = yield* sessions.byId(sessionId);
@@ -1848,17 +2060,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // A bash launch (shell session, shell resume) is an open workbench:
         // shape by what actually launches, not the session's harness identity.
         const shape = platformShape(argv[0] === "bash" ? "shell" : session.harness);
-        const stateDir = sessionStatePathOf(project.storePath, session.id);
         // An explicit null skips both the read and the restore (a shell
         // resume tolerates a session that never harvested state).
-        const manifest =
-          manifestOverride === undefined
-            ? yield* readHarnessStateManifest(stateDir, session.id).pipe(
+        const located =
+          stateOverride === undefined
+            ? yield* harnessStateFor(session).pipe(
                 Effect.catchTag("HarnessStateNotFoundError", (error) =>
                   session.sealantRunId === null ? Effect.succeed(null) : Effect.fail(error),
                 ),
               )
-            : manifestOverride;
+            : stateOverride;
+        const manifest = located?.manifest ?? null;
+        const stateDir = located?.stateDir ?? sessionStatePathOf(project.storePath, session.id);
         // A relaunch is about to overwrite the row's workspace pointer; stop
         // the previous workspace first or it becomes unaddressable and leaks
         // until the platform TTL. Forced: leases cannot hold a workspace that
@@ -2097,15 +2310,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* hotWorkspaces.remove(sessionId);
         }
         // The plural record: the agent is one process in this workspace, not
-        // its owner. The singular pointer above stays as the legacy attach
-        // handle while clients migrate to process addressing.
+        // its owner. The singular pointer above is a compatibility mirror of
+        // this row's PTY id while list readers migrate to `currentAgent`.
         const agentProcess = yield* processes.create({
           sessionId,
           sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
           sealantSessionId: pty.id,
           sealantRunId,
           launchCorrelationId,
-          kind: "agent",
+          kind: "agent-pty",
+          harness: interactiveShell ? "shell" : session.harness,
+          // Known up front only for a native resume of the same harness; the
+          // harvest fills it when the process ends.
+          providerSessionId: interactiveShell
+            ? null
+            : (nativeImport?.providerSessionId ??
+              (manifest !== null && manifest.harness === session.harness
+                ? manifest.providerSessionId
+                : null)),
           label: session.harness,
           argv: shapedArgv,
         });
@@ -2114,11 +2336,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // already settled (a failed first attempt retried) must clear
         // settled_at, or the first-settle-wins guard ignores this run's exit
         // and the row reads "running" forever — unstoppable and undeletable.
-        yield* sessions.reopen(sessionId);
+        yield* sessions.reopen(sessionId, "running");
         yield* forkSupervision(sessionId, sealantRunId);
 
-        // The coding-agent run settles independently; supporting-process leases own retention.
-        yield* forkAgentPtyWatcher(sessionId, pty, sealantRunId, agentProcess, interactiveShell);
+        // The agent process ends on its own; the fold over every process decides the session.
+        yield* Effect.forkIn(watchProcess(agentProcess), scope);
         return yield* sessions.byId(sessionId);
       });
 
@@ -2147,15 +2369,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       const transcript = Effect.fn("SessionEngine.transcript")(function* (sessionId: SessionId) {
         const session = yield* sessions.byId(sessionId);
-        const shape = HARNESS_STATE[session.harness];
+        const rows = yield* processes.listForSession(sessionId);
+        const agents = agentProcessesOf(rows);
+        const agent = currentAgentProcess(rows);
+        // The conversation belongs to the agent that drove it; an open-workbench shell launched
+        // into an agent session has none of its own, so the session's harness names the record.
+        const harness =
+          agent !== null && agent.harness !== null && agent.harness !== "shell"
+            ? agent.harness
+            : session.harness;
+        const shape = HARNESS_STATE[harness];
         let native: string | null = null;
-        if (
-          shape !== undefined &&
-          ACTIVE_STATUSES.has(session.status) &&
-          session.sealantWorkspaceId !== null
-        ) {
+        if (shape !== undefined && agent !== null && isLiveProcess(agent)) {
           native = yield* Effect.gen(function* () {
-            const workspace = yield* sealant.getWorkspace(session.sealantWorkspaceId ?? "");
+            const workspace = yield* sealant.getWorkspace(agent.sealantWorkspaceId);
             const located = yield* sealant.exec(workspace, ["sh", "-c", shape.latestTranscript]);
             const file = located.stdout.trim().split("\n")[0] ?? "";
             if (located.exitCode !== 0 || file === "") return null;
@@ -2168,19 +2395,30 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             .byId(session.projectId)
             .pipe(Effect.catch(() => Effect.succeed(null)));
           if (project !== null) {
-            const stateDir = sessionStatePathOf(project.storePath, session.id);
+            // Newest agent capture first, then the pre-2026-08-21 session-root capture.
+            const candidates = [
+              ...agents
+                .toReversed()
+                .map((candidate) =>
+                  processStatePathOf(project.storePath, session.id, candidate.id),
+                ),
+              sessionStatePathOf(project.storePath, session.id),
+            ];
             native = yield* Effect.promise(async () => {
-              try {
-                return await fs.readFile(path.join(stateDir, "transcript.native"), "utf8");
-              } catch {
-                return null;
+              for (const stateDir of candidates) {
+                try {
+                  return await fs.readFile(path.join(stateDir, "transcript.native"), "utf8");
+                } catch {
+                  // keep looking
+                }
               }
+              return null;
             });
           }
         }
-        if (native === null) return { sourceHarness: session.harness, events: [] };
-        const canonical = ingestNativeSession(session.harness, native, "/workspace/repo");
-        return { sourceHarness: session.harness, events: canonical?.events ?? [] };
+        if (native === null) return { sourceHarness: harness, events: [] };
+        const canonical = ingestNativeSession(harness, native, "/workspace/repo");
+        return { sourceHarness: harness, events: canonical?.events ?? [] };
       });
 
       /** Start the next coding-agent run without replacing a workspace retained by live leases. */
@@ -2190,6 +2428,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           argv: ReadonlyArray<string>,
           nativeImport: ConvertedNativeSession | null,
           launchCorrelationId: string | null = null,
+          providerSessionId: string | null = null,
         ) {
           const session = yield* sessions.byId(sessionId);
           const project = yield* projects.byId(session.projectId);
@@ -2247,15 +2486,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             sealantSessionId: pty.id,
             sealantRunId,
             launchCorrelationId,
-            kind: "agent",
+            kind: "agent-pty",
+            harness: interactiveShell ? "shell" : session.harness,
+            providerSessionId: interactiveShell
+              ? null
+              : (nativeImport?.providerSessionId ?? providerSessionId),
             label: session.harness,
             argv: shapedArgv,
           });
           yield* renewWorkspaceLease(sessionId, agentProcess.sealantWorkspaceId);
           // See launchInternal: reopen unconditionally so a retried row settles again.
-          yield* sessions.reopen(sessionId);
+          yield* sessions.reopen(sessionId, "running");
           yield* forkSupervision(sessionId, sealantRunId);
-          yield* forkAgentPtyWatcher(sessionId, pty, sealantRunId, agentProcess, interactiveShell);
+          yield* Effect.forkIn(watchProcess(agentProcess), scope);
           return yield* sessions.byId(sessionId);
         },
       );
@@ -2265,7 +2508,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (session.sealantWorkspaceId === null) return false;
           const supportingLeases = (yield* processes.listLiveForWorkspace(
             session.sealantWorkspaceId,
-          )).filter((process) => process.kind !== "agent");
+          )).filter((process) => !isAgentProcessKind(process.kind));
           const forwardLeases = (yield* serviceForwards.listOpen()).filter(
             (forward) => forward.sealantWorkspaceId === session.sealantWorkspaceId,
           );
@@ -2281,6 +2524,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         },
       );
 
+      /**
+       * Whether the session's AGENT is live — the fold, not the row: a live agent process; a
+       * launch in flight (no process row yet); or a run supervised without a process of its own.
+       * Shells and Services holding the workspace (`idle`) do not count — a new agent may join
+       * them.
+       */
+      const agentIsLive = Effect.fn("SessionEngine.agentIsLive")(function* (session: Session) {
+        if (session.settledAt !== null) return false;
+        const rows = yield* processes.listForSession(session.id);
+        if (rows.some(isLiveAgentProcess)) return true;
+        if (session.status === "starting") return true;
+        if (session.status === "running" || session.status === "waiting") {
+          const activeRun = yield* sessionRuns.activeForSession(session.id);
+          return (
+            activeRun !== null &&
+            !rows.some((process) => process.sealantRunId === activeRun.sealantRunId)
+          );
+        }
+        return false;
+      });
+
       const launchFollowUp = Effect.fn("SessionEngine.launchFollowUp")(function* (
         sessionId: SessionId,
         instruction: string,
@@ -2290,7 +2554,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (isLegacyBench(session)) {
           return yield* new LegacyBenchReadOnlyError({ sessionId });
         }
-        if (session.settledAt === null && ACTIVE_STATUSES.has(session.status)) {
+        if (yield* agentIsLive(session)) {
           return yield* new SealantPlatformError({
             code: "session_active",
             status: null,
@@ -2322,7 +2586,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (isLegacyBench(session)) {
           return yield* new LegacyBenchReadOnlyError({ sessionId });
         }
-        if (session.settledAt === null && ACTIVE_STATUSES.has(session.status)) {
+        if (yield* agentIsLive(session)) {
           return yield* new SealantPlatformError({
             code: "session_active",
             status: null,
@@ -2339,15 +2603,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // launchInternal lays the conversation down for every supported
         // harness, so either agent opens it natively from inside the shell.
         if (target === "shell") {
-          const project = yield* projects.byId(session.projectId);
-          const stateDir = sessionStatePathOf(project.storePath, session.id);
-          const manifest = yield* readHarnessStateManifest(stateDir, session.id).pipe(
+          const located = yield* harnessStateFor(session).pipe(
             Effect.catchTag("HarnessStateNotFoundError", () => Effect.succeed(null)),
           );
-          yield* sessions.reopen(sessionId);
+          yield* sessions.reopen(sessionId, "running");
           return yield* retainCurrentWorkspace
             ? launchInRetainedWorkspace(sessionId, ["bash"], null)
-            : launchInternal(sessionId, ["bash"], null, manifest);
+            : launchInternal(sessionId, ["bash"], null, located);
         }
         const defaultArgv = HARNESS_ARGV[target];
         if (defaultArgv === undefined) {
@@ -2359,9 +2621,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           });
         }
 
-        const project = yield* projects.byId(session.projectId);
-        const stateDir = sessionStatePathOf(project.storePath, session.id);
-        const manifest = yield* readHarnessStateManifest(stateDir, session.id);
+        // Resume addresses the LATEST agent process's capture (its provider session id).
+        const located = yield* harnessStateFor(session);
+        const { stateDir, manifest } = located;
         let argv = defaultArgv;
         let nativeImport: ConvertedNativeSession | null = null;
         if (
@@ -2434,24 +2696,53 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           argv = nativeResumeArgv(target, manifest.providerSessionId, argv);
         }
         if (target !== session.harness) yield* sessions.setHarness(sessionId, target);
-        yield* sessions.reopen(sessionId);
+        yield* sessions.reopen(sessionId, "running");
         return yield* retainCurrentWorkspace
-          ? launchInRetainedWorkspace(sessionId, argv, nativeImport)
-          : launchInternal(sessionId, argv, nativeImport, manifest);
+          ? launchInRetainedWorkspace(
+              sessionId,
+              argv,
+              nativeImport,
+              null,
+              manifest.harness === target ? manifest.providerSessionId : null,
+            )
+          : launchInternal(sessionId, argv, nativeImport, located);
       });
 
       const stop = Effect.fn("SessionEngine.stop")(function* (sessionId: SessionId) {
         const session = yield* sessions.byId(sessionId);
+        const rows = yield* processes.listForSession(sessionId);
         const activeRun = yield* sessionRuns.activeForSession(sessionId);
-        if (activeRun !== null) {
-          yield* sessionRuns.settle(activeRun.sealantRunId, "stopped", null);
+        // Stop = end the agent. Every live agent process closes (the daemon reaps its process
+        // group) and is recorded as stopped; the fold then reads `idle` while shells or Services
+        // hold the workspace, or settles `stopped` at once.
+        const ended: Array<SessionProcess> = [];
+        for (const agent of rows.filter(isLiveAgentProcess)) {
+          if (agent.sealantSessionId !== null) {
+            yield* closeProcessPty(agent.sealantWorkspaceId, agent.sealantSessionId);
+          }
+          const recorded = yield* endAgentProcess(agent, {
+            how: "stopped",
+            exitCode: null,
+            outcome: "stopped",
+            summary: null,
+          });
+          if (recorded) ended.push(agent);
         }
-        yield* sessions.settle(sessionId, "stopped", null);
+        if (ended.length === 0) {
+          // Nothing of ours to close: a run attached without a process, a launch still in
+          // flight, or a row that outlived its processes. The run record and the row settle.
+          if (activeRun !== null) {
+            yield* sessionRuns.settle(activeRun.sealantRunId, "stopped", null);
+          }
+          if (foldSessionLiveness(rows) === "settled") {
+            yield* sessions.settle(sessionId, "stopped", null);
+          }
+        }
         // A row that already carries settled_at but still reads active (rows
         // launched before reopen-on-launch) is a no-op for first-settle-wins;
         // a user stop must still land, so force the status.
         const afterSettle = yield* sessions.byId(sessionId);
-        if (ACTIVE_STATUSES.has(afterSettle.status)) {
+        if (afterSettle.settledAt !== null && ACTIVE_STATUSES.has(afterSettle.status)) {
           yield* Effect.logWarning("session engine: stop healed an active-but-settled row").pipe(
             Effect.annotateLogs({ sessionId, settledAt: String(afterSettle.settledAt) }),
           );
@@ -2463,9 +2754,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         });
         yield* refreshChangeHead(session).pipe(Effect.ignore);
         // The workspace outlives the PTY just long enough to harvest, then
-        // dies; forked so a stop request answers immediately. If this process
-        // dies first, the next boot's leftover sweep finishes the job.
-        yield* Effect.forkIn(sweepWorkspace(sessionId), scope);
+        // dies (unless a lease holds it); forked so a stop request answers
+        // immediately. If this process dies first, the next boot's leftover
+        // sweep finishes the job.
+        yield* Effect.forkIn(
+          ended.length > 0
+            ? Effect.forEach(ended, (agent) => finishAgentProcess(agent, null), {
+                discard: true,
+              })
+            : sweepWorkspace(sessionId),
+          scope,
+        );
       });
 
       const workspaceForSupportingProcess = Effect.fn(
@@ -2517,6 +2816,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           argv: shellArgv,
         });
         yield* renewWorkspaceLease(sessionId, shellProcess.sealantWorkspaceId);
+        // A shell rejoining a settled session's retained workspace makes it idle again.
+        yield* reconcileSession(sessionId, { sweep: false });
         yield* Effect.forkIn(watchProcess(shellProcess), scope);
         return shellProcess;
       });
@@ -2534,7 +2835,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         yield* closeProcessPty(shell.sealantWorkspaceId, shell.sealantSessionId);
         yield* processes.markExited(processId, "stopped", null);
-        yield* stopWorkspaceIfUnleased(shell.sessionId);
+        yield* reconcileSession(shell.sessionId, { sweep: true }).pipe(
+          Effect.catchTag("SessionNotFoundError", () => Effect.void),
+        );
         return (yield* processes.byId(processId)) ?? shell;
       });
 
@@ -2772,6 +3075,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         workspaceId: SealantWorkspaceId,
         workspacePort: number,
         processId: SessionProcessId,
+        sessionId: SessionId,
       ) =>
         Effect.gen(function* () {
           const deadline = Date.now() + SERVICE_START_TIMEOUT_MS;
@@ -2786,6 +3090,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }).pipe(Effect.orElseSucceed(() => null));
             if (status !== null && status.status !== "running" && status.status !== "starting") {
               yield* processes.markExited(processId, "exited", status.exitCode ?? null);
+              yield* reconcileSession(sessionId, { sweep: false }).pipe(
+                Effect.catchTag("SessionNotFoundError", () => Effect.void),
+              );
               const tail = yield* ptyOutputTail(pty);
               return yield* new ServiceStartError({
                 message:
@@ -2846,6 +3153,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           .pipe(Effect.tapError(() => processes.markExited(attempt.id, "exited", null)));
         yield* processes.setSealantSessionId(attempt.id, pty.id, SealantRunId.make(pty.runId));
         yield* renewWorkspaceLease(sessionId, workspaceId);
+        yield* reconcileSession(sessionId, { sweep: false });
         const runningAttempt = (yield* processes.byId(attempt.id)) ?? attempt;
         yield* Effect.forkIn(watchProcess(runningAttempt), scope);
 
@@ -2866,7 +3174,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             });
           }
         } else {
-          reachable = yield* awaitServicePort(pty, workspaceId, workspacePort, attempt.id);
+          reachable = yield* awaitServicePort(
+            pty,
+            workspaceId,
+            workspacePort,
+            attempt.id,
+            sessionId,
+          );
         }
         yield* processes.setStatus(attempt.id, "running");
         const forwardId = yield* bindServiceForward(
@@ -3004,6 +3318,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             previous.sealantWorkspaceId,
             service.workspacePort,
             attempt.id,
+            service.sessionId,
           );
         }
         yield* processes.setStatus(attempt.id, "running");
@@ -3208,7 +3523,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (service.currentAttemptId !== null) {
           yield* services.compareAndSetCurrentAttempt(service.id, service.currentAttemptId, null);
         }
-        yield* stopWorkspaceIfUnleased(service.sessionId);
+        yield* reconcileSession(service.sessionId, { sweep: true }).pipe(
+          Effect.catchTag("SessionNotFoundError", () => Effect.void),
+        );
         return yield* readServiceView(service.id);
       });
       const stopService = (serviceId: ServiceId) =>
@@ -3550,9 +3867,32 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
         }
 
+        // Processes that were live when the last process died: their PTYs
+        // kept running (a detached client is not intent to stop), so watch
+        // them again — the watcher itself records the end if the workspace is
+        // gone.
+        const liveProcesses = yield* processes.listLive();
+        const sessionsWithLiveProcesses = new Set(
+          liveProcesses.map((liveProcess) => liveProcess.sessionId),
+        );
+
         const unsettled = yield* sessions.listUnsettled();
         for (const session of unsettled) {
           if (reattached.has(session.id)) continue;
+          // Live rows own the verdict: the re-forked watchers end them and the fold follows.
+          if (sessionsWithLiveProcesses.has(session.id)) {
+            yield* reconcileSession(session.id, { sweep: false }).pipe(Effect.ignore);
+            continue;
+          }
+          // Every process ended but nobody folded (the fiber died mid-tail): fold now. A row
+          // that never reached a process died before the harness started.
+          const hadAgent = (yield* processes.listForSession(session.id)).some((process) =>
+            isAgentProcessKind(process.kind),
+          );
+          if (hadAgent) {
+            yield* reconcileSession(session.id, { sweep: true }).pipe(Effect.ignore);
+            continue;
+          }
           yield* sessions.settle(
             session.id,
             "failed",
@@ -3560,10 +3900,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
         }
 
-        // Shells that were live when the last process died: their PTYs kept
-        // running (a detached client is not intent to stop), so watch them
-        // again — the watcher itself records the end if the workspace is gone.
-        const liveProcesses = yield* processes.listLive();
         const allServices = yield* services.listAll();
         // A crash after committing an attempt but before recording PTY acceptance leaves no
         // discoverable platform identity in the public SDK. Settle that row so it cannot hold the
@@ -3599,6 +3935,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         for (const liveProcess of liveProcesses) {
           if (
+            isAgentProcessKind(liveProcess.kind) ||
             liveProcess.kind === "shell" ||
             (liveProcess.kind === "service" && liveProcess.serviceId !== null)
           ) {

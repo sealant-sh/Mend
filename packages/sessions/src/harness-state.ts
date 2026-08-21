@@ -6,10 +6,17 @@
  * relaunch, and the transcript adapters below are the harness-agnostic seam
  * (text is the interchange format — native state never crosses harnesses).
  *
- * Layout under `~/.config/mend/store/<project>/sessions/<session-id>/`:
+ * Harness state belongs to one AGENT PROCESS, not to the session: a session
+ * holds several agent processes over its life (relaunch, follow-up, resume)
+ * and each leaves its own capture. Layout under
+ * `~/.config/mend/store/<project>/sessions/<session-id>/processes/<process-id>/`:
  *   harness-state.tar.gz   the raw `$HOME` state dirs, exactly as the harness wrote them
  *   transcript.native      the primary conversation file (claude/codex: JSONL)
  *   manifest.json          { harness, providerSessionId, capturedAt }
+ *
+ * Sessions harvested before 2026-08-21 kept the same three files at the
+ * session root; `locateHarnessState` reads those when no process capture
+ * exists. Nothing migrates the tarballs.
  */
 
 import * as fs from "node:fs/promises";
@@ -128,6 +135,37 @@ export const readHarnessStateManifest = (stateDir: string, sessionId: string) =>
     ),
   );
 };
+
+/** A harvested capture: the directory holding the three files, and its commit marker. */
+export interface LocatedHarnessState {
+  readonly stateDir: string;
+  readonly manifest: HarnessStateManifest;
+}
+
+/**
+ * The session-level "latest" view over per-process captures: the newest agent
+ * process with a committed manifest wins; the legacy session-root capture is
+ * the last resort. `processStateDirs` is newest first. Fails with
+ * `HarnessStateNotFoundError` (naming the session root) when nothing exists.
+ */
+export const locateHarnessState = (
+  sessionStateDir: string,
+  processStateDirs: ReadonlyArray<string>,
+  sessionId: string,
+): Effect.Effect<
+  LocatedHarnessState,
+  HarnessStateNotFoundError | HarnessStateIOError | HarnessStateInvalidError
+> =>
+  Effect.gen(function* () {
+    for (const stateDir of processStateDirs) {
+      const manifest = yield* readHarnessStateManifest(stateDir, sessionId).pipe(
+        Effect.catchTag("HarnessStateNotFoundError", () => Effect.succeed(null)),
+      );
+      if (manifest !== null) return { stateDir, manifest };
+    }
+    const manifest = yield* readHarnessStateManifest(sessionStateDir, sessionId);
+    return { stateDir: sessionStateDir, manifest };
+  });
 
 interface HarnessStateShape {
   /** `$HOME`-relative directories/files that hold the harness's session state. */

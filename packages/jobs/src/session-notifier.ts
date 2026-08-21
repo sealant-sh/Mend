@@ -4,10 +4,16 @@ import {
   MendEvent,
   ProjectsRepo,
   PushDevicesRepo,
+  SessionProcessesRepo,
   SessionsRepo,
 } from "@mend/db";
 import { SessionId } from "@mend/domain";
-import type { Session } from "@mend/domain/workbench";
+import {
+  agentProcessOutcome,
+  currentAgentProcess,
+  type Session,
+  type SessionProcess,
+} from "@mend/domain/workbench";
 import { Effect, Layer, Schema, Stream } from "effect";
 
 /**
@@ -30,11 +36,21 @@ const TERMINAL_FRESHNESS_MS = 2 * 60_000;
 const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 const BODY_LIMIT = 140;
 
-export const phaseOf = (status: string): Phase | null => {
+/**
+ * The phase of a session as the phone should hear it. Session status is a fold over EVERY
+ * process (docs/SESSION-SERVICES.md): a session whose agent ended while a shell still holds the
+ * workspace reads `idle`, so the agent's own outcome comes from its process row. `waiting` is the
+ * only attention phase (a protocol-mode agent asking for input); `idle` by itself is nobody's
+ * problem — it means no agent is running.
+ */
+export const phaseOf = (status: string, currentAgent: SessionProcess | null): Phase | null => {
   switch (status) {
     case "waiting":
-    case "idle":
       return "attention";
+    case "idle": {
+      const outcome = currentAgent === null ? null : agentProcessOutcome(currentAgent);
+      return outcome === "completed" || outcome === "failed" ? outcome : null;
+    }
     case "completed":
       return "completed";
     case "failed":
@@ -65,6 +81,7 @@ export const SessionNotifierLive = Layer.effectDiscard(
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
     const sessions = yield* SessionsRepo;
+    const processes = yield* SessionProcessesRepo;
     const projects = yield* ProjectsRepo;
     const devices = yield* PushDevicesRepo;
 
@@ -110,21 +127,26 @@ export const SessionNotifierLive = Layer.effectDiscard(
 
     const observe = Effect.fn("SessionNotifier.observe")(function* (sessionId: string) {
       const session = yield* sessions.byId(SessionId.make(sessionId));
-      const phase = phaseOf(session.status);
+      const currentAgent = currentAgentProcess(yield* processes.listForSession(session.id));
+      const phase = phaseOf(session.status, currentAgent);
       const previous = lastPhase.get(session.id);
       lastPhase.set(session.id, phase);
       if (previous === undefined) return; // unknown baseline — record, never ring
       if (previous === phase || phase === null) return;
       if (phase !== "attention") {
-        const settledAt = session.settledAt?.getTime() ?? Date.now();
-        if (Date.now() - settledAt > TERMINAL_FRESHNESS_MS) return;
+        const endedAt =
+          session.settledAt?.getTime() ?? currentAgent?.exitedAt?.getTime() ?? Date.now();
+        if (Date.now() - endedAt > TERMINAL_FRESHNESS_MS) return;
       }
       yield* send(session, phase);
     });
 
     // Baseline: whatever is live right now was live before we were listening.
     const active = yield* sessions.listActive();
-    for (const session of active) lastPhase.set(session.id, phaseOf(session.status));
+    for (const session of active) {
+      const currentAgent = currentAgentProcess(yield* processes.listForSession(session.id));
+      lastPhase.set(session.id, phaseOf(session.status, currentAgent));
+    }
 
     yield* sql.listen(MEND_EVENTS_CHANNEL).pipe(
       Stream.runForEach((payload) =>

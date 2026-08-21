@@ -1,4 +1,10 @@
-import { LIVE_STATUSES, type ProjectDto, type SessionDto } from "#/lib/api";
+import {
+  LIVE_STATUSES,
+  type ProjectDto,
+  type SessionAnnotationDto,
+  type SessionDto,
+  sessionFace,
+} from "#/lib/api";
 import type { InboxShelves } from "#/lib/inbox-shelves";
 import { hasUnseenSettle } from "#/lib/seen";
 import { effectiveSnoozed, type Snoozes } from "#/lib/snooze";
@@ -19,6 +25,10 @@ import { sessionTitle, type Tone } from "#/lib/words";
  * appear). Snoozed outranks everything; then Active = live statuses; Settled
  * = the rest. The status slot is a mutually-exclusive cascade; "done" shows
  * only while a settle is unseen (see lib/seen.ts).
+ *
+ * Session status is a fold over every process, so a session whose agent ended
+ * while a shell still holds the workspace reads `idle`; the inbox shows such a
+ * row by its agent's outcome (`sessionFace`) — the shell is you, not the agent.
  */
 
 export type InboxSection = "active" | "snoozed" | "settled";
@@ -36,6 +46,8 @@ export interface InboxRow {
   readonly recede: boolean;
   /** Title weight carries unseen, like t3's font-medium. */
   readonly unseen: boolean;
+  /** When the agent's work ended (ISO) — orders the settled shelf. */
+  readonly endedAt: string | null;
 }
 
 export interface Inbox {
@@ -56,8 +68,8 @@ export const isLegacyBench = (session: SessionDto): boolean =>
 const isTreeSession = (session: SessionDto): boolean =>
   isAgentSession(session) || isLegacyBench(session);
 
-const settledAt = (session: SessionDto): number => {
-  const at = session.settledAt ?? session.createdAt;
+const endedAt = (row: InboxRow): number => {
+  const at = row.endedAt ?? row.session.createdAt;
   const ms = Date.parse(at);
   return Number.isNaN(ms) ? 0 : ms;
 };
@@ -72,10 +84,10 @@ const unexpectedStatus = (status: never): never => {
 };
 
 const slotFor = (
-  session: SessionDto,
+  status: SessionDto["status"],
   unseen: boolean,
 ): { readonly word: string; readonly tone: Tone } | null => {
-  switch (session.status) {
+  switch (status) {
     case "waiting":
       return { word: "input", tone: "amber" };
     case "running":
@@ -89,7 +101,7 @@ const slotFor = (
     case "idle":
       return null;
     default:
-      return unexpectedStatus(session.status);
+      return unexpectedStatus(status);
   }
 };
 
@@ -104,20 +116,27 @@ export const buildInbox = (
   projects: ReadonlyArray<{
     readonly project: ProjectDto;
     readonly sessions: ReadonlyArray<SessionDto>;
+    /** Per-session list facts; the current agent process rides here. */
+    readonly annotations?: ReadonlyArray<SessionAnnotationDto>;
   }>,
   visited: Record<string, string>,
   snoozes: Snoozes = {},
   now: number = Date.now(),
 ): Inbox => {
   const rows: Array<InboxRow> = [];
-  for (const { project, sessions } of projects) {
+  for (const { project, sessions, annotations } of projects) {
     for (const session of sessions) {
       if (!isAgentSession(session)) continue;
-      const live = LIVE_STATUSES.has(session.status);
-      const unseen = !live && hasUnseenSettle(visited, session.id, session.settledAt);
-      const slot = slotFor(session, unseen);
+      const currentAgent =
+        annotations?.find((annotation) => annotation.sessionId === session.id)?.currentAgent ??
+        null;
+      const face = sessionFace(session, currentAgent);
+      const faced: SessionDto = { ...session, status: face.status, settledAt: face.endedAt };
+      const live = LIVE_STATUSES.has(face.status);
+      const unseen = !live && hasUnseenSettle(visited, session.id, face.endedAt);
+      const slot = slotFor(face.status, unseen);
       const entry = snoozes[session.id];
-      const snoozed = effectiveSnoozed(session, entry, now);
+      const snoozed = effectiveSnoozed(faced, entry, now);
       rows.push({
         session,
         projectName: project.name,
@@ -127,8 +146,9 @@ export const buildInbox = (
         slot,
         // t3: in-flight rows recede the same as read-ready ones — working
         // isn't your problem yet. Only input/failed/unseen hold full weight.
-        recede: !unseen && session.status !== "waiting" && session.status !== "failed",
+        recede: !unseen && face.status !== "waiting" && face.status !== "failed",
         unseen,
+        endedAt: face.endedAt,
       });
     }
   }
@@ -143,7 +163,7 @@ export const buildInbox = (
     .toSorted((a, b) => wakeAtMs(a) - wakeAtMs(b) || byId(a, b));
   const settled = rows
     .filter((r) => r.section === "settled")
-    .toSorted((a, b) => settledAt(b.session) - settledAt(a.session) || byId(a, b));
+    .toSorted((a, b) => endedAt(b) - endedAt(a) || byId(a, b));
   return { active, snoozed, settled, ordered: [...active, ...snoozed, ...settled] };
 };
 

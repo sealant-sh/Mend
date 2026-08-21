@@ -557,6 +557,8 @@ export const sessionProcesses = pgTable(
       .references(() => services.id, { onDelete: "set null" }),
     attemptOrdinal: integer(),
     kind: text().$type<SessionProcessKind>().notNull(),
+    harness: text(),
+    providerSessionId: text(),
     label: text(),
     argv: jsonb()
       .$type<ReadonlyArray<string>>()

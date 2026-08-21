@@ -9,6 +9,7 @@ import { AppShell } from "#/components/shell";
 import { SessionStatusDot } from "#/components/status";
 import { SessionTerminal } from "#/components/terminal";
 import {
+  agentIsLive,
   checkpointSession,
   removeSession,
   resumeSession,
@@ -97,7 +98,13 @@ function TranscriptPane({ sessionId }: { readonly sessionId: string }) {
 
 function SessionPage() {
   const { sessionId } = Route.useParams();
-  const { session, checkpoints, change } = useSuspenseQuery(sessionDetailQuery(sessionId)).data;
+  const { session, checkpoints, change, currentAgent } = useSuspenseQuery(
+    sessionDetailQuery(sessionId),
+  ).data;
+  // The agent's liveness, not the session fold: a shell holding the workspace keeps the session
+  // `idle`, but the terminal, stop, and resume controls are about the AGENT.
+  const agentLive = agentIsLive(session, currentAgent);
+  const agentPty = currentAgent?.sealantSessionId ?? session.sealantSessionId;
   const followUp = useSuspenseQuery(pendingFollowUpQuery(sessionId)).data;
   const [pending, setPending] = useState<"stop" | "checkpoint" | "resume" | null>(null);
   const [labelDraft, setLabelDraft] = useState<string | null>(null);
@@ -219,7 +226,7 @@ function SessionPage() {
           >
             {pending === "checkpoint" ? "Marking…" : "Mark checkpoint"}
           </button>
-          {ACTIVE.has(session.status) && (
+          {agentLive && (
             <button
               type="button"
               disabled={pending !== null}
@@ -229,7 +236,7 @@ function SessionPage() {
               {pending === "stop" ? "Stopping…" : "Stop"}
             </button>
           )}
-          {!ACTIVE.has(session.status) && (
+          {!agentLive && (
             <button
               type="button"
               disabled={deleting === "working"}
@@ -244,7 +251,7 @@ function SessionPage() {
                   : "Delete…"}
             </button>
           )}
-          {!ACTIVE.has(session.status) && (
+          {!agentLive && (
             <div className="flex items-center gap-2">
               <span className="text-xs text-label">resume with:</span>
               {(["claude", "codex", "opencode"] as const).map((harness) => (
@@ -272,7 +279,7 @@ function SessionPage() {
 
         <div className="mt-9 grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
           <section className="min-w-0">
-            {session.sealantSessionId === null && ACTIVE.has(session.status) ? (
+            {agentPty === null && agentLive ? (
               <>
                 <p className="text-xs font-medium text-label">Terminal</p>
                 <div className="mt-3 overflow-hidden rounded-2xl bg-card shadow-sm">
@@ -287,7 +294,7 @@ function SessionPage() {
                   </p>
                 </div>
               </>
-            ) : session.sealantSessionId !== null && ACTIVE.has(session.status) ? (
+            ) : agentPty !== null && agentLive ? (
               <>
                 <p className="text-xs font-medium text-label">Terminal</p>
                 <div className="mt-3 overflow-hidden rounded-2xl bg-card shadow-sm">
@@ -302,7 +309,7 @@ function SessionPage() {
                   {/* Keyed on theme too: the terminal snapshots CSS variables at
                       attach, and a remount replays the record into the new palette. */}
                   <SessionTerminal
-                    key={`${session.sealantSessionId}:${dark ? "dark" : "light"}`}
+                    key={`${agentPty}:${dark ? "dark" : "light"}`}
                     sessionId={session.id}
                   />
                 </div>

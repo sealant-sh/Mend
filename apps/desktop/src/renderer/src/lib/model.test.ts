@@ -105,6 +105,94 @@ describe("buildInbox", () => {
   });
 });
 
+const agent = (exitedAt: string | null, exitCode: number | null) => ({
+  id: "agent-1",
+  sessionId: "idle-done",
+  serviceId: null,
+  attemptOrdinal: null,
+  launchCorrelationId: null,
+  sealantWorkspaceId: "ws-1",
+  sealantSessionId: "pty-1",
+  sealantRunId: "run-1",
+  kind: "agent-pty" as const,
+  harness: "claude",
+  providerSessionId: null,
+  label: "claude",
+  argv: ["claude"],
+  status: exitedAt === null ? ("running" as const) : ("exited" as const),
+  exitCode,
+  workspacePort: null,
+  protocol: "tcp" as const,
+  hostPort: null,
+  createdAt: "2026-08-21T10:00:00.000Z",
+  exitedAt,
+  updatedAt: exitedAt ?? "2026-08-21T10:00:00.000Z",
+});
+const annotation = (currentAgent: ReturnType<typeof agent> | null) => ({
+  sessionId: "idle-done",
+  changeId: null,
+  openComments: 0,
+  totalComments: 0,
+  pendingFollowUp: false,
+  currentAgent,
+});
+
+describe("buildInbox with the current agent process", () => {
+  it("shows an idle session whose agent ended by the agent's outcome — the shell is you", () => {
+    const inbox = buildInbox(
+      [
+        {
+          project: project("p1"),
+          sessions: [session("idle-done", "p1", "idle", "2026-08-21T10:00:00.000Z")],
+          annotations: [annotation(agent("2026-08-21T11:30:00.000Z", 0))],
+        },
+      ],
+      // Visited before the agent ended: the settle is unseen, so "done" shows.
+      { "idle-done": "2026-08-21T10:30:00.000Z" },
+      {},
+      now,
+    );
+    expect(inbox.active).toEqual([]);
+    expect(inbox.settled.map((row) => row.session.id)).toEqual(["idle-done"]);
+    expect(inbox.settled[0]?.slot?.word).toBe("done");
+    expect(inbox.settled[0]?.endedAt).toBe("2026-08-21T11:30:00.000Z");
+  });
+
+  it("keeps a failed agent's weight behind an idle session", () => {
+    const inbox = buildInbox(
+      [
+        {
+          project: project("p1"),
+          sessions: [session("idle-done", "p1", "idle", "2026-08-21T10:00:00.000Z")],
+          annotations: [annotation(agent("2026-08-21T11:30:00.000Z", 2))],
+        },
+      ],
+      {},
+      {},
+      now,
+    );
+    expect(inbox.settled[0]?.slot?.word).toBe("failed");
+    expect(inbox.settled[0]?.recede).toBe(false);
+  });
+
+  it("leaves a truly idle session (no agent ever) on the active shelf", () => {
+    const inbox = buildInbox(
+      [
+        {
+          project: project("p1"),
+          sessions: [session("idle-done", "p1", "idle", "2026-08-21T10:00:00.000Z")],
+          annotations: [annotation(null)],
+        },
+      ],
+      {},
+      {},
+      now,
+    );
+    expect(inbox.active.map((row) => row.session.id)).toEqual(["idle-done"]);
+    expect(inbox.active[0]?.slot).toBeNull();
+  });
+});
+
 describe("scopeInbox + visibleInboxRows", () => {
   const inbox = buildInbox(data, {}, {}, now);
 

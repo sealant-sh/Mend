@@ -1,10 +1,13 @@
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { deliverFollowUp, type DeliverFollowUpInput, type FollowUpDto } from "#/lib/api";
+import {
+  agentIsLive,
+  deliverFollowUp,
+  type DeliverFollowUpInput,
+  type FollowUpDto,
+} from "#/lib/api";
 import { queryClient, sessionDetailQuery } from "#/lib/queries";
-
-const ACTIVE = new Set(["starting", "running", "waiting", "idle"]);
 
 const retryInput = (followUp: FollowUpDto): DeliverFollowUpInput | null =>
   followUp.reviewSliceId === null ||
@@ -31,13 +34,15 @@ export function FollowUpBanner({
   readonly sessionId: string;
   readonly followUp: FollowUpDto | null;
 }) {
-  const { session } = useSuspenseQuery(sessionDetailQuery(sessionId)).data;
+  const { session, currentAgent } = useSuspenseQuery(sessionDetailQuery(sessionId)).data;
   const [delivering, setDelivering] = useState(false);
   const [error, setError] = useState<string | null>(null);
   if (followUp === null) return null;
 
   const input = retryInput(followUp);
-  const active = ACTIVE.has(session.status);
+  // A follow-up needs the AGENT gone, not the workspace: shells holding it leave the session
+  // `idle`, and the next agent process joins them there.
+  const active = agentIsLive(session, currentAgent);
   const deliver = () => {
     if (input === null || delivering || (active && followUp.status !== "delivering")) return;
     setDelivering(true);

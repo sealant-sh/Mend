@@ -8,7 +8,7 @@ import {
   SessionsRepo,
 } from "@mend/db";
 import type { CheckpointId, ReviewCommentId, ReviewSliceId, SessionId } from "@mend/domain";
-import type { DiffDigest, FollowUp } from "@mend/domain/workbench";
+import { type DiffDigest, type FollowUp, isLiveAgentProcess } from "@mend/domain/workbench";
 import { Clock, Duration, Effect, Layer, Option, Result, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -57,8 +57,12 @@ export class FollowUpDelivery extends Context.Service<
 
 const DELIVERY_LEASE_DURATION = Duration.seconds(30);
 const DELIVERY_HEARTBEAT_INTERVAL = Duration.seconds(10);
-const ACTIVE_SESSION_STATUSES = new Set(["starting", "running", "waiting", "idle"]);
-const ACTIVE_AGENT_PROCESS_STATUSES = new Set(["starting", "running"]);
+/**
+ * Row statuses that mean "an agent is live" even before a process row exists: a launch in
+ * flight, a run attached without a process. `idle` is NOT here — shells or Services holding the
+ * workspace do not block a follow-up; the fold over processes says whether an agent is live.
+ */
+const ACTIVE_SESSION_STATUSES = new Set(["starting", "running", "waiting"]);
 
 const sameIds = (left: ReadonlyArray<ReviewCommentId>, right: ReadonlyArray<ReviewCommentId>) =>
   left.length === right.length && left.every((id) => right.includes(id));
@@ -292,12 +296,7 @@ export const FollowUpDeliveryLive: Layer.Layer<
             }));
 
           const sessionProcesses = yield* processes.listForSession(input.sessionId);
-          const hasLiveAgent = sessionProcesses.some(
-            (process) =>
-              process.kind === "agent" &&
-              process.exitedAt === null &&
-              ACTIVE_AGENT_PROCESS_STATUSES.has(process.status),
-          );
+          const hasLiveAgent = sessionProcesses.some(isLiveAgentProcess);
           const observedActive =
             session.settledAt === null && ACTIVE_SESSION_STATUSES.has(session.status);
           if (hasLiveAgent || observedActive) {
