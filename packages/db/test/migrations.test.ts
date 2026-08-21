@@ -27,16 +27,16 @@ const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
 const withScratch = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(scratchLayer), Effect.scoped));
 
+// The layer itself fails to build when nothing listens, so the guard sits outside the Effect.
 const reachable = await withAdmin(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`SELECT 1`;
     return true;
-  }).pipe(
-    Effect.timeout("2 seconds"),
-    Effect.catch(() => Effect.succeed(false)),
-    Effect.catchDefect(() => Effect.succeed(false)),
-  ),
+  }).pipe(Effect.timeout("2 seconds")),
+).then(
+  () => true,
+  () => false,
 );
 
 const ORDERED = Object.entries(migrations).toSorted(([a], [b]) => a.localeCompare(b));
