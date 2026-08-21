@@ -9,12 +9,17 @@ import { ProjectTree } from "#/components/project-tree";
 import { TabBar } from "#/components/tab-bar";
 import { TerminalPane } from "#/components/terminal-pane";
 import { Titlebar } from "#/components/titlebar";
-import { isUnauthorized, type SessionDto } from "#/lib/api";
+import { isUnauthorized, stopShell, type SessionDto, type SessionProcessDto } from "#/lib/api";
 import { useWorkbenchEvents } from "#/lib/events";
 import { useKeybindings } from "#/lib/keys";
 import { buildInbox, buildTree, type InboxRow } from "#/lib/model";
 import { useNow } from "#/lib/now";
-import { projectDetailQuery, projectsQuery } from "#/lib/queries";
+import {
+  projectDetailQuery,
+  projectsQuery,
+  queryClient,
+  sessionProcessesQuery,
+} from "#/lib/queries";
 import { markVisited, useVisited } from "#/lib/seen";
 import { terminalFont } from "#/lib/terminal-font";
 import { openShellTab, useWorkbench, workbench } from "#/lib/workbench";
@@ -25,8 +30,8 @@ const focusRow = (row: InboxRow) => {
 
 /**
  * The main screen (BRIEF.md): project tree and inbox on the left, tabs above
- * one dominant terminal on the right. Herdr's shape, Mend's engine — every
- * tab is a PTY in a Mend-managed workspace.
+ * one dominant terminal on the right. Every writable supporting shell belongs
+ * to a visible session and its change.
  */
 export const Route = createFileRoute("/")({
   component: Main,
@@ -37,7 +42,7 @@ function Main() {
   const navigate = useNavigate();
   const now = useNow();
   const visited = useVisited();
-  const bench = useWorkbench();
+  const layout = useWorkbench();
   const [launcherFor, setLauncherFor] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [shellError, setShellError] = useState<string | null>(null);
@@ -48,53 +53,115 @@ function Main() {
   });
   const data = useMemo(
     () =>
-      (projects.data ?? []).map((project, i) => ({
+      (projects.data ?? []).map((project, index) => ({
         project,
-        sessions: details[i]?.data?.sessions ?? [],
+        sessions: details[index]?.data?.sessions ?? [],
       })),
     [projects.data, details],
   );
+  const sessionList = useMemo(() => data.flatMap((entry) => entry.sessions), [data]);
+  const processQueries = useQueries({
+    queries: sessionList.map((session) => sessionProcessesQuery(session.id)),
+  });
 
   const tree = useMemo(() => buildTree(data), [data]);
   const inbox = useMemo(() => buildInbox(data, visited), [data, visited]);
   const sessions = useMemo(() => {
     const map = new Map<string, SessionDto>();
-    for (const { sessions: list } of data) for (const s of list) map.set(s.id, s);
+    for (const session of sessionList) map.set(session.id, session);
     return map;
-  }, [data]);
+  }, [sessionList]);
+  const processes = useMemo(() => {
+    const map = new Map<string, SessionProcessDto>();
+    for (const query of processQueries) {
+      for (const process of query.data ?? []) map.set(process.id, process);
+    }
+    return map;
+  }, [processQueries]);
 
   // The focused project defaults to the first one the server lists.
   const focusedProjectId =
-    bench.focusedProjectId !== null && data.some((d) => d.project.id === bench.focusedProjectId)
-      ? bench.focusedProjectId
+    layout.focusedProjectId !== null &&
+    data.some((entry) => entry.project.id === layout.focusedProjectId)
+      ? layout.focusedProjectId
       : (data[0]?.project.id ?? null);
-  const focusedProject = data.find((d) => d.project.id === focusedProjectId) ?? null;
+  const focusedProject = data.find((entry) => entry.project.id === focusedProjectId) ?? null;
   const projectTabs =
-    focusedProjectId !== null
-      ? (bench.byProject[focusedProjectId] ?? { tabs: [], focused: 0 })
-      : { tabs: [], focused: 0 };
+    focusedProjectId === null
+      ? { tabs: [], focused: 0 }
+      : (layout.byProject[focusedProjectId] ?? { tabs: [], focused: 0 });
   const focusedTab = projectTabs.tabs[projectTabs.focused] ?? null;
-  const focusedSessionId =
-    focusedTab !== null && focusedTab.kind === "session" ? focusedTab.sessionId : null;
-  const focusedSession = focusedTab !== null ? (sessions.get(focusedTab.sessionId) ?? null) : null;
+  const focusedSessionId = focusedTab?.sessionId ?? null;
+  const focusedSession =
+    focusedSessionId === null ? null : (sessions.get(focusedSessionId) ?? null);
+  const focusedProcess =
+    focusedTab?.kind === "shell" ? (processes.get(focusedTab.processId) ?? null) : null;
 
-  // Viewing a settled session clears its unseen "done" — stamped at the
-  // settle time so a later settle still gets its signal (t3's model).
+  // Viewing any tab owned by a settled session clears its unseen completion.
   useEffect(() => {
     if (focusedSessionId === null) return;
     const session = sessions.get(focusedSessionId);
-    if (session !== undefined && session.settledAt !== null) {
+    if (session?.settledAt !== null && session?.settledAt !== undefined) {
       markVisited(focusedSessionId, session.settledAt);
     }
   }, [focusedSessionId, sessions]);
 
-  // Tabs whose session vanished (removed on the server) leave quietly.
+  // The server owns process existence. On the first complete read, restore live
+  // shells; later reads prune ended processes without reopening detached tabs.
   useEffect(() => {
-    if (focusedProject === null || !details.every((d) => d.isSuccess)) return;
-    workbench.prune(focusedProject.project.id, new Set(sessions.keys()));
-  }, [focusedProject, details, sessions]);
+    if (!details.every((query) => query.isSuccess)) return;
+    if (!processQueries.every((query) => query.isSuccess)) return;
+    for (const entry of data) {
+      const sessionIds = new Set(entry.sessions.map((session) => session.id));
+      const shellProcesses = [...processes.values()].filter((process) =>
+        sessionIds.has(process.sessionId),
+      );
+      workbench.reconcileProject(entry.project.id, sessionIds, shellProcesses);
+    }
+  }, [data, details, processQueries, processes]);
 
-  const projectOrder = tree.map((t) => t.project.id);
+  const requestShell = () => {
+    if (focusedProjectId === null) return;
+    if (focusedSessionId === null) {
+      setLauncherFor(focusedProjectId);
+      return;
+    }
+    setShellError(null);
+    void openShellTab(focusedProjectId, focusedSessionId).catch((error: unknown) => {
+      setShellError(error instanceof Error ? error.message : String(error));
+    });
+  };
+
+  const closeTabAt = async (index: number) => {
+    if (focusedProjectId === null) return;
+    const tab = projectTabs.tabs[index];
+    if (tab === undefined) return;
+    if (tab.kind === "session") {
+      workbench.detachTab(focusedProjectId, index);
+      return;
+    }
+    const process = processes.get(tab.processId);
+    const label = process?.label ?? "this shell";
+    if (
+      !window.confirm(
+        `Stop ${label}? This ends its process group.\n\nUse Detach tab to leave it running.`,
+      )
+    ) {
+      return;
+    }
+    setShellError(null);
+    try {
+      await stopShell(tab.processId);
+      workbench.detachTab(focusedProjectId, index);
+      void queryClient.invalidateQueries({
+        queryKey: ["session", tab.sessionId, "processes"],
+      });
+    } catch (error) {
+      setShellError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const projectOrder = tree.map((entry) => entry.project.id);
   const moveProject = (delta: number) => {
     if (focusedProjectId === null || projectOrder.length === 0) return;
     const index = projectOrder.indexOf(focusedProjectId);
@@ -105,7 +172,6 @@ function Main() {
     const order = inbox.ordered;
     if (order.length === 0) return;
     const index = order.findIndex((row) => row.session.id === focusedSessionId);
-    // No current session: start at the top. Otherwise step without wrapping.
     const target = index === -1 ? order[0] : order[index + delta];
     if (target !== undefined) focusRow(target);
   };
@@ -115,19 +181,8 @@ function Main() {
     prevSession: () => moveSession(-1),
     nextProject: () => moveProject(1),
     prevProject: () => moveProject(-1),
-    newShellTab: () => {
-      if (focusedProjectId !== null) {
-        setShellError(null);
-        openShellTab(focusedProjectId).catch((error: unknown) => {
-          setShellError(error instanceof Error ? error.message : String(error));
-        });
-      }
-    },
-    closeTab: () => {
-      if (focusedProjectId !== null && projectTabs.tabs.length > 0) {
-        workbench.closeTab(focusedProjectId, projectTabs.focused);
-      }
-    },
+    newShellTab: requestShell,
+    closeTab: () => void closeTabAt(projectTabs.focused),
     nextTab: () => {
       if (focusedProjectId !== null && projectTabs.tabs.length > 0) {
         workbench.focusTab(focusedProjectId, (projectTabs.focused + 1) % projectTabs.tabs.length);
@@ -153,12 +208,16 @@ function Main() {
   });
 
   const unauthorized =
-    isUnauthorized(projects.error) || details.some((d) => isUnauthorized(d.error));
+    isUnauthorized(projects.error) ||
+    details.some((query) => isUnauthorized(query.error)) ||
+    processQueries.some((query) => isUnauthorized(query.error));
   if (unauthorized) return <Navigate to="/connect" search={{ reason: "unauthorized" }} />;
 
   return (
     <>
-      <Titlebar liveCount={details.every((d) => d.isSuccess) ? inbox.active.length : null} />
+      <Titlebar
+        liveCount={details.every((query) => query.isSuccess) ? inbox.active.length : null}
+      />
       <div className="flex min-h-0 flex-1">
         <nav
           aria-label="Projects and inbox"
@@ -186,28 +245,14 @@ function Main() {
               tabs={projectTabs.tabs}
               focused={projectTabs.focused}
               sessions={sessions}
-              opening={bench.opening === focusedProjectId}
+              processes={processes}
+              opening={layout.opening === focusedSessionId}
               onFocus={(index) => workbench.focusTab(focusedProject.project.id, index)}
-              onClose={(index) => workbench.closeTab(focusedProject.project.id, index)}
-              onNewShell={() => {
-                setShellError(null);
-                openShellTab(focusedProject.project.id).catch((error: unknown) => {
-                  setShellError(error instanceof Error ? error.message : String(error));
-                });
-              }}
+              onClose={(index) => void closeTabAt(index)}
+              onNewShell={requestShell}
             />
           )}
-          {focusedTab !== null ? (
-            <TerminalPane
-              key={
-                focusedTab.kind === "session"
-                  ? `s:${focusedTab.sessionId}`
-                  : `p:${focusedTab.sessionId}:${focusedTab.processId ?? "pty"}`
-              }
-              tab={focusedTab}
-              session={focusedSession}
-            />
-          ) : (
+          {focusedTab === null ? (
             <div className="flex min-h-0 flex-1 items-center justify-center">
               <div className="max-w-sm text-center">
                 <p className="font-mono text-[12px] tracking-wider text-faint uppercase">
@@ -215,17 +260,38 @@ function Main() {
                 </p>
                 {!projects.isPending && (
                   <p className="mt-3 font-sans text-[14px] leading-relaxed text-muted-foreground">
-                    Ctrl+Shift+T opens a mend shell in{" "}
-                    {focusedProject === null ? "the project" : focusedProject.project.name}; + on a
-                    project launches an agent session. Every terminal is a Mend-managed workspace.
+                    Choose a session, then press Ctrl+Shift+T for a supporting shell in its
+                    worktree. With only a project focused, the shortcut opens the session launcher.
                   </p>
                 )}
               </div>
             </div>
+          ) : (
+            <TerminalPane
+              key={
+                focusedTab.kind === "session"
+                  ? `s:${focusedTab.sessionId}`
+                  : `p:${focusedTab.processId}`
+              }
+              tab={focusedTab}
+              session={focusedSession}
+              process={focusedProcess}
+              onDetach={() => {
+                if (focusedProjectId !== null) {
+                  workbench.detachTab(focusedProjectId, projectTabs.focused);
+                }
+              }}
+              onReview={(changeId, sliceId) => {
+                void navigate({
+                  to: "/review/$changeId/$sliceId",
+                  params: { changeId, sliceId },
+                });
+              }}
+            />
           )}
           {shellError !== null && (
             <p className="border-t border-rule px-3 py-1.5 font-sans text-[12.5px] text-danger">
-              shell failed — {shellError}
+              shell action failed: {shellError}
             </p>
           )}
         </main>
@@ -239,7 +305,9 @@ function Main() {
       {launcherFor !== null && (
         <Launcher
           projectId={launcherFor}
-          projectName={data.find((d) => d.project.id === launcherFor)?.project.name ?? "project"}
+          projectName={
+            data.find((entry) => entry.project.id === launcherFor)?.project.name ?? "project"
+          }
           onLaunched={(session) => {
             setLauncherFor(null);
             workbench.openSession(session.projectId, session.id);

@@ -37,8 +37,15 @@ export interface Inbox {
   readonly ordered: ReadonlyArray<InboxRow>;
 }
 
-/** Agent sessions only: the bench and its shells are not inbox material. */
+/** Coding-agent sessions are the inbox material. */
 export const isAgentSession = (session: SessionDto): boolean => session.harness !== "shell";
+
+/** Retired hidden benches remain visible until their change and processes are resolved. */
+export const isLegacyBench = (session: SessionDto): boolean =>
+  session.harness === "shell" && session.label === "bench";
+
+const isTreeSession = (session: SessionDto): boolean =>
+  isAgentSession(session) || isLegacyBench(session);
 
 const settledAt = (session: SessionDto): number => {
   const at = session.settledAt ?? session.createdAt;
@@ -49,6 +56,10 @@ const settledAt = (session: SessionDto): number => {
 const createdAt = (session: SessionDto): number => {
   const ms = Date.parse(session.createdAt);
   return Number.isNaN(ms) ? 0 : ms;
+};
+
+const unexpectedStatus = (status: never): never => {
+  throw new Error(`Unhandled session status: ${String(status)}`);
 };
 
 const slotFor = (
@@ -68,6 +79,8 @@ const slotFor = (
       return unseen ? { word: "done", tone: "green" } : null;
     case "idle":
       return null;
+    default:
+      return unexpectedStatus(session.status);
   }
 };
 
@@ -103,19 +116,19 @@ export const buildInbox = (
   const active = rows
     .filter((r) => r.section === "active")
     .toSorted(
-      (a, b) =>
+      (a: InboxRow, b: InboxRow) =>
         createdAt(b.session) - createdAt(a.session) || a.session.id.localeCompare(b.session.id),
     );
   const settled = rows
     .filter((r) => r.section === "settled")
     .toSorted(
-      (a, b) =>
+      (a: InboxRow, b: InboxRow) =>
         settledAt(b.session) - settledAt(a.session) || a.session.id.localeCompare(b.session.id),
     );
   return { active, settled, ordered: [...active, ...settled] };
 };
 
-/** The project tree: every project, its agent sessions beneath. */
+/** The project tree: coding-agent sessions plus migration-only legacy benches. */
 export interface TreeProject {
   readonly project: ProjectDto;
   readonly sessions: ReadonlyArray<SessionDto>;
@@ -130,6 +143,8 @@ export const buildTree = (
   projects.map(({ project, sessions }) => ({
     project,
     sessions: sessions
-      .filter(isAgentSession)
-      .toSorted((a, b) => createdAt(b) - createdAt(a) || a.id.localeCompare(b.id)),
+      .filter(isTreeSession)
+      .toSorted(
+        (a: SessionDto, b: SessionDto) => createdAt(b) - createdAt(a) || a.id.localeCompare(b.id),
+      ),
   }));

@@ -161,7 +161,6 @@ function Settings() {
   const themeMode = useThemeMode();
   const settings = useAppSettings();
   const connection = useConnection();
-  const [benchDraft, setBenchDraft] = useState(settings.benchCommand);
 
   return (
     <>
@@ -209,20 +208,10 @@ function Settings() {
               />
             </RowShell>
             <RowShell
-              label="Bench shell command"
-              hint="empty follows the workspace image's login shell (zsh -l on a zsh image); applies to newly created benches"
+              label="Supporting shells"
+              hint="open in the focused session and follow that workspace image's login shell"
             >
-              <input
-                className={`${input} w-64`}
-                value={benchDraft}
-                onChange={(event) => setBenchDraft(event.target.value)}
-                onBlur={() => appSettings.setBenchCommand(benchDraft)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") appSettings.setBenchCommand(benchDraft);
-                }}
-                placeholder="workspace shell"
-                spellCheck={false}
-              />
+              <span className="font-mono text-[12px] text-label">session-owned</span>
             </RowShell>
           </Section>
 

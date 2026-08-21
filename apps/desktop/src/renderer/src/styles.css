@@ -76,6 +76,43 @@
   }
 }
 
+/* Native Review diff: @pierre/diffs renders inside shadow DOM, so the token
+   bridge lives on its host. Diff semantics stay as faint washes plus edge marks. */
+.ev-diff {
+  --diffs-font-family: var(--font-mono);
+  --diffs-header-font-family: var(--font-sans);
+  --diffs-font-size: 12.5px;
+  --diffs-line-height: 20px;
+  --diffs-light-bg: var(--sw-bg);
+  --diffs-dark-bg: var(--sw-bg);
+  --diffs-bg-context-override: transparent;
+  --diffs-bg-context-gutter-override: var(--sw-bg);
+  --diffs-bg-addition-override: var(--sw-add-bg);
+  --diffs-bg-deletion-override: var(--sw-del-bg);
+  --diffs-bg-addition-emphasis-override: color-mix(in oklab, var(--sw-add-edge) 16%, transparent);
+  --diffs-bg-deletion-emphasis-override: color-mix(in oklab, var(--sw-del-edge) 14%, transparent);
+  --diffs-bg-hover-override: var(--sw-wash);
+  --diffs-selection-color-override: var(--sw-accent);
+  --diffs-bg-selection-override: color-mix(in oklab, var(--sw-accent) 20%, transparent);
+  --diffs-bg-selection-number-override: color-mix(in oklab, var(--sw-accent) 42%, transparent);
+  --diffs-bg-separator-override: var(--sw-sunken);
+  --diffs-annotation-bg: transparent;
+  --diffs-addition-color-override: var(--sw-add-edge);
+  --diffs-deletion-color-override: var(--sw-del-edge);
+  --diffs-fg-number-addition-override: var(--sw-add-edge);
+  --diffs-fg-number-deletion-override: var(--sw-del-edge);
+  --diffs-foreground: var(--sw-ink-2);
+  --diffs-background: transparent;
+  --diffs-token-comment: var(--sw-faint);
+  --diffs-token-keyword: var(--sw-muted);
+  --diffs-token-string: var(--sw-ink-2);
+  --diffs-token-string-expression: var(--sw-ink-2);
+  --diffs-token-constant: var(--sw-muted);
+  --diffs-token-function: var(--sw-ink);
+  --diffs-token-punctuation: var(--sw-muted);
+  --diffs-token-link: var(--sw-accent);
+}
+
 /* The ghostty surface (vendored t3 adapter) owns its children; the wrapper
    decides the rectangle. Its scrollbar reads these tokens. */
 .tty-host {

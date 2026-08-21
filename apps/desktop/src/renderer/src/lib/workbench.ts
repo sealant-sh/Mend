@@ -1,34 +1,17 @@
 import { useSyncExternalStore } from "react";
 
-import {
-  createSession,
-  launchSession,
-  LIVE_STATUSES,
-  openShell,
-  projectDetail,
-  stopSession,
-  type SessionDto,
-} from "#/lib/api";
-import { benchArgv } from "#/lib/app-settings";
+import { LIVE_PROCESS, openShell, type SessionProcessDto } from "#/lib/api";
 import { queryClient } from "#/lib/queries";
 
 /**
- * The working set: which project is focused, and per project the open tabs.
- * Every tab is a PTY (BRIEF.md). A session tab views an agent session's
- * terminal; a shell tab is a mend shell — a shell PTY in the project's bench
- * workspace. Closing a session tab detaches the view; closing a shell tab
- * abandons that shell. Persisted per machine.
+ * The client-owned layout of server-owned sessions and supporting processes.
+ * Local storage remembers tabs and focus; the process index decides whether a
+ * shell still exists. Detaching removes a view, never a process.
  */
 
 export type Tab =
   | { readonly kind: "session"; readonly sessionId: string }
-  | {
-      readonly kind: "shell";
-      /** The bench session hosting this shell's workspace. */
-      readonly sessionId: string;
-      /** Null: the bench's own launch PTY (the first shell); else a process. */
-      readonly processId: string | null;
-    };
+  | { readonly kind: "shell"; readonly sessionId: string; readonly processId: string };
 
 export interface ProjectTabs {
   readonly tabs: ReadonlyArray<Tab>;
@@ -38,29 +21,57 @@ export interface ProjectTabs {
 export interface WorkbenchState {
   readonly focusedProjectId: string | null;
   readonly byProject: Record<string, ProjectTabs>;
-  /** A shell tab is being provisioned for this project (bench may be building). */
+  /** Session whose supporting shell is being opened. */
   readonly opening: string | null;
 }
 
 const KEY = "mend-workbench";
-export const BENCH_LABEL = "bench";
-
 const EMPTY: WorkbenchState = { focusedProjectId: null, byProject: {}, opening: null };
+const hydratedProjects = new Set<string>();
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const parseTab = (value: unknown): Tab | null => {
+  if (!isRecord(value) || typeof value.sessionId !== "string") return null;
+  if (value.kind === "session") return { kind: "session", sessionId: value.sessionId };
+  if (value.kind === "shell" && typeof value.processId === "string") {
+    return { kind: "shell", sessionId: value.sessionId, processId: value.processId };
+  }
+  // Legacy bench tabs used a null process id for the hidden session's primary PTY.
+  return null;
+};
+
+const parseProjectTabs = (value: unknown): ProjectTabs | null => {
+  if (!isRecord(value) || !Array.isArray(value.tabs)) return null;
+  const tabs = value.tabs.flatMap((entry) => {
+    const tab = parseTab(entry);
+    return tab === null ? [] : [tab];
+  });
+  const focused =
+    typeof value.focused === "number" && Number.isSafeInteger(value.focused)
+      ? Math.max(0, Math.min(value.focused, Math.max(0, tabs.length - 1)))
+      : 0;
+  return { tabs, focused };
+};
 
 const read = (): WorkbenchState => {
   try {
     const raw = localStorage.getItem(KEY);
     if (raw === null) return EMPTY;
     const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) return EMPTY;
-    const record = parsed as Partial<WorkbenchState>;
+    if (!isRecord(parsed)) return EMPTY;
+    const byProject: Record<string, ProjectTabs> = {};
+    if (isRecord(parsed.byProject)) {
+      for (const [projectId, value] of Object.entries(parsed.byProject)) {
+        const projectTabs = parseProjectTabs(value);
+        if (projectTabs !== null) byProject[projectId] = projectTabs;
+      }
+    }
     return {
       focusedProjectId:
-        typeof record.focusedProjectId === "string" ? record.focusedProjectId : null,
-      byProject:
-        typeof record.byProject === "object" && record.byProject !== null
-          ? (record.byProject as Record<string, ProjectTabs>)
-          : {},
+        typeof parsed.focusedProjectId === "string" ? parsed.focusedProjectId : null,
+      byProject,
       opening: null,
     };
   } catch {
@@ -76,11 +87,12 @@ const set = (next: WorkbenchState) => {
   try {
     localStorage.setItem(KEY, JSON.stringify({ ...next, opening: null }));
   } catch {
-    // Storage unavailable — the in-memory state still works.
+    // Storage unavailable. The in-memory layout still works for this window.
   }
   for (const listener of listeners) listener();
 };
 
+/** Subscribe to the desktop's current tab layout. */
 export const useWorkbench = (): WorkbenchState =>
   useSyncExternalStore(
     (listener) => {
@@ -96,7 +108,7 @@ const tabsOf = (projectId: string): ProjectTabs =>
   state.byProject[projectId] ?? { tabs: [], focused: 0 };
 
 const tabKey = (tab: Tab): string =>
-  tab.kind === "session" ? `s:${tab.sessionId}` : `p:${tab.sessionId}:${tab.processId ?? "pty"}`;
+  tab.kind === "session" ? `s:${tab.sessionId}` : `p:${tab.processId}`;
 
 const withTabs = (projectId: string, next: ProjectTabs): WorkbenchState => ({
   ...state,
@@ -104,6 +116,20 @@ const withTabs = (projectId: string, next: ProjectTabs): WorkbenchState => ({
   byProject: { ...state.byProject, [projectId]: next },
 });
 
+const addOrRaise = (projectId: string, tab: Tab) => {
+  const current = tabsOf(projectId);
+  const existing = current.tabs.findIndex((candidate) => tabKey(candidate) === tabKey(tab));
+  set(
+    withTabs(
+      projectId,
+      existing === -1
+        ? { tabs: [...current.tabs, tab], focused: current.tabs.length }
+        : { ...current, focused: existing },
+    ),
+  );
+};
+
+/** Local layout operations. Process lifecycle stays behind the Mend API. */
 export const workbench = {
   focusProject: (projectId: string) => {
     if (state.focusedProjectId === projectId) return;
@@ -116,23 +142,20 @@ export const workbench = {
     set(withTabs(projectId, { ...current, focused: index }));
   },
 
-  /** Open (or raise) the tab viewing an agent session's terminal. */
+  /** Open or raise the tab viewing a coding-agent session. */
   openSession: (projectId: string, sessionId: string) => {
-    const current = tabsOf(projectId);
-    const existing = current.tabs.findIndex(
-      (t) => t.kind === "session" && t.sessionId === sessionId,
-    );
-    if (existing !== -1) {
-      set(withTabs(projectId, { ...current, focused: existing }));
-      return;
-    }
-    const tab: Tab = { kind: "session", sessionId };
-    set(withTabs(projectId, { tabs: [...current.tabs, tab], focused: current.tabs.length }));
+    addOrRaise(projectId, { kind: "session", sessionId });
   },
 
-  closeTab: (projectId: string, index: number) => {
+  /** Open or raise one server-owned supporting shell. */
+  openShell: (projectId: string, sessionId: string, processId: string) => {
+    addOrRaise(projectId, { kind: "shell", sessionId, processId });
+  },
+
+  /** Detach one view without changing its server-owned process. */
+  detachTab: (projectId: string, index: number) => {
     const current = tabsOf(projectId);
-    const tabs = current.tabs.filter((_, i) => i !== index);
+    const tabs = current.tabs.filter((_, candidate) => candidate !== index);
     const focused = Math.min(
       current.focused >= index ? current.focused - 1 : current.focused,
       tabs.length - 1,
@@ -140,11 +163,44 @@ export const workbench = {
     set(withTabs(projectId, { tabs, focused: Math.max(0, focused) }));
   },
 
-  /** Drop tabs whose session no longer exists. */
-  prune: (projectId: string, known: ReadonlySet<string>) => {
+  /**
+   * Reconcile saved layout with server facts. The first pass also restores
+   * every live shell after an app restart; later absent tabs stay detached.
+   */
+  reconcileProject: (
+    projectId: string,
+    knownSessions: ReadonlySet<string>,
+    shellProcesses: ReadonlyArray<SessionProcessDto>,
+  ) => {
+    const liveShells = shellProcesses.filter(
+      (process) => process.kind === "shell" && LIVE_PROCESS.has(process.status),
+    );
+    const liveById = new Map(liveShells.map((process) => [process.id, process]));
     const current = tabsOf(projectId);
-    const tabs = current.tabs.filter((t) => known.has(t.sessionId));
-    if (tabs.length === current.tabs.length) return;
+    let tabs = current.tabs.filter((tab) => {
+      if (!knownSessions.has(tab.sessionId)) return false;
+      return tab.kind === "session" || liveById.has(tab.processId);
+    });
+    if (!hydratedProjects.has(projectId)) {
+      hydratedProjects.add(projectId);
+      const present = new Set(tabs.flatMap((tab) => (tab.kind === "shell" ? [tab.processId] : [])));
+      tabs = [
+        ...tabs,
+        ...liveShells
+          .filter((process) => !present.has(process.id))
+          .map<Tab>((process) => ({
+            kind: "shell",
+            sessionId: process.sessionId,
+            processId: process.id,
+          })),
+      ];
+    }
+    if (
+      tabs.length === current.tabs.length &&
+      tabs.every((tab, index) => tabKey(tab) === tabKey(current.tabs[index] ?? tab))
+    ) {
+      return;
+    }
     set(
       withTabs(projectId, {
         tabs,
@@ -154,61 +210,15 @@ export const workbench = {
   },
 };
 
-/**
- * New shell tab: the bench mechanism (BRIEF.md §tabs). The project's bench is
- * one session with a shell harness; its launch PTY is the first shell, every
- * further tab is `openShell` into the same workspace. Created lazily here —
- * a first shell on a cold project builds a workspace and can take a while.
- */
-export const openShellTab = async (projectId: string): Promise<void> => {
+/** Open a supporting shell in one visible session and focus its process tab. */
+export const openShellTab = async (projectId: string, sessionId: string): Promise<void> => {
   if (state.opening !== null) return;
-  set({ ...state, opening: projectId });
+  set({ ...state, opening: sessionId });
   try {
-    const detail = await projectDetail(projectId);
-    const bench = detail.sessions.find(
-      (s: SessionDto) =>
-        s.harness === "shell" && s.label === BENCH_LABEL && LIVE_STATUSES.has(s.status),
-    );
-    const freshBench = async (): Promise<Tab> => {
-      const image = detail.project.workspaceImage;
-      const imageShell =
-        image !== null && image.mode === "family" && typeof image.shell === "string"
-          ? image.shell
-          : "bash";
-      const created = await createSession(projectId, "shell", BENCH_LABEL);
-      await launchSession(created.id, [...benchArgv(imageShell)]);
-      return { kind: "shell", sessionId: created.id, processId: null };
-    };
-    let tab: Tab;
-    if (bench === undefined) {
-      tab = await freshBench();
-    } else {
-      try {
-        const process = await openShell(bench.id);
-        tab = { kind: "shell", sessionId: bench.id, processId: process.id };
-      } catch {
-        // A bench the server still calls live can sit on a dead workspace
-        // (its container exited; opening a PTY there times out). Ask the
-        // server to reconcile it, then build a fresh bench rather than
-        // surfacing the corpse's error.
-        await stopSession(bench.id).catch(() => undefined);
-        tab = await freshBench();
-      }
-    }
-    void queryClient.invalidateQueries({ queryKey: ["project", projectId] });
-    const current = tabsOf(projectId);
-    const existing = current.tabs.findIndex((t) => tabKey(t) === tabKey(tab));
-    set({
-      ...withTabs(
-        projectId,
-        existing === -1
-          ? { tabs: [...current.tabs, tab], focused: current.tabs.length }
-          : { ...current, focused: existing },
-      ),
-      opening: null,
-    });
-  } catch (error) {
+    const process = await openShell(sessionId);
+    workbench.openShell(projectId, sessionId, process.id);
+    void queryClient.invalidateQueries({ queryKey: ["session", sessionId, "processes"] });
+  } finally {
     set({ ...state, opening: null });
-    throw error;
   }
 };
