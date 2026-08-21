@@ -54,6 +54,12 @@ export interface AdoptedRepo {
   readonly headSha: Sha;
 }
 
+/** A flat, sorted path list — the client nests it; `truncated` when the cap bit. */
+export interface FileListing {
+  readonly files: ReadonlyArray<string>;
+  readonly truncated: boolean;
+}
+
 export interface SessionWorktree {
   /** Absolute path of the worktree directory. */
   readonly path: string;
@@ -180,6 +186,11 @@ const untrackedIn = (worktreePath: string) =>
     Effect.map((out) => (out === "" ? [] : out.split("\n"))),
   );
 
+const capListing = (paths: ReadonlyArray<string>, limit: number): FileListing => {
+  const sorted = paths.filter((entry) => entry !== "").toSorted();
+  return { files: sorted.slice(0, limit), truncated: sorted.length > limit };
+};
+
 const rmBestEffort = (target: string): { readonly leftover: string | null } => {
   try {
     fs.rmSync(target, { recursive: true, force: true });
@@ -297,6 +308,21 @@ export class Store extends Context.Service<
       options?: { readonly ignoreWhitespace?: boolean },
     ) => Effect.Effect<ReadonlyArray<DiffFileFact>, GitError>;
     readonly headSha: (dir: string) => Effect.Effect<Sha, GitError>;
+    /**
+     * Every path a session worktree holds right now — tracked plus untracked,
+     * ignore rules applied (so dependency stores never appear). Sorted, capped
+     * at `limit`; `truncated` says the cap bit.
+     */
+    readonly listWorktreeFiles: (
+      worktreePath: string,
+      limit: number,
+    ) => Effect.Effect<FileListing, GitError>;
+    /** Every path in one commit's tree (`ls-tree -r`), for the bare store when no worktree is in play. */
+    readonly listTreeFiles: (
+      dir: string,
+      ref: string,
+      limit: number,
+    ) => Effect.Effect<FileListing, GitError>;
     /**
      * Clone `source` shallow into `_references/<name>` as read-only source
      * material (plan §17, decided 2026-08-01). `ref` pins a branch or tag;
@@ -585,6 +611,29 @@ export class Store extends Context.Service<
         return parseNameStatus(names, parseNumstat(counts));
       });
 
+      const listWorktreeFiles = Effect.fn("Store.listWorktreeFiles")(function* (
+        worktreePath: string,
+        limit: number,
+      ) {
+        // --cached --others in one call: tracked and untracked, ignore rules
+        // applied (the store-level excludes keep dependency stores out). -z so
+        // unusual names survive; git prints paths relative to the cwd.
+        const out = yield* git(
+          ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+          worktreePath,
+        );
+        return capListing([...new Set(out.split("\0"))], limit);
+      });
+
+      const listTreeFiles = Effect.fn("Store.listTreeFiles")(function* (
+        dir: string,
+        ref: string,
+        limit: number,
+      ) {
+        const out = yield* git(["ls-tree", "-r", "-z", "--name-only", ref], dir);
+        return capListing(out.split("\0"), limit);
+      });
+
       const headSha = Effect.fn("Store.headSha")(function* (dir: string) {
         const head = yield* git(["rev-parse", "HEAD"], dir);
         return sha(head);
@@ -658,6 +707,8 @@ export class Store extends Context.Service<
         changedFiles,
         diffFileFacts,
         headSha,
+        listWorktreeFiles,
+        listTreeFiles,
       };
     }),
   );

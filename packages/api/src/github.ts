@@ -4,7 +4,7 @@ import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
-import { GhFailure, GhRepoView, GhStatusView, MendApi } from "./contract.ts";
+import { GhFailure, GhRepoView, GhStatusView, MendApi, PullRequestView } from "./contract.ts";
 
 /**
  * Adoption discovery through the host's own GitHub CLI (plan §17, decided
@@ -103,6 +103,67 @@ const LIST_FIELDS =
 const SEARCH_FIELDS =
   "fullName,description,visibility,isFork,language,stargazersCount,pushedAt,url";
 
+/**
+ * owner/name from a GitHub origin URL — https, ssh scp-style, ssh://, with or
+ * without `.git`. Null for anything else (GitLab, a local path, a bare repo).
+ */
+export const parseGithubRepo = (originUrl: string | null): string | null => {
+  if (originUrl === null) return null;
+  const trimmed = originUrl.trim();
+  const match =
+    /^(?:https?:\/\/|ssh:\/\/(?:[^@/]+@)?|git:\/\/)(?:www\.)?github\.com[/:]([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i.exec(
+      trimmed,
+    ) ?? /^(?:[^@\s]+@)?github\.com:([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i.exec(trimmed);
+  if (match === null) return null;
+  const [, owner, name] = match;
+  return owner === undefined || name === undefined ? null : `${owner}/${name}`;
+};
+
+/** Why gh could not answer, read from its own output — reported as state, never rephrased. */
+export type GhUnavailable = "gh-missing" | "gh-signed-out" | "rate-limited" | "error";
+
+export const classifyGhError = (error: GhError): GhUnavailable => {
+  const text = error.stderr.toLowerCase();
+  if (error.exitCode === null && (text.includes("enoent") || text.includes("not found"))) {
+    return "gh-missing";
+  }
+  if (text.includes("rate limit")) return "rate-limited";
+  if (
+    text.includes("gh auth login") ||
+    text.includes("not logged in") ||
+    text.includes("authentication") ||
+    text.includes("http 401")
+  ) {
+    return "gh-signed-out";
+  }
+  return "error";
+};
+
+/** `gh pr list --json` item. */
+interface PullRequestItem {
+  readonly number: number;
+  readonly title: string;
+  readonly state: string;
+  readonly isDraft: boolean;
+  readonly url: string;
+  readonly headRefName: string;
+  readonly baseRefName: string;
+  readonly author: { readonly login?: string } | null;
+  readonly reviewDecision: string;
+  readonly additions: number;
+  readonly deletions: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly mergedAt: string | null;
+}
+
+const PR_LIMIT = 50;
+const PR_FIELDS =
+  "number,title,state,isDraft,url,headRefName,baseRefName,author,reviewDecision,additions,deletions,createdAt,updatedAt,mergedAt";
+
+const prState = (state: string): "open" | "closed" | "merged" =>
+  state === "MERGED" ? "merged" : state === "CLOSED" ? "closed" : "open";
+
 export class Gh extends Context.Service<
   Gh,
   {
@@ -110,6 +171,8 @@ export class Gh extends Context.Service<
     readonly status: () => Effect.Effect<GhStatusView>;
     /** Empty query: the account's repos, most recently pushed first. Otherwise a GitHub-wide search. */
     readonly repos: (query: string) => Effect.Effect<ReadonlyArray<GhRepoView>, GhError>;
+    /** Open, closed, and merged pull requests of one `owner/name`, most recently updated first. */
+    readonly pullRequests: (repo: string) => Effect.Effect<ReadonlyArray<PullRequestView>, GhError>;
   }
 >()("@mend/api/Gh") {}
 
@@ -205,6 +268,44 @@ export const GhLive: Layer.Layer<Gh> = Layer.succeed(Gh, {
               stars: item.stargazersCount,
               pushedAt: item.pushedAt,
               url: item.url,
+            }),
+        ),
+      ),
+    );
+  },
+  pullRequests: (repo: string) => {
+    const args = [
+      "pr",
+      "list",
+      "--repo",
+      repo,
+      "--state",
+      "all",
+      "--limit",
+      String(PR_LIMIT),
+      "--json",
+      PR_FIELDS,
+    ];
+    return gh(args).pipe(
+      Effect.flatMap(({ stdout }) => parseJson<ReadonlyArray<PullRequestItem>>(stdout, args)),
+      Effect.map((items) =>
+        items.map(
+          (item) =>
+            new PullRequestView({
+              number: item.number,
+              title: item.title,
+              state: prState(item.state),
+              isDraft: item.isDraft,
+              url: item.url,
+              headRefName: item.headRefName,
+              baseRefName: item.baseRefName,
+              author: item.author?.login ?? null,
+              reviewDecision: item.reviewDecision === "" ? null : item.reviewDecision,
+              additions: item.additions,
+              deletions: item.deletions,
+              createdAt: item.createdAt,
+              updatedAt: item.updatedAt,
+              mergedAt: item.mergedAt,
             }),
         ),
       ),

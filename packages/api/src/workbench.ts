@@ -91,7 +91,9 @@ import {
   NotFound,
   ProjectDetail,
   ProjectEnvironmentMutationResult,
+  ProjectFileListing,
   ProjectHotSessionsStatus,
+  ProjectPullRequests,
   ProjectSecretMutationResult,
   ProjectWorkspaceImageSaveResult,
   ProcessLogPage,
@@ -113,6 +115,7 @@ import {
   TranscriptEvent,
   WorkspacePackageResolutionView,
 } from "./contract.ts";
+import { classifyGhError, Gh, parseGithubRepo } from "./github.ts";
 import { HostEnvironment } from "./host-environment.ts";
 import { digestReviewPatch, lineAnchorExists, parseReviewDiff } from "./review-diff.ts";
 import {
@@ -133,6 +136,23 @@ import {
  * `_references/` dir collision-free.
  */
 const STORE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+/** A file listing answers at most this many paths; `truncated` says when it bit. */
+const FILE_LISTING_LIMIT = 20_000;
+
+const fileListingFailure = (error: { readonly stderr: string }) =>
+  new StoreFailure({ message: error.stderr === "" ? "git could not list files" : error.stderr });
+
+/** The pull-request answer for a project that cannot have any on GitHub. */
+const noPullRequests = (origin: "none" | "not-github", availability: "no-origin" | "not-github") =>
+  new ProjectPullRequests({
+    origin,
+    repo: null,
+    availability,
+    detail: null,
+    pullRequests: [],
+    fetchedAt: null,
+  });
 
 const reviewDiffViews = (patch: string, facts: ReadonlyArray<DiffFileFact>) =>
   parseReviewDiff(patch, facts).map(
@@ -477,6 +497,82 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         yield* engine.reconcileHotSessions(params.id);
         return project;
+      }),
+    )
+    .handle("files", ({ params, query }) =>
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        const sessions = yield* SessionsRepo;
+        const store = yield* Store;
+        const project = yield* projects
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        if (query.session !== undefined) {
+          const session = yield* sessions
+            .byId(query.session)
+            .pipe(Effect.mapError(() => new NotFound({ id: query.session ?? params.id })));
+          if (session.projectId !== project.id) {
+            return yield* new NotFound({ id: query.session });
+          }
+          const rootPath = worktreePathOf(project.storePath, session.worktree);
+          const listing = yield* store
+            .listWorktreeFiles(rootPath, FILE_LISTING_LIMIT)
+            .pipe(Effect.mapError(fileListingFailure));
+          return new ProjectFileListing({
+            source: "worktree",
+            label: session.worktree,
+            rootPath,
+            files: listing.files,
+            truncated: listing.truncated,
+          });
+        }
+        const listing = yield* store
+          .listTreeFiles(project.storePath, project.defaultBranch, FILE_LISTING_LIMIT)
+          .pipe(Effect.mapError(fileListingFailure));
+        return new ProjectFileListing({
+          source: "branch",
+          label: project.defaultBranch,
+          rootPath: null,
+          files: listing.files,
+          truncated: listing.truncated,
+        });
+      }),
+    )
+    .handle("pullRequests", ({ params }) =>
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        const cli = yield* Gh;
+        const project = yield* projects
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        if (project.originUrl === null) return noPullRequests("none", "no-origin");
+        const repo = parseGithubRepo(project.originUrl);
+        if (repo === null) return noPullRequests("not-github", "not-github");
+        return yield* cli.pullRequests(repo).pipe(
+          Effect.map(
+            (pullRequests) =>
+              new ProjectPullRequests({
+                origin: "github",
+                repo,
+                availability: "ok",
+                detail: null,
+                pullRequests,
+                fetchedAt: new Date().toISOString(),
+              }),
+          ),
+          Effect.catch((error) =>
+            Effect.succeed(
+              new ProjectPullRequests({
+                origin: "github",
+                repo,
+                availability: classifyGhError(error),
+                detail: error.stderr === "" ? String(error) : error.stderr,
+                pullRequests: [],
+                fetchedAt: null,
+              }),
+            ),
+          ),
+        );
       }),
     )
     .handle("hotSessionsStatus", ({ params }) =>
