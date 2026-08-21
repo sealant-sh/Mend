@@ -46,13 +46,24 @@ observations, "recorded/observed" only when a Sealant run stands behind the clai
 Left to right: project tree · (tabs above) the terminal · inbox. The Evidence Review token sheet
 (`@mend/ui`) styles everything; the terminal is the one always-dark surface.
 
-### Project tree (left rail)
+### The left rail — two faces (`docs/SIDEBAR-MAP.md`)
 
-Projects from `/api/projects`, each expanding to its sessions (`/api/projects/:id` — every session
-is a branch worktree, which is exactly what herdr's space tree showed). Row = dot + name; session
-rows carry the status word and branch. Selecting a session focuses its terminal; selecting a project
-focuses that project's tabs. The rail foot keeps the counts line ("2 running · 0 waiting · 8
-settled").
+Ctrl+Shift+B (or the toggle at the top of the rail) switches faces; the choice persists.
+
+- **Tree.** Projects from `/api/projects`, any number open at once (`mend-sidebar-expanded`). Each
+  session is a worktree and opens into what runs in it: the harness process, every live supporting
+  shell, and its Services — a shell is never hidden behind a closed tab. Row = dot + name + the
+  status word; clicking a shell child raises its tab.
+- **Inbox.** t3code's flat cross-project list: static creation order (activity never reorders a
+  row), a collapsed Snoozed shelf, a Settled tail with show-more paging, attention by contrast
+  (done-unseen / input / failed prominent, working receded). Snooze is client-local with t3's
+  presets and hand-raise wakes. A scope menu narrows to one project; a scoped project reveals
+  **Inbox · Services · PRs · Files** behind a compact switcher. Files root at the focused session's
+  worktree when it belongs to the project, else the default branch's tree. PRs come from the host's
+  `gh`, with honest states when it cannot answer.
+
+Ctrl+1..9 and Ctrl+Shift+J/K walk whatever the visible face numbers. The rail resizes by dragging
+its edge (208px minimum, the main pane keeps 640px); double-click the edge to reset.
 
 ### Tabs: sessions and their supporting shells
 
@@ -175,6 +186,7 @@ One capture-phase listener on the window, so the combos work while the terminal 
 | Ctrl+Tab / +Shift | next / previous tab in the project                                        |
 | Ctrl+1…9          | jump to inbox row N (hold Ctrl to see the pills)                          |
 | Ctrl+Shift+P      | palette (jump to any session; Ctrl+K is readline kill-line — left alone)  |
+| Ctrl+Shift+B      | sidebar face: tree ⇄ inbox (Ctrl+B is readline back-char — left alone)    |
 | Alt+Space         | summon the window from anywhere (global)                                  |
 
 ## What survives, what goes, what's new

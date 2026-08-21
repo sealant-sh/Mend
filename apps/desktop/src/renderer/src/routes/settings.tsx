@@ -264,6 +264,7 @@ function Settings() {
                     ["Ctrl+Tab / +Shift", "next / previous tab"],
                     ["Ctrl+1…9", "jump to inbox row (hold Ctrl for pills)"],
                     ["Ctrl+Shift+P", "session palette"],
+                    ["Ctrl+Shift+B", "sidebar: tree ⇄ inbox"],
                     ["Ctrl+Shift+= / − / 0", "terminal font bigger / smaller / reset"],
                     ["Ctrl+,", "settings"],
                     ["Alt+Space", "summon the window (global)"],

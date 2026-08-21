@@ -9,6 +9,8 @@ import {
   listSessionRecipes,
   processOutput,
   projectDetail,
+  projectFiles,
+  projectPullRequests,
   reviewDiff,
   sessionDetail,
 } from "#/lib/api";
@@ -82,4 +84,20 @@ export const reviewCommentsQuery = (changeId: string) =>
   queryOptions({
     queryKey: ["change", changeId, "comments"],
     queryFn: () => changeComments(changeId),
+  });
+
+export const projectFilesQuery = (projectId: string, sessionId: string | null) =>
+  queryOptions({
+    queryKey: ["project", projectId, "files", sessionId],
+    queryFn: () => projectFiles(projectId, sessionId),
+    staleTime: 30_000,
+  });
+
+/** Pull requests are a remote read through gh; refetch on a timer, not on every focus. */
+export const projectPullRequestsQuery = (projectId: string) =>
+  queryOptions({
+    queryKey: ["project", projectId, "pull-requests"],
+    queryFn: () => projectPullRequests(projectId),
+    staleTime: 60_000,
+    refetchInterval: 120_000,
   });
