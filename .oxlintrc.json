@@ -27,6 +27,12 @@
   },
   "overrides": [
     {
+      "files": ["packages/ui/src/components/ui/**"],
+      "rules": {
+        "no-shadow": "off"
+      }
+    },
+    {
       "files": ["apps/desktop/src/renderer/src/terminal/ghostty/**"],
       "rules": {
         "unicorn/consistent-function-scoping": "off",

@@ -1,5 +1,17 @@
 @custom-variant dark (&:is(.dark *));
 
+/* The shadcn base templates write `data-horizontal:`/`data-vertical:` but
+   @base-ui/react 1.7 emits `data-orientation="…"` — accept both spellings. */
+@custom-variant data-horizontal (&:is([data-horizontal], [data-orientation="horizontal"]));
+@custom-variant data-vertical (&:is([data-vertical], [data-orientation="vertical"]));
+
+/* Enter/exit animation utilities for the shadcn (Base UI) components. */
+@import "tw-animate-css";
+
+/* Shared primitives live beside the tokens; every importer generates their
+   classes (Tailwind v4 does not scan workspace deps on its own). */
+@source "../components";
+
 /*
   ──────────────────────────────────────────────────────────────────────────
   EVIDENCE REVIEW — design system tokens, vendored VERBATIM from the Sealant
@@ -87,6 +99,23 @@
   --color-label: var(--sw-label);
   --color-faint: var(--sw-faint);
 
+  /* shadcn sidebar bridge — the sidebar is the working sheet, not a new surface. */
+  --color-sidebar: var(--sw-bg);
+  --color-sidebar-foreground: var(--sw-ink);
+  --color-sidebar-primary: var(--sw-accent);
+  --color-sidebar-primary-foreground: var(--sw-accent-foreground);
+  --color-sidebar-accent: var(--sw-sunken);
+  --color-sidebar-accent-foreground: var(--sw-ink);
+  --color-sidebar-border: var(--sw-soft-rule);
+  --color-sidebar-ring: var(--sw-accent);
+
+  /* Chart series — the earned accents first, then neutrals (DESIGN.md §1). */
+  --color-chart-1: var(--sw-accent);
+  --color-chart-2: var(--sw-green);
+  --color-chart-3: var(--sw-amber);
+  --color-chart-4: var(--sw-red);
+  --color-chart-5: var(--sw-muted);
+
   /*
     Three voices: Space Grotesk for display headlines (used with restraint),
     Inter for everything human/UI, JetBrains Mono for everything the recorder
@@ -117,6 +146,24 @@
 
 :root {
   --radius: 0.75rem;
+
+  /* Raw shadcn sidebar vars — some components read these directly. They chase
+     the --sw-* surfaces, so the dark flip carries them automatically. */
+  --sidebar: var(--sw-bg);
+  --sidebar-foreground: var(--sw-ink);
+  --sidebar-primary: var(--sw-accent);
+  --sidebar-primary-foreground: var(--sw-accent-foreground);
+  --sidebar-accent: var(--sw-sunken);
+  --sidebar-accent-foreground: var(--sw-ink);
+  --sidebar-border: var(--sw-soft-rule);
+  --sidebar-ring: var(--sw-accent);
+
+  /* Chart series as raw vars for recharts config objects. */
+  --chart-1: var(--sw-accent);
+  --chart-2: var(--sw-green);
+  --chart-3: var(--sw-amber);
+  --chart-4: var(--sw-red);
+  --chart-5: var(--sw-muted);
 
   --background: var(--sw-bg);
   --foreground: var(--sw-ink);
