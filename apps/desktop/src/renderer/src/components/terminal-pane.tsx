@@ -1,12 +1,16 @@
+import { Button } from "@mend/ui/components/ui/button";
+import { cn } from "@mend/ui/lib/utils";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
+import { LogsView } from "#/components/logs-view";
 import { ReplayScrubber } from "#/components/replay-scrubber";
 import { StatusDot } from "#/components/status-dot";
 import { TtyTerminal } from "#/components/tty-terminal";
 import {
   checkpointSession,
   openReview,
+  removeSession,
   renameShell as renameShellProcess,
   stopSession,
   type SessionDto,
@@ -16,6 +20,19 @@ import { queryClient, sessionDetailQuery } from "#/lib/queries";
 import { reviewOpenKey, takeReplayCursor } from "#/lib/review";
 import { isLive, statusTone, statusWord } from "#/lib/words";
 import type { Tab } from "#/lib/workbench";
+
+/** The header-strip action, composed from the ui Button at cockpit scale. */
+function Quiet({ className, ...props }: React.ComponentProps<typeof Button>) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="xs"
+      className={cn("h-6 px-1.5 text-[12.5px] font-normal text-label", className)}
+      {...props}
+    />
+  );
+}
 
 /**
  * The terminal (BRIEF.md): one dominant PTY for the focused tab, with a slim
@@ -75,6 +92,17 @@ export function TerminalPane({
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: ["session", tab.sessionId, "processes"] }),
   });
+  const remove = useMutation({
+    mutationFn: () => removeSession(tab.sessionId),
+    onSuccess: () => {
+      queryClient.removeQueries({ queryKey: ["session", tab.sessionId] });
+      void queryClient.invalidateQueries({ queryKey: ["projects"] });
+      if (session !== null) {
+        void queryClient.invalidateQueries({ queryKey: ["project", session.projectId] });
+      }
+      onDetach();
+    },
+  });
 
   const live = session !== null && isLive(session);
   const change = detail.data?.change ?? null;
@@ -82,9 +110,6 @@ export function TerminalPane({
     mutationFn: (changeId: string) => openReview(changeId, reviewOpenKey(changeId)),
     onSuccess: (opened) => onReview(opened.slice.changeId, opened.slice.id),
   });
-
-  const quiet =
-    "font-sans text-[12.5px] text-label hover:text-foreground disabled:opacity-40 disabled:hover:text-label";
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -98,11 +123,11 @@ export function TerminalPane({
             />
             <span className="truncate font-mono text-[12px] text-label">{session.branch}</span>
             <span className="flex-1" />
-            <button type="button" className={quiet} onClick={onServices}>
+            <Quiet onClick={onServices}>
               <span className={serviceAttention ? "text-warning" : ""}>
                 Services {serviceCount}
               </span>
-            </button>
+            </Quiet>
             {(mark.isError || review.isError) && (
               <span className="truncate font-mono text-[11.5px] text-danger">
                 {mark.error instanceof Error
@@ -112,9 +137,7 @@ export function TerminalPane({
                     : "Review could not be opened"}
               </span>
             )}
-            <button
-              type="button"
-              className={quiet}
+            <Quiet
               disabled={change === null || review.isPending}
               title={change === null ? "No change recorded yet" : "Open the pinned native Review"}
               onClick={() => {
@@ -122,45 +145,64 @@ export function TerminalPane({
               }}
             >
               {review.isPending ? "opening Review…" : "review the change"}
-            </button>
-            <button
-              type="button"
-              className={quiet}
-              disabled={!live || mark.isPending}
-              onClick={() => mark.mutate()}
-            >
+            </Quiet>
+            <Quiet disabled={!live || mark.isPending} onClick={() => mark.mutate()}>
               {mark.isPending ? "marking…" : "mark checkpoint"}
-            </button>
-            <button
-              type="button"
-              className={`${quiet} hover:text-danger`}
-              disabled={!live || stop.isPending}
-              onClick={() => stop.mutate()}
-            >
-              {stop.isPending ? "stopping…" : "stop"}
-            </button>
+            </Quiet>
+            {live ? (
+              <Quiet
+                className="hover:text-danger"
+                disabled={stop.isPending}
+                onClick={() => stop.mutate()}
+              >
+                {stop.isPending ? "stopping…" : "stop"}
+              </Quiet>
+            ) : (
+              <Quiet
+                className="hover:text-danger"
+                disabled={remove.isPending}
+                onClick={() => {
+                  if (window.confirm("Really delete session and worktree?")) remove.mutate();
+                }}
+              >
+                {remove.isPending ? "deleting…" : "delete"}
+              </Quiet>
+            )}
+            {remove.isError && (
+              <span className="truncate font-mono text-[11.5px] text-danger">
+                {remove.error instanceof Error ? remove.error.message : "delete failed"}
+              </span>
+            )}
           </>
         )}
-        {!isSessionTab && (
+        {tab.kind === "logs" && (
+          <>
+            <span className="truncate font-mono text-[12px] text-label">
+              {tab.name} · logs · read-only
+              {session === null ? "" : ` · ${session.branch}`}
+            </span>
+            <span className="flex-1" />
+            <Quiet onClick={onDetach}>close</Quiet>
+          </>
+        )}
+        {tab.kind === "shell" && (
           <>
             <span className="truncate font-mono text-[12px] text-label">
               {process?.label ?? "shell"} · session worktree
               {session === null ? "" : ` · ${session.branch}`}
             </span>
             <span className="flex-1" />
-            <button type="button" className={quiet} onClick={onServices}>
+            <Quiet onClick={onServices}>
               <span className={serviceAttention ? "text-warning" : ""}>
                 Services {serviceCount}
               </span>
-            </button>
+            </Quiet>
             {rename.isError && (
               <span className="truncate font-mono text-[11.5px] text-danger">
                 {rename.error instanceof Error ? rename.error.message : "rename failed"}
               </span>
             )}
-            <button
-              type="button"
-              className={quiet}
+            <Quiet
               disabled={process === null || rename.isPending}
               onClick={() => {
                 const next = window.prompt("Shell name", process?.label ?? "shell");
@@ -168,26 +210,28 @@ export function TerminalPane({
               }}
             >
               {rename.isPending ? "renaming…" : "rename"}
-            </button>
-            <button type="button" className={quiet} onClick={onDetach}>
-              detach tab
-            </button>
+            </Quiet>
+            <Quiet onClick={onDetach}>detach tab</Quiet>
           </>
         )}
       </div>
 
-      <div className="relative min-h-0 flex-1 bg-term">
-        <TtyTerminal
-          target={
-            tab.kind === "shell"
-              ? { kind: "process", id: tab.processId }
-              : { kind: "session", id: tab.sessionId }
-          }
-          from={isSessionTab ? from : "0"}
-          dim={isSessionTab && !live}
-          focus
-          focusRequest={terminalFocusRequest}
-        />
+      <div className="relative flex min-h-0 flex-1 flex-col bg-term">
+        {tab.kind === "logs" ? (
+          <LogsView processId={tab.processId} />
+        ) : (
+          <TtyTerminal
+            target={
+              tab.kind === "shell"
+                ? { kind: "process", id: tab.processId }
+                : { kind: "session", id: tab.sessionId }
+            }
+            from={isSessionTab ? from : "0"}
+            dim={isSessionTab && !live}
+            focus
+            focusRequest={terminalFocusRequest}
+          />
+        )}
       </div>
 
       {isSessionTab && session !== null && !live && (

@@ -152,3 +152,33 @@ export const servicesForSession = (
   sessionId: string,
 ): ReadonlyArray<ServiceFacts> =>
   views.filter((view) => view.service.sessionId === sessionId).map(serviceFacts);
+
+/** One sidebar line per Service: the attention word, or the tersest liveness fact. */
+export interface ServiceGlance {
+  readonly name: string;
+  readonly word: string;
+  readonly tone: Tone;
+  readonly attention: boolean;
+}
+
+export const serviceGlance = (view: ServiceViewDto): ServiceGlance => {
+  const facts = serviceFacts(view);
+  if (facts.attention !== null) {
+    return {
+      name: facts.name,
+      word: facts.attention.word,
+      tone: facts.attention.tone,
+      attention: true,
+    };
+  }
+  if (facts.target?.tone === "green") {
+    return { name: facts.name, word: "reachable", tone: "green", attention: false };
+  }
+  if (facts.process?.tone === "accent") {
+    return { name: facts.name, word: "running", tone: "accent", attention: false };
+  }
+  if (facts.forward.tone === "accent") {
+    return { name: facts.name, word: "bound", tone: "accent", attention: false };
+  }
+  return { name: facts.name, word: "stopped", tone: "hollow", attention: false };
+};

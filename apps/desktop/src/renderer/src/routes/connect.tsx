@@ -1,7 +1,9 @@
+import { Button } from "@mend/ui/components/ui/button";
+import { Input } from "@mend/ui/components/ui/input";
+import { Label } from "@mend/ui/components/ui/label";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
-import { Button } from "#/components/button";
 import { Titlebar } from "#/components/titlebar";
 import { useConnection } from "#/lib/connection";
 import { queryClient } from "#/lib/queries";
@@ -25,8 +27,8 @@ export const Route = createFileRoute("/connect")({
   component: Connect,
 });
 
-const field =
-  "no-drag w-full rounded-xl border border-[var(--sw-rule)] bg-panel px-3 py-2 font-sans text-[14px] text-foreground outline-none placeholder:text-faint focus:border-[var(--sw-accent)]";
+/* Sign-in scale: the ui Input at form height, on the panel ground. */
+const field = "no-drag h-10 bg-panel text-[14px]";
 
 function Connect() {
   const { reason } = Route.useSearch();
@@ -96,55 +98,51 @@ function Connect() {
           </h1>
           {note !== null && <p className="mt-2 font-sans text-[13.5px] text-warning">{note}</p>}
 
-          <label className="mt-5 block">
-            <span className="font-sans text-[12.5px] font-medium text-muted-foreground">
-              Server URL
-            </span>
-            <input
-              className={`${field} mt-1.5 font-mono text-[13.5px]`}
+          <div className="mt-5 grid gap-1.5">
+            <Label htmlFor="connect-url">Server URL</Label>
+            <Input
+              id="connect-url"
+              className={`${field} font-mono text-[13.5px]`}
               value={serverUrl}
               onChange={(event) => setUrl(event.target.value)}
               placeholder="http://localhost:3105"
               spellCheck={false}
               autoCapitalize="off"
             />
-          </label>
+          </div>
 
           {mode === "password" ? (
             <>
-              <label className="mt-4 block">
-                <span className="font-sans text-[12.5px] font-medium text-muted-foreground">
-                  Email
-                </span>
-                <input
-                  className={`${field} mt-1.5`}
+              <div className="mt-4 grid gap-1.5">
+                <Label htmlFor="connect-email">Email</Label>
+                <Input
+                  id="connect-email"
+                  className={field}
                   type="email"
                   value={email}
                   onChange={(event) => setEmail(event.target.value)}
                   autoComplete="username"
                   autoFocus
                 />
-              </label>
-              <label className="mt-4 block">
-                <span className="font-sans text-[12.5px] font-medium text-muted-foreground">
-                  Password
-                </span>
-                <input
-                  className={`${field} mt-1.5`}
+              </div>
+              <div className="mt-4 grid gap-1.5">
+                <Label htmlFor="connect-password">Password</Label>
+                <Input
+                  id="connect-password"
+                  className={field}
                   type="password"
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                   autoComplete="current-password"
                 />
-              </label>
+              </div>
             </>
           ) : (
-            <label className="mt-4 block">
-              <span className="font-sans text-[12.5px] font-medium text-muted-foreground">
-                Bearer token
-              </span>
-              <input
-                className={`${field} mt-1.5 font-mono text-[13.5px]`}
+            <div className="mt-4 grid gap-1.5">
+              <Label htmlFor="connect-token">Bearer token</Label>
+              <Input
+                id="connect-token"
+                className={`${field} font-mono text-[13.5px]`}
                 value={token}
                 onChange={(event) => setToken(event.target.value)}
                 placeholder="the token mend login saved, or MEND_AUTH_STATIC_TOKEN in dev"
@@ -152,34 +150,30 @@ function Connect() {
                 autoCapitalize="off"
                 autoFocus
               />
-            </label>
+            </div>
           )}
 
           {error !== null && <p className="mt-3 font-sans text-[12.5px] text-danger">{error}</p>}
 
           <div className="mt-6 flex items-center gap-3">
-            <Button variant="primary" type="submit" disabled={pending || serverUrl === ""}>
+            <Button type="submit" size="lg" disabled={pending || serverUrl === ""}>
               {pending ? "Signing in…" : mode === "password" ? "Sign in" : "Use this token"}
             </Button>
-            <button
+            <Button
               type="button"
-              className="font-sans text-[13px] text-muted-foreground hover:text-foreground"
+              variant="ghost"
               onClick={() => {
                 setError(null);
                 setMode(mode === "password" ? "token" : "password");
               }}
             >
               {mode === "password" ? "Paste a token instead" : "Sign in with a password"}
-            </button>
+            </Button>
             <span className="flex-1" />
             {connection?.signedIn === true && (
-              <button
-                type="button"
-                className="font-sans text-[13px] text-muted-foreground hover:text-foreground"
-                onClick={() => void finish()}
-              >
+              <Button type="button" variant="ghost" onClick={() => void finish()}>
                 Back to the cockpit
-              </button>
+              </Button>
             )}
           </div>
 
@@ -189,9 +183,11 @@ function Connect() {
               : `credential file · ${connection.configPath} — shared with the mend CLI; mend login and mend logout land here too.`}
           </p>
           {connection?.signedIn === true && (
-            <button
+            <Button
               type="button"
-              className="mt-2 font-sans text-[12px] text-muted-foreground hover:text-danger"
+              variant="destructive"
+              size="sm"
+              className="mt-2"
               onClick={() => {
                 void window.mend.connection.signOut().then(() => {
                   queryClient.clear();
@@ -200,7 +196,7 @@ function Connect() {
               }}
             >
               sign out · removes the token from that file
-            </button>
+            </Button>
           )}
         </form>
       </main>

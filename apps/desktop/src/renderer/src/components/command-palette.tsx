@@ -1,3 +1,4 @@
+import { Input } from "@mend/ui/components/ui/input";
 import { useState } from "react";
 
 import { StatusDot } from "#/components/status-dot";
@@ -56,7 +57,7 @@ export function CommandPalette({
         onMouseDown={(event) => event.stopPropagation()}
         className="no-drag w-[520px] overflow-hidden rounded-2xl border border-rule bg-panel shadow-overlay"
       >
-        <input
+        <Input
           autoFocus
           value={query}
           onChange={(event) => {
@@ -79,7 +80,7 @@ export function CommandPalette({
             }
           }}
           placeholder="Jump to a session — project, harness, branch…"
-          className="w-full border-b border-rule bg-transparent px-4 py-3 font-sans text-[14.5px] text-foreground outline-none placeholder:text-faint"
+          className="h-auto w-full rounded-none border-0 border-b border-rule bg-transparent px-4 py-3 text-[14.5px] focus-visible:border-rule focus-visible:ring-0"
         />
         <ul className="max-h-[50vh] overflow-y-auto py-1.5">
           {shown.length === 0 && (

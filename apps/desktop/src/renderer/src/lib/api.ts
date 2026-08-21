@@ -554,3 +554,13 @@ export const renameShell = (id: string, label: string) =>
   post<SessionProcessDto>(`/api/processes/${id}/label`, { label });
 
 export const stopSession = (id: string) => post<SessionDto>(`/api/sessions/${id}/stop`, {});
+
+/** The outcome of a destructive removal — what went, what would not delete. */
+export interface RemovalReportDto {
+  readonly removed: boolean;
+  readonly leftover: string | null;
+}
+
+/** Settled sessions only — a live one answers 409. Takes the worktree with it. */
+export const removeSession = (id: string) =>
+  request<RemovalReportDto>("DELETE", `/api/sessions/${id}`);

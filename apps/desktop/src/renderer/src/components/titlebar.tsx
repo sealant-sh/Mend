@@ -1,3 +1,5 @@
+import { Button } from "@mend/ui/components/ui/button";
+import { cn } from "@mend/ui/lib/utils";
 import { Link } from "@tanstack/react-router";
 
 import { useEventsState } from "#/lib/events";
@@ -12,41 +14,46 @@ const alt = isMac ? "⌥" : "Alt+";
  * do it — not faux-macOS dots on a non-mac OS. Close reddens on hover; the
  * others just wash.
  */
+function WindowControl({ className, ...props }: React.ComponentProps<typeof Button>) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      className={cn(
+        "no-drag h-12 w-12 rounded-none text-muted-foreground transition-colors",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
 function WindowControls() {
-  const base = "no-drag grid h-11 w-11 place-items-center text-muted-foreground transition-colors";
   return (
     <div className="-mr-4 ml-1 flex items-stretch" role="group" aria-label="Window">
-      <button
-        type="button"
-        aria-label="Minimize window"
-        className={`${base} hover:bg-[var(--sw-sunken)] hover:text-foreground`}
-        onClick={() => window.mend.window.minimize()}
-      >
+      <WindowControl aria-label="Minimize window" onClick={() => window.mend.window.minimize()}>
         <svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true">
           <line x1="1.5" y1="6" x2="9.5" y2="6" stroke="currentColor" strokeWidth="1" />
         </svg>
-      </button>
-      <button
-        type="button"
+      </WindowControl>
+      <WindowControl
         aria-label="Maximize window"
-        className={`${base} hover:bg-[var(--sw-sunken)] hover:text-foreground`}
         onClick={() => window.mend.window.toggleMaximize()}
       >
         <svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true" fill="none">
           <rect x="1.5" y="1.5" width="8" height="8" stroke="currentColor" strokeWidth="1" />
         </svg>
-      </button>
-      <button
-        type="button"
+      </WindowControl>
+      <WindowControl
         aria-label="Close window"
-        className={`${base} hover:bg-[#c0362c] hover:text-white`}
+        className="hover:bg-[var(--sw-red)] hover:text-white"
         onClick={() => window.mend.window.close()}
       >
         <svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true">
           <line x1="1.5" y1="1.5" x2="9.5" y2="9.5" stroke="currentColor" strokeWidth="1" />
           <line x1="9.5" y1="1.5" x2="1.5" y2="9.5" stroke="currentColor" strokeWidth="1" />
         </svg>
-      </button>
+      </WindowControl>
     </div>
   );
 }
@@ -82,11 +89,13 @@ export function Titlebar({
           : "mend · not connected";
   return (
     <header
-      className={`drag-region flex h-11 shrink-0 items-center gap-2 border-b border-rule bg-background pr-4 ${
+      className={`drag-region flex h-12 shrink-0 items-center gap-2.5 border-b border-rule bg-background pr-4 ${
         isMac ? "pl-[76px]" : "pl-4"
       }`}
     >
-      <span className="font-display text-[15px] font-medium text-foreground">Mend</span>
+      <span className="font-display text-[17px] font-semibold tracking-[-0.02em] text-foreground">
+        Mend
+      </span>
       <span className="font-mono text-[12px] text-label">{fact}</span>
       <span className="flex-1" />
       {stream !== null && (
