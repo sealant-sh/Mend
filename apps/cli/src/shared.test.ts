@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseLaunchArgs } from "./shared.ts";
+import { parseLaunchArgs, matchProjectByCwd, normalizeRemoteUrl } from "./shared.ts";
 
 describe("parseLaunchArgs", () => {
   it("parses a bare invocation to all-null", () => {
@@ -63,5 +63,73 @@ describe("parseLaunchArgs", () => {
     expect(parsed.project).toBe("mend");
     expect(parsed.custom).toEqual(["npm", "test", "--force"]);
     expect(parsed.error).toBeNull();
+  });
+});
+
+describe("normalizeRemoteUrl", () => {
+  it("reduces every spelling of a remote to host/owner/name", () => {
+    for (const raw of [
+      "https://github.com/sealant-sh/mend",
+      "https://github.com/sealant-sh/mend.git",
+      "git@github.com:sealant-sh/mend.git",
+      "ssh://git@github.com/sealant-sh/mend.git",
+      "ssh://git@github.com:22/Sealant-sh/Mend/",
+    ]) {
+      expect(normalizeRemoteUrl(raw)).toBe("github.com/sealant-sh/mend");
+    }
+  });
+
+  it("leaves local paths and nothing alone", () => {
+    expect(normalizeRemoteUrl("/home/yiannis/dots")).toBeNull();
+    expect(normalizeRemoteUrl(null)).toBeNull();
+    expect(normalizeRemoteUrl("  ")).toBeNull();
+  });
+});
+
+describe("matchProjectByCwd", () => {
+  const projects = [
+    { name: "mend", originUrl: "https://github.com/sealant-sh/mend" },
+    { name: "dots", originUrl: "/home/yiannis/dots" },
+    { name: "mend-fork", originUrl: "git@github.com:someone/mend.git" },
+  ];
+
+  it("matches a GitHub-adopted project from any clone of the same remote", () => {
+    expect(
+      matchProjectByCwd(projects, {
+        cwd: "/home/yiannis/Developer/OSS/Sealant/Mend/apps/cli",
+        repoRoot: "/home/yiannis/Developer/OSS/Sealant/Mend",
+        originUrl: "git@github.com:sealant-sh/mend.git",
+      })?.name,
+    ).toBe("mend");
+  });
+
+  it("prefers the path it was adopted from, including subdirectories", () => {
+    expect(
+      matchProjectByCwd(projects, {
+        cwd: "/home/yiannis/dots/zsh",
+        repoRoot: "/home/yiannis/dots",
+        originUrl: "git@github.com:ypanagidis/dots.git",
+      })?.name,
+    ).toBe("dots");
+    expect(
+      matchProjectByCwd(projects, {
+        cwd: "/home/yiannis/dotsfiles",
+        repoRoot: null,
+        originUrl: null,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("falls back to the repository root's normalized name, case-insensitively", () => {
+    expect(
+      matchProjectByCwd(projects, {
+        cwd: "/tmp/Mend/packages/api",
+        repoRoot: "/tmp/Mend",
+        originUrl: null,
+      })?.name,
+    ).toBe("mend");
+    expect(
+      matchProjectByCwd(projects, { cwd: "/tmp/Other", repoRoot: null, originUrl: null }),
+    ).toBeUndefined();
   });
 });

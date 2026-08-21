@@ -5,7 +5,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { reviewTargetForSession } from "./review-workflow.ts";
 import { ReviewScreen } from "./review.tsx";
-import { HARNESS_COMMANDS, LIVE_STATUSES, matchProjectByCwd } from "./shared.ts";
+import { cwdFacts, HARNESS_COMMANDS, LIVE_STATUSES, matchProjectByCwd } from "./shared.ts";
 import { openUrl } from "./terminal.ts";
 import { AMBER, BG, COBALT, FAINT, GREEN, INK, MUTED, RED, RULE, WASH } from "./tui-theme.ts";
 
@@ -189,7 +189,7 @@ const itemKey = (item: Item): string =>
 const itemHeight = (view: View): number => (view.kind === "sessions" ? 2 : 1);
 
 const homeView = (cwd: string, data: Workbench): View => {
-  const home = matchProjectByCwd(data.projects, cwd);
+  const home = matchProjectByCwd(data.projects, cwdFacts(cwd));
   return home === undefined ? { kind: "projects" } : { kind: "sessions", projectId: home.id };
 };
 
