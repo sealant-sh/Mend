@@ -35,13 +35,13 @@ const SCRIPT: ReadonlyArray<Step> = [
   },
   { kind: "pause", ms: 900 },
   { kind: "chapter", label: "store" },
-  { kind: "cmd", text: `ls ~/.mend/store/newsroom-api/sessions/${SID}/` },
+  { kind: "cmd", text: `ls ~/.config/mend/store/newsroom-api/sessions/${SID}/` },
   {
     kind: "lines",
     delay: 240,
     lines: [[o("harness-state.tar.gz  manifest.json  session.canonical.json  transcript.native")]],
   },
-  { kind: "cmd", text: "cat ~/.mend/store/newsroom-api/sessions/8f3c92e1-*/manifest.json" },
+  { kind: "cmd", text: "cat ~/.config/mend/store/newsroom-api/sessions/8f3c92e1-*/manifest.json" },
   {
     kind: "lines",
     delay: 240,
@@ -274,7 +274,7 @@ export function ExpandedHarness() {
 
       <FactsBar
         items={[
-          "~/.mend/store/<project>/sessions/<id>/ · harness-state.tar.gz · transcript.native · session.canonical.json · manifest.json",
+          "~/.config/mend/store/<project>/sessions/<id>/ · harness-state.tar.gz · transcript.native · session.canonical.json · manifest.json",
           "same-harness resume is native: claude --resume <providerSessionId>",
           "cross-harness invariant: ingest(emit(ingest(x))) ≡ ingest(x)",
           "refs/mend/checkpoints/<sessionId>/<n> — indices keep counting across a switch",

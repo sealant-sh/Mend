@@ -22,6 +22,7 @@ import {
   LIVE_STATUSES,
   matchProjectByCwd,
   normalizeProjectName,
+  parseLaunchArgs,
 } from "./shared.ts";
 
 /**
@@ -352,25 +353,31 @@ const findProject = async (config: CliConfig, explicit: string | null, adoptCwd 
 };
 
 const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<string>) => {
-  const projectFlag = args.indexOf("--project");
-  const explicit =
-    projectFlag !== -1 && args[projectFlag + 1] !== undefined
-      ? String(args[projectFlag + 1])
-      : null;
-  const dashdash = args.indexOf("--");
-  const custom = dashdash === -1 ? [] : args.slice(dashdash + 1);
-  const argv = harness === "run" ? custom : (HARNESS_COMMANDS[harness] ?? []);
+  const parsed = parseLaunchArgs(args);
+  if (parsed.error !== null) return fail(parsed.error);
+  const structured =
+    parsed.prompt !== null ||
+    parsed.model !== null ||
+    parsed.effort !== null ||
+    parsed.ask ||
+    parsed.fast;
+  if (harness === "run" && structured) {
+    return fail(
+      "mend run takes no prompt or harness flags — usage: mend run [--project p] -- <command...>",
+    );
+  }
+  const argv = harness === "run" ? parsed.custom : (HARNESS_COMMANDS[harness] ?? []);
   if (argv.length === 0) {
     return fail(
       harness === "run" ? "usage: mend run -- <command...>" : `unknown harness ${harness}`,
     );
   }
 
-  const project = await findProject(config, explicit, true);
+  const project = await findProject(config, parsed.project, true);
   const session = await api<SessionDto>(config, "POST", `/projects/${project.id}/sessions`, {
     harness,
     label: null,
-    base: null,
+    base: parsed.base,
   });
   say(`${green("✓")} worktree ${session.worktree} ${dim(`· branch ${session.branch}`)}`);
   say(
@@ -384,9 +391,20 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
   if (harness === "run") {
     return supervisedRun(config, session, argv);
   }
+  // A structured start sends no argv: the server composes the harness flags
+  // (one shared mapping) and names the session from the prompt immediately.
+  const launchBody = structured
+    ? {
+        ...(parsed.prompt === null ? {} : { prompt: parsed.prompt }),
+        ...(parsed.model === null ? {} : { model: parsed.model }),
+        ...(parsed.effort === null ? {} : { effort: parsed.effort }),
+        ...(parsed.ask ? { permissionMode: "ask" } : {}),
+        ...(parsed.fast ? { speed: "fast" } : {}),
+      }
+    : { argv };
   await withSpinner(
     "provisioning workspace — a first launch builds the harness image (can take minutes)…",
-    api<SessionDto>(config, "POST", `/sessions/${session.id}/launch`, { argv }),
+    api<SessionDto>(config, "POST", `/sessions/${session.id}/launch`, launchBody),
   );
   say(`${green("✓ recording")} · workspace mounts the worktree${detachHint()}`);
   say("");
@@ -2331,7 +2349,12 @@ const HELP = `mend — the agent workbench
   mend dotfiles sync [--all | paths…]   capture config files from THIS machine into your store
   mend keys share                       relay THIS machine's ssh-agent to the server (bridge mode:
                                         hardware keys sign here; Ctrl-C stops sharing)
-  mend codex|claude|opencode            new session worktree + launch the harness in it
+  mend codex|claude|opencode ["prompt"] [--model <id>] [--effort low|medium|high|xhigh|max]
+                             [--base <ref>] [--ask] [--fast]
+                                        new session worktree + launch the harness in it; a quoted
+                                        prompt becomes its first message (and names the session),
+                                        --ask restores the harness's permission prompts, --fast
+                                        requests priority processing (codex service tier)
   mend run -- <command...>              same, with an arbitrary command
   mend attach <session-id-prefix>       reattach this terminal to a running session
   mend shell [session-id-prefix]        open a shell in a live session's workspace

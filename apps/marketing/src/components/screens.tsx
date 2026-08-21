@@ -532,7 +532,7 @@ export const SCREENS: ReadonlyArray<{ url: string; node: ReactNode }> = [
         <ScreenHead
           eyebrow="project"
           title="billing-service"
-          meta="store ~/.mend/store/billing-service · main@4f2c91a · origin github.com/acme/billing-service"
+          meta="store ~/.config/mend/store/billing-service · main@4f2c91a · origin github.com/acme/billing-service"
           action={
             <span className="flex items-center gap-2">
               <span className="font-sans text-[11px] text-label">start a session:</span>

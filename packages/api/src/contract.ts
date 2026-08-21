@@ -28,6 +28,9 @@ import {
 } from "@mend/domain";
 import {
   AutomationChoice,
+  EFFORT_LEVELS,
+  PERMISSION_MODES,
+  SPEED_MODES,
   Change as SessionChange,
   ChangePass,
   ChangeTour,
@@ -1073,9 +1076,21 @@ export class DeliverFollowUpRequest extends Schema.Class<DeliverFollowUpRequest>
   idempotencyKey: Schema.String,
 }) {}
 
-/** What to run in the session's PTY — argv[0] is the program. */
+/**
+ * What to run in the session's PTY. Two shapes: verbatim `argv` (argv[0] is
+ * the program; wins when present), or the structured start — the server
+ * composes the harness argv from it in one place (`composeLaunchArgv`).
+ */
 export class LaunchRequest extends Schema.Class<LaunchRequest>("LaunchRequest")({
-  argv: Schema.Array(Schema.String),
+  argv: Schema.optional(Schema.Array(Schema.String)),
+  /** The typed first message; rides the harness argv and seeds auto-naming. */
+  prompt: Schema.optional(Schema.String),
+  /** Free-form harness model id; HARNESS_MODELS is advisory, for pickers. */
+  model: Schema.optional(Schema.String),
+  effort: Schema.optional(Schema.Literals(EFFORT_LEVELS)),
+  permissionMode: Schema.optional(Schema.Literals(PERMISSION_MODES)),
+  /** `fast` = priority processing where the harness supports it (codex). */
+  speed: Schema.optional(Schema.Literals(SPEED_MODES)),
 }) {}
 
 /** One conversation event of the canonical session record (chat surfaces render these). */

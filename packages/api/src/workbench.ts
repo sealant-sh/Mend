@@ -36,7 +36,9 @@ import {
 } from "@mend/domain";
 import {
   DiffDigest,
+  PROMPTABLE_HARNESSES,
   ReviewCommentAnchor,
+  composeLaunchArgv,
   type ReviewSlice,
   formatProjectEnvironmentIssue,
   parseDotenv,
@@ -1771,26 +1773,41 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     .handle("launch", ({ params, payload }) =>
       Effect.gen(function* () {
         const engine = yield* SessionEngine;
+        const sessions = yield* SessionsRepo;
+        const session = yield* sessions
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        // Verbatim argv wins; otherwise the structured start composes here —
+        // the one place harness flags are assembled for every surface.
+        const argv = payload.argv ?? composeLaunchArgv(session.harness, payload);
+        const prompt = payload.prompt?.trim() ?? "";
+        const inlineNamePrompt =
+          payload.argv === undefined && prompt !== "" && PROMPTABLE_HARNESSES.has(session.harness)
+            ? prompt
+            : null;
         // Session auto-naming: queue the namer at launch so a label appears in
-        // lists while the session still runs. Delayed first attempt + spaced
-        // retries cover "the user hasn't typed the first prompt yet"; the
-        // worker re-checks label/setting and no-ops when either changed.
-        // Best-effort — a launch never fails because naming could not queue.
+        // lists while the session still runs. A composed start knows the first
+        // prompt already, so the namer runs immediately on it; a bare launch
+        // keeps the delayed first attempt + spaced retries that cover "the
+        // user hasn't typed the first prompt yet". The worker re-checks
+        // label/setting and no-ops when either changed. Best-effort — a
+        // launch never fails because naming could not queue.
         const queueAutoName = Effect.gen(function* () {
-          const sessions = yield* SessionsRepo;
           const projects = yield* ProjectsRepo;
           const settingsRepo = yield* SettingsRepo;
           const jobs = yield* JobRunner;
-          const session = yield* sessions.byId(params.id);
           if (session.label !== null) return;
           const project = yield* projects.byId(session.projectId);
           const settings = yield* settingsRepo.get();
           if (!resolveAutomation(project.autoName, settings.autoName)) return;
           yield* jobs.enqueue({
             name: "name-session",
-            payload: { sessionId: params.id },
+            payload:
+              inlineNamePrompt !== null
+                ? { sessionId: params.id, firstUserTurn: inlineNamePrompt }
+                : { sessionId: params.id },
             idempotencyKey: `name-session:${params.id}`,
-            startAfterSeconds: 45,
+            startAfterSeconds: inlineNamePrompt !== null ? 0 : 45,
             retryDelaySeconds: 30,
             retryLimit: 6,
           });
@@ -1803,8 +1820,12 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           ),
           Effect.asVoid,
         );
-        return yield* engine.launch(params.id, payload.argv).pipe(
-          Effect.tap(() => queueAutoName),
+        // Inline naming has no transcript dependency and a first launch can
+        // take minutes — enqueue before the launch so the label lands while
+        // the workspace still provisions.
+        if (inlineNamePrompt !== null) yield* queueAutoName;
+        return yield* engine.launch(params.id, argv).pipe(
+          Effect.tap(() => (inlineNamePrompt !== null ? Effect.void : queueAutoName)),
           Effect.catchTag("SessionNotFoundError", () =>
             Effect.fail(new NotFound({ id: params.id })),
           ),

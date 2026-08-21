@@ -3,6 +3,7 @@ import { useQuery, useSuspenseQueries, useSuspenseQuery } from "@tanstack/react-
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useState } from "react";
 
+import { SessionComposer } from "#/components/session-composer";
 import { AppShell } from "#/components/shell";
 import { SessionStatusDot } from "#/components/status";
 import {
@@ -14,14 +15,7 @@ import {
 } from "#/lib/api";
 import { changeStatsQuery, projectDetailQuery, projectsQuery, queryClient } from "#/lib/queries";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
-import {
-  HARNESSES,
-  LIVE_STATES,
-  projectMenu,
-  sessionMenu,
-  startSession,
-  type Harness,
-} from "#/lib/workbench-menus";
+import { LIVE_STATES, projectMenu, sessionMenu } from "#/lib/workbench-menus";
 
 export const Route = createFileRoute("/")({
   ssr: false,
@@ -94,12 +88,6 @@ function HomePage() {
       !annotation.pendingFollowUp,
   );
 
-  /** Fire a fresh session on a project and land in its workbench. */
-  const start = (projectId: string, harness: Harness) => {
-    setBusy(`${projectId}:${harness}`);
-    void startSession(navigate, projectId, harness).finally(() => setBusy(null));
-  };
-
   /** Rejoin a settled session — same worktree, restored state, fresh workspace. */
   const rejoin = (session: SessionDto) => {
     setBusy(session.id);
@@ -146,6 +134,12 @@ function HomePage() {
             ? "Nothing yet — adopt a repository and start a session."
             : `${waiting.length === 0 ? "Nothing waiting on you" : `${waiting.length} waiting`} · ${live.length} live · ${readyToReview.length} to review · ${projects.length} project${projects.length === 1 ? "" : "s"}`}
         </p>
+
+        {projects.length > 0 && (
+          <div className="mt-6">
+            <SessionComposer projects={projects} />
+          </div>
+        )}
 
         {waiting.length > 0 && (
           <Section label="Needs you">
@@ -274,23 +268,6 @@ function HomePage() {
                           {project.defaultBranch}
                           {project.originUrl === null ? "" : ` · ${project.originUrl}`}
                         </p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-label">start:</span>
-                        {HARNESSES.map((harness) => {
-                          const key = `${project.id}:${harness}`;
-                          return (
-                            <button
-                              key={harness}
-                              type="button"
-                              disabled={busy === key}
-                              onClick={() => start(project.id, harness)}
-                              className="rounded-xl border border-border bg-card px-3 py-1.5 font-mono text-xs text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-50"
-                            >
-                              {busy === key ? "starting…" : harness}
-                            </button>
-                          );
-                        })}
                       </div>
                     </div>
                     {recent.length === 0 ? (

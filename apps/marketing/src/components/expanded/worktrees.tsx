@@ -30,7 +30,7 @@ const SCRIPT: ReadonlyArray<Step> = [
     kind: "lines",
     delay: 300,
     lines: [
-      [g("✓ adopted"), o(" · newsroom-api · "), d("~/.mend/store/newsroom-api")],
+      [g("✓ adopted"), o(" · newsroom-api · "), d("~/.config/mend/store/newsroom-api")],
       [d("  default branch main")],
       [
         d("  sessions start with: "),
@@ -108,7 +108,7 @@ const SCRIPT: ReadonlyArray<Step> = [
 ];
 
 const TREE: ReadonlyArray<readonly [string, string, string]> = [
-  ["~/.mend/store/", "", ""],
+  ["~/.config/mend/store/", "", ""],
   ["  newsroom-api/", "", ""],
   ["    repo.git/", "bare · canonical", ""],
   ["      info/exclude", "# mend: dependency stores are not review content", ""],
@@ -174,7 +174,8 @@ export function ExpandedWorktrees() {
         <CellLabel>the project page</CellLabel>
         <p className="font-sans text-[13px] font-medium text-foreground">newsroom-api</p>
         <p className="mt-0.5 truncate font-mono text-[9.5px] text-faint">
-          store ~/.mend/store/newsroom-api · main@3f8c2e9 · origin github.com/acme/newsroom-api
+          store ~/.config/mend/store/newsroom-api · main@3f8c2e9 · origin
+          github.com/acme/newsroom-api
         </p>
         <div className="mt-3 divide-y divide-[var(--sw-faint-rule)]">
           {[
@@ -275,7 +276,7 @@ export function ExpandedWorktrees() {
 
       <FactsBar
         items={[
-          "git clone --bare <src> → ~/.mend/store/<name>/repo.git · MEND_STORE_ROOT overrides",
+          "git clone --bare <src> → ~/.config/mend/store/<name>/repo.git · MEND_STORE_ROOT overrides",
           "git worktree add -b mend/session/<id> worktrees/session-<id> <baseSha>",
           "refs/mend/checkpoints/<sessionId>/<n> · each commit stamped with the record seq",
           "mounts: /workspace/repo · /workspace/ref/<name> read-only · /workspace/home/<name> read-only by default",
