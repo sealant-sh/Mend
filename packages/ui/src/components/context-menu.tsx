@@ -3,8 +3,9 @@ import { createPortal } from "react-dom";
 
 /**
  * A right-click menu, hand-rolled — no headless-UI dependency exists in this
- * app. One floating panel per page (`useContextMenu`), items supplied at open
- * time, so a list of rows shares a single menu instance.
+ * repo. One floating panel per page (`useContextMenu`), items supplied at open
+ * time, so a list of rows shares a single menu instance. Both apps import
+ * this copy.
  */
 
 export interface ContextMenuAction {

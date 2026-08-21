@@ -1,8 +1,8 @@
+import { useContextMenu } from "@mend/ui/context-menu";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
-import { useContextMenu } from "#/components/context-menu";
 import { ProjectSetupFacts } from "#/components/project-setup-facts";
 import { AppShell } from "#/components/shell";
 import { SessionStatusDot } from "#/components/status";

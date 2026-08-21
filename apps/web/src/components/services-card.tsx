@@ -1,7 +1,28 @@
+import { Button } from "@mend/ui/components/ui/button";
+import { Checkbox } from "@mend/ui/components/ui/checkbox";
+import { Input } from "@mend/ui/components/ui/input";
+import { NativeSelect, NativeSelectOption } from "@mend/ui/components/ui/native-select";
+import { cn } from "@mend/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { StatusDot } from "#/components/status";
+
+/** Row-scale quiet action, composed from the ui Button. */
+function RowAction({ className, ...props }: React.ComponentProps<typeof Button>) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="xs"
+      className={cn(
+        "h-6 px-1.5 text-xs font-normal text-muted-foreground hover:text-ink",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
 import {
   addService,
   restartService,
@@ -136,17 +157,16 @@ function ServiceRow({
         )}
         <span className="flex shrink-0 items-center gap-2">
           {endpoint !== null && (
-            <button
-              type="button"
+            <RowAction
               onClick={copy}
-              className={`font-sans text-xs transition-opacity ${
+              className={
                 copied
-                  ? "text-success opacity-100"
-                  : "text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-ink"
-              }`}
+                  ? "text-success opacity-100 hover:text-success"
+                  : "opacity-0 group-hover:opacity-100"
+              }
             >
               {copied ? "Copied" : "Copy"}
-            </button>
+            </RowAction>
           )}
           {live && url !== null && currentObservation(service)?.state === "reachable" && (
             <a
@@ -159,34 +179,31 @@ function ServiceRow({
             </a>
           )}
           {live && attempt !== null && attempt.argv.length > 0 && (
-            <button
-              type="button"
+            <RowAction
               onClick={() => onAction("restart", service)}
               disabled={pending !== null}
-              className="font-sans text-xs text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-ink"
+              className="opacity-0 group-hover:opacity-100"
             >
               {pending === `restart:${stable.id}` ? "Restarting…" : "Restart"}
-            </button>
+            </RowAction>
           )}
           {live && (
-            <button
-              type="button"
+            <RowAction
               onClick={() => onAction("stop", service)}
               disabled={pending !== null}
-              className="font-sans text-xs text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-ink"
+              className="opacity-0 group-hover:opacity-100"
             >
               {pending === `stop:${stable.id}` ? "Stopping…" : "Stop"}
-            </button>
+            </RowAction>
           )}
           {!live && actionable && rerunAttempt !== null && (
-            <button
-              type="button"
+            <RowAction
               onClick={() => onAction("rerun", service)}
               disabled={pending !== null}
-              className="font-sans text-xs font-medium text-info hover:underline disabled:opacity-50"
+              className="font-medium text-info hover:text-info hover:underline"
             >
               {pending === `rerun:${stable.id}` ? "Starting…" : "Run"}
-            </button>
+            </RowAction>
           )}
         </span>
       </div>
@@ -412,13 +429,15 @@ function RunServiceForm({
 
   if (!open) {
     return (
-      <button
+      <Button
         type="button"
+        variant="ghost"
+        size="xs"
         onClick={() => setOpen(true)}
-        className="w-full border-t border-rule-faint px-4 py-2.5 text-left font-sans text-xs text-muted-foreground transition-colors hover:text-ink"
+        className="h-auto w-full justify-start rounded-none border-t border-rule-faint px-4 py-2.5 text-xs font-normal text-muted-foreground hover:bg-transparent hover:text-ink"
       >
         + run service…
-      </button>
+      </Button>
     );
   }
 
@@ -430,57 +449,56 @@ function RunServiceForm({
         submit(event.currentTarget);
       }}
     >
-      <input
+      <Input
         name="command"
         autoFocus
         placeholder="pnpm dev (empty = adopt a listening port)"
-        className="w-full rounded-lg border border-input bg-background px-2.5 py-1.5 font-mono text-xs text-ink placeholder:text-faint"
+        className="w-full bg-background font-mono text-xs"
       />
       <div className="flex items-center gap-2">
-        <input
+        <Input
           name="port"
           inputMode="numeric"
           placeholder="port"
-          className="w-20 rounded-lg border border-input bg-background px-2.5 py-1.5 font-mono text-xs text-ink placeholder:text-faint"
+          className="w-20 bg-background font-mono text-xs"
         />
-        <input
+        <Input
           name="name"
           placeholder="name (optional)"
-          className="min-w-0 flex-1 rounded-lg border border-input bg-background px-2.5 py-1.5 font-mono text-xs text-ink placeholder:text-faint"
+          className="min-w-0 flex-1 bg-background font-mono text-xs"
         />
-        <select
+        <NativeSelect
           name="browserScheme"
           aria-label="Browser behavior"
           defaultValue=""
-          className="rounded-lg border border-input bg-background px-2 py-1.5 font-mono text-[11px] text-muted-foreground"
+          size="sm"
+          className="w-fit bg-background font-mono text-[11px]"
         >
-          <option value="">raw</option>
-          <option value="http">http</option>
-          <option value="https">https</option>
-        </select>
+          <NativeSelectOption value="">raw</NativeSelectOption>
+          <NativeSelectOption value="http">http</NativeSelectOption>
+          <NativeSelectOption value="https">https</NativeSelectOption>
+        </NativeSelect>
         <label className="flex shrink-0 items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
-          <input type="checkbox" name="udp" className="size-3.5 accent-[var(--sw-accent)]" />
+          <Checkbox name="udp" />
           udp
         </label>
       </div>
       <div className="flex items-center justify-end gap-2.5">
-        <button
-          type="button"
+        <RowAction
           onClick={() => {
             setOpen(false);
             setError(null);
           }}
-          className="font-sans text-xs text-muted-foreground hover:text-ink"
         >
           cancel
-        </button>
-        <button
+        </RowAction>
+        <RowAction
           type="submit"
           disabled={pending !== null}
-          className="font-sans text-xs font-medium text-info hover:underline disabled:opacity-50"
+          className="font-medium text-info hover:text-info hover:underline"
         >
           {pending === "run:form" ? "Starting…" : "Run"}
-        </button>
+        </RowAction>
       </div>
       {error === null ? null : (
         <p className="border-l-2 border-[var(--sw-red)] pl-2 font-sans text-xs text-danger">
