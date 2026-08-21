@@ -60,6 +60,7 @@ interface TestWorld {
   launchGate: Deferred.Deferred<void> | null;
   deliveryAttemptId: string | null;
   deliveryLeaseExpiresAt: Date | null;
+  renewalDefectsRemaining: number;
 }
 
 const makeWorld = (launcherMode: TestWorld["launcherMode"] = "success"): TestWorld => ({
@@ -116,6 +117,7 @@ const makeWorld = (launcherMode: TestWorld["launcherMode"] = "success"): TestWor
   launchGate: null,
   deliveryAttemptId: null,
   deliveryLeaseExpiresAt: null,
+  renewalDefectsRemaining: 0,
 });
 
 const updateFollowUp = (world: TestWorld, patch: Partial<FollowUp>): FollowUp => {
@@ -226,12 +228,18 @@ const testLayer = (world: TestWorld) => {
         return { followUp, attemptId, leaseExpiresAt };
       }),
     renewClaim: (_id, attemptId, leaseExpiresAt) =>
-      Effect.sync(() => {
-        if (world.followUp?.status !== "delivering" || world.deliveryAttemptId !== attemptId) {
-          return false;
+      Effect.suspend(() => {
+        if (world.renewalDefectsRemaining > 0) {
+          world.renewalDefectsRemaining -= 1;
+          return Effect.die("transient lease renewal failure");
         }
-        world.deliveryLeaseExpiresAt = leaseExpiresAt;
-        return true;
+        return Effect.sync(() => {
+          if (world.followUp?.status !== "delivering" || world.deliveryAttemptId !== attemptId) {
+            return false;
+          }
+          world.deliveryLeaseExpiresAt = leaseExpiresAt;
+          return true;
+        });
       }),
     releaseClaim: (_id, attemptId, outcome) =>
       Effect.sync(() => {
@@ -498,8 +506,9 @@ describe("FollowUpDelivery", () => {
     }).pipe(Effect.provide(testLayer(world)));
   });
 
-  it.effect("renews a slow launch lease so retries cannot start a second process", () => {
+  it.effect("renews a slow launch lease after a transient database defect", () => {
     const world = makeWorld("held");
+    world.renewalDefectsRemaining = 1;
     return Effect.gen(function* () {
       const delivery = yield* FollowUpDelivery;
       const gate = yield* Deferred.make<void>();

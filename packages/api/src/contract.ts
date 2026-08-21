@@ -1130,7 +1130,7 @@ const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionProcessId },
       payload: RenameShellRequest,
       success: SessionProcess,
-      error: Schema.Union([NotFound, StoreFailure]),
+      error: [NotFound, StoreFailure],
     }),
   )
   .add(
@@ -1278,7 +1278,7 @@ const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       payload: DeliverFollowUpRequest,
       success: FollowUp,
-      error: Schema.Union([NotFound, StoreFailure]),
+      error: [NotFound, StoreFailure],
     }),
   )
   .middleware(AuthMiddleware);
@@ -1394,7 +1394,7 @@ const sessionChangesGroup = HttpApiGroup.make("sessionChanges")
       params: { id: ChangeId },
       payload: OpenReviewRequest,
       success: OpenReviewResult,
-      error: Schema.Union([NotFound, StoreFailure]),
+      error: [NotFound, StoreFailure],
     }),
   )
   .add(
@@ -1405,7 +1405,7 @@ const sessionChangesGroup = HttpApiGroup.make("sessionChanges")
         context: Schema.optional(Schema.String),
       },
       success: ReviewDiffView,
-      error: Schema.Union([NotFound, StoreFailure]),
+      error: [NotFound, StoreFailure],
     }),
   )
   .add(
@@ -1413,7 +1413,7 @@ const sessionChangesGroup = HttpApiGroup.make("sessionChanges")
       params: { id: ChangeId, sliceId: ReviewSliceId },
       payload: NewSliceReviewCommentRequest,
       success: ReviewComment,
-      error: Schema.Union([NotFound, StoreFailure]),
+      error: [NotFound, StoreFailure],
     }),
   )
   .add(

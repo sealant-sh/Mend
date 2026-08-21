@@ -9,7 +9,7 @@ import {
 } from "@mend/db";
 import type { CheckpointId, ReviewCommentId, ReviewSliceId, SessionId } from "@mend/domain";
 import type { DiffDigest, FollowUp } from "@mend/domain/workbench";
-import { Clock, Duration, Effect, Layer, Result, Schema } from "effect";
+import { Clock, Duration, Effect, Layer, Option, Result, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { SessionEngine, SessionNotLiveError } from "./engine.ts";
@@ -386,17 +386,18 @@ export const FollowUpDeliveryLive: Layer.Layer<
                   new Date(now + Duration.toMillis(DELIVERY_LEASE_DURATION)),
                 )
                 .pipe(
+                  Effect.map(Option.some),
                   Effect.catchCause((cause) =>
                     Effect.logWarning("follow-up delivery: lease heartbeat failed").pipe(
                       Effect.annotateLogs({
                         followUpId: decision.followUp.id,
                         cause: String(cause),
                       }),
-                      Effect.as(false),
+                      Effect.as(Option.none<boolean>()),
                     ),
                   ),
                 );
-              if (!renewed) return;
+              if (Option.isSome(renewed) && !renewed.value) return;
             }
           });
           const launched = yield* Effect.scoped(
