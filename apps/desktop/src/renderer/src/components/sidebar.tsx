@@ -201,12 +201,14 @@ export function Sidebar({
     setDeleting(true);
     setDeleteError(null);
     let failed = 0;
+    let reason: string | null = null;
     for (const row of rows) {
       try {
         await removeSession(row.session.id);
         queryClient.removeQueries({ queryKey: ["session", row.session.id] });
-      } catch {
+      } catch (cause) {
         failed += 1;
+        reason = cause instanceof Error ? cause.message : String(cause);
       }
     }
     void queryClient.invalidateQueries({ queryKey: ["projects"] });
@@ -214,7 +216,11 @@ export function Sidebar({
       void queryClient.invalidateQueries({ queryKey: ["project", projectId] });
     }
     if (failed > 0) {
-      setDeleteError(`${failed} of ${rows.length} could not be deleted`);
+      // The server's own words for the last failure — "1 of 1 could not be
+      // deleted" hides a stopped session whose supporting shell still runs.
+      setDeleteError(
+        `${failed} of ${rows.length} could not be deleted${reason === null ? "" : ` — ${reason}`}`,
+      );
     }
     setDeleting(false);
   };

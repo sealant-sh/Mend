@@ -4,7 +4,7 @@ import { createFileRoute, Navigate, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 
 import { CommandPalette } from "#/components/command-palette";
-import { Launcher } from "#/components/launcher";
+import { Launcher, ProjectPicker, SessionComposer } from "#/components/launcher";
 import { ServicesSheet } from "#/components/services-sheet";
 import { Sidebar } from "#/components/sidebar";
 import { TabBar } from "#/components/tab-bar";
@@ -326,6 +326,11 @@ function Main() {
     openSettings: () => void navigate({ to: "/settings" }),
   });
 
+  const launcherProject =
+    launcherFor === null
+      ? null
+      : (data.find((entry) => entry.project.id === launcherFor)?.project ?? null);
+
   const unauthorized =
     isUnauthorized(projects.error) ||
     details.some((query) => isUnauthorized(query.error)) ||
@@ -377,18 +382,33 @@ function Main() {
           )}
           {tabMenu.menuElement}
           {focusedTab === null ? (
-            <div className="flex min-h-0 flex-1 items-center justify-center">
-              <div className="max-w-sm text-center">
+            <div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-8 py-10">
+              {focusedProject === null ? (
                 <p className="font-mono text-[12px] tracking-wider text-faint uppercase">
-                  {projects.isPending ? "reading projects…" : "no tabs open"}
+                  {projects.isPending ? "reading projects…" : "no projects"}
                 </p>
-                {!projects.isPending && (
-                  <p className="mt-3 font-sans text-[14px] leading-relaxed text-muted-foreground">
-                    Choose a session, then press Ctrl+Shift+T for a supporting shell in its
-                    worktree. With only a project focused, the shortcut opens the session launcher.
+              ) : (
+                <div className="flex w-full max-w-[640px] flex-col items-center">
+                  <div className="mb-4 flex w-full items-center gap-1 font-sans text-[14px] font-medium text-foreground">
+                    <span className="pl-2">New session ·</span>
+                    <ProjectPicker
+                      projects={data.map((entry) => entry.project)}
+                      projectId={focusedProject.project.id}
+                      onPick={workbench.focusProject}
+                    />
+                  </div>
+                  <SessionComposer
+                    key={focusedProject.project.id}
+                    project={focusedProject.project}
+                    variant="inline"
+                    onLaunched={(session) => workbench.openSession(session.projectId, session.id)}
+                  />
+                  <p className="mt-5 max-w-sm text-center font-sans text-[12.5px] leading-relaxed text-muted-foreground">
+                    Or choose a session in the tree; Ctrl+Shift+T opens a supporting shell in its
+                    worktree.
                   </p>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           ) : (
             <TerminalPane
@@ -443,12 +463,9 @@ function Main() {
           {projects.error instanceof Error ? projects.error.message : "could not read projects"}
         </p>
       )}
-      {launcherFor !== null && (
+      {launcherProject !== null && (
         <Launcher
-          projectId={launcherFor}
-          projectName={
-            data.find((entry) => entry.project.id === launcherFor)?.project.name ?? "project"
-          }
+          project={launcherProject}
           onLaunched={(session) => {
             setLauncherFor(null);
             workbench.openSession(session.projectId, session.id);

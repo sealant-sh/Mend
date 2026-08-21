@@ -219,8 +219,16 @@ export function TerminalPane({
       <div className="relative flex min-h-0 flex-1 flex-col bg-term">
         {tab.kind === "logs" ? (
           <LogsView processId={tab.processId} />
+        ) : isSessionTab && session !== null && session.sealantSessionId === null && live ? (
+          <p className="pointer-events-none absolute right-3 bottom-2 font-mono text-[11.5px] text-term-faint">
+            provisioning workspace — the terminal attaches the moment the PTY is live (a first
+            launch can take minutes)…
+          </p>
         ) : (
           <TtyTerminal
+            // The PTY handle is the attach identity: a session that was provisioning
+            // (or one `mend continue` reopened) needs a fresh connection, not a retry.
+            key={isSessionTab ? (session?.sealantSessionId ?? "none") : tab.processId}
             target={
               tab.kind === "shell"
                 ? { kind: "process", id: tab.processId }
