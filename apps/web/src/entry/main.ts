@@ -482,7 +482,7 @@ const MainLive = Layer.unwrap(
 // SIGTERM/SIGINT and unwinds finalizers — but an uninterruptible pending
 // platform promise inside a watch fiber can wedge that unwind forever
 // (docs/BUGS.md), leaving a half-dead server: HTTP gone, Service ports and
-// session sockets still held, `node --watch` waiting on a child that will
+// session sockets still held, the watch runner waiting on a child that will
 // never exit. The timer is unref'd: a clean unwind exits on its own first;
 // the deadline only fires for a wedge, and the OS reclaims every fd.
 for (const signal of ["SIGTERM", "SIGINT"] as const) {

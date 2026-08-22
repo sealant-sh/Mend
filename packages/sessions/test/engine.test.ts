@@ -1320,6 +1320,16 @@ describe("SessionEngine", () => {
           expect(attached[0]?.process.kind).toBe("agent-protocol");
           expect(attached[0]?.process.argv).toEqual(["codex", "app-server"]);
           expect(submitted).toEqual(["inspect replay"]);
+
+          yield* engine.stop(session.id);
+          yield* engine.resumeSession(session.id, null);
+          expect(attached[1]?.process.kind).toBe("agent-protocol");
+
+          yield* engine.stop(session.id);
+          yield* engine.launchFollowUp(session.id, "address the review", "follow-up-1");
+          expect(attached[2]?.process.kind).toBe("agent-protocol");
+          expect(attached[2]?.process.launchCorrelationId).toBe("follow-up-1");
+          expect(submitted).toEqual(["inspect replay", "address the review"]);
         }),
       {
         sealantLayer: sealantLaunchLayer(

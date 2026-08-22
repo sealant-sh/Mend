@@ -1,12 +1,6 @@
-// One session as a CONVERSATION. The list is a LegendList tuned the way
-// t3code tunes theirs (MIT — pingdotgg/t3code apps/mobile ThreadFeed):
-// maintainScrollAtEnd owns bottom-following (it only re-pins when the list
-// is already at the end, so scrolling up to read is never fought), and
-// maintainVisibleContentPosition compensates both data appends and in-place
-// row growth so streamed turns never shove the viewport. Chrome is spent on
-// the conversation: one compact header row, assistant prose full-bleed on
-// the sheet, and a floating composer whose measured height is the list's
-// only bottom inset.
+// One session as a conversation. Protocol agents render the durable authored
+// turns, ordered items, and agent-to-human requests. Older PTY sessions keep
+// their transcript projection and raw TTY composer.
 
 import { LegendList } from "@legendapp/list/react-native";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
@@ -17,11 +11,12 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { EvButton } from "@/components/button";
 import { MendMarkdown } from "@/components/markdown";
+import { ProtocolConversation } from "@/components/protocol-conversation";
 import { StatusWord } from "@/components/status";
 import { DisplayTitle, MonoText, UiText } from "@/components/typography";
 import {
-  ACTIVE,
-  canContinue,
+  agentIsActive,
+  canDeliverFollowUp,
   loadConfig,
   toneOf,
   usePendingFollowUp,
@@ -30,7 +25,7 @@ import {
   useTranscript,
   type TranscriptEventDto,
 } from "@/data/live";
-import { useTtySocket } from "@/data/tty-socket";
+import { useTtySocket, type TtyTarget } from "@/data/tty-socket";
 import { radius, spacing, useEvidenceTheme } from "@/theme/evidence";
 
 interface FeedEntry {
@@ -45,8 +40,6 @@ const sameEvent = (a: TranscriptEventDto, b: TranscriptEventDto): boolean =>
   a.command === b.command &&
   a.output === b.output;
 
-// The transcript poll rebuilds every event object each round; compare by
-// value so settled rows skip the re-render and only the growing tail paints.
 const EventRow = memo(
   function EventRow({ event }: { readonly event: TranscriptEventDto }) {
     const { colors } = useEvidenceTheme();
@@ -70,8 +63,6 @@ const EventRow = memo(
       );
     }
     if (event.kind === "assistant" && event.text !== null) {
-      // Full-bleed prose on the sheet — the report needs width, not a card.
-      // Rendered as real markdown: harness output is markdown-shaped.
       return (
         <View style={{ paddingHorizontal: 2 }}>
           <MendMarkdown>{event.text}</MendMarkdown>
@@ -97,7 +88,7 @@ const EventRow = memo(
           }}
         >
           <MonoText size={11.5} style={{ color: colors.ink2 }}>
-            {event.command !== null ? `$ ${event.command}` : `⚙ ${event.name ?? "tool"}`}
+            {event.command === null ? (event.name ?? "tool") : `$ ${event.command}`}
           </MonoText>
           {event.output !== null && event.output !== "" && (
             <MonoText tone="faint" size={10.5} numberOfLines={3}>
@@ -112,18 +103,18 @@ const EventRow = memo(
   (prev, next) => sameEvent(prev.event, next.event),
 );
 
-export default function SessionScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
-  const router = useRouter();
+function PtyConversation({
+  sessionId,
+  active,
+  summary,
+}: {
+  readonly sessionId: string;
+  readonly active: boolean;
+  readonly summary: string | null;
+}) {
   const { colors } = useEvidenceTheme();
   const insets = useSafeAreaInsets();
-  const detail = useSession(id);
-  const session = detail.data?.session;
-  const change = detail.data?.change ?? null;
-  const active = session !== undefined && ACTIVE.has(session.status);
-  const transcript = useTranscript(id, active);
-  const followUp = usePendingFollowUp(id).data ?? null;
-  const { resume, stop, continueFollowUp } = useSessionActions();
+  const transcript = useTranscript(sessionId, active);
   const [draft, setDraft] = useState("");
   const [pendingSends, setPendingSends] = useState<
     ReadonlyArray<{ readonly id: number; readonly text: string }>
@@ -139,15 +130,18 @@ export default function SessionScreen() {
 
   useEffect(() => {
     void loadConfig().then((config) => setBase({ url: config.url, token: config.token }));
+    return () => {
+      if (workingTimer.current !== null) {
+        clearTimeout(workingTimer.current);
+      }
+    };
   }, []);
 
-  // PTY bytes are the live signal: the harness is doing something. Surface
-  // it immediately (working indicator) and pull the transcript at most
-  // once a second while activity flows — turns land as they happen. The
-  // supervised socket owns reconnection; this screen only reads phase.
   const onBinary = useCallback(() => {
     setWorking(true);
-    if (workingTimer.current !== null) clearTimeout(workingTimer.current);
+    if (workingTimer.current !== null) {
+      clearTimeout(workingTimer.current);
+    }
     workingTimer.current = setTimeout(() => setWorking(false), 2_500);
     const now = Date.now();
     if (now - lastInvalidate.current > 1_000) {
@@ -155,30 +149,25 @@ export default function SessionScreen() {
       void transcriptRef.current?.();
     }
   }, []);
+  const ttyTarget = useMemo<TtyTarget>(() => ({ kind: "session", id: sessionId }), [sessionId]);
   const tty = useTtySocket({
     serverUrl: base?.url ?? null,
     token: base?.token ?? null,
-    sessionId: session?.id,
+    target: ttyTarget,
     enabled: active,
     onBinary,
   });
-
   const send = () => {
     const text = draft.trim();
-    if (text === "") return;
-    // Body and Enter must be separate PTY writes. One write delivers the
-    // whole burst to the harness in a single read, and Claude/Codex TUIs
-    // classify that as a paste — a \r inside a paste becomes a literal
-    // newline in the prompt buffer instead of a submit. A lone trailing \r
-    // (never \n: that is Ctrl+J to a raw-mode TUI) is unambiguous Enter.
-    if (!tty.send(text)) return;
+    if (text === "" || !tty.send(text)) {
+      return;
+    }
     setTimeout(() => void tty.send("\r"), 100);
     pendingSeq.current += 1;
     setPendingSends((current) => [...current, { id: pendingSeq.current, text }]);
     setWorking(true);
     setDraft("");
   };
-
   const keyboard = useKeyboardState((state) => ({
     height: state.height,
     isVisible: state.isVisible,
@@ -187,10 +176,11 @@ export default function SessionScreen() {
     (keyboard.isVisible ? keyboard.height : insets.bottom) +
     (active ? composerHeight + spacing.xs : spacing.md);
   const serverEvents = transcript.data?.events ?? [];
-  // Optimistic reconcile: a pending send disappears once the transcript
-  // carries it (compare against the tail's user turns).
+
   useEffect(() => {
-    if (pendingSends.length === 0) return;
+    if (pendingSends.length === 0) {
+      return;
+    }
     const tail = new Set(
       serverEvents
         .slice(-12)
@@ -199,8 +189,7 @@ export default function SessionScreen() {
     );
     setPendingSends((current) => current.filter((pending) => !tail.has(pending.text)));
   }, [serverEvents.length]);
-  // Stable keys: server events are append-only (positional keys never move),
-  // pending sends carry their own ids — a confirmed send swaps key, not rows.
+
   const feed = useMemo<ReadonlyArray<FeedEntry>>(
     () => [
       ...serverEvents.map((event, index) => ({ key: `s${index}`, event })),
@@ -217,6 +206,162 @@ export default function SessionScreen() {
     ],
     [serverEvents, pendingSends],
   );
+  let emptyMessage = summary ?? "no conversation recorded";
+  if (transcript.isLoading) {
+    emptyMessage = "reading the conversation…";
+  } else if (active) {
+    emptyMessage = "provisioning, the conversation appears as the agent starts…";
+  }
+
+  return (
+    <View style={{ flex: 1 }}>
+      <LegendList
+        data={feed}
+        keyExtractor={(entry) => entry.key}
+        getItemType={(entry) => entry.event.kind}
+        renderItem={({ item }) => <EventRow event={item.event} />}
+        estimatedItemSize={72}
+        drawDistance={500}
+        alignItemsAtEnd
+        initialScrollAtEnd
+        maintainScrollAtEnd={{
+          animated: true,
+          on: { dataChange: true, itemLayout: true, layout: true },
+        }}
+        maintainVisibleContentPosition={{ data: true, size: true }}
+        keyboardDismissMode="interactive"
+        keyboardShouldPersistTaps="handled"
+        style={{ flex: 1 }}
+        contentContainerStyle={{
+          paddingHorizontal: 16,
+          paddingTop: spacing.xs,
+          paddingBottom: bottomPad,
+          gap: 10,
+        }}
+        ListFooterComponent={
+          working && active ? (
+            <MonoText tone="faint" size={11.5} style={{ paddingHorizontal: 2, paddingTop: 4 }}>
+              working…
+            </MonoText>
+          ) : null
+        }
+        ListEmptyComponent={<MonoText tone="faint">{emptyMessage}</MonoText>}
+      />
+      {active && (
+        <KeyboardStickyView
+          style={{ position: "absolute", bottom: 0, left: 0, right: 0 }}
+          offset={{ closed: 0, opened: 0 }}
+        >
+          {!tty.canSend && (
+            <Pressable
+              onPress={tty.retryNow}
+              style={{
+                alignItems: "center",
+                paddingVertical: 4,
+                backgroundColor: colors.sunken,
+              }}
+            >
+              <MonoText tone="faint" size={11}>
+                {tty.phase === "reconnecting"
+                  ? "reconnecting… tap to retry now"
+                  : "connecting to the session…"}
+              </MonoText>
+            </Pressable>
+          )}
+          <View
+            onLayout={(event) => setComposerHeight(event.nativeEvent.layout.height)}
+            style={{
+              flexDirection: "row",
+              alignItems: "flex-end",
+              gap: 8,
+              paddingHorizontal: 10,
+              paddingTop: 8,
+              paddingBottom: keyboard.isVisible ? 8 : insets.bottom + 4,
+              backgroundColor: colors.panel,
+              borderTopWidth: StyleSheet.hairlineWidth,
+              borderTopColor: colors.softRule,
+            }}
+          >
+            <TextInput
+              value={draft}
+              onChangeText={setDraft}
+              placeholder="Message the session…"
+              placeholderTextColor={colors.faint}
+              multiline
+              style={{
+                flex: 1,
+                minHeight: 40,
+                maxHeight: 120,
+                backgroundColor: colors.bg,
+                borderWidth: StyleSheet.hairlineWidth,
+                borderColor: colors.rule,
+                borderRadius: radius.lg,
+                paddingHorizontal: 13,
+                paddingVertical: 9,
+                color: colors.ink,
+                fontSize: 15,
+              }}
+            />
+            <EvButton label="Send" onPress={send} disabled={!tty.canSend} />
+          </View>
+        </KeyboardStickyView>
+      )}
+    </View>
+  );
+}
+
+export default function SessionScreen() {
+  const { id, mode } = useLocalSearchParams<{ id: string; mode?: string }>();
+  const router = useRouter();
+  const { colors } = useEvidenceTheme();
+  const insets = useSafeAreaInsets();
+  const detail = useSession(id);
+  const session = detail.data?.session;
+  const change = detail.data?.change ?? null;
+  const currentAgent = detail.data?.currentAgent ?? null;
+  const agentActive = agentIsActive(session, currentAgent);
+  const canOpenShell =
+    session !== undefined && ["running", "waiting", "idle"].includes(session.status);
+  const protocol =
+    currentAgent === null ? mode === "protocol" : currentAgent.kind === "agent-protocol";
+  const followUp = usePendingFollowUp(id).data ?? null;
+  const { resume, stop, openShell, deliverFollowUp } = useSessionActions();
+  const [shellError, setShellError] = useState<string | null>(null);
+
+  const openTerminal = () => {
+    if (session === undefined) {
+      return;
+    }
+    const attach = (processId: string) =>
+      router.push({
+        pathname: "/terminal/[id]",
+        params: { id: session.id, process: processId },
+      });
+    const reusable = detail.data?.processes.findLast(
+      (process) => process.kind === "shell" && process.exitedAt === null,
+    );
+    if (reusable !== undefined) {
+      attach(reusable.id);
+      return;
+    }
+    setShellError(null);
+    openShell.mutate(session.id, {
+      onSuccess: (process) => attach(process.id),
+      onError: (error) => setShellError(error instanceof Error ? error.message : String(error)),
+    });
+  };
+  let conversation = (
+    <View style={{ flex: 1, paddingHorizontal: 16, paddingTop: 8 }}>
+      <MonoText tone="faint">loading session…</MonoText>
+    </View>
+  );
+  if (session !== undefined) {
+    conversation = protocol ? (
+      <ProtocolConversation sessionId={session.id} active={agentActive} summary={session.summary} />
+    ) : (
+      <PtyConversation sessionId={session.id} active={agentActive} summary={session.summary} />
+    );
+  }
 
   return (
     <>
@@ -240,7 +385,7 @@ export default function SessionScreen() {
             )}
           </View>
           {session !== undefined && (
-            <View style={{ flexDirection: "row", gap: 8 }}>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
               {change !== null && (
                 <EvButton
                   size="sm"
@@ -250,21 +395,15 @@ export default function SessionScreen() {
                   }
                 />
               )}
-              {!active && followUp !== null && canContinue(session.harness) && (
+              {!agentActive && followUp !== null && canDeliverFollowUp(followUp) && (
                 <EvButton
                   size="sm"
-                  label={continueFollowUp.isPending ? "delivering…" : "Deliver follow-up"}
-                  disabled={continueFollowUp.isPending}
-                  onPress={() =>
-                    continueFollowUp.mutate({
-                      sessionId: session.id,
-                      harness: session.harness,
-                      instruction: followUp.instruction,
-                    })
-                  }
+                  label={deliverFollowUp.isPending ? "delivering…" : "Deliver follow-up"}
+                  disabled={deliverFollowUp.isPending}
+                  onPress={() => deliverFollowUp.mutate(followUp)}
                 />
               )}
-              {!active && (
+              {!agentActive && (
                 <EvButton
                   size="sm"
                   variant={change === null && followUp === null ? "primary" : "outline"}
@@ -272,16 +411,17 @@ export default function SessionScreen() {
                   onPress={() => resume.mutate({ sessionId: session.id, harness: null })}
                 />
               )}
-              <EvButton
-                size="sm"
-                variant="outline"
-                label="Terminal"
-                onPress={() =>
-                  router.push({ pathname: "/terminal/[id]", params: { id: session.id } })
-                }
-              />
+              {canOpenShell && (
+                <EvButton
+                  size="sm"
+                  variant="outline"
+                  label={openShell.isPending ? "opening…" : "Shell"}
+                  disabled={openShell.isPending}
+                  onPress={openTerminal}
+                />
+              )}
               <View style={{ flex: 1 }} />
-              {active && (
+              {agentActive && (
                 <EvButton
                   size="sm"
                   variant="ghost"
@@ -291,108 +431,13 @@ export default function SessionScreen() {
               )}
             </View>
           )}
-        </View>
-        <LegendList
-          data={feed}
-          keyExtractor={(entry) => entry.key}
-          getItemType={(entry) => entry.event.kind}
-          renderItem={({ item }) => <EventRow event={item.event} />}
-          estimatedItemSize={72}
-          drawDistance={500}
-          alignItemsAtEnd
-          initialScrollAtEnd
-          maintainScrollAtEnd={{
-            animated: true,
-            on: { dataChange: true, itemLayout: true, layout: true },
-          }}
-          maintainVisibleContentPosition={{ data: true, size: true }}
-          keyboardDismissMode="interactive"
-          keyboardShouldPersistTaps="handled"
-          style={{ flex: 1 }}
-          contentContainerStyle={{
-            paddingHorizontal: 16,
-            paddingTop: spacing.xs,
-            paddingBottom: bottomPad,
-            gap: 10,
-          }}
-          ListFooterComponent={
-            working && active ? (
-              <MonoText tone="faint" size={11.5} style={{ paddingHorizontal: 2, paddingTop: 4 }}>
-                ▍ working…
-              </MonoText>
-            ) : null
-          }
-          ListEmptyComponent={
-            <MonoText tone="faint">
-              {transcript.isLoading
-                ? "reading the conversation…"
-                : active
-                  ? "provisioning — the conversation appears as the harness starts…"
-                  : (session?.summary ?? "no conversation recorded")}
+          {shellError === null ? null : (
+            <MonoText tone="danger" size={11} numberOfLines={2}>
+              {shellError}
             </MonoText>
-          }
-        />
-        {active && (
-          <KeyboardStickyView
-            style={{ position: "absolute", bottom: 0, left: 0, right: 0 }}
-            offset={{ closed: 0, opened: 0 }}
-          >
-            {!tty.canSend && (
-              // The socket is down or still opening: say so instead of letting
-              // Send silently no-op. Tapping skips the remaining backoff.
-              <Pressable
-                onPress={tty.retryNow}
-                style={{
-                  alignItems: "center",
-                  paddingVertical: 4,
-                  backgroundColor: colors.sunken,
-                }}
-              >
-                <MonoText tone="faint" size={11}>
-                  {tty.phase === "reconnecting"
-                    ? "reconnecting… (tap to retry now)"
-                    : "connecting to the session…"}
-                </MonoText>
-              </Pressable>
-            )}
-            <View
-              onLayout={(event) => setComposerHeight(event.nativeEvent.layout.height)}
-              style={{
-                flexDirection: "row",
-                alignItems: "flex-end",
-                gap: 8,
-                paddingHorizontal: 10,
-                paddingTop: 8,
-                paddingBottom: keyboard.isVisible ? 8 : insets.bottom + 4,
-                backgroundColor: colors.panel,
-                borderTopWidth: StyleSheet.hairlineWidth,
-                borderTopColor: colors.softRule,
-              }}
-            >
-              <TextInput
-                value={draft}
-                onChangeText={setDraft}
-                placeholder="Message the session…"
-                placeholderTextColor={colors.faint}
-                multiline
-                style={{
-                  flex: 1,
-                  minHeight: 40,
-                  maxHeight: 120,
-                  backgroundColor: colors.bg,
-                  borderWidth: StyleSheet.hairlineWidth,
-                  borderColor: colors.rule,
-                  borderRadius: radius.lg,
-                  paddingHorizontal: 13,
-                  paddingVertical: 9,
-                  color: colors.ink,
-                  fontSize: 15,
-                }}
-              />
-              <EvButton label="Send" onPress={send} disabled={!tty.canSend} />
-            </View>
-          </KeyboardStickyView>
-        )}
+          )}
+        </View>
+        {conversation}
       </View>
     </>
   );

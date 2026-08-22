@@ -4,15 +4,15 @@
 // key bar for what phone keyboards lack (Esc, Tab, Ctrl-C, arrows) rides
 // stuck to the top of the keyboard.
 
-import { Stack, useLocalSearchParams } from "expo-router";
+import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useRef, useState } from "react";
-import { Pressable, View } from "react-native";
+import { Alert, Pressable, View } from "react-native";
 import { KeyboardStickyView, useKeyboardState } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { GhosttyTerminal } from "@/components/ghostty-terminal";
 import { MonoText } from "@/components/typography";
-import { loadConfig } from "@/data/live";
+import { loadConfig, useSessionActions } from "@/data/live";
 import { useEvidenceTheme } from "@/theme/evidence";
 
 const ACCESSORY_HEIGHT = 44;
@@ -47,7 +47,9 @@ const applyCtrl = (data: string): string => {
 };
 
 export default function TerminalScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, process } = useLocalSearchParams<{ id: string; process?: string }>();
+  const router = useRouter();
+  const { stopShell } = useSessionActions();
   const { colors } = useEvidenceTheme();
   const insets = useSafeAreaInsets();
   const [base, setBase] = useState<{ url: string; token: string } | null>(null);
@@ -70,16 +72,46 @@ export default function TerminalScreen() {
     isVisible: state.isVisible,
   }));
   const bottomInset = keyboard.isVisible ? keyboard.height + ACCESSORY_HEIGHT : insets.bottom;
+  const confirmStop = () => {
+    if (process === undefined) {
+      return;
+    }
+    Alert.alert("Stop this shell?", "This ends the shell process. Going back only detaches.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Stop shell",
+        style: "destructive",
+        onPress: () =>
+          stopShell.mutate(process, {
+            onSuccess: () => router.back(),
+          }),
+      },
+    ]);
+  };
+  const screenOptions =
+    process === undefined
+      ? { title: "Terminal" }
+      : {
+          title: "Shell",
+          headerRight: () => (
+            <Pressable disabled={stopShell.isPending} onPress={confirmStop}>
+              <MonoText tone="danger" size={12}>
+                {stopShell.isPending ? "stopping…" : "Stop"}
+              </MonoText>
+            </Pressable>
+          ),
+        };
 
   return (
     <>
-      <Stack.Screen options={{ title: "Terminal" }} />
+      <Stack.Screen options={screenOptions} />
       <View style={{ flex: 1, backgroundColor: colors.panel, paddingBottom: bottomInset }}>
         {base !== null && id !== undefined && (
           <GhosttyTerminal
             serverUrl={base.url}
             token={base.token}
             sessionId={id}
+            {...(process === undefined ? {} : { processId: process })}
             registerSend={(send) => {
               sendRef.current = send;
             }}

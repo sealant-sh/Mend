@@ -17,10 +17,31 @@ export interface MendConfig {
 
 let cached: MendConfig | null = null;
 
+const parseConfig = (raw: string): MendConfig | null => {
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      !("url" in value) ||
+      !("token" in value) ||
+      typeof value.url !== "string" ||
+      typeof value.token !== "string"
+    ) {
+      return null;
+    }
+    return { url: value.url, token: value.token };
+  } catch {
+    return null;
+  }
+};
+
 export const loadConfig = async (): Promise<MendConfig> => {
-  if (cached !== null) return cached;
+  if (cached !== null) {
+    return cached;
+  }
   const raw = await AsyncStorage.getItem("mend-config");
-  cached = raw !== null ? (JSON.parse(raw) as MendConfig) : { url: "", token: "" };
+  cached = raw === null ? { url: "", token: "" } : (parseConfig(raw) ?? { url: "", token: "" });
   return cached;
 };
 
@@ -38,6 +59,8 @@ export interface ProjectDto {
   readonly adoptedSha: string | null;
 }
 
+export const PROTOCOL_HARNESSES = ["claude", "codex"] as const;
+
 export interface SessionDto {
   readonly id: string;
   readonly projectId: string;
@@ -52,6 +75,13 @@ export interface SessionDto {
   readonly settledAt: string | null;
   readonly startedAt: string | null;
   readonly createdAt: string;
+}
+
+export interface SessionProcessDto {
+  readonly id: string;
+  readonly kind: "shell" | "agent-pty" | "agent-protocol" | "service";
+  readonly status: string;
+  readonly exitedAt: string | null;
 }
 
 export interface ChangedFileDto {
@@ -107,6 +137,18 @@ export const api = async <T>(method: "GET" | "POST", route: string, body?: unkno
 // ─── queries ────────────────────────────────────────────────────────────────
 
 export const ACTIVE = new Set(["starting", "running", "waiting", "idle"]);
+
+export const agentIsActive = (
+  session: SessionDto | undefined,
+  currentAgent: SessionProcessDto | null,
+): boolean =>
+  session?.status === "starting" ||
+  (currentAgent === null &&
+    session !== undefined &&
+    (session.status === "running" || session.status === "waiting")) ||
+  (currentAgent !== null &&
+    currentAgent.exitedAt === null &&
+    (currentAgent.status === "starting" || currentAgent.status === "running"));
 
 export const toneOf = (status: string): StatusTone =>
   status === "completed"
@@ -224,6 +266,8 @@ export const useSession = (id: string | null) =>
         readonly session: SessionDto;
         readonly checkpoints: ReadonlyArray<{ readonly sha: string; readonly trigger: string }>;
         readonly change: SessionChangeDto | null;
+        readonly processes: ReadonlyArray<SessionProcessDto>;
+        readonly currentAgent: SessionProcessDto | null;
       }>("GET", `/sessions/${id}`),
     refetchInterval: 5_000,
   });
@@ -340,18 +384,31 @@ export const useAdoptProject = () => {
 export interface FollowUpDto {
   readonly id: string;
   readonly sessionId: string;
+  readonly reviewSliceId: string | null;
+  readonly checkpointAId: string | null;
+  readonly checkpointBId: string | null;
+  readonly diffDigest: string | null;
+  readonly commentIds: ReadonlyArray<string>;
   readonly instruction: string;
+  readonly idempotencyKey: string | null;
   readonly status: string;
+  readonly deliveryError: string | null;
 }
 
-/** How each harness takes an instruction as its opening prompt (the CLI's table). */
-const CONTINUE_ARGV: Record<string, (instruction: string) => ReadonlyArray<string>> = {
-  codex: (instruction) => ["codex", instruction],
-  claude: (instruction) => ["claude", instruction],
-  opencode: (instruction) => ["opencode", "run", instruction],
+export const requireFollowUpDelivery = (followUp: FollowUpDto): FollowUpDto => {
+  if (followUp.status === "delivery_failed") {
+    throw new ApiError(followUp.deliveryError ?? "The follow-up could not be delivered.", 0);
+  }
+  return followUp;
 };
 
-export const canContinue = (harness: string): boolean => CONTINUE_ARGV[harness] !== undefined;
+export const canDeliverFollowUp = (followUp: FollowUpDto): boolean =>
+  followUp.reviewSliceId !== null &&
+  followUp.checkpointAId !== null &&
+  followUp.checkpointBId !== null &&
+  followUp.diffDigest !== null &&
+  followUp.commentIds.length > 0 &&
+  followUp.idempotencyKey !== null;
 
 export const usePendingFollowUp = (sessionId: string | undefined) =>
   useQuery({
@@ -368,11 +425,12 @@ export const useSessionActions = () => {
     mutationFn: async (input: { readonly projectId: string; readonly harness: string }) => {
       const session = await api<SessionDto>("POST", `/projects/${input.projectId}/sessions`, {
         harness: input.harness,
+        mode: "protocol",
         label: null,
         base: null,
       });
       // Fire-and-forget: the server settles the session if provisioning fails.
-      void api("POST", `/sessions/${session.id}/launch`, { argv: [input.harness] }).catch(
+      void api("POST", `/sessions/${session.id}/launch`, { mode: "protocol" }).catch(
         () => undefined,
       );
       return session;
@@ -381,32 +439,49 @@ export const useSessionActions = () => {
   });
   const resume = useMutation({
     mutationFn: (input: { readonly sessionId: string; readonly harness: string | null }) =>
-      api<SessionDto>("POST", `/sessions/${input.sessionId}/resume`, { harness: input.harness }),
+      api<SessionDto>("POST", `/sessions/${input.sessionId}/resume`, {
+        harness: input.harness,
+      }),
     onSettled: invalidate,
   });
   const stop = useMutation({
     mutationFn: (sessionId: string) => api<SessionDto>("POST", `/sessions/${sessionId}/stop`, {}),
     onSettled: invalidate,
   });
-  // `mend continue` parity: deliver the pending follow-up (reopens the
-  // session), then relaunch the harness in the same worktree with the
-  // instruction as its opening prompt.
-  const continueFollowUp = useMutation({
-    mutationFn: async (input: {
-      readonly sessionId: string;
-      readonly harness: string;
-      readonly instruction: string;
-    }) => {
-      const build = CONTINUE_ARGV[input.harness];
-      if (build === undefined) {
-        throw new ApiError(`harness "${input.harness}" has no known resume command`, 0);
+  const openShell = useMutation({
+    mutationFn: (sessionId: string) =>
+      api<SessionProcessDto>("POST", `/sessions/${sessionId}/shell`, {}),
+    onSettled: invalidate,
+  });
+  const stopShell = useMutation({
+    mutationFn: (processId: string) =>
+      api<SessionProcessDto>("POST", `/processes/${processId}/stop`, {}),
+    onSettled: invalidate,
+  });
+  const deliverFollowUp = useMutation({
+    mutationFn: async (followUp: FollowUpDto) => {
+      if (!canDeliverFollowUp(followUp)) {
+        throw new ApiError(
+          "This follow-up predates pinned Review and cannot be delivered here.",
+          0,
+        );
       }
-      await api<FollowUpDto>("POST", `/sessions/${input.sessionId}/follow-up/deliver`, {});
-      return await api<SessionDto>("POST", `/sessions/${input.sessionId}/launch`, {
-        argv: build(input.instruction),
-      });
+      const delivered = await api<FollowUpDto>(
+        "POST",
+        `/sessions/${followUp.sessionId}/follow-up/deliver`,
+        {
+          reviewSliceId: followUp.reviewSliceId,
+          checkpointAId: followUp.checkpointAId,
+          checkpointBId: followUp.checkpointBId,
+          diffDigest: followUp.diffDigest,
+          commentIds: followUp.commentIds,
+          instruction: followUp.instruction,
+          idempotencyKey: followUp.idempotencyKey,
+        },
+      );
+      return requireFollowUpDelivery(delivered);
     },
     onSettled: invalidate,
   });
-  return { start, resume, stop, continueFollowUp };
+  return { start, resume, stop, openShell, stopShell, deliverFollowUp };
 };
