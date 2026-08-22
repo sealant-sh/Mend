@@ -1,5 +1,27 @@
 # @sealant/mend
 
+## 0.6.0
+
+### Minor Changes
+
+- 3f1eea2: Onboarding: `mend pair` prints a QR (and an eight-character code) that pairs a phone with
+  this machine — the phone gets its own revocable device token, listed and revoked under Settings →
+  Devices. `mend doctor` is a read-only checklist: server, sign-in, connected accounts, adopted
+  projects, local harness CLIs, tailnet address — each failing line names the command that fixes it.
+  `mend help` now opens with the getting-started sequence. A hidden `mend qr <text>` backs the
+  installer's closing QR.
+- e63ac2f: Each Mend user is their own Sealant user. Mend now authenticates to the control plane as
+  a service principal (`SEALANT_SERVICE_KEY`; `SEALANT_OWNER_USER_ID` is gone) and provisions one
+  Sealant user per account on first use, so sessions, records and model calls are attributed to the
+  person who made them and run on that person's own connected accounts.
+  - `mend connect claude|codex|github [--from-stdin] [--remove]` sends this machine's credential
+    (the file the provider's CLI wrote at login, or a pasted one) to the platform under your own
+    user; `mend accounts` lists what is connected. The Sealant web app is no longer needed.
+  - Settings → Connected accounts does the same on web and desktop.
+  - A hot-pool skeleton is claimed only by sessions of the user it was warmed for.
+
+  Requires a control plane with service principals (`SEALANT_SERVICE_KEYS`, `POST /v1/users`).
+
 ## 0.5.0
 
 ### Minor Changes
