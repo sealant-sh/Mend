@@ -420,6 +420,7 @@ export class SessionEngine extends Context.Service<
       start: LaunchStart,
       author: string | null,
       launchCorrelationId?: string | null,
+      forceFreshWorkspace?: boolean,
     ) => Effect.Effect<
       Session,
       | SessionNotFoundError
@@ -2507,9 +2508,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         start: LaunchStart,
         author: string | null,
         launchCorrelationId: string | null = null,
+        forceFreshWorkspace = false,
       ) {
         const session = yield* sessions.byId(sessionId);
         const rows = yield* processes.listForSession(sessionId);
+        if (rows.some(isLiveAgentProcess)) {
+          return yield* new SealantPlatformError({
+            code: "session_active",
+            status: null,
+            message: "The session already has a live agent process.",
+            cause: null,
+          });
+        }
         const previous = currentAgentProcess(rows);
         const providerSessionId =
           previous?.kind === "agent-protocol"
@@ -2519,16 +2529,31 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (composed instanceof ProtocolHarnessUnsupportedError) {
           return yield* Effect.fail(composed);
         }
-        return yield* launchInternal(
+        const launchFresh = () =>
+          launchInternal(
+            sessionId,
+            composed,
+            null,
+            null,
+            launchCorrelationId,
+            start,
+            author,
+            providerSessionId ?? null,
+          );
+        const retainCurrentWorkspace =
+          !forceFreshWorkspace && (yield* retainedWorkspaceAvailable(session));
+        if (!retainCurrentWorkspace) {
+          return yield* launchFresh();
+        }
+        return yield* launchInRetainedWorkspace(
           sessionId,
           composed,
           null,
-          null,
           launchCorrelationId,
+          providerSessionId ?? null,
           start,
           author,
-          providerSessionId ?? null,
-        );
+        ).pipe(Effect.catchTag("SessionNotLiveError", launchFresh));
       });
 
       const submitTurn = (sessionId: SessionId, input: string, author: string | null) =>
@@ -2633,11 +2658,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           nativeImport: ConvertedNativeSession | null,
           launchCorrelationId: string | null = null,
           providerSessionId: string | null = null,
+          protocolStart: LaunchStart | null = null,
+          protocolAuthor: string | null = null,
         ) {
           const session = yield* sessions.byId(sessionId);
           const project = yield* projects.byId(session.projectId);
           const worktree = worktreePathOf(project.storePath, session.worktree);
-          const workspace = yield* workspaceForSupportingProcess(session);
+          const workspace = yield* workspaceForSupportingProcess(session).pipe(
+            Effect.catchTag("SealantPlatformError", () =>
+              Effect.fail(new SessionNotLiveError({ sessionId })),
+            ),
+          );
           if (nativeImport !== null) {
             yield* placeConvertedFiles(
               session,
@@ -2652,8 +2683,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const shapedArgv = interactiveShell
             ? interactiveShellArgv(session.workspaceImage, argv.slice(1))
             : argv;
+          const launchedArgv =
+            protocolStart === null
+              ? withHarnessBootstrap(session.harness, shapedArgv)
+              : withHarnessSetup(session.harness, shapedArgv);
           const pty = yield* sealant
-            .openSession(workspace, withHarnessBootstrap(session.harness, shapedArgv))
+            .openSession(
+              workspace,
+              launchedArgv,
+              protocolStart === null ? undefined : { mode: "pipe" },
+            )
             .pipe(
               Effect.tapError((error) =>
                 sessions
@@ -2684,25 +2723,95 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             SealantWorkspaceId.make(workspace.id),
           );
           yield* sessions.setSealantSessionId(sessionId, pty.id);
+          const claudeSessionFlag = shapedArgv.indexOf("--session-id");
+          const protocolProviderSessionId =
+            protocolStart !== null && session.harness === "claude" && claudeSessionFlag >= 0
+              ? (shapedArgv.at(claudeSessionFlag + 1) ?? null)
+              : null;
           const agentProcess = yield* processes.create({
             sessionId,
             sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
             sealantSessionId: pty.id,
             sealantRunId,
             launchCorrelationId,
-            kind: "agent-pty",
+            kind: protocolStart === null ? "agent-pty" : "agent-protocol",
             harness: interactiveShell ? "shell" : session.harness,
             providerSessionId: interactiveShell
               ? null
-              : (nativeImport?.providerSessionId ?? providerSessionId),
+              : (nativeImport?.providerSessionId ?? protocolProviderSessionId ?? providerSessionId),
             label: session.harness,
             argv: shapedArgv,
           });
+          if (protocolStart !== null) {
+            yield* protocolHost
+              .attach({
+                process: agentProcess,
+                pipe: pty,
+                cwd: "/workspace/repo",
+                model: protocolStart.model,
+                effort: protocolStart.effort,
+                permissionMode: protocolStart.permissionMode ?? "bypass",
+                hooks: {
+                  onRequestChanged: (changedSessionId) =>
+                    reconcileSession(changedSessionId, { sweep: false }).pipe(
+                      Effect.catchTag("SessionNotFoundError", () => Effect.void),
+                      Effect.asVoid,
+                    ),
+                  onTurnCompleted: (turn) =>
+                    Effect.gen(function* () {
+                      const currentSession = yield* sessions.byId(turn.sessionId);
+                      const run =
+                        agentProcess.sealantRunId === null
+                          ? null
+                          : yield* sessionRuns.bySealantRunId(agentProcess.sealantRunId);
+                      yield* tryCheckpoint(currentSession, "turn-boundary", {
+                        sealantRunId: agentProcess.sealantRunId,
+                        sequence: run?.lastSeenSequence ?? 0n,
+                      });
+                      yield* refreshChangeHead(currentSession).pipe(Effect.ignore);
+                    }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void)),
+                },
+              })
+              .pipe(
+                Effect.tapError((error) =>
+                  Effect.gen(function* () {
+                    yield* protocolHost.detach(agentProcess.id);
+                    yield* conversations.cancelOpenForProcess(agentProcess.id);
+                    yield* closeProcessPty(agentProcess.sealantWorkspaceId, pty.id).pipe(
+                      Effect.ignore,
+                    );
+                    const recorded = yield* endAgentProcess(agentProcess, {
+                      how: "exited",
+                      exitCode: null,
+                      outcome: "failed",
+                      summary: `protocol initialization failed: ${error.message}`,
+                    }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(false)));
+                    if (recorded) yield* finishAgentProcess(agentProcess, "turn-boundary");
+                  }).pipe(Effect.ignore),
+                ),
+              );
+          }
           yield* renewWorkspaceLease(sessionId, agentProcess.sealantWorkspaceId);
           // See launchInternal: reopen unconditionally so a retried row settles again.
           yield* sessions.reopen(sessionId, "running");
           yield* forkSupervision(sessionId, sealantRunId);
           yield* Effect.forkIn(watchProcess(agentProcess), scope);
+          if (protocolStart !== null) {
+            const openingInput = protocolStart.prompt?.trim() ?? "";
+            if (openingInput !== "") {
+              yield* protocolHost.submitTurn(sessionId, openingInput, protocolAuthor).pipe(
+                Effect.mapError(
+                  (error) =>
+                    new SealantPlatformError({
+                      code: "agent_protocol_not_live",
+                      status: null,
+                      message: `Protocol process did not accept its opening turn: ${error.processId}`,
+                      cause: error,
+                    }),
+                ),
+              );
+            }
+          }
           return yield* sessions.byId(sessionId);
         },
       );
@@ -2842,6 +2951,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             sessionId,
             { mode: "protocol", permissionMode: "bypass" },
             null,
+            null,
+            fresh,
           ).pipe(
             Effect.catchTag("ProtocolHarnessUnsupportedError", (error) =>
               Effect.fail(
