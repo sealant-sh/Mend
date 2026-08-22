@@ -61,13 +61,6 @@ const rpcId = (value: unknown): JsonRpcId | null =>
 
 const requestKey = (id: JsonRpcId): string => `${typeof id === "number" ? "n" : "s"}:${id}`;
 
-const parseProviderRequestId = (value: string): JsonRpcId | null => {
-  if (value.startsWith("s:")) return value.slice(2);
-  if (!value.startsWith("n:")) return null;
-  const parsed = Number(value.slice(2));
-  return Number.isSafeInteger(parsed) ? parsed : null;
-};
-
 const protocolError = (operation: string, message: string, cause: unknown): AgentProtocolError =>
   new AgentProtocolError({ adapter: "codex", operation, message, cause });
 
@@ -237,6 +230,7 @@ export const CodexAdapter: AgentAdapter = {
       let currentTurnId: string | null = null;
       let latestUsage: AgentTurnUsage | null = null;
       let transportFailure: AgentProtocolError | null = null;
+      const readTransportFailure = (): AgentProtocolError | null => transportFailure;
       let closed = false;
 
       const publish = (event: AgentEvent): Effect.Effect<void> =>
@@ -248,6 +242,14 @@ export const CodexAdapter: AgentAdapter = {
       const send = (value: unknown): Effect.Effect<void, AgentProtocolError> =>
         transport.send(encodeLine(value));
 
+      /**
+       * Codex answers accepted requests immediately (a turn/start response is the turn object,
+       * not the finished turn), so a quiet minute means the process is wedged, not thinking.
+       * The timeout keeps launchInternal and the dispatch permit from hanging forever on a
+       * binary that starts but never speaks.
+       */
+      const REQUEST_TIMEOUT = "60 seconds";
+
       const request = Effect.fn("CodexAdapter.request")(function* (
         method: string,
         params: JsonObject,
@@ -256,10 +258,34 @@ export const CodexAdapter: AgentAdapter = {
         const id = nextId++;
         const deferred = yield* Deferred.make<unknown, AgentProtocolError>();
         pendingRpc.set(requestKey(id), { method, deferred });
+        // Re-check after registering: a transport failure that swept pendingRpc between the
+        // first check and the set would otherwise leave this deferred waiting forever. Read
+        // through a call so control-flow narrowing does not reduce the check to `never`.
+        const sweptFailure = readTransportFailure();
+        if (sweptFailure !== null) {
+          pendingRpc.delete(requestKey(id));
+          return yield* sweptFailure;
+        }
         yield* send({ method, id, params }).pipe(
           Effect.tapError(() => Effect.sync(() => pendingRpc.delete(requestKey(id)))),
         );
-        return yield* Deferred.await(deferred);
+        return yield* Deferred.await(deferred).pipe(
+          Effect.timeoutOrElse({
+            duration: REQUEST_TIMEOUT,
+            orElse: () =>
+              Effect.sync(() => pendingRpc.delete(requestKey(id))).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    protocolError(
+                      method,
+                      `Codex did not answer ${method} within ${REQUEST_TIMEOUT}.`,
+                      null,
+                    ),
+                  ),
+                ),
+              ),
+          }),
+        );
       });
 
       const sendResponse = (
@@ -545,16 +571,17 @@ export const CodexAdapter: AgentAdapter = {
         providerRequestId: string,
         decision: AgentApprovalDecision,
       ) {
+        // Only requests this adapter instance is holding open can be answered. Reconstructing a
+        // JSON-RPC id from the opaque string would risk answering an id twice after close().
         const pending = pendingServer.get(providerRequestId);
-        const id = pending?.id ?? parseProviderRequestId(providerRequestId);
-        if (id === null || id === undefined || pending?.kind === "input") {
+        if (pending === undefined || pending.kind !== "approval") {
           return yield* protocolError(
             "respond",
             `Unknown Codex approval request ${providerRequestId}.`,
             null,
           );
         }
-        yield* sendResponse(id, { decision: approvalDecision(decision) });
+        yield* sendResponse(pending.id, { decision: approvalDecision(decision) });
         pendingServer.delete(providerRequestId);
       });
 
@@ -563,15 +590,14 @@ export const CodexAdapter: AgentAdapter = {
         answers: AgentInputAnswers,
       ) {
         const pending = pendingServer.get(providerRequestId);
-        const id = pending?.id ?? parseProviderRequestId(providerRequestId);
-        if (id === null || id === undefined || pending?.kind === "approval") {
+        if (pending === undefined || pending.kind !== "input") {
           return yield* protocolError(
             "respondInput",
             `Unknown Codex user-input request ${providerRequestId}.`,
             null,
           );
         }
-        yield* sendResponse(id, { answers: codexInputAnswers(answers) });
+        yield* sendResponse(pending.id, { answers: codexInputAnswers(answers) });
         pendingServer.delete(providerRequestId);
       });
 

@@ -1037,7 +1037,7 @@ const agentConversation = Effect.gen(function* () {
       created_at timestamptz NOT NULL DEFAULT now(),
       started_at timestamptz,
       ended_at timestamptz,
-      UNIQUE (session_id, ordinal)
+      CONSTRAINT agent_turns_session_ordinal_key UNIQUE (session_id, ordinal)
     )`;
   yield* sql`
     CREATE UNIQUE INDEX IF NOT EXISTS agent_turns_session_provider_key
@@ -1074,8 +1074,8 @@ const agentConversation = Effect.gen(function* () {
       data jsonb,
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now(),
-      UNIQUE (session_id, seq),
-      UNIQUE (session_id, provider_item_id)
+      CONSTRAINT agent_items_session_seq_key UNIQUE (session_id, seq),
+      CONSTRAINT agent_items_process_provider_key UNIQUE (process_id, provider_item_id)
     )`;
   yield* sql`
     CREATE INDEX IF NOT EXISTS agent_items_session_seq_idx
@@ -1102,7 +1102,7 @@ const agentConversation = Effect.gen(function* () {
       response_delivery text NOT NULL DEFAULT 'none',
       created_at timestamptz NOT NULL DEFAULT now(),
       decided_at timestamptz,
-      UNIQUE (process_id, provider_request_id)
+      CONSTRAINT agent_requests_process_provider_key UNIQUE (process_id, provider_request_id)
     )`;
   yield* sql`
     CREATE INDEX IF NOT EXISTS agent_requests_session_status_idx

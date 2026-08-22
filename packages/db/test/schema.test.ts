@@ -171,7 +171,7 @@ describe("Mend Drizzle schema", () => {
     ).toEqual(["agent_turns", "agent_items", "agent_requests"]);
     const itemConfig = getTableConfig(agentItems);
     expect(itemConfig.uniqueConstraints.map((constraint) => constraint.name).toSorted()).toEqual([
-      "agent_items_session_provider_key",
+      "agent_items_process_provider_key",
       "agent_items_session_seq_key",
     ]);
     expect(itemConfig.indexes.map((index) => index.config.name)).toEqual([

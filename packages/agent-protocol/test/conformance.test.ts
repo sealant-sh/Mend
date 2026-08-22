@@ -17,7 +17,7 @@ const hasClaude = binaryExists("claude");
 
 describe.skipIf(!hasCodex)("codex app-server conformance", () => {
   it("accepts initialization and ask-mode thread settings", async () => {
-    const child = spawn("codex", ["app-server", "--stdio"], {
+    const child = spawn("codex", ["app-server"], {
       stdio: ["pipe", "pipe", "pipe"],
     });
     const threadResponse = new Promise<Readonly<Record<string, unknown>>>((resolve, reject) => {

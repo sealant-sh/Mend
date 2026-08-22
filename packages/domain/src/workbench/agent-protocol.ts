@@ -77,7 +77,10 @@ export class AgentItem extends Schema.Class<AgentItem>("AgentItem")({
   sessionId: SessionId,
   processId: SessionProcessId,
   turnId: AgentTurnId,
-  /** Session-ordered resume cursor. */
+  /**
+   * Session-wide change-feed cursor: bumps on every applied update so `listItems(after)`
+   * re-delivers changed items. NOT conversation order — render by `createdAt` or turn ordinal.
+   */
   seq: Schema.Int,
   /** Harness item id, unique within the process and used for replay upserts. */
   providerItemId: Schema.String,

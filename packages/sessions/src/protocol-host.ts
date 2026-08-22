@@ -134,17 +134,24 @@ export const ProtocolHostLive: Layer.Layer<
     const dispatchNext = (entry: HostedProcess): Effect.Effect<void> =>
       entry.dispatchPermit.withPermit(
         Effect.gen(function* () {
-          const turn = yield* conversations.claimNextTurn(entry.process.id);
-          if (turn === null) return;
-          const sent = yield* entry.adapter.sendTurn(turn.input).pipe(Effect.result);
-          if (sent._tag === "Failure") {
-            yield* conversations.failTurn(turn.id, String(sent.failure)).pipe(Effect.orDie);
-            const failed = yield* conversations.byTurnId(turn.id);
-            if (failed === null) return yield* Effect.die(`Turn ${turn.id} disappeared`);
-            yield* entry.hooks.onTurnCompleted(failed);
+          // Drain until one turn is accepted or the queue is empty. A rejected turn (bad model,
+          // transient send failure) must not strand the turns queued behind it: nothing else
+          // re-enters dispatch until the NEXT accepted turn completes.
+          for (;;) {
+            const turn = yield* conversations.claimNextTurn(entry.process.id);
+            if (turn === null) return;
+            const sent = yield* entry.adapter.sendTurn(turn.input).pipe(Effect.result);
+            if (sent._tag === "Failure") {
+              yield* conversations.failTurn(turn.id, String(sent.failure)).pipe(Effect.orDie);
+              const failed = yield* conversations.byTurnId(turn.id);
+              if (failed === null) return yield* Effect.die(`Turn ${turn.id} disappeared`);
+              yield* entry.hooks.onTurnCompleted(failed);
+              if (!hosted.has(entry.process.id)) return;
+              continue;
+            }
+            yield* conversations.setProviderTurnId(turn.id, sent.success).pipe(Effect.orDie);
             return;
           }
-          yield* conversations.setProviderTurnId(turn.id, sent.success).pipe(Effect.orDie);
         }),
       );
 
@@ -206,7 +213,9 @@ export const ProtocolHostLive: Layer.Layer<
           return;
         case "request.opened": {
           const turn = yield* lookupTurn(entry.process.sessionId, event.request.providerTurnId);
-          if (turn === null) return;
+          // A request that races turn completion must not re-open after cancelOpenForTurn ran;
+          // the adapter's own close/cancel path answers the held response.
+          if (turn === null || turn.status !== "running") return;
           yield* conversations.openRequest({
             ...event.request,
             sessionId: entry.process.sessionId,
@@ -227,6 +236,9 @@ export const ProtocolHostLive: Layer.Layer<
           return;
         case "runtime.error":
           hosted.delete(entry.process.id);
+          // Close the adapter first: it answers held provider requests and stops the output
+          // fiber, so no request.opened can land after the cancel sweep below.
+          yield* entry.adapter.close().pipe(Effect.ignore);
           yield* conversations.cancelOpenForProcess(entry.process.id);
           yield* entry.hooks.onRequestChanged(entry.process.sessionId);
           yield* Effect.tryPromise({
@@ -240,20 +252,24 @@ export const ProtocolHostLive: Layer.Layer<
     });
 
     const attach = Effect.fn("ProtocolHost.attach")(function* (input: AttachProtocolProcessInput) {
-      const cursor = yield* conversations.protocolCursor(input.process.id);
       const abort = new AbortController();
-      // Advance only after the adapter durably projects a newline-complete provider frame.
-      let pendingNextSequence = cursor.nextSequence;
-      let currentOutputSequence = cursor.nextSequence;
+      // Always replay from 0: delta text accumulates in the adapter's in-memory items, so a
+      // partial replay would rebuild an item from its tail alone. Replaying everything is
+      // idempotent — upsertItem skips positions at or below what a row already carries — and
+      // rebuilds the accumulation state exactly. (Today attach only ever runs at process
+      // creation; boot ends live protocol rows rather than re-attaching.)
+      let currentOutputSequence = 0n;
       let currentEventIndex = 0;
       const output = Stream.fromAsyncIterable(
-        input.pipe.output({ from: cursor.nextSequence, signal: abort.signal }),
+        input.pipe.output({ from: 0n, signal: abort.signal }),
         (cause) => toPlatformError("output", cause),
       ).pipe(
+        // One pipe chunk per stream chunk (fromAsyncIterable emits element-wise); the rechunk
+        // pins that so the position mutation stays aligned with the element being handled.
+        Stream.rechunk(1),
         Stream.map((chunk) => {
           currentOutputSequence = chunk.sequence;
           currentEventIndex = 0;
-          pendingNextSequence = chunk.sequence + 1n;
           return chunk.data;
         }),
       );
@@ -280,25 +296,10 @@ export const ProtocolHostLive: Layer.Layer<
               }),
           ),
         ),
-        acknowledgeOutput: () =>
-          conversations
-            .saveProtocolCursor(input.process.id, {
-              nextSequence: pendingNextSequence,
-            })
-            .pipe(
-              Effect.mapError(
-                (cause) =>
-                  new AgentProtocolError({
-                    adapter: input.process.harness === "claude" ? "claude" : "codex",
-                    operation: "transport.acknowledgeOutput",
-                    message: String(cause),
-                    cause,
-                  }),
-              ),
-            ),
         close: () => Effect.sync(() => abort.abort()),
       };
       let activeEntry: HostedProcess | null = null;
+      let flushed = false;
       const pendingEvents: Array<{
         readonly event: AgentEvent;
         readonly position: ProviderEventPosition;
@@ -309,7 +310,9 @@ export const ProtocolHostLive: Layer.Layer<
           eventIndex: currentEventIndex,
         } satisfies ProviderEventPosition;
         currentEventIndex += 1;
-        if (activeEntry === null) {
+        // Buffer until the flush below drains the queue: an event landing between
+        // `activeEntry = entry` and the drain must not jump ahead of buffered ones.
+        if (activeEntry === null || !flushed) {
           return Effect.sync(() => pendingEvents.push({ event, position })).pipe(Effect.asVoid);
         }
         return projectEvent(activeEntry, event, position);
@@ -337,11 +340,16 @@ export const ProtocolHostLive: Layer.Layer<
       };
       activeEntry = entry;
       hosted.set(input.process.id, entry);
-      yield* Effect.forEach(
-        pendingEvents,
-        ({ event, position }) => projectEvent(entry, event, position),
-        { discard: true },
-      );
+      while (pendingEvents.length > 0) {
+        const buffered = pendingEvents.splice(0);
+        yield* Effect.forEach(
+          buffered,
+          ({ event, position }) => projectEvent(entry, event, position),
+          { discard: true },
+        );
+      }
+      // Synchronous with the emptiness check above: nothing can enqueue between it and this.
+      flushed = true;
       yield* dispatchNext(entry);
     });
 
@@ -376,6 +384,16 @@ export const ProtocolHostLive: Layer.Layer<
     const interruptTurn = Effect.fn("ProtocolHost.interruptTurn")(function* (turnId: AgentTurnId) {
       const turn = yield* conversations.byTurnId(turnId);
       if (turn === null) return yield* new ProtocolHostNotLiveError({ processId: turnId });
+      // A queued turn never reached the harness: cancel the row and leave the running turn
+      // alone. The adapters can only interrupt their current turn, so reaching them for a
+      // queued or already-ended turn would stop the wrong work.
+      if (turn.status === "queued") {
+        yield* conversations.cancelOpenForTurn(turn.id);
+        const entry = hosted.get(turn.processId);
+        if (entry !== undefined) yield* entry.hooks.onRequestChanged(turn.sessionId);
+        return;
+      }
+      if (turn.status !== "running") return;
       const entry = hosted.get(turn.processId);
       if (entry === undefined) {
         return yield* new ProtocolHostNotLiveError({ processId: turn.processId });
@@ -403,7 +421,19 @@ export const ProtocolHostLive: Layer.Layer<
           : entry.adapter.respondInput(request.providerRequestId, response.answers);
       yield* sendResponse.pipe(
         Effect.mapError(() => new ProtocolHostNotLiveError({ processId: request.processId })),
-        Effect.tapError(() => conversations.failRequestResponse(request.id)),
+        Effect.tapError(() =>
+          Effect.gen(function* () {
+            yield* conversations.failRequestResponse(request.id);
+            // The turn may have completed while the send was in flight; its cancel sweep
+            // skipped this row (delivery read `sending`). Sweep again now that it reads
+            // `failed`, or the pending row pins the session at `waiting` forever.
+            const turn = yield* conversations.byTurnId(request.turnId);
+            if (turn !== null && turn.status !== "running" && turn.status !== "queued") {
+              yield* conversations.cancelOpenForTurn(request.turnId);
+            }
+            yield* entry.hooks.onRequestChanged(request.sessionId);
+          }),
+        ),
       );
       const resolved = yield* conversations.completeRequestResponse(request.id);
       yield* entry.hooks.onRequestChanged(request.sessionId);

@@ -313,3 +313,72 @@ describe("ClaudeAdapter", () => {
     ),
   );
 });
+
+describe("regression: reviewer findings", () => {
+  it.effect("claude keeps items distinct across assistant messages in one turn", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* makeTransport(() => {});
+        const latest = new Map<string, { text: string | null; kind: string }>();
+        const session = yield* ClaudeAdapter.start(fake.transport, {
+          cwd: "/workspace/repo",
+          permissionMode: "bypass",
+          providerSessionId: "11111111-2222-4333-8444-555566667777",
+          onEvent: (event) =>
+            Effect.sync(() => {
+              if (event._tag === "item.updated") {
+                latest.set(event.item.providerItemId, {
+                  text: event.item.text,
+                  kind: event.item.kind,
+                });
+              }
+            }),
+        });
+        const turnId = yield* session.sendTurn("two steps");
+        const push = (event: unknown) =>
+          fake.push({
+            type: "stream_event",
+            session_id: "11111111-2222-4333-8444-555566667777",
+            event,
+          });
+        // Assistant message #1: text block at index 0.
+        push({ type: "message_start" });
+        push({ type: "content_block_start", index: 0, content_block: { type: "text" } });
+        push({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "one" } });
+        push({ type: "content_block_stop", index: 0 });
+        // Assistant message #2 reuses index 0. Its item must not overwrite message #1's.
+        push({ type: "message_start" });
+        push({ type: "content_block_start", index: 0, content_block: { type: "text" } });
+        push({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "two" } });
+        // Await the projection of the second message's delta before asserting.
+        yield* session.events.pipe(
+          Stream.filter((event) => event._tag === "item.updated" && event.item.text === "two"),
+          Stream.runHead,
+        );
+        const texts = [...latest.entries()]
+          .filter(([, item]) => item.kind === "assistant-message")
+          .map(([id, item]) => ({ id, text: item.text }));
+        expect(texts).toHaveLength(2);
+        expect(texts.map((item) => item.text).sort()).toEqual(["one", "two"]);
+        expect(new Set(texts.map((item) => item.id)).size).toBe(2);
+        expect(texts.every((item) => item.id.startsWith(`${turnId}:m`))).toBe(true);
+      }),
+    ),
+  );
+
+  it.effect("codex refuses to answer a request it is not holding", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* codexTransport;
+        const session = yield* CodexAdapter.start(fake.transport, {
+          cwd: "/workspace/repo",
+          permissionMode: "ask",
+        });
+        const error = yield* session.respond("n:99", "accept").pipe(Effect.flip);
+        expect(error).toBeInstanceOf(AgentProtocolError);
+        // No stray JSON-RPC response left for an id nothing is waiting on.
+        expect(fake.sent.some((message) => message["id"] === 99)).toBe(false);
+      }),
+    ),
+  );
+});

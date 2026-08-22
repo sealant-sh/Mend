@@ -152,7 +152,7 @@ describe.skipIf(!reachable)("0035 process kinds and 0036 agent conversation", ()
           VALUES
             ('item-1', 'sess-codex', 'p-codex-1', 'turn-1', 1, 'provider-item-1',
              'p-codex-1', 5, 0, 'assistant-message', 'in-progress', 'first')
-          ON CONFLICT (session_id, provider_item_id) DO UPDATE
+          ON CONFLICT (process_id, provider_item_id) DO UPDATE
           SET status = EXCLUDED.status, text = EXCLUDED.text, updated_at = now()`;
         yield* sql`
           INSERT INTO agent_items
@@ -161,7 +161,7 @@ describe.skipIf(!reachable)("0035 process kinds and 0036 agent conversation", ()
           VALUES
             ('item-replay', 'sess-codex', 'p-codex-1', 'turn-1', 99, 'provider-item-1',
              'p-codex-1', 5, 0, 'assistant-message', 'completed', 'final')
-          ON CONFLICT (session_id, provider_item_id) DO UPDATE
+          ON CONFLICT (process_id, provider_item_id) DO UPDATE
           SET status = EXCLUDED.status, text = EXCLUDED.text, updated_at = now()`;
         return yield* sql<{
           readonly id: string;

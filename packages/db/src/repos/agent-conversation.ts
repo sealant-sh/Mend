@@ -78,7 +78,9 @@ export type ResolveAgentRequestInput =
 
 /**
  * Durable structured conversation state. Provider identities are database keys so replay updates
- * existing rows, and item sequence allocation occurs only on first insert under a session lock.
+ * existing rows. `seq` is a session-wide change-feed cursor, not conversation order: every applied
+ * update moves the item to the tail so `listItems(after)` re-delivers changed items; render order
+ * is `createdAt` (or turn ordinal). Allocation happens under a per-session advisory lock.
  */
 export class AgentConversationRepo extends Context.Service<
   AgentConversationRepo,
@@ -446,7 +448,7 @@ export const AgentConversationRepoLive: Layer.Layer<
               .from(agentItems)
               .where(
                 and(
-                  eq(agentItems.sessionId, input.sessionId),
+                  eq(agentItems.processId, input.processId),
                   eq(agentItems.providerItemId, input.providerItemId),
                 ),
               )

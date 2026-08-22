@@ -681,7 +681,9 @@ export const agentItems = pgTable(
   },
   (table) => [
     unique("agent_items_session_seq_key").on(table.sessionId, table.seq),
-    unique("agent_items_session_provider_key").on(table.sessionId, table.providerItemId),
+    // Per process, not per session: a fresh process (thread/resume falling back to thread/start)
+    // may reuse provider item ids and must not overwrite the previous process's items.
+    unique("agent_items_process_provider_key").on(table.processId, table.providerItemId),
     index("agent_items_session_seq_idx").on(table.sessionId, table.seq),
     index("agent_items_turn_seq_idx").on(table.turnId, table.seq),
   ],

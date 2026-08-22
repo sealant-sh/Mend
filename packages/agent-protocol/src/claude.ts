@@ -153,6 +153,13 @@ export const ClaudeAdapter: AgentAdapter = {
       const items = new Map<string, AgentEventItem>();
       const sessionId = options.providerSessionId ?? crypto.randomUUID();
       let currentTurnId: string | null = null;
+      // Anthropic streaming resets content-block indexes to 0 on every message_start, and one
+      // turn holds many assistant messages (each tool round trip starts a new one). Item
+      // identity therefore needs the message ordinal, and deltas need the id minted at
+      // content_block_start (tool_use blocks carry a real id; text blocks get the fallback).
+      let messageOrdinal = 0;
+      const blockIds = new Map<number, string>();
+      let announcedSessionId: string | null = null;
       let closed = false;
 
       const publish = (event: AgentEvent): Effect.Effect<void> =>
@@ -176,7 +183,10 @@ export const ClaudeAdapter: AgentAdapter = {
           (block, index) => {
             if (!isObject(block)) return Effect.void;
             const type = stringField(block, "type");
-            const id = stringField(block, "id") ?? `${currentTurnId}:block:${index}`;
+            const id =
+              stringField(block, "id") ??
+              blockIds.get(index) ??
+              `${currentTurnId}:m${messageOrdinal}:block:${index}`;
             const kind: AgentItemKind =
               type === "text"
                 ? "assistant-message"
@@ -204,13 +214,19 @@ export const ClaudeAdapter: AgentAdapter = {
         const event = objectField(message, "event");
         if (event === null) return Effect.void;
         const eventType = stringField(event, "type");
+        if (eventType === "message_start") {
+          messageOrdinal += 1;
+          blockIds.clear();
+          return Effect.void;
+        }
         const index = integerField(event, "index") ?? 0;
-        const fallbackId = `${currentTurnId}:block:${index}`;
+        const fallbackId = `${currentTurnId}:m${messageOrdinal}:block:${index}`;
         if (eventType === "content_block_start") {
           const block = objectField(event, "content_block");
           if (block === null) return Effect.void;
           const type = stringField(block, "type");
           const providerItemId = stringField(block, "id") ?? fallbackId;
+          blockIds.set(index, providerItemId);
           const kind: AgentItemKind =
             type === "text"
               ? "assistant-message"
@@ -234,9 +250,10 @@ export const ClaudeAdapter: AgentAdapter = {
           const delta =
             stringField(deltaObject, "text") ?? stringField(deltaObject, "thinking") ?? "";
           if (delta === "") return Effect.void;
-          const previous = items.get(fallbackId);
+          const blockId = blockIds.get(index) ?? fallbackId;
+          const previous = items.get(blockId);
           const item: AgentEventItem = previous ?? {
-            providerItemId: fallbackId,
+            providerItemId: blockId,
             providerTurnId: currentTurnId,
             kind:
               stringField(deltaObject, "type") === "thinking_delta"
@@ -256,7 +273,7 @@ export const ClaudeAdapter: AgentAdapter = {
           }).pipe(Effect.andThen(updateItem(next)));
         }
         if (eventType === "content_block_stop") {
-          const previous = items.get(fallbackId);
+          const previous = items.get(blockIds.get(index) ?? fallbackId);
           return previous === undefined
             ? Effect.void
             : updateItem({ ...previous, status: "completed" });
@@ -332,9 +349,12 @@ export const ClaudeAdapter: AgentAdapter = {
         const type = stringField(value, "type");
         const providerSessionId = stringField(value, "session_id");
         const ready =
-          providerSessionId === null
+          providerSessionId === null || providerSessionId === announcedSessionId
             ? Effect.void
-            : publish({ _tag: "session.ready", providerSessionId });
+            : Effect.suspend(() => {
+                announcedSessionId = providerSessionId;
+                return publish({ _tag: "session.ready", providerSessionId });
+              });
         switch (type) {
           case "system":
             return ready.pipe(
@@ -400,6 +420,7 @@ export const ClaudeAdapter: AgentAdapter = {
         Effect.forkScoped,
       );
 
+      announcedSessionId = sessionId;
       yield* publish({ _tag: "session.ready", providerSessionId: sessionId });
 
       const sendTurn = Effect.fn("ClaudeAdapter.sendTurn")(function* (input: string) {
@@ -412,6 +433,8 @@ export const ClaudeAdapter: AgentAdapter = {
         }
         const providerTurnId = crypto.randomUUID();
         currentTurnId = providerTurnId;
+        messageOrdinal = 0;
+        blockIds.clear();
         const message: ClaudeUserMessage = {
           type: "user",
           session_id: sessionId,
