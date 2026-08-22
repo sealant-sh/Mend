@@ -1332,3 +1332,31 @@ export const continueArgv = (harness: string, instruction: string): ReadonlyArra
       : harness === "opencode"
         ? ["opencode", "run", instruction]
         : null;
+
+/**
+ * Paired devices. A device holds a bearer token of its own, minted when it
+ * claims a pairing code; revoking the device is what ends its access.
+ */
+export interface DeviceDto {
+  readonly id: string;
+  readonly name: string;
+  readonly platform: string;
+  readonly createdAt: string;
+  readonly lastUsedAt: string | null;
+}
+
+/** A minted code and the base URLs this machine answers on, tailnet first. */
+export interface PairingDto {
+  readonly code: string;
+  readonly expiresAt: string;
+  readonly urls: ReadonlyArray<string>;
+}
+
+export const listDevices = () => request<ReadonlyArray<DeviceDto>>("/api/me/devices");
+
+/** Mints a code the claiming device trades for a token. Single use, 10 minutes. */
+export const createPairing = () =>
+  request<PairingDto>("/api/me/devices/pairings", { method: "POST" });
+
+export const revokeDevice = (id: string) =>
+  del<DeviceDto>(`/api/me/devices/${encodeURIComponent(id)}`);

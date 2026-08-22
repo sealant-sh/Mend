@@ -27,6 +27,27 @@ Mend is open-source, self-hosted, and built on the public
 See [`MEND-AGENT-WORKBENCH-PLAN.md`](MEND-AGENT-WORKBENCH-PLAN.md) for the canonical product
 direction, including the milestone plan and the decision log.
 
+## Install
+
+One command sets up the whole thing on a Linux machine with Docker (macOS is untested — the
+installer stops on Darwin unless `MEND_ALLOW_MACOS=1` is set): the Sealant control plane (without
+its web app — Mend is the login), the Mend server as a user service, and the `mend` CLI. Nothing
+needs sudo. Postgres and the control plane bind to loopback; the Mend server binds every interface
+so a phone on your tailnet or LAN can reach it — keep the machine behind one.
+
+```sh
+curl -fsSL https://mend.sealant.dev/install.sh | sh
+```
+
+Then open `http://localhost:3105`, create the first account, `mend login`, `mend connect claude` (or
+`codex`, `github`), and run `mend claude` / `mend codex` inside a repository. `mend pair` hands a
+phone the same server — the native app in `apps/mobile` is unpublished, so build it yourself or open
+the URL in the phone's browser. Sign-up stays open after the first account: anyone who can reach the
+port can create one, so keep the machine on a network you control. Re-running the script repairs
+rather than reinstalls, leaving the volumes alone; `MEND_VERSION=latest SEALANT_VERSION=latest`
+upgrades. The knobs (ports, directories, dry run) are listed in the header of
+[`install.sh`](install.sh).
+
 ## Status
 
 **In development — marketing refreshed 2026-08-01.** Mend pivoted from an issue-to-PR queue product

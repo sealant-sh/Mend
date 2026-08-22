@@ -71,10 +71,28 @@ SEALANT_BASE_URL=http://localhost:4000
 
 ## Production-shaped run
 
-`docker compose up` (see `compose.yaml`): the Mend image + Postgres, pointed at your Sealant via
-`SEALANT_BASE_URL` / `SEALANT_SERVICE_KEY`. Container listens on 3000; host port via `MEND_PORT`.
-Note: a loopback-bound Sealant (`SEALANT_BIND_HOST=127.0.0.1`, the installer default) is not
-reachable through `host.docker.internal` — bind it wider or share a network.
+The supported production shape is what [`install.sh`](install.sh) builds — run it with
+`MEND_DRY_RUN=1` to see every command without changing the machine:
+
+- Sealant from `compose.selfhost.yaml` in `~/.config/sealant`, started with `--scale web=0`; its
+  `.env` carries `SEALANT_SERVICE_KEYS` (Mend's key is the first entry), `SEALANT_CREDENTIALS_KEY`
+  and `SEALANT_MOUNT_ALLOWED_STORE_ROOTS` (which must include Mend's store root).
+- The Mend server on the host, not in a container: it owns the store path that Sealant bind-mounts
+  into workspaces. A shallow clone at `~/.local/share/mend/src` (the `cli-v*` tag), built with
+  `pnpm --filter @mend/web build`, run by `node apps/web/src/entry/main.ts` as a user service
+  (`systemctl --user status mend` / `journalctl --user -u mend -f` on Linux; `dev.sealant.mend`
+  under launchd on macOS). Config in `~/.config/mend/server.env` (0600): `DATABASE_URL`,
+  `SEALANT_BASE_URL`, `SEALANT_SERVICE_KEY`, `BETTER_AUTH_SECRET`, `PORT` (3105), `APP_URL`,
+  `MEND_STORE_ROOT`, `MEND_VERSION`, `NODE_ENV`, `PATH`.
+- Mend's Postgres from `~/.config/mend/compose.yaml` (project `mend`, host port 5436 on loopback —
+  5432–5434 are taken on dev machines).
+- The CLI under a private npm prefix (`~/.local/share/mend/npm`), linked to `~/.local/bin/mend`.
+
+`compose.yaml` at the repo root is the containerised alternative (the Mend image + Postgres, pointed
+at your Sealant via `SEALANT_BASE_URL` / `SEALANT_SERVICE_KEY`; container listens on 3000, host port
+via `MEND_PORT`). Two caveats: a loopback-bound Sealant is not reachable through
+`host.docker.internal` (bind it wider or share a network), and the store lives inside the container,
+so Sealant mounts need the same host path on both sides.
 
 ## Conventions & gotchas
 

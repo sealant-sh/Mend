@@ -433,6 +433,44 @@ export const pushDevices = pgTable("push_devices", {
   lastSeenAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * A paired device's long-lived bearer token. Only the sha256 hex of the token is
+ * kept; the token itself is shown to the claimer once and never again. Revoking
+ * stamps `revoked_at` — the row stays as the record that the device existed.
+ * `user` is better-auth's table, so the reference lives in the migration only.
+ */
+export const deviceTokens = pgTable(
+  "device_tokens",
+  {
+    id: text().primaryKey(),
+    userId: text().notNull(),
+    name: text().notNull(),
+    platform: text().notNull(),
+    tokenHash: text().notNull().unique(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    lastUsedAt: timestamp({ mode: "date", withTimezone: true }),
+    revokedAt: timestamp({ mode: "date", withTimezone: true }),
+  },
+  (table) => [index("device_tokens_user_created_idx").on(table.userId, table.createdAt)],
+);
+
+/**
+ * One short-lived pairing code, single use: claiming stamps `claimed_at` and
+ * mints a device token for the code's owner.
+ */
+export const pairingCodes = pgTable(
+  "pairing_codes",
+  {
+    id: text().primaryKey(),
+    userId: text().notNull(),
+    code: text().notNull().unique(),
+    expiresAt: timestamp({ mode: "date", withTimezone: true }).notNull(),
+    claimedAt: timestamp({ mode: "date", withTimezone: true }),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("pairing_codes_user_created_idx").on(table.userId, table.createdAt)],
+);
+
 export const contextSnapshots = pgTable("context_snapshots", {
   id: text().$type<ContextSnapshotId>().primaryKey(),
   packName: text(),
@@ -1026,6 +1064,8 @@ export type ProjectReferenceRow = typeof projectReferences.$inferSelect;
 export type SettingsRow = typeof settings.$inferSelect;
 export type InferenceCallRow = typeof inferenceCalls.$inferSelect;
 export type PushDeviceRow = typeof pushDevices.$inferSelect;
+export type DeviceTokenRow = typeof deviceTokens.$inferSelect;
+export type PairingCodeRow = typeof pairingCodes.$inferSelect;
 export type ContextSnapshotRow = typeof contextSnapshots.$inferSelect;
 export type AgentSessionRow = typeof agentSessions.$inferSelect;
 export type SessionRunRow = typeof sessionRuns.$inferSelect;

@@ -3,6 +3,7 @@ import { useQuery, useSuspenseQueries, useSuspenseQuery } from "@tanstack/react-
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useState } from "react";
 
+import { FirstRun, PairHint } from "#/components/first-run";
 import { SessionComposer } from "#/components/session-composer";
 import { AppShell } from "#/components/shell";
 import { SessionStatusDot } from "#/components/status";
@@ -226,26 +227,24 @@ function HomePage() {
           </Section>
         )}
 
-        <section className="mt-10">
-          <div className="flex items-center justify-between">
-            <p className="text-xs font-medium text-label">Projects</p>
-            <Link
-              to="/projects"
-              className="font-sans text-xs font-medium text-muted-foreground no-underline transition-colors hover:text-foreground"
-            >
-              Adopt a repository
-            </Link>
-          </div>
-          <div className="mt-3 flex flex-col gap-4">
-            {projects.length === 0 ? (
-              <div className="rounded-2xl bg-card p-6 shadow-sm">
-                <p className="text-sm text-muted-foreground">
-                  No projects yet. Adopt one here or run{" "}
-                  <span className="font-mono text-xs">mend adopt</span> in a repository.
-                </p>
+        {projects.length === 0 ? (
+          <FirstRun />
+        ) : (
+          <section className="mt-10">
+            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+              <p className="text-xs font-medium text-label">Projects</p>
+              <div className="flex items-center gap-4">
+                <PairHint />
+                <Link
+                  to="/projects"
+                  className="font-sans text-xs font-medium text-muted-foreground no-underline transition-colors hover:text-foreground"
+                >
+                  Adopt a repository
+                </Link>
               </div>
-            ) : (
-              projects.map((project, index) => {
+            </div>
+            <div className="mt-3 flex flex-col gap-4">
+              {projects.map((project, index) => {
                 const detail = details[index]?.data;
                 const sessions = detail?.sessions ?? [];
                 const recent = sessions.filter(({ status }) => !ACTIVE.has(status)).slice(0, 4);
@@ -330,10 +329,10 @@ function HomePage() {
                     )}
                   </div>
                 );
-              })
-            )}
-          </div>
-        </section>
+              })}
+            </div>
+          </section>
+        )}
       </div>
       {menuElement}
     </AppShell>

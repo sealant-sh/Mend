@@ -24,6 +24,7 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
+      "permissions": ["android.permission.CAMERA"],
       "predictiveBackGestureEnabled": false,
       "usesCleartextTraffic": true
     },
@@ -44,7 +45,15 @@
           }
         }
       ],
-      "expo-notifications"
+      "expo-notifications",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Mend reads the pairing code your machine shows, so this phone can talk to it.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

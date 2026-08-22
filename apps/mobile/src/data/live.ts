@@ -1,10 +1,12 @@
 /**
  * The live workbench API, adapted into the shapes the screens already render
  * (mock.ts defined the visual contract; this feeds it real sessions). Config
- * is a server URL + bearer token stored on device — same token the CLI uses.
+ * is a server URL + a token stored on device — minted by pairing, or the
+ * CLI bearer token typed in by hand.
  */
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSyncExternalStore } from "react";
 
 import type { StatusTone } from "@/components/status";
 
@@ -13,9 +15,16 @@ import type { StatusTone } from "@/components/status";
 export interface MendConfig {
   readonly url: string;
   readonly token: string;
+  /** The name the machine recorded for this device when it paired. */
+  readonly deviceName: string | null;
+  /** ISO timestamp of the pairing claim; null for a hand-typed token. */
+  readonly pairedAt: string | null;
 }
 
-let cached: MendConfig | null = null;
+const EMPTY: MendConfig = { url: "", token: "", deviceName: null, pairedAt: null };
+
+const readString = (value: unknown): string | null =>
+  typeof value === "string" && value !== "" ? value : null;
 
 const parseConfig = (raw: string): MendConfig | null => {
   try {
@@ -30,25 +39,70 @@ const parseConfig = (raw: string): MendConfig | null => {
     ) {
       return null;
     }
-    return { url: value.url, token: value.token };
+    return {
+      url: value.url,
+      token: value.token,
+      deviceName: "deviceName" in value ? readString(value.deviceName) : null,
+      pairedAt: "pairedAt" in value ? readString(value.pairedAt) : null,
+    };
   } catch {
     return null;
   }
 };
 
+// One store, read two ways: `loadConfig()` for the fetch path (awaits the
+// first read off disk) and `useConfig()` for screens (re-renders on save,
+// no effect). Hydrated once at import, same pattern as preferences.ts.
+//
+// null is a third state, not a missing value: "AsyncStorage has not answered
+// yet". Screens that render "not paired" have to wait for it, or a phone that
+// is paired flashes the pairing panel on every cold start.
+let current: MendConfig | null = null;
+const configListeners = new Set<() => void>();
+const notifyConfig = (): void => {
+  for (const listener of configListeners) listener();
+};
+
+const settle = (config: MendConfig): void => {
+  current = config;
+  notifyConfig();
+};
+
+const hydrated: Promise<void> = AsyncStorage.getItem("mend-config")
+  .then((raw) => {
+    settle((raw === null ? null : parseConfig(raw)) ?? EMPTY);
+    return undefined;
+  })
+  .catch(() => settle(EMPTY));
+
 export const loadConfig = async (): Promise<MendConfig> => {
-  if (cached !== null) {
-    return cached;
-  }
-  const raw = await AsyncStorage.getItem("mend-config");
-  cached = raw === null ? { url: "", token: "" } : (parseConfig(raw) ?? { url: "", token: "" });
-  return cached;
+  await hydrated;
+  return current ?? EMPTY;
 };
 
 export const saveConfig = async (config: MendConfig): Promise<void> => {
-  cached = config;
+  current = config;
+  notifyConfig();
   await AsyncStorage.setItem("mend-config", JSON.stringify(config));
 };
+
+/** Forget the machine on this device. The machine keeps its own record. */
+export const clearConfig = async (): Promise<void> => {
+  current = EMPTY;
+  notifyConfig();
+  await AsyncStorage.removeItem("mend-config");
+};
+
+/** null until the stored config has been read — see the note on `current`. */
+export const useConfig = (): MendConfig | null =>
+  useSyncExternalStore(
+    (onChange: () => void) => {
+      configListeners.add(onChange);
+      return () => configListeners.delete(onChange);
+    },
+    () => current,
+    () => null,
+  );
 
 // ─── wire types (the server's DTOs, minimally) ──────────────────────────────
 

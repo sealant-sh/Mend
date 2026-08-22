@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { networkInterfaces } from "node:os";
+
 import { betterAuth } from "better-auth";
 import { bearer } from "better-auth/plugins";
 import { Config, Effect, Layer, Option, Redacted } from "effect";
@@ -15,6 +18,46 @@ export interface AuthSession {
   readonly user: AuthUser;
   readonly expiresAt: Date;
 }
+
+/** Vite serves the web app here in development; the Effect server proxies to it. */
+const DEV_PORT = 3101;
+
+/**
+ * Every non-internal IPv4 bound to this machine — the same observation
+ * packages/api/src/machine.ts makes for the pairing endpoint, repeated here
+ * because @mend/api depends on this package and cannot be imported back.
+ */
+const localAddresses = (
+  interfaces: ReturnType<typeof networkInterfaces> = networkInterfaces(),
+): ReadonlyArray<string> => {
+  const found: Array<string> = [];
+  for (const entries of Object.values(interfaces)) {
+    for (const entry of entries ?? []) {
+      if (entry.family === "IPv4" && !entry.internal) found.push(entry.address);
+    }
+  }
+  return found;
+};
+
+/**
+ * Which origins better-auth will accept a session from. APP_URL is
+ * authoritative; localhost covers both local entry points; and every address
+ * this machine actually answers on is added, because a phone on the tailnet or
+ * the LAN reaches the web app by IP and would otherwise be refused. The set is
+ * read once at startup — a machine that changes address needs a restart.
+ */
+export const trustedOrigins = (
+  baseUrl: string,
+  serverPort: number,
+  interfaces: ReturnType<typeof networkInterfaces> = networkInterfaces(),
+): Array<string> => {
+  const ports = [...new Set([serverPort, DEV_PORT])];
+  const origins = [baseUrl, ...ports.map((port) => `http://localhost:${port}`)];
+  for (const address of localAddresses(interfaces)) {
+    for (const port of ports) origins.push(`http://${address}:${port}`);
+  }
+  return [...new Set(origins)];
+};
 
 /**
  * better-auth mounted behind an Effect contract: cookie sessions for the web
@@ -42,6 +85,7 @@ export class Auth extends Context.Service<
       const baseUrl = yield* Config.string("APP_URL").pipe(
         Config.orElse(() => Config.succeed("http://localhost:3101")),
       );
+      const serverPort = yield* Config.int("PORT").pipe(Config.orElse(() => Config.succeed(3105)));
 
       const pool = yield* Effect.acquireRelease(
         Effect.sync(() => new Pool({ connectionString: Redacted.value(databaseUrl) })),
@@ -57,19 +101,7 @@ export class Auth extends Context.Service<
         basePath: "/api/auth",
         emailAndPassword: { enabled: true },
         plugins: [bearer()],
-        // APP_URL is authoritative; the localhost pair covers both local entry
-        // points (vite dev on 3101, the Effect server itself on 3105) so a dev
-        // instance never rejects its own origin. The tailnet addresses are how
-        // the operator reaches this machine from a phone.
-        trustedOrigins: [
-          baseUrl,
-          "http://localhost:3101",
-          "http://localhost:3105",
-          "http://100.126.133.49:3101",
-          "http://100.126.133.49:3105",
-          "http://192.168.1.245:3101",
-          "http://192.168.1.245:3105",
-        ],
+        trustedOrigins: trustedOrigins(baseUrl, serverPort),
       });
 
       const handler = Effect.fn("Auth.handler")((request: Request) =>
@@ -82,6 +114,58 @@ export class Auth extends Context.Service<
       const staticToken = yield* Config.string("MEND_STATIC_TOKEN").pipe(
         Config.orElse(() => Config.succeed("")),
       );
+
+      // A paired device authenticates with its own bearer token (mdt_…): only the
+      // sha256 is stored, so the check is a hash and a lookup. `last_used_at` is
+      // a fact about the device, not a session clock — one write a minute is enough.
+      const DEVICE_LAST_USED_INTERVAL_MS = 60_000;
+
+      const deviceSession = Effect.fn("Auth.deviceSession")(function* (headers: Headers) {
+        const authorization = headers.get("authorization");
+        if (authorization === null || !authorization.startsWith("Bearer ")) {
+          return Option.none<AuthSession>();
+        }
+        const token = authorization.slice("Bearer ".length).trim();
+        if (token === "") return Option.none<AuthSession>();
+        const tokenHash = createHash("sha256").update(token).digest("hex");
+
+        const rows = yield* Effect.promise(() =>
+          pool.query(
+            `SELECT d.id AS device_id, d.last_used_at, u.id AS user_id, u.email, u.name
+               FROM device_tokens d
+               JOIN "user" u ON u.id = d.user_id
+              WHERE d.token_hash = $1 AND d.revoked_at IS NULL
+              LIMIT 1`,
+            [tokenHash],
+          ),
+        );
+        const row = rows.rows[0] as
+          | {
+              readonly device_id: string;
+              readonly last_used_at: Date | null;
+              readonly user_id: string;
+              readonly email: string;
+              readonly name: string;
+            }
+          | undefined;
+        if (row === undefined) return Option.none<AuthSession>();
+
+        const stale =
+          row.last_used_at === null ||
+          Date.now() - row.last_used_at.getTime() >= DEVICE_LAST_USED_INTERVAL_MS;
+        if (stale) {
+          yield* Effect.promise(() =>
+            pool.query("UPDATE device_tokens SET last_used_at = now() WHERE id = $1", [
+              row.device_id,
+            ]),
+          );
+        }
+
+        return Option.some<AuthSession>({
+          user: { id: row.user_id, email: row.email, name: row.name },
+          expiresAt: new Date(Date.now() + 86_400_000),
+        });
+      });
 
       const getSession = Effect.fn("Auth.getSession")(function* (headers: Headers) {
         if (staticToken !== "" && headers.get("authorization") === `Bearer ${staticToken}`) {
@@ -99,7 +183,8 @@ export class Auth extends Context.Service<
           }
         }
         const result = yield* Effect.promise(() => auth.api.getSession({ headers }));
-        if (result === null) return Option.none<AuthSession>();
+        // Not a better-auth session: it may still be a paired device's token.
+        if (result === null) return yield* deviceSession(headers);
         return Option.some<AuthSession>({
           user: {
             id: result.user.id,

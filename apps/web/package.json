@@ -45,6 +45,7 @@
     "effect": "catalog:",
     "ghostty-web": "catalog:",
     "lucide-react": "catalog:",
+    "qrcode": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
     "tailwindcss": "catalog:"
@@ -52,6 +53,7 @@
   "devDependencies": {
     "@mend/typescript": "workspace:*",
     "@types/node": "catalog:",
+    "@types/qrcode": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "catalog:",
