@@ -17,23 +17,29 @@ import type {
   WorkspaceForward,
 } from "@sealant/sdk";
 import { Sealant, SealantApiError, SealantError } from "@sealant/sdk";
-import type { Harness } from "@sealant/sdk";
+import type { Harness, SealantConfig } from "@sealant/sdk";
 import {
+  archiveConnectedAccountOp,
+  createConnectedAccountOp,
   createRunOp,
   expireWorkspaceOp,
   getSessionOutputOp,
   inferenceRespondOp,
+  listConnectedAccountsOp,
   listWorkspacesOp,
   resolveInternalConfig,
   SealantApiClient,
   sealantApiClientLayer,
 } from "@sealant/sdk/effect";
-import { Clock, type Config, Effect, Layer, Option, Redacted, Stream } from "effect";
+import { Clock, type Config, Effect, Layer, Option, Redacted, Scope, Stream } from "effect";
 import * as Context from "effect/Context";
 
+import { ConnectedAccount, type ConnectAccountInput } from "./accounts.ts";
 import { SealantEnv } from "./config.ts";
 import { SealantConnection } from "./connection.ts";
 import { SealantPlatformError } from "./errors.ts";
+import { SealantIdentityStore } from "./identity.ts";
+import { SealantPrincipal } from "./principal.ts";
 
 export interface SessionOutputPage {
   readonly sessionId: string;
@@ -67,167 +73,175 @@ export interface WorkspacePackageResolution {
  *   it here would be exactly the workaround PLATFORM-FEEDBACK.md forbids
  *   (see the 0.5.0 entry, "composition layer not exported").
  */
-export class SealantClient extends Context.Service<
-  SealantClient,
-  {
-    readonly createWorkspace: (
-      options: CreateOptions,
-    ) => Effect.Effect<Workspace, SealantPlatformError>;
-    readonly getWorkspace: (id: string) => Effect.Effect<Workspace, SealantPlatformError>;
-    /** Runs outlive workspaces — records are replayable long after close-out. */
-    readonly getRun: (runId: string) => Effect.Effect<Run, SealantPlatformError>;
-    /** BLOCKING: resolves once the harness terminally completed. */
-    readonly runHarness: (
-      workspace: Workspace,
-      prompt: string,
-      options?: RunOptions,
-    ) => Effect.Effect<Run, SealantPlatformError>;
-    /** NON-BLOCKING: a live handle for streaming via `recordStream`. */
-    readonly startHarness: (
-      workspace: Workspace,
-      prompt: string,
-      options?: RunOptions,
-    ) => Effect.Effect<Run, SealantPlatformError>;
-    /**
-     * Starts a harness in a workspace BY ID — for runs on a workspace that
-     * outlives the handle that created it (follow-ups, verification passes).
-     * Re-fetched facade handles carry no harness (PLATFORM-FEEDBACK.md), so
-     * this goes through the /effect ops and hand-assembles the run command.
-     */
-    readonly startHarnessInWorkspace: (
-      workspaceId: string,
-      harness: Harness,
-      prompt: string,
-    ) => Effect.Effect<Run, SealantPlatformError>;
-    readonly waitRun: (run: Run) => Effect.Effect<Run, SealantPlatformError>;
-    /** Open an interactive PTY session in a workspace (0.7.0) — a durable platform resource. */
-    readonly openSession: (
-      workspace: Workspace,
-      argv: ReadonlyArray<string>,
-      options?: SessionOptions,
-    ) => Effect.Effect<InteractiveSession, SealantPlatformError>;
-    /**
-     * A raw TCP byte pipe — or a UDP datagram pipe, where one WS frame is
-     * exactly one datagram — into the workspace (host option 0.15.0) —
-     * one held WebSocket per pipe. The target is a closed workspace-private
-     * set: loopback (default) or `docker`, the workspace-scoped Docker
-     * sidecar where inner compose publishes its ports. Fails when nothing
-     * listens, which doubles as the reachability probe for Services.
-     */
-    readonly forward: (
-      workspace: Workspace,
-      port: number,
-      host?: "127.0.0.1" | "docker",
-      protocol?: "tcp" | "udp",
-    ) => Effect.Effect<WorkspaceForward, SealantPlatformError>;
-    /** Reattach to a PTY session by id — works from any workspace handle. */
-    /** Stop the workspace: remove its container, settle it "stopped". */
-    readonly stopWorkspace: (workspace: Workspace) => Effect.Effect<void, SealantPlatformError>;
-    /** Re-arm the workspace TTL and return the platform's exact resulting expiry. */
-    readonly expireWorkspace: (
-      workspaceId: string,
-      ttlSeconds: number,
-    ) => Effect.Effect<Date | null, SealantPlatformError>;
-    readonly getSession: (
-      workspace: Workspace,
-      sessionId: string,
-    ) => Effect.Effect<InteractiveSession, SealantPlatformError>;
-    /** Sequence-addressed, read-only PTY output. Cursors remain decimal strings. */
-    readonly sessionOutput: (
-      sessionId: string,
-      options: { readonly from: string; readonly limit: string },
-    ) => Effect.Effect<SessionOutputPage, SealantPlatformError>;
-    /**
-     * Deterministic check run (0.5.0): commands executed verbatim, recorded
-     * into a run record like any process. The exit code is a check datum, not
-     * an error — the effect fails only when execution machinery broke.
-     */
-    readonly exec: (
-      workspace: Workspace,
-      argv: readonly string[],
-      options?: WorkspaceExecOptions,
-    ) => Effect.Effect<WorkspaceExecResult, SealantPlatformError>;
-    /**
-     * The committed diff between two shas, read from git in the workspace — the
-     * source of truth for what a change contains. Mend prefers this to the
-     * recording-derived `runChanges` diff, which today comes up empty because
-     * the runtime is not recording file-change events (PLATFORM-FEEDBACK.md).
-     */
-    readonly diffCommits: (
-      workspaceId: string,
-      base: string,
-      head: string,
-    ) => Effect.Effect<
-      {
-        readonly diff: string;
-        readonly files: ReadonlyArray<{
-          readonly path: string;
-          readonly additions: number;
-          readonly deletions: number;
-        }>;
-      },
-      SealantPlatformError
-    >;
-    /**
-     * Inference on connected accounts (0.5.0): server-side via the official
-     * agent SDKs; the tool loop is caller-executed via `sessionId`.
-     */
-    readonly inferenceRespond: (
-      options: InferenceRespondOptions | InferenceContinueOptions,
-    ) => Effect.Effect<InferenceResponse, SealantPlatformError>;
-    /** The record's live event stream — typed entries, resumable for crash-resume. */
-    readonly recordStream: (
-      run: Run,
-      options?: { readonly from?: bigint },
-    ) => Stream.Stream<TimelineEntry, SealantPlatformError>;
-    /** The full timeline as recorded so far — ends at the record's end, never waits for more. */
-    readonly recordTimeline: (
-      run: Run,
-      options?: { readonly from?: bigint },
-    ) => Stream.Stream<TimelineEntry, SealantPlatformError>;
-    /** The terminal commands the run executed, reconstructed by the platform. */
-    readonly recordCommands: (
-      run: Run,
-    ) => Effect.Effect<readonly RunCommand[], SealantPlatformError>;
-    /**
-     * Byte-exact scrollback for one process's output stream, concatenated.
-     * "pty" is served by the control plane but missing from the SDK's
-     * IoStream type (PLATFORM-FEEDBACK.md 2026-08-09) — verified live.
-     */
-    readonly recordScrollback: (
-      run: Run,
-      processId: string,
-      stream: "pty" | "stdout" | "stderr",
-    ) => Effect.Effect<Uint8Array, SealantPlatformError>;
-    /** The before/after of what a run changed: file list plus the unified diff. */
-    readonly runChanges: (run: Run) => Effect.Effect<
-      {
-        readonly files: ReadonlyArray<RunFileChange>;
-        readonly diff: string;
-      },
-      SealantPlatformError
-    >;
-    /** Cheap authenticated round-trip for the settings page. Never fails — the failure is the content. */
-    readonly connectionCheck: () => Effect.Effect<SealantConnection>;
-    /** Resolve one package against the selected workspace OS through Sealant's public API. */
-    readonly resolveWorkspacePackage: (
-      packageName: string,
-      os: WorkspaceImageOs,
-    ) => Effect.Effect<WorkspacePackageResolution, SealantPlatformError>;
-  }
->()("@mend/sealant/SealantClient") {}
+export interface SealantClientShape {
+  readonly createWorkspace: (
+    options: CreateOptions,
+  ) => Effect.Effect<Workspace, SealantPlatformError>;
+  readonly getWorkspace: (id: string) => Effect.Effect<Workspace, SealantPlatformError>;
+  /** Runs outlive workspaces — records are replayable long after close-out. */
+  readonly getRun: (runId: string) => Effect.Effect<Run, SealantPlatformError>;
+  /** BLOCKING: resolves once the harness terminally completed. */
+  readonly runHarness: (
+    workspace: Workspace,
+    prompt: string,
+    options?: RunOptions,
+  ) => Effect.Effect<Run, SealantPlatformError>;
+  /** NON-BLOCKING: a live handle for streaming via `recordStream`. */
+  readonly startHarness: (
+    workspace: Workspace,
+    prompt: string,
+    options?: RunOptions,
+  ) => Effect.Effect<Run, SealantPlatformError>;
+  /**
+   * Starts a harness in a workspace BY ID — for runs on a workspace that
+   * outlives the handle that created it (follow-ups, verification passes).
+   * Re-fetched facade handles carry no harness (PLATFORM-FEEDBACK.md), so
+   * this goes through the /effect ops and hand-assembles the run command.
+   */
+  readonly startHarnessInWorkspace: (
+    workspaceId: string,
+    harness: Harness,
+    prompt: string,
+  ) => Effect.Effect<Run, SealantPlatformError>;
+  readonly waitRun: (run: Run) => Effect.Effect<Run, SealantPlatformError>;
+  /** Open an interactive PTY session in a workspace (0.7.0) — a durable platform resource. */
+  readonly openSession: (
+    workspace: Workspace,
+    argv: ReadonlyArray<string>,
+    options?: SessionOptions,
+  ) => Effect.Effect<InteractiveSession, SealantPlatformError>;
+  /**
+   * A raw TCP byte pipe — or a UDP datagram pipe, where one WS frame is
+   * exactly one datagram — into the workspace (host option 0.15.0) —
+   * one held WebSocket per pipe. The target is a closed workspace-private
+   * set: loopback (default) or `docker`, the workspace-scoped Docker
+   * sidecar where inner compose publishes its ports. Fails when nothing
+   * listens, which doubles as the reachability probe for Services.
+   */
+  readonly forward: (
+    workspace: Workspace,
+    port: number,
+    host?: "127.0.0.1" | "docker",
+    protocol?: "tcp" | "udp",
+  ) => Effect.Effect<WorkspaceForward, SealantPlatformError>;
+  /** Reattach to a PTY session by id — works from any workspace handle. */
+  /** Stop the workspace: remove its container, settle it "stopped". */
+  readonly stopWorkspace: (workspace: Workspace) => Effect.Effect<void, SealantPlatformError>;
+  /** Re-arm the workspace TTL and return the platform's exact resulting expiry. */
+  readonly expireWorkspace: (
+    workspaceId: string,
+    ttlSeconds: number,
+  ) => Effect.Effect<Date | null, SealantPlatformError>;
+  readonly getSession: (
+    workspace: Workspace,
+    sessionId: string,
+  ) => Effect.Effect<InteractiveSession, SealantPlatformError>;
+  /** Sequence-addressed, read-only PTY output. Cursors remain decimal strings. */
+  readonly sessionOutput: (
+    sessionId: string,
+    options: { readonly from: string; readonly limit: string },
+  ) => Effect.Effect<SessionOutputPage, SealantPlatformError>;
+  /**
+   * Deterministic check run (0.5.0): commands executed verbatim, recorded
+   * into a run record like any process. The exit code is a check datum, not
+   * an error — the effect fails only when execution machinery broke.
+   */
+  readonly exec: (
+    workspace: Workspace,
+    argv: readonly string[],
+    options?: WorkspaceExecOptions,
+  ) => Effect.Effect<WorkspaceExecResult, SealantPlatformError>;
+  /**
+   * The committed diff between two shas, read from git in the workspace — the
+   * source of truth for what a change contains. Mend prefers this to the
+   * recording-derived `runChanges` diff, which today comes up empty because
+   * the runtime is not recording file-change events (PLATFORM-FEEDBACK.md).
+   */
+  readonly diffCommits: (
+    workspaceId: string,
+    base: string,
+    head: string,
+  ) => Effect.Effect<
+    {
+      readonly diff: string;
+      readonly files: ReadonlyArray<{
+        readonly path: string;
+        readonly additions: number;
+        readonly deletions: number;
+      }>;
+    },
+    SealantPlatformError
+  >;
+  /**
+   * Inference on connected accounts (0.5.0): server-side via the official
+   * agent SDKs; the tool loop is caller-executed via `sessionId`.
+   */
+  readonly inferenceRespond: (
+    options: InferenceRespondOptions | InferenceContinueOptions,
+  ) => Effect.Effect<InferenceResponse, SealantPlatformError>;
+  /** The record's live event stream — typed entries, resumable for crash-resume. */
+  readonly recordStream: (
+    run: Run,
+    options?: { readonly from?: bigint },
+  ) => Stream.Stream<TimelineEntry, SealantPlatformError>;
+  /** The full timeline as recorded so far — ends at the record's end, never waits for more. */
+  readonly recordTimeline: (
+    run: Run,
+    options?: { readonly from?: bigint },
+  ) => Stream.Stream<TimelineEntry, SealantPlatformError>;
+  /** The terminal commands the run executed, reconstructed by the platform. */
+  readonly recordCommands: (run: Run) => Effect.Effect<readonly RunCommand[], SealantPlatformError>;
+  /**
+   * Byte-exact scrollback for one process's output stream, concatenated.
+   * "pty" is served by the control plane but missing from the SDK's
+   * IoStream type (PLATFORM-FEEDBACK.md 2026-08-09) — verified live.
+   */
+  readonly recordScrollback: (
+    run: Run,
+    processId: string,
+    stream: "pty" | "stdout" | "stderr",
+  ) => Effect.Effect<Uint8Array, SealantPlatformError>;
+  /** The before/after of what a run changed: file list plus the unified diff. */
+  readonly runChanges: (run: Run) => Effect.Effect<
+    {
+      readonly files: ReadonlyArray<RunFileChange>;
+      readonly diff: string;
+    },
+    SealantPlatformError
+  >;
+  /** Cheap authenticated round-trip for the settings page. Never fails — the failure is the content. */
+  readonly connectionCheck: () => Effect.Effect<SealantConnection>;
+  /** Resolve one package against the selected workspace OS through Sealant's public API. */
+  readonly resolveWorkspacePackage: (
+    packageName: string,
+    os: WorkspaceImageOs,
+  ) => Effect.Effect<WorkspacePackageResolution, SealantPlatformError>;
+}
 
-export const SealantClientLive: Layer.Layer<SealantClient, never, SealantEnv> = Layer.effect(
-  SealantClient,
+/**
+ * The platform for ONE principal. Which principal is the `SealantPrincipal`
+ * reference in context (principal.ts); the live layer below dispatches every
+ * call to the per-user client `SealantClients` holds for it.
+ */
+export class SealantClient extends Context.Service<SealantClient, SealantClientShape>()(
+  "@mend/sealant/SealantClient",
+) {}
+
+type SealantEnvShape = Context.Service.Shape<typeof SealantEnv>;
+
+const publicConfigOf = (env: SealantEnvShape, ownerUserId?: string): SealantConfig => ({
+  baseUrl: env.baseUrl,
+  ...(ownerUserId === undefined ? {} : { ownerUserId }),
+  ...Option.match(env.serviceKey, {
+    onNone: () => ({}),
+    onSome: (key) => ({ apiKey: Redacted.value(key) }),
+  }),
+});
+
+/** The client for one Sealant user: the SDK facade + Effect core, both bound to `ownerUserId`. */
+const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
   Effect.gen(function* () {
-    const env = yield* SealantEnv;
-    const publicConfig = {
-      baseUrl: env.baseUrl,
-      ...Option.match(env.apiKey, {
-        onNone: () => ({}),
-        onSome: (key) => ({ apiKey: Redacted.value(key) }),
-      }),
-    };
+    const publicConfig = publicConfigOf(env, ownerUserIdInput);
 
     // The facade, for the stateful object model.
     const sealant = yield* Effect.acquireRelease(
@@ -523,13 +537,270 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantEnv> = 
       runChanges,
       connectionCheck,
       resolveWorkspacePackage,
+    } satisfies SealantClientShape;
+  });
+
+// ─── Per-user clients ────────────────────────────────────────────────────────
+
+/** A Sealant user's credentials, as the settings page and `mend accounts` show them. */
+export interface ConnectedAccountsApi {
+  readonly list: () => Effect.Effect<ReadonlyArray<ConnectedAccount>, SealantPlatformError>;
+  readonly connect: (
+    input: ConnectAccountInput,
+  ) => Effect.Effect<ConnectedAccount, SealantPlatformError>;
+  readonly disconnect: (id: string) => Effect.Effect<ConnectedAccount, SealantPlatformError>;
+}
+
+/**
+ * One client per Sealant user, built on first use and kept for the process
+ * (docs/SEALANT-IDENTITY.md). Mend authenticates as a service principal; each
+ * user's client is the same service key with that user's Sealant id as owner.
+ * The Sealant user is provisioned on first use (`users.ensure`, idempotent on
+ * the Mend account's email) and the mapping recorded in the identity store.
+ */
+export class SealantClients extends Context.Service<
+  SealantClients,
+  {
+    /** The platform as a Mend user. Fails with code `UNKNOWN_USER` when the account is gone. */
+    readonly forUser: (userId: string) => Effect.Effect<SealantClientShape, SealantPlatformError>;
+    /** The platform for the principal in context. Fails with code `NO_PRINCIPAL` when unset. */
+    readonly forPrincipal: () => Effect.Effect<SealantClientShape, SealantPlatformError>;
+    /** The Sealant user id a Mend user acts as, provisioning it on first use. */
+    readonly sealantUserId: (userId: string) => Effect.Effect<string, SealantPlatformError>;
+    /** The user's Claude / Codex / GitHub accounts on the platform. */
+    readonly connectedAccounts: (userId: string) => ConnectedAccountsApi;
+  }
+>()("@mend/sealant/SealantClients") {}
+
+const toConnectedAccount = (wire: {
+  readonly connectedAccountId: string;
+  readonly provider: ConnectedAccount["provider"];
+  readonly name: string;
+  readonly kind: string;
+  readonly status: ConnectedAccount["status"];
+  readonly metadata: Readonly<Record<string, unknown>>;
+  readonly connectedAt: string;
+  readonly updatedAt: string;
+  readonly lastUsedAt: string | null;
+}) =>
+  new ConnectedAccount({
+    id: wire.connectedAccountId,
+    provider: wire.provider,
+    name: wire.name,
+    kind: wire.kind,
+    status: wire.status,
+    metadata: wire.metadata,
+    connectedAt: new Date(wire.connectedAt),
+    updatedAt: new Date(wire.updatedAt),
+    lastUsedAt: wire.lastUsedAt === null ? null : new Date(wire.lastUsedAt),
+  });
+
+const platformFailure = (code: string, message: string) =>
+  new SealantPlatformError({ code, status: null, message, cause: null });
+
+export const SealantClientsLive: Layer.Layer<
+  SealantClients,
+  never,
+  SealantEnv | SealantIdentityStore
+> = Layer.effect(
+  SealantClients,
+  Effect.gen(function* () {
+    const env = yield* SealantEnv;
+    const identities = yield* SealantIdentityStore;
+    const scope = yield* Effect.scope;
+
+    // The service-level client: provisions users. Bound to no owner on purpose.
+    const adminConfig = publicConfigOf(env);
+    const admin = yield* Effect.acquireRelease(
+      Effect.sync(() => new Sealant(adminConfig)),
+      (client) => Effect.promise(() => client.close()),
+    );
+    const adminContext = yield* Layer.build(
+      sealantApiClientLayer(resolveInternalConfig(adminConfig)),
+    );
+
+    // Per-Sealant-user clients, built once for the process. A failed build is
+    // not kept, so a transient outage at first use does not poison the user.
+    const clients = new Map<string, SealantClientShape>();
+    const building = new Map<string, Effect.Effect<SealantClientShape, SealantPlatformError>>();
+    const clientFor = Effect.fn("SealantClients.clientFor")(function* (sealantUserId: string) {
+      const ready = clients.get(sealantUserId);
+      if (ready !== undefined) return ready;
+      const inFlight = building.get(sealantUserId);
+      if (inFlight !== undefined) return yield* inFlight;
+      const build = makeUserClient(env, sealantUserId).pipe(
+        Effect.mapError(toPlatformError),
+        Effect.provideService(Scope.Scope, scope),
+        Effect.tap((client) => Effect.sync(() => clients.set(sealantUserId, client))),
+        Effect.ensuring(Effect.sync(() => building.delete(sealantUserId))),
+        Effect.cached,
+        Effect.flatten,
+      );
+      building.set(sealantUserId, build);
+      return yield* build;
+    });
+
+    const sealantUserIdFor = Effect.fn("SealantClients.sealantUserId")(function* (userId: string) {
+      const recorded = yield* identities.sealantUserId(userId);
+      if (recorded !== null) return recorded;
+      const user = yield* identities.user(userId);
+      if (user === null) {
+        return yield* platformFailure("UNKNOWN_USER", `Mend user ${userId} does not exist`);
+      }
+      const ensured = yield* wrap(() => admin.users.ensure({ email: user.email, name: user.name }));
+      yield* identities.record(userId, ensured.userId);
+      yield* Effect.logInfo("sealant identity: mapped user").pipe(
+        Effect.annotateLogs({
+          userId,
+          sealantUserId: ensured.userId,
+          created: ensured.created,
+        }),
+      );
+      return ensured.userId;
+    });
+
+    const forUser = Effect.fn("SealantClients.forUser")(function* (userId: string) {
+      const sealantUserId = yield* sealantUserIdFor(userId);
+      return yield* clientFor(sealantUserId);
+    });
+
+    const forPrincipal = Effect.fn("SealantClients.forPrincipal")(function* () {
+      const principal = yield* SealantPrincipal;
+      switch (principal.kind) {
+        case "user":
+          return yield* forUser(principal.userId);
+        case "first-user": {
+          const first = yield* identities.firstUser();
+          if (first === null) {
+            return yield* platformFailure("NO_PRINCIPAL", "no Mend account exists yet to act as");
+          }
+          return yield* forUser(first.id);
+        }
+        case "none":
+          return yield* platformFailure(
+            "NO_PRINCIPAL",
+            "Sealant call made without a principal (docs/SEALANT-IDENTITY.md)",
+          );
+      }
+    });
+
+    const connectedAccounts = (userId: string): ConnectedAccountsApi => {
+      const withOwner = <A>(
+        run: (ownerUserId: string) => Effect.Effect<A, unknown, SealantApiClient>,
+      ): Effect.Effect<A, SealantPlatformError> =>
+        sealantUserIdFor(userId).pipe(
+          Effect.flatMap((ownerUserId) =>
+            run(ownerUserId).pipe(
+              Effect.provideContext(adminContext),
+              Effect.mapError(toPlatformError),
+            ),
+          ),
+        );
+      return {
+        list: () =>
+          withOwner((ownerUserId) =>
+            listConnectedAccountsOp(ownerUserId).pipe(
+              Effect.map((response) => response.items.map(toConnectedAccount)),
+            ),
+          ),
+        connect: (input) =>
+          withOwner((ownerUserId) =>
+            createConnectedAccountOp({
+              ownerUserId,
+              provider: input.provider,
+              secret: input.secret,
+              ...(input.name === undefined ? {} : { name: input.name }),
+            }).pipe(Effect.map(toConnectedAccount)),
+          ),
+        disconnect: (id) =>
+          withOwner((ownerUserId) =>
+            archiveConnectedAccountOp(id, ownerUserId).pipe(Effect.map(toConnectedAccount)),
+          ),
+      };
     };
+
+    return { forUser, forPrincipal, sealantUserId: sealantUserIdFor, connectedAccounts };
   }),
 );
 
-/** The live client with its process environment attached for the application composition root. */
-export const SealantClientLiveFromEnv: Layer.Layer<SealantClient, Config.ConfigError> =
-  SealantClientLive.pipe(Layer.provide(SealantEnv.layer));
+// ─── The dispatching client ──────────────────────────────────────────────────
+
+/**
+ * `SealantClient` for whichever principal is in context. Every method resolves
+ * the principal's client at call time, so one layer serves every request and
+ * every session fiber. Streams unwrap the same way.
+ */
+export const SealantClientLive: Layer.Layer<SealantClient, never, SealantClients> = Layer.effect(
+  SealantClient,
+  Effect.gen(function* () {
+    const clients = yield* SealantClients;
+    const current = clients.forPrincipal();
+    const via = <A>(
+      call: (client: SealantClientShape) => Effect.Effect<A, SealantPlatformError>,
+    ): Effect.Effect<A, SealantPlatformError> => Effect.flatMap(current, call);
+    const viaStream = <A>(
+      call: (client: SealantClientShape) => Stream.Stream<A, SealantPlatformError>,
+    ): Stream.Stream<A, SealantPlatformError> => Stream.unwrap(Effect.map(current, call));
+
+    return {
+      createWorkspace: (options) => via((c) => c.createWorkspace(options)),
+      getWorkspace: (id) => via((c) => c.getWorkspace(id)),
+      getRun: (runId) => via((c) => c.getRun(runId)),
+      runHarness: (workspace, prompt, options) =>
+        via((c) => c.runHarness(workspace, prompt, options)),
+      startHarness: (workspace, prompt, options) =>
+        via((c) => c.startHarness(workspace, prompt, options)),
+      startHarnessInWorkspace: (workspaceId, harness, prompt) =>
+        via((c) => c.startHarnessInWorkspace(workspaceId, harness, prompt)),
+      waitRun: (run) => via((c) => c.waitRun(run)),
+      openSession: (workspace, argv, options) =>
+        via((c) => c.openSession(workspace, argv, options)),
+      forward: (workspace, port, host, protocol) =>
+        via((c) => c.forward(workspace, port, host, protocol)),
+      stopWorkspace: (workspace) => via((c) => c.stopWorkspace(workspace)),
+      expireWorkspace: (workspaceId, ttlSeconds) =>
+        via((c) => c.expireWorkspace(workspaceId, ttlSeconds)),
+      getSession: (workspace, sessionId) => via((c) => c.getSession(workspace, sessionId)),
+      sessionOutput: (sessionId, options) => via((c) => c.sessionOutput(sessionId, options)),
+      exec: (workspace, argv, options) => via((c) => c.exec(workspace, argv, options)),
+      diffCommits: (workspaceId, base, head) => via((c) => c.diffCommits(workspaceId, base, head)),
+      inferenceRespond: (options) => via((c) => c.inferenceRespond(options)),
+      recordStream: (run, options) => viaStream((c) => c.recordStream(run, options)),
+      recordTimeline: (run, options) => viaStream((c) => c.recordTimeline(run, options)),
+      recordCommands: (run) => via((c) => c.recordCommands(run)),
+      recordScrollback: (run, processId, stream) =>
+        via((c) => c.recordScrollback(run, processId, stream)),
+      runChanges: (run) => via((c) => c.runChanges(run)),
+      // Never fails: a missing principal or identity is reported as the observation.
+      connectionCheck: () =>
+        Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis;
+          return yield* current.pipe(
+            Effect.flatMap((c) => c.connectionCheck()),
+            Effect.catch((error) =>
+              Effect.succeed(
+                new SealantConnection({
+                  status: connectionStatusOf(error.cause ?? error),
+                  baseUrl: "",
+                  detail: error.message,
+                  checkedAt: new Date(now),
+                }),
+              ),
+            ),
+          );
+        }),
+      resolveWorkspacePackage: (packageName, os) =>
+        via((c) => c.resolveWorkspacePackage(packageName, os)),
+    } satisfies SealantClientShape;
+  }),
+);
+
+/** Both live layers over the process environment, for the application composition root. */
+export const SealantLiveFromEnv: Layer.Layer<
+  SealantClient | SealantClients,
+  Config.ConfigError,
+  SealantIdentityStore
+> = SealantClientLive.pipe(Layer.provideMerge(SealantClientsLive), Layer.provide(SealantEnv.layer));
 
 /** The facade's `true` means "the account named default"; the wire wants a name or nothing. */
 const accountReference = (value: boolean | string | undefined) =>

@@ -532,6 +532,40 @@ const request = async <A>(
 
 const get = <A>(path: string) => request<A>("GET", path);
 const post = <A>(path: string, body: unknown) => request<A>("POST", path, body);
+const del = <A>(path: string) => request<A>("DELETE", path);
+
+// ─── the signed-in user's platform identity ─────────────────────────────────
+
+export type ConnectedAccountProviderDto = "claude" | "codex" | "github";
+
+/** A connected account as the platform reports it — never carries the secret. */
+export interface ConnectedAccountDto {
+  readonly id: string;
+  readonly provider: ConnectedAccountProviderDto;
+  readonly name: string;
+  readonly kind: string;
+  readonly status: "active" | "invalid" | "archived";
+  readonly metadata: Readonly<Record<string, unknown>>;
+  readonly connectedAt: string;
+  readonly updatedAt: string;
+  readonly lastUsedAt: string | null;
+}
+
+export interface SealantIdentityDto {
+  readonly sealantUserId: string;
+  readonly accounts: ReadonlyArray<ConnectedAccountDto>;
+}
+
+export const getSealantIdentity = () => get<SealantIdentityDto>("/api/me/sealant");
+
+/** Forwards the credential to the platform under the user's own identity; Mend keeps nothing. */
+export const connectAccount = (input: {
+  readonly provider: ConnectedAccountProviderDto;
+  readonly secret: string;
+}) => post<ConnectedAccountDto>("/api/me/sealant/accounts", input);
+
+export const disconnectAccount = (id: string) =>
+  del<ConnectedAccountDto>(`/api/me/sealant/accounts/${id}`);
 
 // ─── reads ──────────────────────────────────────────────────────────────────
 

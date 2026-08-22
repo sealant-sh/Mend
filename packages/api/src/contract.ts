@@ -61,7 +61,12 @@ import {
   Session,
   SessionProcess,
 } from "@mend/domain/workbench";
-import { SealantConnection } from "@mend/sealant";
+import {
+  ConnectAccountInput,
+  ConnectedAccount,
+  SealantConnection,
+  SealantIdentity,
+} from "@mend/sealant";
 import { Schema } from "effect";
 import * as Context from "effect/Context";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware } from "effect/unstable/httpapi";
@@ -141,6 +146,48 @@ const machineGroup = HttpApiGroup.make("machine")
 /** The settings page's connection check — reports what was observed, never a judgment. */
 const sealantGroup = HttpApiGroup.make("sealant")
   .add(HttpApiEndpoint.get("connection", "/sealant/connection", { success: SealantConnection }))
+  .middleware(AuthMiddleware);
+
+/** The platform refused the credential (format, a dead token, an unknown account). */
+export class AccountRejected extends Schema.TaggedErrorClass<AccountRejected>()(
+  "AccountRejected",
+  { message: Schema.String },
+  { httpApiStatus: 400 },
+) {}
+
+/** The platform could not be reached or answered outside its contract. */
+export class SealantUnavailable extends Schema.TaggedErrorClass<SealantUnavailable>()(
+  "SealantUnavailable",
+  { code: Schema.String, message: Schema.String },
+  { httpApiStatus: 502 },
+) {}
+
+/**
+ * The signed-in user's platform identity and connected accounts
+ * (docs/SEALANT-IDENTITY.md). Secrets pass straight through to Sealant under
+ * the user's own Sealant user; Mend never stores or echoes them.
+ */
+const accountsGroup = HttpApiGroup.make("accounts")
+  .add(
+    HttpApiEndpoint.get("identity", "/me/sealant", {
+      success: SealantIdentity,
+      error: [SealantUnavailable],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("connect", "/me/sealant/accounts", {
+      payload: ConnectAccountInput,
+      success: ConnectedAccount,
+      error: [AccountRejected, SealantUnavailable],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.delete("disconnect", "/me/sealant/accounts/:id", {
+      params: Schema.Struct({ id: Schema.String }),
+      success: ConnectedAccount,
+      error: [AccountRejected, SealantUnavailable],
+    }),
+  )
   .middleware(AuthMiddleware);
 
 export class NotFound extends Schema.TaggedErrorClass<NotFound>()(
@@ -1800,6 +1847,7 @@ export const MendApi = HttpApi.make("mend")
   .add(healthGroup)
   .add(machineGroup)
   .add(sealantGroup)
+  .add(accountsGroup)
   .add(settingsGroup)
   .add(dotfilesGroup)
   .add(issuesGroup)

@@ -9,7 +9,7 @@ import {
   type IssueId,
   type Run,
 } from "@mend/domain";
-import { SealantClient } from "@mend/sealant";
+import { asFirstSealantUser, SealantClient } from "@mend/sealant";
 import type { Run as SdkRun } from "@sealant/sdk";
 import { opencode } from "@sealant/sdk";
 import { Effect, Layer, Option, Stream } from "effect";
@@ -469,6 +469,11 @@ export const runStarterLayer = Layer.effect(
       return run.id;
     });
 
-    return { start, startOnChange };
-  }),
+    // The retired queue's runs belong to the operator (docs/SEALANT-IDENTITY.md).
+    return {
+      start: (issue: Issue) => asFirstSealantUser(start(issue)),
+      startOnChange: (change: ChangeId, instruction: string, kind: "follow-up" | "verification") =>
+        asFirstSealantUser(startOnChange(change, instruction, kind)),
+    };
+  }).pipe(asFirstSealantUser),
 );

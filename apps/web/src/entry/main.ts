@@ -21,6 +21,8 @@ import {
   ChangePassesRepoLive,
   ProjectsRepo,
   SessionsRepo,
+  SessionChangesRepo,
+  SealantIdentityStoreLive,
   SettingsRepo,
   ChangesRepoLive,
   ChangeToursRepoLive,
@@ -53,7 +55,7 @@ import {
   SettingsRepoLive,
   UserDotfilesRepoLive,
 } from "@mend/db";
-import type { ChangeId } from "@mend/domain";
+import type { ChangeId, SessionId } from "@mend/domain";
 import { resolveAutomation } from "@mend/domain/workbench";
 import {
   BriefCompiler,
@@ -84,7 +86,7 @@ import {
   SessionNotifierLive,
   startRunToolLayer,
 } from "@mend/jobs";
-import { SealantClientLiveFromEnv } from "@mend/sealant";
+import { asSealantUser, SealantLiveFromEnv } from "@mend/sealant";
 import {
   FollowUpDeliveryLive,
   FollowUpLauncherLive,
@@ -107,7 +109,7 @@ import {
   Store,
   StoreConfig,
 } from "@mend/store";
-import { Config, Effect, Layer, Schema } from "effect";
+import { Config, Effect, Layer, Option, Schema } from "effect";
 import {
   HttpMiddleware,
   HttpRouter,
@@ -284,6 +286,29 @@ const InferenceWorkersLive = Layer.effectDiscard(
     const tourComposer = yield* TourComposer;
     const suggester = yield* ChangeSuggester;
     const passes = yield* ChangePassesRepo;
+    const sessionChanges = yield* SessionChangesRepo;
+    const sessionsForJobs = yield* SessionsRepo;
+    // Inference runs on the SESSION OWNER's connected subscription (plan §9.3, docs/SEALANT-
+    // IDENTITY.md): a pass over someone's change is paid for by their account, never the
+    // operator's.
+    const asSessionOwner =
+      (sessionId: SessionId) =>
+      <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+        sessionsForJobs.byId(sessionId).pipe(
+          Effect.option,
+          Effect.flatMap((session) =>
+            self.pipe(asSealantUser(Option.isSome(session) ? session.value.ownerUserId : null)),
+          ),
+        );
+    const asChangeOwner =
+      (changeId: ChangeId) =>
+      <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+        sessionChanges.byId(changeId).pipe(
+          Effect.option,
+          Effect.flatMap((change) =>
+            Option.isSome(change) ? asSessionOwner(change.value.sessionId)(self) : self,
+          ),
+        );
     // Every change pass records its outcome — running, completed with a
     // count, or failed with the error's own words — so the review page can
     // state what ran instead of leaving "drafted nothing" and "never ran"
@@ -302,19 +327,25 @@ const InferenceWorkersLive = Layer.effectDiscard(
       );
     yield* jobs.work("read-change", (payload) =>
       decodeReadChangeJob(payload).pipe(
-        Effect.flatMap((job) => recorded("read", job.changeId, reader.read(job))),
+        Effect.flatMap((job) =>
+          asChangeOwner(job.changeId)(recorded("read", job.changeId, reader.read(job))),
+        ),
         Effect.orDie,
       ),
     );
     yield* jobs.work("compose-tour", (payload) =>
       decodeComposeTourJob(payload).pipe(
-        Effect.flatMap((job) => recorded("tour", job.changeId, tourComposer.compose(job))),
+        Effect.flatMap((job) =>
+          asChangeOwner(job.changeId)(recorded("tour", job.changeId, tourComposer.compose(job))),
+        ),
         Effect.orDie,
       ),
     );
     yield* jobs.work("suggest-change", (payload) =>
       decodeSuggestChangeJob(payload).pipe(
-        Effect.flatMap((job) => recorded("suggest", job.changeId, suggester.suggest(job))),
+        Effect.flatMap((job) =>
+          asChangeOwner(job.changeId)(recorded("suggest", job.changeId, suggester.suggest(job))),
+        ),
         Effect.orDie,
       ),
     );
@@ -403,7 +434,7 @@ const InferenceWorkersLive = Layer.effectDiscard(
     });
     yield* jobs.work("name-session", (payload) =>
       decodeNameSessionJob(payload).pipe(
-        Effect.flatMap((job) => nameSession(job)),
+        Effect.flatMap((job) => asSessionOwner(job.sessionId)(nameSession(job))),
         Effect.orDie,
       ),
     );
@@ -472,7 +503,8 @@ const MainLive = Layer.unwrap(
       Layer.provide(GhLive),
       Layer.provide(HostEnvironmentLive),
       Layer.provide(Auth.layer),
-      Layer.provide(SealantClientLiveFromEnv),
+      // One Sealant client per user, provisioned on first use (docs/SEALANT-IDENTITY.md).
+      Layer.provide(SealantLiveFromEnv.pipe(Layer.provide(SealantIdentityStoreLive))),
       Layer.provide(DatabaseLive),
     );
   }),

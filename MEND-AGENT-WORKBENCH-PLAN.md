@@ -1370,6 +1370,19 @@ understand the work.
   when no retained workspace exists because its worktree path is fixed; a session retained by live
   leases resumes in place. Status stays observational: "2 ready · 1 warming", never a promise.
 
+- **2026-08-22 — Mend owns the people; Sealant owns the resources.** Every Mend user ran as one
+  Sealant user (`SEALANT_OWNER_USER_ID`): one set of connected accounts for the whole team, which
+  shares subscriptions against the providers' terms, and every platform resource owned by one id.
+  Decided: Mend is the only login. Mend authenticates to Sealant as a service principal
+  (`SEALANT_SERVICE_KEY`) and acts on behalf of each signed-in user under a Sealant user it
+  provisions on first use (idempotent on email; mapping in `user_sealant_identities`). The platform
+  principal is an Effect reference set per request (the caller) and per session fiber (the session
+  OWNER — a collaborator reads a session's workspace as its owner); an unset principal is a typed
+  failure, never a seed user. Users connect their own Claude / Codex / GitHub accounts from Mend
+  (Settings on web and desktop, `mend connect`); secrets pass straight through and are never stored.
+  Hot-pool skeletons are claimed only by their owner's sessions. The Sealant web app is not part of
+  a Mend deployment. Details and consequences: `docs/SEALANT-IDENTITY.md`.
+
 - **2026-08-21 — Sessions are worktrees; everything else is a process.** The engine's data model and
   status logic treated "the session" as "the agent PTY" (`sessions.sealant_session_id`, one watcher
   settling the row). Protocol-mode agents and multiplayer both need the session to be the worktree

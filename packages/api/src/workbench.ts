@@ -53,7 +53,7 @@ import {
   type GitAuthMode,
 } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
-import { SealantClient } from "@mend/sealant";
+import { asSealantUser, SealantClient } from "@mend/sealant";
 import {
   FollowUpDelivery,
   RECIPE_NAME,
@@ -431,6 +431,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
               : sealant.getWorkspace(entry.sealantWorkspaceId).pipe(
                   Effect.flatMap((workspace) => sealant.stopWorkspace(workspace)),
                   Effect.ignore,
+                  asSealantUser(entry.ownerUserId),
                 ),
           { concurrency: 4 },
         );

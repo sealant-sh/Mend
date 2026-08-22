@@ -211,7 +211,7 @@ const hintHerdrAttachment = (harness: string): (() => void) => {
 /** The raw server call — THROWS with a human message; the dashboard renders it. */
 const request = async <T>(
   config: CliConfig,
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "DELETE",
   route: string,
   body?: unknown,
 ): Promise<T> => {
@@ -256,7 +256,7 @@ const request = async <T>(
 /** The same call for one-shot commands: any failure prints and exits. */
 const api = async <T>(
   config: CliConfig,
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "DELETE",
   route: string,
   body?: unknown,
 ): Promise<T> => {
@@ -1237,6 +1237,130 @@ const serviceCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
   }
 };
 
+// ─── connect / accounts: the user's own provider credentials ────────────────
+
+type ConnectedAccountProvider = "claude" | "codex" | "github";
+
+interface ConnectedAccountDto {
+  readonly id: string;
+  readonly provider: ConnectedAccountProvider;
+  readonly name: string;
+  readonly kind: string;
+  readonly status: "active" | "invalid" | "archived";
+  readonly metadata: Readonly<Record<string, unknown>>;
+  readonly connectedAt: string;
+  readonly lastUsedAt: string | null;
+}
+
+interface SealantIdentityDto {
+  readonly sealantUserId: string;
+  readonly accounts: ReadonlyArray<ConnectedAccountDto>;
+}
+
+const isProvider = (value: string | undefined): value is ConnectedAccountProvider =>
+  value === "claude" || value === "codex" || value === "github";
+
+const readIfExists = (file: string) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null);
+
+/** The credential as THIS machine holds it — the same files the agent CLIs wrote at login. */
+const localCredential = (provider: ConnectedAccountProvider): string | null => {
+  const home = os.homedir();
+  switch (provider) {
+    case "codex":
+      return readIfExists(
+        path.join(process.env["CODEX_HOME"] ?? path.join(home, ".codex"), "auth.json"),
+      );
+    case "claude":
+      return readIfExists(
+        path.join(
+          process.env["CLAUDE_CONFIG_DIR"] ?? path.join(home, ".claude"),
+          ".credentials.json",
+        ),
+      );
+    case "github": {
+      const result = spawnSync("gh", ["auth", "token"], { encoding: "utf8" });
+      const token = result.status === 0 ? result.stdout.trim() : "";
+      return token === "" ? null : token;
+    }
+  }
+};
+
+const accountLine = (account: ConnectedAccountDto): string => {
+  const meta = account.metadata;
+  const pick = (key: string) => (typeof meta[key] === "string" ? String(meta[key]) : null);
+  const identity = pick("login") ?? pick("email") ?? pick("accountEmail") ?? pick("accountId");
+  const suffix = pick("tokenSuffix");
+  const facts = [
+    account.status === "active" ? "connected" : account.status,
+    identity,
+    suffix === null ? null : `…${suffix}`,
+    `since ${account.connectedAt.slice(0, 10)}`,
+  ].filter((fact): fact is string => fact !== null);
+  return `${account.provider.padEnd(8)} ${facts.join(" · ")}`;
+};
+
+/**
+ * `mend accounts`: the signed-in user's own connected accounts on the platform — each person's
+ * subscriptions, under their own Sealant user (docs/SEALANT-IDENTITY.md).
+ */
+const accountsCommand = async (config: CliConfig) => {
+  const identity = await api<SealantIdentityDto>(config, "GET", "/me/sealant");
+  process.stdout.write(`platform user ${identity.sealantUserId}\n`);
+  const providers: ReadonlyArray<ConnectedAccountProvider> = ["claude", "codex", "github"];
+  for (const provider of providers) {
+    const account =
+      identity.accounts.find((row) => row.provider === provider && row.name === "default") ??
+      identity.accounts.find((row) => row.provider === provider);
+    process.stdout.write(
+      `  ${account === undefined ? `${provider.padEnd(8)} not connected` : accountLine(account)}\n`,
+    );
+  }
+};
+
+/**
+ * `mend connect claude|codex|github [--from-stdin] [--remove]`: send THIS machine's credential
+ * for the provider to the platform under your own user. The file the provider's CLI wrote at
+ * login is read verbatim (codex: ~/.codex/auth.json; claude: ~/.claude/.credentials.json;
+ * github: `gh auth token`); `--from-stdin` takes a pasted token or file instead. Mend forwards
+ * it once and stores nothing.
+ */
+const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const [providerArg, ...flags] = args;
+  if (!isProvider(providerArg)) {
+    return fail("usage: mend connect claude|codex|github [--from-stdin] [--remove]");
+  }
+  const provider = providerArg;
+  if (flags.includes("--remove")) {
+    const identity = await api<SealantIdentityDto>(config, "GET", "/me/sealant");
+    const account = identity.accounts.find((row) => row.provider === provider);
+    if (account === undefined) return fail(`${provider}: nothing connected`);
+    await api<ConnectedAccountDto>(config, "DELETE", `/me/sealant/accounts/${account.id}`);
+    process.stdout.write(`${provider}: disconnected\n`);
+    return;
+  }
+  let secret: string | null;
+  if (flags.includes("--from-stdin")) {
+    secret = fs.readFileSync(0, "utf8").trim();
+    if (secret === "") return fail("nothing on stdin");
+  } else {
+    secret = localCredential(provider);
+    if (secret === null) {
+      const where =
+        provider === "github"
+          ? "`gh auth login` first, or pipe a token: gh auth token | mend connect github --from-stdin"
+          : provider === "codex"
+            ? "`codex login` first, or: mend connect codex --from-stdin < auth.json"
+            : "`claude setup-token` then: mend connect claude --from-stdin";
+      return fail(`${provider}: no credential on this machine — ${where}`);
+    }
+  }
+  const account = await withSpinner(
+    `connecting ${provider}`,
+    api<ConnectedAccountDto>(config, "POST", "/me/sealant/accounts", { provider, secret }),
+  );
+  process.stdout.write(`${accountLine(account)}\n`);
+};
+
 // ─── login: obtain and save the bearer token ────────────────────────────────
 
 const takeFlagValue = (args: ReadonlyArray<string>, flag: string): string | null => {
@@ -1766,6 +1890,8 @@ _mend() {
     'attach:reattach to a running session' 'shell:open a shell in a live session workspace'
     'service:reachable ports — add, list, stop'
     'keys:the machine Mend deploy key — init, show, share'
+    'accounts:your connected accounts on the platform'
+    'connect:send this machine'"'"'s claude/codex/github credential to the platform'
     'continue:resume with the pending follow-up' 'resume:rejoin a settled session'
     'rejoin:attach if live, otherwise resume'
     'projects:adopted projects' 'sessions:sessions with review facts' 'status:active sessions'
@@ -2364,6 +2490,11 @@ const HELP = `mend — the agent workbench
                                         secret-shaped names → secrets; --secret sends all (or the
                                         named ones, e.g. DATABASE_URL) to secrets
   mend env show                         what the project store holds — names only, never values
+  mend accounts                         your connected accounts on the platform (claude, codex, github)
+  mend connect <provider> [--from-stdin] [--remove]
+                                        send THIS machine's claude/codex/github credential to the
+                                        platform under your own user (reads the file the provider's
+                                        CLI wrote at login; --from-stdin pastes one instead)
   mend dotfiles                         your dotfiles on the server: repo + synced home files
   mend dotfiles sync [--all | paths…]   capture config files from THIS machine into your store
   mend keys share                       relay THIS machine's ssh-agent to the server (bridge mode:
@@ -2427,6 +2558,10 @@ const main = async () => {
       return keysCommand(config, rest);
     case "dotfiles":
       return dotfilesCommand(config, rest);
+    case "accounts":
+      return accountsCommand(config);
+    case "connect":
+      return connectCommand(config, rest);
     case "env":
       return envCommand(config, rest);
     case "completions":

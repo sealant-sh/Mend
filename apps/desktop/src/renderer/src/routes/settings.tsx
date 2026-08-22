@@ -2,13 +2,20 @@ import { Button, buttonVariants } from "@mend/ui/components/ui/button";
 import { Input } from "@mend/ui/components/ui/input";
 import { ToggleGroup, ToggleGroupItem } from "@mend/ui/components/ui/toggle-group";
 import { cn } from "@mend/ui/lib/utils";
+import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState, type ReactNode } from "react";
 
 import { Titlebar } from "#/components/titlebar";
+import {
+  connectAccount,
+  disconnectAccount,
+  type ConnectedAccountDto,
+  type ConnectedAccountProviderDto,
+} from "#/lib/api";
 import { appSettings, HARNESSES, useAppSettings } from "#/lib/app-settings";
 import { useConnection } from "#/lib/connection";
-import { queryClient } from "#/lib/queries";
+import { queryClient, sealantIdentityQuery } from "#/lib/queries";
 import { DEFAULT_FAMILY, DEFAULT_SIZE, terminalFont, useTerminalFont } from "#/lib/terminal-font";
 import { setThemeMode, useThemeMode, type ThemeMode } from "#/lib/theme";
 import { isMonospaceFamily } from "#/terminal/ghostty/monospace-probe";
@@ -16,7 +23,8 @@ import { isMonospaceFamily } from "#/terminal/ghostty/monospace-probe";
 /**
  * Settings (BRIEF.md §settings): the terminal, appearance, workbench
  * defaults, the connection, and the keymap. Everything applies live and
- * persists per machine; nothing here writes to the server.
+ * persists per machine. The one server-side section is the signed-in user's
+ * connected accounts — their own subscriptions, held by the platform.
  */
 export const Route = createFileRoute("/settings")({
   component: Settings,
@@ -253,6 +261,8 @@ function Settings() {
             </RowShell>
           </Section>
 
+          {connection?.signedIn === true && <ConnectedAccountsSection />}
+
           <Section title="Keyboard">
             <div className="px-4 py-3">
               <table className="w-full font-mono text-[12px]">
@@ -284,5 +294,176 @@ function Settings() {
         </div>
       </main>
     </>
+  );
+}
+
+const PROVIDERS: ReadonlyArray<{
+  readonly provider: ConnectedAccountProviderDto;
+  readonly label: string;
+  readonly hint: string;
+  readonly placeholder: string;
+}> = [
+  {
+    provider: "claude",
+    label: "Claude",
+    hint: "Paste a setup token (`claude setup-token`) or ~/.claude/.credentials.json",
+    placeholder: "sk-ant-oat01-…",
+  },
+  {
+    provider: "codex",
+    label: "Codex",
+    hint: "Paste ~/.codex/auth.json from a machine where `codex login` has run",
+    placeholder: '{ "tokens": { … } }',
+  },
+  {
+    provider: "github",
+    label: "GitHub",
+    hint: "Paste `gh auth token` — gives `gh` in every session a GH_TOKEN",
+    placeholder: "gho_…",
+  },
+];
+
+const accountHint = (account: ConnectedAccountDto): string => {
+  const meta = account.metadata;
+  const pick = (key: string) => (typeof meta[key] === "string" ? String(meta[key]) : null);
+  const identity = pick("login") ?? pick("email") ?? pick("accountEmail") ?? pick("accountId");
+  const suffix = pick("tokenSuffix");
+  const parts = [
+    "connected",
+    identity,
+    suffix === null ? null : `…${suffix}`,
+    account.status === "invalid" ? "rejected by the provider — reconnect" : null,
+  ].filter((part): part is string => part !== null);
+  return parts.join(" · ");
+};
+
+/**
+ * The signed-in user's own provider accounts (docs/SEALANT-IDENTITY.md in the
+ * Mend repo). The credential goes to the platform under their Sealant user
+ * and is never shown again; Mend stores nothing.
+ */
+const refreshIdentity = () => queryClient.invalidateQueries({ queryKey: ["sealant-identity"] });
+
+function ConnectedAccountsSection() {
+  const identity = useQuery(sealantIdentityQuery);
+  const [editing, setEditing] = useState<ConnectedAccountProviderDto | null>(null);
+  const [secret, setSecret] = useState("");
+  const [pending, setPending] = useState<ConnectedAccountProviderDto | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = refreshIdentity;
+  const report = (cause: unknown) =>
+    setError(cause instanceof Error ? cause.message : String(cause));
+  const submit = (provider: ConnectedAccountProviderDto) => {
+    const value = secret.trim();
+    if (value === "") return;
+    setPending(provider);
+    setError(null);
+    void connectAccount({ provider, secret: value })
+      .then(() => {
+        setEditing(null);
+        setSecret("");
+        return refresh();
+      })
+      .catch(report)
+      .finally(() => setPending(null));
+  };
+  const disconnect = (account: ConnectedAccountDto) => {
+    setPending(account.provider);
+    setError(null);
+    void disconnectAccount(account.id)
+      .then(() => refresh())
+      .catch(report)
+      .finally(() => setPending(null));
+  };
+
+  return (
+    <Section title="Connected accounts">
+      {identity.data === undefined ? (
+        <RowShell
+          label={identity.isError ? "Platform identity unavailable" : "Loading…"}
+          {...(identity.isError ? { hint: String(identity.error) } : {})}
+        >
+          <span />
+        </RowShell>
+      ) : (
+        PROVIDERS.map((row) => {
+          const accounts = identity.data.accounts;
+          const account =
+            accounts.find(
+              (candidate) => candidate.provider === row.provider && candidate.name === "default",
+            ) ?? accounts.find((candidate) => candidate.provider === row.provider);
+          const isEditing = editing === row.provider;
+          const busy = pending === row.provider;
+          return (
+            <div key={row.provider}>
+              <RowShell
+                label={row.label}
+                hint={account === undefined ? row.hint : accountHint(account)}
+              >
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => {
+                    setError(null);
+                    setSecret("");
+                    setEditing(isEditing ? null : row.provider);
+                  }}
+                >
+                  {isEditing ? "Cancel" : account === undefined ? "Connect" : "Replace"}
+                </Button>
+                {account !== undefined && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    disabled={busy}
+                    onClick={() => disconnect(account)}
+                  >
+                    Disconnect
+                  </Button>
+                )}
+              </RowShell>
+              {isEditing && (
+                <form
+                  className="flex items-center gap-2 border-t border-rule px-4 py-3"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    submit(row.provider);
+                  }}
+                >
+                  <Input
+                    autoFocus
+                    type="password"
+                    value={secret}
+                    placeholder={row.placeholder}
+                    spellCheck={false}
+                    autoComplete="off"
+                    onChange={(event) => setSecret(event.target.value)}
+                    className="font-mono"
+                  />
+                  <Button type="submit" disabled={busy || secret.trim() === ""}>
+                    {busy ? "Connecting…" : "Connect"}
+                  </Button>
+                </form>
+              )}
+            </div>
+          );
+        })
+      )}
+      {error !== null && (
+        <p
+          className="border-t border-rule px-4 py-3 font-mono text-[12.5px] text-warning"
+          role="alert"
+        >
+          {error}
+        </p>
+      )}
+      <p className="border-t border-rule px-4 py-3 font-sans text-[12.5px] leading-relaxed text-label">
+        Your subscriptions, under your platform user
+        {identity.data === undefined ? "" : ` ${identity.data.sealantUserId}`}. Sessions and Mend's
+        model calls run on these. Credentials go to Sealant once and are not kept here.
+      </p>
+    </Section>
   );
 }

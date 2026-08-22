@@ -476,6 +476,10 @@ process-env parsers alias the sandbox-era names for a release.
 - **Suggested:** noting rather than asking — the internal-config comment already says this
   disappears once auth lands. Until then, surfacing the web user's id somewhere copyable in the
   Sealant UI (or aligning the default owner) would save the next self-hoster the archaeology.
+- **Resolved 2026-08-22 (Core `feat/service-principals`):** `SEALANT_SERVICE_KEYS` +
+  `POST /v1/users` + `SealantConfig.ownerUserId`. Mend is a service principal and provisions one
+  Sealant user per Mend account; `SEALANT_OWNER_USER_ID` is gone from Mend
+  (`docs/SEALANT-IDENTITY.md`).
 
 ## 2026-07-08 · 0.5.1 · No file-change events recorded for harness edits (diff comes up empty)
 

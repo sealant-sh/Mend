@@ -1,30 +1,31 @@
 import { QueryClient, queryOptions } from "@tanstack/react-query";
 
 import {
-  listServices,
-  listSessionProcesses,
-  listSessionRecipes,
   changeComments,
   changeDiff,
-  openReview,
-  reviewDiff,
   changePasses,
   changeStats,
   changeTour,
   getDotfiles,
   getMachine,
+  getSealantIdentity,
   getSettings,
   gitBridgeStatus,
   gitKey,
   listActiveSessions,
   listProjects,
   listReferences,
+  listServices,
+  listSessionProcesses,
+  listSessionRecipes,
+  openReview,
   pendingFollowUp,
   projectDetail,
   projectHotSessionsStatus,
   projectMounts,
   projectRecipes,
   projectReferences,
+  reviewDiff,
   sessionDetail,
   sessionTranscript,
 } from "#/lib/api";
@@ -216,4 +217,9 @@ export const dotfilesQuery = queryOptions({
 export const settingsQuery = queryOptions({
   queryKey: ["settings"],
   queryFn: getSettings,
+});
+
+export const sealantIdentityQuery = queryOptions({
+  queryKey: ["sealant-identity"],
+  queryFn: getSealantIdentity,
 });

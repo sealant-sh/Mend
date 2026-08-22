@@ -2,6 +2,7 @@ import { QueryClient, queryOptions } from "@tanstack/react-query";
 
 import {
   changeComments,
+  getSealantIdentity,
   isUnauthorized,
   listProjects,
   listServices,
@@ -27,6 +28,11 @@ export const queryClient = new QueryClient({
       retry: (count, error) => !isUnauthorized(error) && count < 1,
     },
   },
+});
+
+export const sealantIdentityQuery = queryOptions({
+  queryKey: ["sealant-identity"],
+  queryFn: getSealantIdentity,
 });
 
 export const projectsQuery = queryOptions({

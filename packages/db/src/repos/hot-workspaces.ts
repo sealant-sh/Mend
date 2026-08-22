@@ -11,7 +11,7 @@ import {
   type SessionExtraMount,
   type SessionReferenceMount,
 } from "@mend/domain/workbench";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -57,6 +57,7 @@ export class HotWorkspacesRepo extends Context.Service<
     readonly claim: (
       projectId: ProjectId,
       fingerprint: string,
+      ownerUserId: string | null,
     ) => Effect.Effect<HotWorkspace | null>;
     readonly remove: (id: SessionId) => Effect.Effect<void>;
   }
@@ -141,7 +142,10 @@ export const HotWorkspacesRepoLive: Layer.Layer<HotWorkspacesRepo, never, MendDB
     const claim = Effect.fn("HotWorkspacesRepo.claim")(function* (
       projectId: ProjectId,
       fingerprint: string,
+      ownerUserId: string | null,
     ) {
+      // A skeleton was provisioned AS its owner (its workspace carries that user's connected
+      // accounts), so only that owner's sessions may claim it (docs/SEALANT-IDENTITY.md).
       const oldestReady = db
         .select({ id: hotWorkspaces.id })
         .from(hotWorkspaces)
@@ -150,6 +154,9 @@ export const HotWorkspacesRepoLive: Layer.Layer<HotWorkspacesRepo, never, MendDB
             eq(hotWorkspaces.projectId, projectId),
             eq(hotWorkspaces.status, "ready"),
             eq(hotWorkspaces.fingerprint, fingerprint),
+            ownerUserId === null
+              ? isNull(hotWorkspaces.ownerUserId)
+              : eq(hotWorkspaces.ownerUserId, ownerUserId),
           ),
         )
         .orderBy(asc(hotWorkspaces.createdAt))
