@@ -1327,6 +1327,15 @@ describe("SessionEngine", () => {
           expect(attached[0]?.process.argv).toEqual(["codex", "app-server"]);
           expect(submitted).toEqual(["inspect replay"]);
 
+          const duplicate = yield* engine
+            .launchProtocol(session.id, { mode: "protocol", permissionMode: "bypass" }, null)
+            .pipe(Effect.flip);
+          expect(duplicate).toBeInstanceOf(SealantPlatformError);
+          expect(duplicate instanceof SealantPlatformError ? duplicate.code : null).toBe(
+            "session_active",
+          );
+          expect(attached).toHaveLength(1);
+
           yield* engine.stop(session.id);
           yield* engine.resumeSession(session.id, null);
           expect(attached[1]?.process.kind).toBe("agent-protocol");
@@ -1348,6 +1357,149 @@ describe("SessionEngine", () => {
           undefined,
           openedOptions,
         ),
+        protocolHostLayer: recordingProtocolHostLayer(attached, submitted),
+      },
+    );
+  });
+
+  it("resumes an idle protocol session in the workspace retained by its shell", async () => {
+    const created: CreateOptions[] = [];
+    const stopped: string[] = [];
+    const openedOptions: SessionOptions[] = [];
+    const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
+    const submitted: string[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            ownerUserId: null,
+            base: null,
+          });
+          yield* engine.launchProtocol(
+            session.id,
+            { mode: "protocol", permissionMode: "bypass" },
+            "user-1",
+          );
+          const shell = yield* engine.openShell(session.id);
+          yield* engine.stop(session.id);
+          expect(world.sessions.get(session.id)?.status).toBe("idle");
+
+          const resumed = yield* engine.resumeSession(session.id, null);
+
+          expect(resumed.status).toBe("running");
+          expect(created).toHaveLength(1);
+          expect(stopped).toEqual([]);
+          expect(world.processes.get(shell.id)?.exitedAt).toBeNull();
+          expect(attached).toHaveLength(2);
+          expect(attached[1]?.mode).toBe("pipe");
+          expect(attached[1]?.process.kind).toBe("agent-protocol");
+          expect(attached[1]?.process.sealantWorkspaceId).toBe(shell.sealantWorkspaceId);
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          stopped,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          openedOptions,
+        ),
+        protocolHostLayer: recordingProtocolHostLayer(attached, submitted),
+      },
+    );
+  });
+
+  it("honors a fresh protocol resume while a shell retains the old workspace", async () => {
+    const created: CreateOptions[] = [];
+    const stopped: string[] = [];
+    const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
+    const submitted: string[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            ownerUserId: null,
+            base: null,
+          });
+          yield* engine.launchProtocol(
+            session.id,
+            { mode: "protocol", permissionMode: "bypass" },
+            "user-1",
+          );
+          const shell = yield* engine.openShell(session.id);
+          yield* engine.stop(session.id);
+          expect(world.sessions.get(session.id)?.status).toBe("idle");
+
+          const resumed = yield* engine.resumeSession(session.id, null, true);
+
+          expect(resumed.status).toBe("running");
+          expect(created).toHaveLength(2);
+          expect(stopped).toEqual(["workspace-1"]);
+          expect(world.processes.get(shell.id)?.exitedAt).not.toBeNull();
+          expect(attached).toHaveLength(2);
+          expect(attached[1]?.process.kind).toBe("agent-protocol");
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created, undefined, stopped),
+        protocolHostLayer: recordingProtocolHostLayer(attached, submitted),
+      },
+    );
+  });
+
+  it("falls back to a fresh protocol launch when the retained workspace disappears", async () => {
+    const created: CreateOptions[] = [];
+    const stopped: string[] = [];
+    const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
+    const submitted: string[] = [];
+    let simulateDisappearance = false;
+    let workspaceLookups = 0;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            ownerUserId: null,
+            base: null,
+          });
+          yield* engine.launchProtocol(
+            session.id,
+            { mode: "protocol", permissionMode: "bypass" },
+            "user-1",
+          );
+          yield* engine.openShell(session.id);
+          yield* engine.stop(session.id);
+          expect(world.sessions.get(session.id)?.status).toBe("idle");
+          simulateDisappearance = true;
+
+          const resumed = yield* engine.resumeSession(session.id, null);
+
+          expect(resumed.status).toBe("running");
+          expect(created).toHaveLength(2);
+          expect(stopped).toEqual(["workspace-1"]);
+          expect(attached).toHaveLength(2);
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created, undefined, stopped, undefined, () => {
+          if (!simulateDisappearance) return false;
+          workspaceLookups += 1;
+          return workspaceLookups === 2;
+        }),
         protocolHostLayer: recordingProtocolHostLayer(attached, submitted),
       },
     );
