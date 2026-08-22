@@ -47,12 +47,12 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
 
 - Never open a PR (or push a branch for one) without first running
   `pnpm exec turbo typecheck --force` and `pnpm exec turbo lint --force` and seeing both pass —
-  forced, so a warm cache can't lie. Note the residual gap: CI installs with `--lockfile=false`, so
-  local green only equals CI green while the catalog pins exact versions; if CI fails on code you
-  didn't touch, suspect dependency drift before suspecting your diff.
+  forced, so a warm cache can't lie.
+- `pnpm-lock.yaml` is generated, never hand-edited: let `pnpm install` / `pnpm add` write it, and
+  commit the result alongside the `package.json` change that caused it — a PR that adds a dependency
+  ships its lockfile update.
 - After code changes, always run `pnpm format:fix`.
 - For type-checking, always use `tsgo` (`pnpm typecheck`) and do not use `tsc`.
-- Never touch `pnpm-lock.yaml` (no manual edits and no workflow steps that update it).
 - For internal dependencies, always use `workspace:*` in `package.json` and import via
   `@mend/<package-name>`; never import from `../packages/*` paths.
 - For external dependencies used by more than one app/package, prefer `catalog:` versions in
@@ -61,8 +61,6 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
   `pnpm-workspace.yaml` `catalog` and then reference it as `catalog:` from importers.
 - Do not duplicate shared external dependency version strings across apps/packages; keep version
   authority in `pnpm-workspace.yaml`.
-- When installing new dependencies for agent work, do not update the lockfile (for example use
-  `pnpm add --lockfile=false ...` when needed).
 - For any non-tiny UI change, read `DESIGN.md` first and follow it as the design source of truth.
   Mend must be visually identical family with Sealant's Evidence Review language.
 - Do not add `"use client"` anywhere; this repo is not Next.js.
