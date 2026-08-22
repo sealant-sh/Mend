@@ -12,7 +12,7 @@
 #
 # Host requirements: curl, git, a running Docker daemon with Compose >= 2.23.1. Node 22+ on PATH is
 # used; otherwise a private Node 26 is downloaded (26 is what the CLI's dashboard needs for
-# node:ffi). No sudo, no system-wide prefix, loopback only. Linux is what this is tested on; macOS
+# node:ffi; official Node 25+ builds need libatomic1 on Debian/Ubuntu). No sudo, no system-wide prefix, loopback only. Linux is what this is tested on; macOS
 # is untested — Sealant's containers bind-mount /run/sealant/sockets, which Docker Desktop does not
 # share by default, so Darwin needs MEND_ALLOW_MACOS=1 to proceed.
 #
@@ -235,6 +235,15 @@ else
 fi
 export PATH="$NPM_PREFIX/bin:$(dirname "$NODE_BIN"):$PATH"
 NODE_DIR_BIN="$(dirname "$NODE_BIN")"
+# The service runs this binary with no login environment: no LD_LIBRARY_PATH, no version manager.
+# Prove it starts that way now, or the install would end with a unit in a restart loop. Node 25+
+# official builds need libatomic.so.1, which minimal Debian/Ubuntu images lack.
+if ! env -i HOME="$HOME" PATH="$NODE_DIR_BIN" node -e 0 2>/dev/null; then
+  node_err="$(env -i HOME="$HOME" PATH="$NODE_DIR_BIN" node -e 0 2>&1 | tail -n 1)"
+  hint=""
+  case "$node_err" in *libatomic*) hint=" Missing libatomic: sudo apt install libatomic1 (Debian/Ubuntu), dnf install libatomic (Fedora)." ;; esac
+  die "$NODE_BIN cannot start outside your shell environment: $node_err.$hint"
+fi
 ok "Node: $NODE_BIN"
 if [ "$(node_major "$NODE_BIN")" -lt "$NODE_MAJOR" ] 2>/dev/null; then
   info "This Node runs every command except the dashboard (bare \`mend\`), which needs Node $NODE_MAJOR for node:ffi."
@@ -421,6 +430,31 @@ EOF
 info "Starting Mend's Postgres on 127.0.0.1:$MEND_DB_PORT…"
 mend_compose up -d --wait || die "Mend's Postgres failed to start. Inspect with: docker compose --project-directory $MEND_DIR logs"
 
+# --- CLI (before the server starts: if the service fails, `mend doctor` is still there) ----------------------------------------------------------------------------------------------
+if [ "$MEND_VERSION" = main ]; then CLI_VERSION=latest; else CLI_VERSION="$MEND_VERSION"; fi
+run "$NPM_BIN" install -g --prefix "$NPM_PREFIX" --no-fund --no-audit --loglevel=error "@sealant/mend@$CLI_VERSION"
+# A wrapper, not npm's symlink: the CLI's shebang is `#!/usr/bin/env node`, and on a host that had
+# no Node the only Node is the private one under $NODE_DIR. The wrapper names it outright and puts
+# it on PATH first, so `mend` runs and can re-exec itself.
+MEND_BIN="$HOME/.local/bin/mend"
+run mkdir -p "$HOME/.local/bin"
+# An earlier install may have left npm's symlink here; writing through it would clobber npm's bin.
+run rm -f "$MEND_BIN"
+cat >"$(stage_file "$MEND_BIN")" <<EOF
+#!/bin/sh
+# Written by Mend's installer. Re-run it to move this wrapper to another Node.
+PATH="$NPM_PREFIX/bin:$NODE_DIR_BIN:\$PATH"
+export PATH
+exec "$NODE_BIN" "$NPM_PREFIX/lib/node_modules/@sealant/mend/dist/main.js" "\$@"
+EOF
+run chmod 755 "$MEND_BIN"
+ok "mend CLI at ~/.local/bin/mend (running $NODE_BIN)"
+case ":$PATH:" in
+*":$HOME/.local/bin:"*) ;;
+*) info "~/.local/bin is not on your PATH. Add to your shell rc:  export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
+esac
+
+# --- Mend service ------------------------------------------------------------------------------------
 ENTRY="$MEND_SRC/apps/web/src/entry/main.ts"
 case "$OS" in
 linux)
@@ -476,30 +510,6 @@ EOF
 esac
 wait_for "http://127.0.0.1:$MEND_PORT/api/health" "Mend did not become healthy. Check: $MANAGE_LOGS"
 ok "Mend server on http://127.0.0.1:$MEND_PORT"
-
-# --- CLI ----------------------------------------------------------------------------------------------
-if [ "$MEND_VERSION" = main ]; then CLI_VERSION=latest; else CLI_VERSION="$MEND_VERSION"; fi
-run "$NPM_BIN" install -g --prefix "$NPM_PREFIX" --no-fund --no-audit --loglevel=error "@sealant/mend@$CLI_VERSION"
-# A wrapper, not npm's symlink: the CLI's shebang is `#!/usr/bin/env node`, and on a host that had
-# no Node the only Node is the private one under $NODE_DIR. The wrapper names it outright and puts
-# it on PATH first, so `mend` runs and can re-exec itself.
-MEND_BIN="$HOME/.local/bin/mend"
-run mkdir -p "$HOME/.local/bin"
-# An earlier install may have left npm's symlink here; writing through it would clobber npm's bin.
-run rm -f "$MEND_BIN"
-cat >"$(stage_file "$MEND_BIN")" <<EOF
-#!/bin/sh
-# Written by Mend's installer. Re-run it to move this wrapper to another Node.
-PATH="$NPM_PREFIX/bin:$NODE_DIR_BIN:\$PATH"
-export PATH
-exec "$NODE_BIN" "$NPM_PREFIX/lib/node_modules/@sealant/mend/dist/main.js" "\$@"
-EOF
-run chmod 755 "$MEND_BIN"
-ok "mend CLI at ~/.local/bin/mend (running $NODE_BIN)"
-case ":$PATH:" in
-*":$HOME/.local/bin:"*) ;;
-*) info "~/.local/bin is not on your PATH. Add to your shell rc:  export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
-esac
 
 # --- Done ----------------------------------------------------------------------------------------------
 printf '\n'
