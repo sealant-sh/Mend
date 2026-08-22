@@ -7,6 +7,25 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-08-22 · 0.22.0 · Installer: a no-web mode Mend can delegate to
+
+- **Needed:** Mend's one-line installer (`install.sh`) brings up Sealant as its control plane and
+  replaces the Sealant web app with Mend (docs/SEALANT-IDENTITY.md). It wants to hand that part to
+  Core's installer and only layer Mend on top.
+- **Today:** `install.sh` in Core always pulls and starts `sealant-web`, waits on its port, and
+  writes only the four original secrets. So Mend's script re-implements the Sealant half: same
+  install dir, compose asset/raw URLs, version precedence and `.env` helpers, but it pulls
+  `api`/`worker`/`ssh-gateway` only, starts with `--scale web=0`, and additionally writes
+  `SEALANT_SERVICE_KEYS` (one `slt_svc_` key, generated once), `SEALANT_CREDENTIALS_KEY` (32 raw
+  bytes base64) and `SEALANT_MOUNT_ALLOWED_STORE_ROOTS` (merged into any existing colon list). Two
+  copies of that logic will drift — the legacy `~/.sealant` merge is already simplified on Mend's
+  side.
+- **Suggested:** `SEALANT_NO_WEB=1` (or `SEALANT_SERVICES=…`) in Core's installer that skips the web
+  image, starts with `--scale web=0` and skips its health wait; generate `SEALANT_SERVICE_KEYS` and
+  `SEALANT_CREDENTIALS_KEY` the way the other secrets are generated; accept
+  `SEALANT_MOUNT_ALLOWED_STORE_ROOTS` as a merge-in setting. Mend's installer would then become
+  `curl get.sealant.dev | SEALANT_NO_WEB=1 sh` plus the Mend-specific steps.
+
 ## 2026-08-20 · 0.19.0 · Codex inference: naming sessions on whichever sub the user has
 
 **Implemented at the source** — [sealant#181](https://github.com/sealant-sh/sealant/pull/181)

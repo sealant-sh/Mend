@@ -7,9 +7,9 @@
     "#/*": "./src/*"
   },
   "scripts": {
-    "build": "vite build",
+    "build": "node scripts/sync-install-script.mjs && vite build",
     "cf-typegen": "wrangler types",
-    "deploy": "vite build && wrangler deploy",
+    "deploy": "pnpm run build && wrangler deploy",
     "dev": "vite dev --port 3102",
     "lint": "oxlint .",
     "preview": "vite preview",

@@ -3,26 +3,44 @@ import { useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { useReducer, useState } from "react";
 
+import {
+  PairingQr,
+  formatDay,
+  formatLastUsed,
+  pairingPayload,
+  pairingUrls,
+  renderPairingSvg,
+  useSecondTick,
+} from "#/components/pairing-qr";
 import { AppShell } from "#/components/shell";
 import {
   connectAccount,
+  createPairing,
   deleteDotfilesSnapshot,
   disconnectAccount,
   postDotfilesSnapshot,
   putDotfilesRepository,
   putSettings,
+  revokeDevice,
   saveWorkspaceEnvironment,
   scanHostEnvironment,
   sealantConnection,
   type DotfilesDto,
   type DotfilesRepositoryDto,
   type HostEnvironmentSuggestionsDto,
+  type PairingDto,
   type ConnectedAccountDto,
   type ConnectedAccountProviderDto,
   type SealantConnectionDto,
   type SettingsDto,
 } from "#/lib/api";
-import { dotfilesQuery, queryClient, sealantIdentityQuery, settingsQuery } from "#/lib/queries";
+import {
+  devicesQuery,
+  dotfilesQuery,
+  queryClient,
+  sealantIdentityQuery,
+  settingsQuery,
+} from "#/lib/queries";
 import { setThemePreference, useThemePreference, type ThemePreference } from "#/lib/theme";
 import {
   createWorkspaceEnvironmentForm,
@@ -41,6 +59,7 @@ export const Route = createFileRoute("/settings")({
       queryClient.ensureQueryData(settingsQuery),
       queryClient.ensureQueryData(dotfilesQuery),
       queryClient.ensureQueryData(sealantIdentityQuery),
+      queryClient.ensureQueryData(devicesQuery),
     ]);
     return sealantConnection();
   },
@@ -66,6 +85,7 @@ function SettingsPage() {
         <DotfilesPanel />
         <ReviewAutomationPanel />
         <ConnectedAccountsPanel />
+        <DevicesPanel />
         <SealantConnectionPanel connection={connection} />
       </div>
     </AppShell>
@@ -1147,6 +1167,139 @@ function ConnectedAccountsPanel() {
             </div>
           );
         })}
+        {error === null ? null : (
+          <p className="font-mono text-[12.5px] text-warning" role="alert">
+            {error}
+          </p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+const refreshDevices = () => queryClient.invalidateQueries({ queryKey: ["devices"] });
+
+/** Mint a code and draw its QR for the first candidate URL — one await chain, no effects. */
+const mintPairing = async (): Promise<{ pairing: PairingDto; svg: string }> => {
+  const pairing = await createPairing();
+  const url = pairingUrls(pairing)[0] ?? "";
+  const svg = await renderPairingSvg(pairingPayload(url, pairing.code));
+  return { pairing, svg };
+};
+
+/**
+ * Paired devices. Each one holds a bearer token of its own, minted by a code
+ * this machine shows for ten minutes; revoking a device ends that token.
+ */
+function DevicesPanel() {
+  const devices = useSuspenseQuery(devicesQuery).data;
+  const [minted, setMinted] = useState<{ pairing: PairingDto; svg: string } | null>(null);
+  const [pending, setPending] = useState(false);
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const now = useSecondTick();
+
+  const startPairing = () => {
+    setPending(true);
+    setError(null);
+    void mintPairing()
+      .then((made) => setMinted(made))
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+      .finally(() => setPending(false));
+  };
+
+  const revoke = (id: string) => {
+    setError(null);
+    void revokeDevice(id)
+      .then(() => {
+        setConfirming(null);
+        return refreshDevices();
+      })
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)));
+  };
+
+  return (
+    <section id="devices" className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="font-sans text-sm font-semibold">Devices</h2>
+          <p className="mt-1 max-w-[58ch] text-[13px] leading-relaxed text-muted-foreground">
+            A paired phone holds a token of its own and reaches this machine over your private
+            network. Revoking ends that token.
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-3">
+          <button
+            type="button"
+            onClick={() => void refreshDevices()}
+            className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+          >
+            Refresh
+          </button>
+          <button
+            type="button"
+            disabled={pending}
+            onClick={startPairing}
+            className="rounded-xl bg-primary px-3.5 py-1.5 font-sans text-xs font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-transform hover:-translate-y-0.5 disabled:opacity-50"
+          >
+            {pending ? "Minting…" : "Pair a phone"}
+          </button>
+        </div>
+      </div>
+
+      {minted === null ? null : (
+        <PairingQr
+          pairing={minted.pairing}
+          initialSvg={minted.svg}
+          onDismiss={() => {
+            setMinted(null);
+            void refreshDevices();
+          }}
+        />
+      )}
+
+      <div className="mt-5 space-y-4 border-t border-[var(--sw-faint-rule)] pt-5">
+        {devices.length === 0 ? (
+          <p className="font-mono text-[12px] text-label">no devices paired</p>
+        ) : (
+          devices.map((device) => (
+            <div key={device.id} className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <p className="font-sans text-sm font-medium text-foreground">{device.name}</p>
+                <p className="mt-1 font-mono text-[12px] text-label">
+                  {device.platform} · paired {formatDay(device.createdAt)} · last used{" "}
+                  {formatLastUsed(device.lastUsedAt, now)}
+                </p>
+              </div>
+              {confirming === device.id ? (
+                <div className="flex shrink-0 items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => revoke(device.id)}
+                    className="font-sans text-xs font-medium text-danger transition-opacity hover:opacity-80"
+                  >
+                    Confirm revoke
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirming(null)}
+                    className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirming(device.id)}
+                  className="shrink-0 font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  Revoke
+                </button>
+              )}
+            </div>
+          ))
+        )}
         {error === null ? null : (
           <p className="font-mono text-[12.5px] text-warning" role="alert">
             {error}

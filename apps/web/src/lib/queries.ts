@@ -13,6 +13,7 @@ import {
   gitBridgeStatus,
   gitKey,
   listActiveSessions,
+  listDevices,
   listProjects,
   listReferences,
   listServices,
@@ -222,4 +223,14 @@ export const settingsQuery = queryOptions({
 export const sealantIdentityQuery = queryOptions({
   queryKey: ["sealant-identity"],
   queryFn: getSealantIdentity,
+});
+
+/**
+ * Paired devices. Read on the first-run checklist and in settings, so it is
+ * one query with one key — the two surfaces share the cache.
+ */
+export const devicesQuery = queryOptions({
+  queryKey: ["devices"],
+  queryFn: listDevices,
+  staleTime: 30_000,
 });

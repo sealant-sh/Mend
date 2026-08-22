@@ -1,16 +1,18 @@
-// Settings — the machine this app steers: server URL + the bearer token the
-// CLI already uses (MEND_TOKEN), plus how the app reads: theme and text size.
-// Stored on device; nothing else to set up.
+// Settings — the machine this app steers. Pairing is the path: the machine
+// shows a code, this phone claims it and keeps the token it gets back. The
+// hand-typed bearer token lives on under Advanced. Plus how the app reads:
+// theme and text size. Stored on device; nothing else to set up.
 
-import { useEffect, useState } from "react";
-import { Pressable, TextInput, View } from "react-native";
+import { useRouter } from "expo-router";
+import { useState } from "react";
+import { Pressable, StyleSheet, TextInput, View } from "react-native";
 
 import { EvButton } from "@/components/button";
 import { Panel } from "@/components/panel";
 import { Screen, ScreenHeader } from "@/components/screen";
 import { StatusWord } from "@/components/status";
 import { MonoText, UiText } from "@/components/typography";
-import { loadConfig, saveConfig } from "@/data/live";
+import { clearConfig, saveConfig, useConfig } from "@/data/live";
 import { enablePushNotifications } from "@/data/notifications";
 import type { ThemePreference } from "@/data/preferences";
 import { setDisplayPreferences, TEXT_SCALES, useDisplayPreferences } from "@/data/preferences";
@@ -56,9 +58,13 @@ function Segmented<T extends string | number>({
 
 export default function SettingsScreen() {
   const { colors } = useEvidenceTheme();
+  const router = useRouter();
   const display = useDisplayPreferences();
-  const [url, setUrl] = useState("");
-  const [token, setToken] = useState("");
+  const config = useConfig();
+  // The stored config is the truth; a draft only exists once something is
+  // typed under Advanced. No effect, no copy that goes stale on save.
+  const [draft, setDraft] = useState<{ readonly url: string; readonly token: string } | null>(null);
+  const [advanced, setAdvanced] = useState(false);
   const [saved, setSaved] = useState(false);
   const [push, setPush] = useState<
     | { readonly state: "idle" }
@@ -73,7 +79,21 @@ export default function SettingsScreen() {
     | { readonly state: "bad"; readonly detail: string }
   >({ state: "idle" });
 
-  /** Test what's TYPED (not what's saved): health first, then an authed call. */
+  // Nothing is known about this phone until AsyncStorage answers — see live.ts.
+  // Rendering "Not paired" before that flashes the wrong panel on every launch.
+  if (config === null) {
+    return (
+      <Screen topInset>
+        <ScreenHeader eyebrow="mend" title="Settings" meta="reading this device" />
+      </Screen>
+    );
+  }
+
+  const url = draft?.url ?? config.url;
+  const token = draft?.token ?? config.token;
+  const paired = config.url !== "" && config.token !== "";
+
+  /** Test what's typed (not only what's saved): health first, then an authed call. */
   const testConnection = async () => {
     setCheck({ state: "testing" });
     const base = url.trim().replace(/\/$/, "");
@@ -104,14 +124,6 @@ export default function SettingsScreen() {
     }
   };
 
-  useEffect(() => {
-    void (async () => {
-      const config = await loadConfig();
-      setUrl(config.url);
-      setToken(config.token);
-    })();
-  }, []);
-
   const inputStyle = {
     borderWidth: 1,
     borderColor: colors.rule,
@@ -122,57 +134,149 @@ export default function SettingsScreen() {
     fontSize: 14,
   };
 
+  const pairedLine =
+    config.deviceName === null && config.pairedAt === null
+      ? "token entered by hand"
+      : `${config.deviceName ?? "this device"}${
+          config.pairedAt === null ? "" : ` · paired ${config.pairedAt.slice(0, 10)}`
+        }`;
+
   return (
     <Screen topInset>
-      <ScreenHeader eyebrow="mend" title="Settings" meta="server · token" />
+      <ScreenHeader
+        eyebrow="mend"
+        title="Settings"
+        meta={paired ? "paired · one connection" : "not paired"}
+      />
+      {paired ? (
+        <Panel>
+          <View style={{ padding: 16, gap: 12 }}>
+            <UiText weight="medium">This phone is paired</UiText>
+            <MonoText>{config.url}</MonoText>
+            <MonoText tone="faint">{pairedLine}</MonoText>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+              <EvButton
+                variant="outline"
+                label={check.state === "testing" ? "Testing…" : "Test connection"}
+                onPress={() => void testConnection()}
+                style={{ flex: 1 }}
+              />
+              {check.state === "ok" && <StatusWord tone="observed" word="connected" />}
+              {check.state === "bad" && <StatusWord tone="breakage" word="failed" />}
+            </View>
+            {(check.state === "ok" || check.state === "bad") && <MonoText>{check.detail}</MonoText>}
+            <View style={{ flexDirection: "row", gap: 12 }}>
+              <EvButton
+                variant="outline"
+                label="Pair another machine"
+                onPress={() => router.push("/pair")}
+                style={{ flex: 1 }}
+              />
+              <EvButton
+                variant="ghost"
+                label="Unpair"
+                onPress={() => {
+                  void clearConfig().then(() => {
+                    setDraft(null);
+                    setCheck({ state: "idle" });
+                    setSaved(false);
+                    return undefined;
+                  });
+                }}
+              />
+            </View>
+            <MonoText tone="faint">
+              Unpair clears the URL and token on this phone only. The machine keeps the device until
+              you revoke it there — Settings → Devices.
+            </MonoText>
+          </View>
+        </Panel>
+      ) : (
+        <Panel>
+          <View style={{ padding: 16, gap: 12 }}>
+            <UiText weight="medium">Not paired</UiText>
+            <UiText>
+              On the machine running Mend, open Settings → Devices and show the pairing code. Scan
+              it here and this phone gets its own token.
+            </UiText>
+            <MonoText tone="faint">no server · no token</MonoText>
+            <EvButton label="Pair with your machine" onPress={() => router.push("/pair")} />
+          </View>
+        </Panel>
+      )}
       <Panel>
-        <View style={{ padding: 16, gap: 12 }}>
-          <UiText>Server URL (reachable from this phone — tailnet or LAN)</UiText>
-          <TextInput
-            value={url}
-            onChangeText={(value) => {
-              setUrl(value);
-              setSaved(false);
+        <Pressable
+          onPress={() => setAdvanced(!advanced)}
+          style={{
+            padding: 16,
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <UiText weight="medium">Advanced</UiText>
+          <MonoText tone="faint">{advanced ? "hide" : "server url · bearer token"}</MonoText>
+        </Pressable>
+        {advanced && (
+          <View
+            style={{
+              paddingHorizontal: 16,
+              paddingBottom: 16,
+              paddingTop: 12,
+              gap: 12,
+              borderTopWidth: StyleSheet.hairlineWidth,
+              borderTopColor: colors.faintRule,
             }}
-            placeholder="http://your-machine.tailnet:3105"
-            autoCapitalize="none"
-            autoCorrect={false}
-            style={inputStyle}
-          />
-          <UiText>Bearer token (same as MEND_TOKEN)</UiText>
-          <TextInput
-            value={token}
-            onChangeText={(value) => {
-              setToken(value);
-              setSaved(false);
-            }}
-            placeholder="token"
-            autoCapitalize="none"
-            autoCorrect={false}
-            secureTextEntry
-            style={inputStyle}
-          />
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+          >
+            <MonoText tone="faint">
+              legacy path — the CLI bearer token (MEND_TOKEN), typed by hand. Pairing replaces it.
+            </MonoText>
+            <UiText>Server URL (reachable from this phone — tailnet or LAN)</UiText>
+            <TextInput
+              value={url}
+              onChangeText={(next) => {
+                setDraft({ url: next, token });
+                setSaved(false);
+              }}
+              placeholder="http://your-machine.tailnet:3105"
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={inputStyle}
+            />
+            <UiText>Bearer token</UiText>
+            <TextInput
+              value={token}
+              onChangeText={(next) => {
+                setDraft({ url, token: next });
+                setSaved(false);
+              }}
+              placeholder="token"
+              autoCapitalize="none"
+              autoCorrect={false}
+              secureTextEntry
+              style={inputStyle}
+            />
             <EvButton
               variant="outline"
-              label={check.state === "testing" ? "Testing…" : "Test connection"}
-              onPress={() => void testConnection()}
-              style={{ flex: 1 }}
+              label={saved ? "Saved" : "Save"}
+              onPress={() => {
+                void saveConfig({
+                  url: url.trim().replace(/\/$/, ""),
+                  token: token.trim(),
+                  deviceName: null,
+                  pairedAt: null,
+                }).then(() => {
+                  setDraft(null);
+                  setSaved(true);
+                  return undefined;
+                });
+              }}
             />
-            {check.state === "ok" && <StatusWord tone="observed" word="connected" />}
-            {check.state === "bad" && <StatusWord tone="breakage" word="failed" />}
+            <MonoText tone="faint">
+              Sessions, terminal, and review all ride this one connection.
+            </MonoText>
           </View>
-          {(check.state === "ok" || check.state === "bad") && <MonoText>{check.detail}</MonoText>}
-          <EvButton
-            label={saved ? "Saved" : "Save"}
-            onPress={() => {
-              void saveConfig({ url: url.trim().replace(/\/$/, ""), token: token.trim() }).then(
-                () => setSaved(true),
-              );
-            }}
-          />
-          <MonoText>Sessions, terminal, and review all ride this one connection.</MonoText>
-        </View>
+        )}
       </Panel>
       <Panel>
         <View style={{ padding: 16, gap: 12 }}>

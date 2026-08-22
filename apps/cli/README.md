@@ -17,6 +17,58 @@ diffs, reveal whitespace, select line ranges, add line or whole-change comments,
 evidence, and draft a follow-up for the same session. Press `y` to deliver a pending follow-up and
 relaunch that session, or `o` to continue the review in the web app.
 
+## Getting started
+
+Once per machine, in this order:
+
+```sh
+mend login                       # sign in to the server; the token is saved 0600
+mend connect codex               # send this machine's codex (or claude, github) credential
+mend adopt                       # adopt the repository you are standing in
+mend codex "fix the flaky test"  # new session worktree, harness running in it
+mend pair                        # hand a phone the same server
+mend doctor                      # every fact above, on one screen
+```
+
+`mend help` prints the same sequence under `start`, then everything else.
+
+### mend pair
+
+```
+mend pair [--url <base url>]
+```
+
+Asks the server for a pairing code and prints it three ways: a QR of the `mend://pair` deep link,
+the code grouped as `ABCD-EFGH`, and the base URL the device should reach — the machine's tailnet
+address when it has one, otherwise a LAN address (`--url` overrides the choice). Scan it in the Mend
+app, or type the URL and the code in by hand. The code is single use and expires in 10 minutes; the
+device's own token is minted when it claims the code, and can be revoked from the Mend app later.
+The device names itself when it claims the code.
+
+### mend doctor
+
+```
+mend doctor
+```
+
+Reads, and changes nothing: server reachable, token accepted, the Sealant connection, each connected
+account, adopted projects, the `claude` / `codex` / `gh` CLIs on PATH and whether their credentials
+exist on this machine, and the tailnet address. One line per fact — `✓` observed, `○` not set up
+yet, `✗` a blocker — and every line that needs an action ends with the one command that takes it:
+
+```
+✓ server      http://localhost:3105 · mend 0.5.0
+✓ signed in   token accepted
+✓ sealant     connected · http://127.0.0.1:4000
+✓ claude      connected · you@example.com
+○ codex       not connected → mend connect codex
+✓ projects    2 adopted
+○ gh cli      on PATH · no credential here → gh auth login
+○ tailnet     not detected
+```
+
+It exits 1 when a `✗` is printed, so a setup script can gate on it. No request waits longer than 3s.
+
 ## Commands
 
 ```
@@ -29,6 +81,8 @@ mend resume [session-id] [--with h]   rejoin a settled session (state restored; 
 mend rejoin [session-id] [--harness h] attach if live, otherwise resume; newest live wins
 mend sessions [--all] [--project p] [--json]
 mend status                           active sessions (alias of mend sessions)
+mend pair [--url <base url>]          pair a phone or a second machine: QR + code + URL
+mend doctor                           read-only checklist of this machine's setup
 ```
 
 ## Signing in

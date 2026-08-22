@@ -6,8 +6,10 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { doctorCommand } from "./doctor.ts";
 import { readSyncFiles, scanDotfileCandidates } from "./dotfiles.ts";
 import { formatLoadReport, type EnvironmentLoadReportDto } from "./env.ts";
+import { type ApiCall, pairCommand, qrCommand } from "./pair.ts";
 import {
   isComposeFile,
   proposeFromCompose,
@@ -266,6 +268,12 @@ const api = async <T>(
     return fail(error instanceof Error ? error.message : String(error));
   }
 };
+
+/** The same call bound to one config — the dependency ./pair.ts takes. */
+const boundApi =
+  (config: CliConfig): ApiCall =>
+  <T>(method: "GET" | "POST" | "DELETE", route: string, body?: unknown): Promise<T> =>
+    api<T>(config, method, route, body);
 
 /** A live elapsed-time spinner around a slow await — provisioning is not a hang. */
 const withSpinner = async <T>(label: string, work: Promise<T>): Promise<T> => {
@@ -1891,6 +1899,7 @@ _mend() {
     'service:reachable ports — add, list, stop'
     'keys:the machine Mend deploy key — init, show, share'
     'accounts:your connected accounts on the platform'
+    'pair:pair a phone or a second machine' 'doctor:read-only checklist of this setup'
     'connect:send this machine'"'"'s claude/codex/github credential to the platform'
     'continue:resume with the pending follow-up' 'resume:rejoin a settled session'
     'rejoin:attach if live, otherwise resume'
@@ -1915,7 +1924,7 @@ _mend "$@"
 const BASH_COMPLETIONS = `_mend() {
   local cur=\${COMP_WORDS[COMP_CWORD]}
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "adopt codex claude opencode run attach shell service keys continue resume rejoin projects sessions status ui help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "adopt codex claude opencode run attach shell service keys pair doctor continue resume rejoin projects sessions status ui help" -- "$cur") )
     return
   fi
   case \${COMP_WORDS[1]} in
@@ -2478,11 +2487,28 @@ const dashboard = async (config: CliConfig) => {
 
 const HELP = `mend — the agent workbench
 
-  mend                                  the dashboard: every project and session, live
+start
+  mend login [--url <server>]           sign in with email + password; saves the token (0600)
+  mend connect <provider> [--from-stdin] [--remove]
+                                        send THIS machine's claude/codex/github credential to the
+                                        platform under your own user (reads the file the provider's
+                                        CLI wrote at login; --from-stdin pastes one instead)
   mend adopt [source] [--name <name>] [--auth ambient|mend-key|bridge]
                                         adopt a repository into the store (default: cwd; any git
                                         URL — GitHub, GitLab, self-hosted, ssh://, a local path)
-  mend login [--url <server>]           sign in with email + password; saves the token (0600)
+  mend codex|claude|opencode ["prompt"] [--model <id>] [--effort low|medium|high|xhigh|max]
+                             [--base <ref>] [--ask] [--fast]
+                                        new session worktree + launch the harness in it; a quoted
+                                        prompt becomes its first message (and names the session),
+                                        --ask restores the harness's permission prompts, --fast
+                                        requests priority processing (codex service tier)
+  mend pair [--url <base url>]          pair a phone or a second machine: prints a QR, the code, and
+                                        the URL to reach this server (one device, once, 10 minutes)
+  mend doctor                           read-only checklist of this machine's setup — one line per
+                                        fact, each unfinished one ending in the command that fixes it
+
+everything else
+  mend                                  the dashboard: every project and session, live
   mend logout                           forget the saved token
   mend keys init                        generate the machine's Mend deploy key (ed25519)
   mend keys show                        print the public key — add it as a deploy key on your git host
@@ -2491,20 +2517,10 @@ const HELP = `mend — the agent workbench
                                         named ones, e.g. DATABASE_URL) to secrets
   mend env show                         what the project store holds — names only, never values
   mend accounts                         your connected accounts on the platform (claude, codex, github)
-  mend connect <provider> [--from-stdin] [--remove]
-                                        send THIS machine's claude/codex/github credential to the
-                                        platform under your own user (reads the file the provider's
-                                        CLI wrote at login; --from-stdin pastes one instead)
   mend dotfiles                         your dotfiles on the server: repo + synced home files
   mend dotfiles sync [--all | paths…]   capture config files from THIS machine into your store
   mend keys share                       relay THIS machine's ssh-agent to the server (bridge mode:
                                         hardware keys sign here; Ctrl-C stops sharing)
-  mend codex|claude|opencode ["prompt"] [--model <id>] [--effort low|medium|high|xhigh|max]
-                             [--base <ref>] [--ask] [--fast]
-                                        new session worktree + launch the harness in it; a quoted
-                                        prompt becomes its first message (and names the session),
-                                        --ask restores the harness's permission prompts, --fast
-                                        requests priority processing (codex service tier)
   mend run -- <command...>              same, with an arbitrary command
   mend attach <session-id-prefix>       reattach this terminal to a running session
   mend shell [session-id-prefix]        open a shell in a live session's workspace
@@ -2562,6 +2578,13 @@ const main = async () => {
       return accountsCommand(config);
     case "connect":
       return connectCommand(config, rest);
+    case "pair":
+      return pairCommand(rest, boundApi(config));
+    // Deliberately absent from HELP: the installer renders its own QR through this.
+    case "qr":
+      return qrCommand(rest);
+    case "doctor":
+      return doctorCommand(config, localCredential);
     case "env":
       return envCommand(config, rest);
     case "completions":

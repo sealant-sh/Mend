@@ -4,11 +4,12 @@
 import { useRouter } from "expo-router";
 import { View } from "react-native";
 
+import { EvButton } from "@/components/button";
 import { Panel } from "@/components/panel";
 import { Screen, ScreenHeader } from "@/components/screen";
 import { SessionRow } from "@/components/session-row";
-import { Eyebrow, MonoText } from "@/components/typography";
-import { ACTIVE, annotationDetail, toSession, useAllSessions } from "@/data/live";
+import { Eyebrow, MonoText, UiText } from "@/components/typography";
+import { ACTIVE, annotationDetail, toSession, useAllSessions, useConfig } from "@/data/live";
 import { useEvidenceTheme } from "@/theme/evidence";
 
 function GroupLabel({ label }: { readonly label: string }) {
@@ -22,6 +23,7 @@ function GroupLabel({ label }: { readonly label: string }) {
 
 export default function NowScreen() {
   const router = useRouter();
+  const config = useConfig();
   const all = useAllSessions();
   const rows = (all.data ?? []).map(({ session, project, annotation }) => ({
     dto: session,
@@ -30,6 +32,37 @@ export default function NowScreen() {
   }));
 
   const openSession = (id: string) => router.push({ pathname: "/session/[id]", params: { id } });
+
+  // The stored config has not been read off disk yet: neither panel is true
+  // yet, so show the header alone rather than flash "not paired" at a phone
+  // that is paired.
+  if (config === null) {
+    return (
+      <Screen topInset>
+        <ScreenHeader eyebrow="mend" title="Now" meta="reading this device" />
+      </Screen>
+    );
+  }
+
+  // Nothing to inbox until this phone has a machine to ask.
+  if (config.url === "" || config.token === "") {
+    return (
+      <Screen topInset>
+        <ScreenHeader eyebrow="mend" title="Now" meta="not paired" />
+        <Panel>
+          <View style={{ padding: 16, gap: 12 }}>
+            <UiText weight="medium">Pair this phone with your machine</UiText>
+            <UiText>
+              On the machine running Mend, open Settings → Devices and show the pairing code. Scan
+              it here and this phone gets its own token.
+            </UiText>
+            <MonoText tone="faint">no server · no token</MonoText>
+            <EvButton label="Pair with your machine" onPress={() => router.push("/pair")} />
+          </View>
+        </Panel>
+      </Screen>
+    );
+  }
 
   const groups = [
     { label: "Needs you", items: rows.filter(({ dto }) => dto.status === "waiting") },

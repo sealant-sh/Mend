@@ -32,6 +32,33 @@ export const detectTailnetAddress = (
   return null;
 };
 
+/**
+ * Every non-internal IPv4 bound to this machine, tailnet addresses first, then
+ * the LAN ones. These are the addresses a phone could try; whether a packet
+ * arrives is the phone's observation, not this machine's claim.
+ */
+export const detectReachableAddresses = (
+  interfaces: ReturnType<typeof networkInterfaces> = networkInterfaces(),
+): ReadonlyArray<string> => {
+  const tailnet: Array<string> = [];
+  const lan: Array<string> = [];
+  for (const entries of Object.values(interfaces)) {
+    for (const entry of entries ?? []) {
+      if (entry.family !== "IPv4" || entry.internal) continue;
+      if (isTailnetAddress(entry.address)) tailnet.push(entry.address);
+      else lan.push(entry.address);
+    }
+  }
+  return [...new Set([...tailnet, ...lan])];
+};
+
+/** The reachable addresses as base URLs on the port this server answers on. */
+export const candidateBaseUrls = (
+  port: number,
+  interfaces: ReturnType<typeof networkInterfaces> = networkInterfaces(),
+): ReadonlyArray<string> =>
+  detectReachableAddresses(interfaces).map((address) => `http://${address}:${port}`);
+
 export const readMachine = (): MachineView => {
   const address = detectTailnetAddress();
   return new MachineView({

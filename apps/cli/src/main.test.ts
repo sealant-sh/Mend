@@ -95,14 +95,18 @@ const startCli = (url: string, args: ReadonlyArray<string>) => {
     env: { ...process.env, MEND_URL: url, MEND_DETACH_KEY: "none" },
     stdio: ["ignore", "pipe", "pipe"],
   });
+  let stdout = "";
   let stderr = "";
+  child.stdout.on("data", (chunk: Buffer) => {
+    stdout += chunk.toString();
+  });
   child.stderr.on("data", (chunk: Buffer) => {
     stderr += chunk.toString();
   });
   const exited = new Promise<{ readonly kind: "exit"; readonly code: number | null }>((resolve) => {
     child.once("exit", (code) => resolve({ kind: "exit", code }));
   });
-  return { child, exited, stderr: () => stderr };
+  return { child, exited, stdout: () => stdout, stderr: () => stderr };
 };
 
 const expectFastExit = async (
@@ -160,5 +164,62 @@ describe("Mend CLI session exit", () => {
       cli.child.kill("SIGKILL");
       await fake.close();
     }
+  });
+});
+
+describe("mend help", () => {
+  it("sequences the start block first and still lists every command", async () => {
+    const cli = startCli("http://127.0.0.1:1", ["help"]);
+    await cli.exited;
+    const help = cli.stdout();
+
+    expect(help.indexOf("\nstart\n")).toBeGreaterThan(-1);
+    expect(help.indexOf("\nstart\n")).toBeLessThan(help.indexOf("\neverything else\n"));
+    // The start block is the first run, in order.
+    const started = [
+      "mend login",
+      "mend connect",
+      "mend adopt",
+      "mend codex",
+      "mend pair",
+      "mend doctor",
+    ];
+    const positions = started.map((command) => help.indexOf(`  ${command}`));
+    expect(positions).toEqual(positions.toSorted((a, b) => a - b));
+    expect(positions[0]).toBeGreaterThan(help.indexOf("\nstart\n"));
+    expect(positions.at(-1)).toBeLessThan(help.indexOf("\neverything else\n"));
+    // Nothing was dropped on the way past the reorder.
+    for (const command of [
+      "mend logout",
+      "mend keys init",
+      "mend keys show",
+      "mend keys share",
+      "mend env load",
+      "mend env show",
+      "mend accounts",
+      "mend dotfiles",
+      "mend dotfiles sync",
+      "mend run --",
+      "mend attach",
+      "mend shell",
+      "mend service run",
+      "mend service add",
+      "mend service init",
+      "mend service list",
+      "mend service logs",
+      "mend service restart",
+      "mend service stop",
+      "mend continue",
+      "mend resume",
+      "mend rejoin",
+      "mend projects",
+      "mend sessions",
+      "mend status",
+      "mend completions",
+    ]) {
+      expect(help, command).toContain(`  ${command}`);
+    }
+    // The installer's renderer stays out of the printed surface.
+    expect(help).not.toContain("mend qr");
   });
 });

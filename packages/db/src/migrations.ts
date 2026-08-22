@@ -1126,6 +1126,38 @@ const userSealantIdentities = Effect.gen(function* () {
     )`;
 });
 
+/**
+ * Device pairing (docs: the settings Devices panel): a short-lived code minted by a
+ * signed-in user, claimed once by a phone, which then holds a hashed bearer token.
+ */
+const devicePairing = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE device_tokens (
+      id text PRIMARY KEY,
+      user_id text NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+      name text NOT NULL,
+      platform text NOT NULL,
+      token_hash text NOT NULL UNIQUE,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      last_used_at timestamptz,
+      revoked_at timestamptz
+    )`;
+  yield* sql`
+    CREATE INDEX device_tokens_user_created_idx ON device_tokens (user_id, created_at)`;
+  yield* sql`
+    CREATE TABLE pairing_codes (
+      id text PRIMARY KEY,
+      user_id text NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+      code text NOT NULL UNIQUE,
+      expires_at timestamptz NOT NULL,
+      claimed_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`
+    CREATE INDEX pairing_codes_user_created_idx ON pairing_codes (user_id, created_at)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -1165,4 +1197,5 @@ export const migrations = {
   "0035_session_process_kinds": sessionProcessKinds,
   "0036_agent_conversation": agentConversation,
   "0037_user_sealant_identities": userSealantIdentities,
+  "0038_device_pairing": devicePairing,
 };

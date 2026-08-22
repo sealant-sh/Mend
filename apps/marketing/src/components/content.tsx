@@ -2,6 +2,7 @@
 // install line. Layout lives in page.tsx and
 // screens.tsx; the words live here.
 
+import { Link } from "@tanstack/react-router";
 import { Check, Copy, SunMoon } from "lucide-react";
 import { type ReactNode, useState } from "react";
 
@@ -14,7 +15,7 @@ export const INSTALL_COMMAND = "curl -fsSL https://mend.sealant.dev/install.sh |
 export const HEADLINE = "Run your TUI agents anywhere you want";
 export const SUBLINE =
   "The coding agent you already use, in a recorded worktree on your own machine — reachable from every device you own.";
-export const TRUST_LINE = "Open source · Self-hosted · Linux and macOS";
+export const TRUST_LINE = "Open source · Self-hosted · Linux";
 
 export const FEATURES: ReadonlyArray<{ title: string; body: ReactNode }> = [
   {
@@ -68,7 +69,8 @@ export function Cmd({ children }: { children: ReactNode }) {
   return <code className="font-mono text-[0.92em] text-foreground">{children}</code>;
 }
 
-export function PageHeader() {
+/** `getStarted` is off on the walkthrough itself — it is already there. */
+export function PageHeader({ getStarted = true }: { readonly getStarted?: boolean }) {
   return (
     <header className="relative">
       <div className="mx-auto flex min-h-16 w-full max-w-[1200px] items-center justify-between gap-3 px-6 sm:px-8">
@@ -78,6 +80,14 @@ export function PageHeader() {
           <span className="font-mono text-xs font-normal text-faint">by Sealant</span>
         </span>
         <div className="flex items-center gap-2.5">
+          {getStarted ? (
+            <Link
+              to="/get-started"
+              className="inline-flex min-h-9 items-center rounded-xl px-3 font-sans text-sm font-medium text-muted-foreground no-underline transition-colors duration-200 hover:text-foreground"
+            >
+              Get started
+            </Link>
+          ) : null}
           <ThemeSwitcher />
           <a
             className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-xl border border-border bg-panel px-4 font-sans text-sm font-medium text-foreground no-underline shadow-[var(--shadow-xs)] transition-[transform,border-color,box-shadow] duration-200 hover:-translate-y-0.5 hover:border-input hover:shadow-[var(--shadow-sm)]"
