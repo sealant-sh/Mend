@@ -2,6 +2,9 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 import {
+  AgentConversationRepo,
+  type AgentRequestAlreadyResolvedError,
+  AgentRequestNotFoundError,
   CheckpointsRepo,
   HotWorkspacesRepo,
   ProjectEnvironmentRepo,
@@ -25,6 +28,8 @@ import {
   UserDotfilesRepo,
 } from "@mend/db";
 import {
+  AgentRequestId,
+  AgentTurnId,
   SealantRunId,
   SealantWorkspaceId,
   type ServiceForwardId,
@@ -46,6 +51,13 @@ import type {
 } from "@mend/domain/workbench";
 import {
   AGENT_PROCESS_KINDS,
+  type AgentApprovalDecision,
+  type AgentInputAnswers,
+  type AgentRequest,
+  type AgentTurn,
+  type LaunchStart,
+  ProtocolHarnessUnsupportedError,
+  composeProtocolArgv,
   agentProcessesOf,
   currentAgentProcess,
   foldSessionLiveness,
@@ -101,6 +113,7 @@ import {
   ingestNativeSession,
   type ConvertedNativeSession,
 } from "./native-convert.ts";
+import { ProtocolHost, ProtocolHostNotLiveError } from "./protocol-host.ts";
 import { mergeRecipes, readServiceRecipes } from "./recipes.ts";
 import { ServiceBindError, ServiceHost } from "./service-host.ts";
 import {
@@ -401,6 +414,41 @@ export class SessionEngine extends Context.Service<
       | SessionLaunchSetupError
       | DotfilesResolveError
     >;
+    /** Launch a supported harness as a structured byte protocol over a Sealant pipe session. */
+    readonly launchProtocol: (
+      sessionId: SessionId,
+      start: LaunchStart,
+      author: string | null,
+    ) => Effect.Effect<
+      Session,
+      | SessionNotFoundError
+      | LegacyBenchReadOnlyError
+      | ProjectNotFoundError
+      | SealantPlatformError
+      | HarnessStateError
+      | SessionLaunchSetupError
+      | DotfilesResolveError
+      | ProtocolHarnessUnsupportedError
+    >;
+    /** Queue one authored turn on the live protocol process. */
+    readonly submitTurn: (
+      sessionId: SessionId,
+      input: string,
+      author: string | null,
+    ) => Effect.Effect<AgentTurn, ProtocolHostNotLiveError>;
+    /** Interrupt the running protocol turn. */
+    readonly interruptTurn: (turnId: AgentTurnId) => Effect.Effect<void, ProtocolHostNotLiveError>;
+    /** Route and record one human response to a live provider request. */
+    readonly respondRequest: (
+      requestId: AgentRequestId,
+      response:
+        | { readonly decision: AgentApprovalDecision; readonly answers?: never }
+        | { readonly answers: AgentInputAnswers; readonly decision?: never },
+      decidedBy: string,
+    ) => Effect.Effect<
+      AgentRequest,
+      ProtocolHostNotLiveError | AgentRequestNotFoundError | AgentRequestAlreadyResolvedError
+    >;
     /** Launch the exact approved Review instruction with a durable process correlation. */
     readonly launchFollowUp: (
       sessionId: SessionId,
@@ -561,6 +609,8 @@ export class SessionEngine extends Context.Service<
 
 type SessionEngineRequirements =
   | SealantClient
+  | AgentConversationRepo
+  | ProtocolHost
   | SessionsRepo
   | HotWorkspacesRepo
   | UserDotfilesRepo
@@ -592,6 +642,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
     SessionEngine,
     Effect.gen(function* () {
       const sealant = yield* SealantClient;
+      const conversations = yield* AgentConversationRepo;
+      const protocolHost = yield* ProtocolHost;
       const sessions = yield* SessionsRepo;
       const hotWorkspaces = yield* HotWorkspacesRepo;
       const userDotfilesRepo = yield* UserDotfilesRepo;
@@ -939,15 +991,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         `export IS_SANDBOX=1; ` +
         `exec "$@"`;
 
-      const withHarnessBootstrap = (
+      const withHarnessSetup = (
         harness: string,
         argv: ReadonlyArray<string>,
       ): ReadonlyArray<string> => {
-        const shaped = withPermissionDefaults(harness, argv);
-        if (harness === "claude") return ["sh", "-c", CLAUDE_ONBOARDING_SEED, "sh", ...shaped];
-        if (harness === "codex") return ["sh", "-c", CODEX_TRUST_SEED, "sh", ...shaped];
-        return shaped;
+        if (harness === "claude") return ["sh", "-c", CLAUDE_ONBOARDING_SEED, "sh", ...argv];
+        if (harness === "codex") return ["sh", "-c", CODEX_TRUST_SEED, "sh", ...argv];
+        return argv;
       };
+
+      const withHarnessBootstrap = (
+        harness: string,
+        argv: ReadonlyArray<string>,
+      ): ReadonlyArray<string> => withHarnessSetup(harness, withPermissionDefaults(harness, argv));
 
       // Codex's per-project trust prompt, pre-answered the same way: the user
       // made the trust decision when they adopted the repo.
@@ -1400,12 +1456,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) {
         const session = yield* sessions.byId(sessionId);
         const rows = yield* processes.listForSession(sessionId);
-        const liveness = foldSessionLiveness(rows);
+        const hasPendingRequest = yield* conversations.hasPendingRequests(sessionId);
+        const liveness = foldSessionLiveness(rows, hasPendingRequest);
+        if (liveness === "waiting") {
+          if (session.settledAt !== null) yield* sessions.reopen(sessionId, "running");
+          if (session.status !== "waiting") yield* sessions.setStatus(sessionId, "waiting");
+          return liveness;
+        }
         if (liveness === "running") {
           if (session.settledAt !== null) yield* sessions.reopen(sessionId, "running");
-          else if (session.status !== "running" && session.status !== "waiting") {
-            yield* sessions.setStatus(sessionId, "running");
-          }
+          else if (session.status !== "running") yield* sessions.setStatus(sessionId, "running");
           return liveness;
         }
         if (liveness === "idle") {
@@ -1500,10 +1560,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) =>
         isAgentProcessKind(ended.kind)
           ? Effect.gen(function* () {
-              const outcome =
-                ended.harness === "shell" || exitCode === null || exitCode === 0
-                  ? "completed"
-                  : "failed";
+              if (ended.kind === "agent-protocol") {
+                yield* protocolHost.detach(ended.id);
+                yield* conversations.cancelOpenForProcess(ended.id);
+              }
+              let outcome: SessionOutcome = "failed";
+              if (
+                ended.kind !== "agent-protocol" &&
+                (ended.harness === "shell" || exitCode === null || exitCode === 0)
+              ) {
+                outcome = "completed";
+              }
               const recorded = yield* endAgentProcess(ended, {
                 how,
                 exitCode,
@@ -2050,6 +2117,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         nativeImport: ConvertedNativeSession | null,
         stateOverride?: LocatedHarnessState | null,
         launchCorrelationId: string | null = null,
+        protocolStart: LaunchStart | null = null,
+        protocolAuthor: string | null = null,
+        protocolResumeId: string | null = null,
       ) {
         const session = yield* sessions.byId(sessionId);
         if (isLegacyBench(session)) {
@@ -2190,7 +2260,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   .pipe(Effect.andThen(sealant.stopWorkspace(workspace)), Effect.ignore),
               ),
             );
-            shapedArgv = nativeResumeArgv(session.harness, manifest.providerSessionId, shapedArgv);
+            if (protocolStart === null) {
+              shapedArgv = nativeResumeArgv(
+                session.harness,
+                manifest.providerSessionId,
+                shapedArgv,
+              );
+            }
           } else {
             yield* restore.pipe(
               Effect.catch((error) =>
@@ -2281,8 +2357,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           provisioned.extraMounts,
         );
 
+        const launchedArgv =
+          protocolStart === null
+            ? withHarnessBootstrap(session.harness, shapedArgv)
+            : withHarnessSetup(session.harness, shapedArgv);
         const pty = yield* sealant
-          .openSession(workspace, withHarnessBootstrap(session.harness, shapedArgv))
+          .openSession(
+            workspace,
+            launchedArgv,
+            protocolStart === null ? undefined : { mode: "pipe" },
+          )
           .pipe(
             // The workspace exists but its id is not on the row yet — reap it
             // here or it burns until the platform TTL.
@@ -2312,13 +2396,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // The plural record: the agent is one process in this workspace, not
         // its owner. The singular pointer above is a compatibility mirror of
         // this row's PTY id while list readers migrate to `currentAgent`.
+        const claudeSessionFlag = shapedArgv.indexOf("--session-id");
+        const protocolProviderSessionId =
+          protocolStart !== null && session.harness === "claude" && claudeSessionFlag >= 0
+            ? (shapedArgv.at(claudeSessionFlag + 1) ?? null)
+            : null;
         const agentProcess = yield* processes.create({
           sessionId,
           sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
           sealantSessionId: pty.id,
           sealantRunId,
           launchCorrelationId,
-          kind: "agent-pty",
+          kind: protocolStart === null ? "agent-pty" : "agent-protocol",
           harness: interactiveShell ? "shell" : session.harness,
           // Known up front only for a native resume of the same harness; the
           // harvest fills it when the process ends.
@@ -2327,10 +2416,59 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             : (nativeImport?.providerSessionId ??
               (manifest !== null && manifest.harness === session.harness
                 ? manifest.providerSessionId
-                : null)),
+                : (protocolProviderSessionId ?? protocolResumeId))),
           label: session.harness,
           argv: shapedArgv,
         });
+        if (protocolStart !== null) {
+          yield* protocolHost
+            .attach({
+              process: agentProcess,
+              pipe: pty,
+              cwd: "/workspace/repo",
+              model: protocolStart.model,
+              effort: protocolStart.effort,
+              permissionMode: protocolStart.permissionMode ?? "bypass",
+              hooks: {
+                onRequestChanged: (changedSessionId) =>
+                  reconcileSession(changedSessionId, { sweep: false }).pipe(
+                    Effect.catchTag("SessionNotFoundError", () => Effect.void),
+                    Effect.asVoid,
+                  ),
+                onTurnCompleted: (turn) =>
+                  Effect.gen(function* () {
+                    const currentSession = yield* sessions.byId(turn.sessionId);
+                    const run =
+                      agentProcess.sealantRunId === null
+                        ? null
+                        : yield* sessionRuns.bySealantRunId(agentProcess.sealantRunId);
+                    yield* tryCheckpoint(currentSession, "turn-boundary", {
+                      sealantRunId: agentProcess.sealantRunId,
+                      sequence: run?.lastSeenSequence ?? 0n,
+                    });
+                    yield* refreshChangeHead(currentSession).pipe(Effect.ignore);
+                  }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void)),
+              },
+            })
+            .pipe(
+              Effect.tapError((error) =>
+                Effect.gen(function* () {
+                  yield* protocolHost.detach(agentProcess.id);
+                  yield* conversations.cancelOpenForProcess(agentProcess.id);
+                  yield* closeProcessPty(agentProcess.sealantWorkspaceId, pty.id).pipe(
+                    Effect.ignore,
+                  );
+                  const recorded = yield* endAgentProcess(agentProcess, {
+                    how: "exited",
+                    exitCode: null,
+                    outcome: "failed",
+                    summary: `protocol initialization failed: ${error.message}`,
+                  }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(false)));
+                  if (recorded) yield* finishAgentProcess(agentProcess, "turn-boundary");
+                }).pipe(Effect.ignore),
+              ),
+            );
+        }
         yield* renewWorkspaceLease(sessionId, agentProcess.sealantWorkspaceId);
         // Always reopen, not only for follow-ups: a plain launch on a row that
         // already settled (a failed first attempt retried) must clear
@@ -2341,7 +2479,68 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
         // The agent process ends on its own; the fold over every process decides the session.
         yield* Effect.forkIn(watchProcess(agentProcess), scope);
+        if (protocolStart !== null) {
+          const openingInput = protocolStart.prompt?.trim() ?? "";
+          if (openingInput !== "") {
+            yield* protocolHost.submitTurn(sessionId, openingInput, protocolAuthor).pipe(
+              Effect.mapError(
+                (error) =>
+                  new SealantPlatformError({
+                    code: "agent_protocol_not_live",
+                    status: null,
+                    message: `Protocol process did not accept its opening turn: ${error.processId}`,
+                    cause: error,
+                  }),
+              ),
+            );
+          }
+        }
         return yield* sessions.byId(sessionId);
+      });
+
+      const launchProtocol = Effect.fn("SessionEngine.launchProtocol")(function* (
+        sessionId: SessionId,
+        start: LaunchStart,
+        author: string | null,
+      ) {
+        const session = yield* sessions.byId(sessionId);
+        const rows = yield* processes.listForSession(sessionId);
+        const previous = currentAgentProcess(rows);
+        const providerSessionId =
+          previous?.kind === "agent-protocol"
+            ? (previous.providerSessionId ?? undefined)
+            : undefined;
+        const composed = composeProtocolArgv(session.harness, start, providerSessionId);
+        if (composed instanceof ProtocolHarnessUnsupportedError) {
+          return yield* Effect.fail(composed);
+        }
+        return yield* launchInternal(
+          sessionId,
+          composed,
+          null,
+          null,
+          null,
+          start,
+          author,
+          providerSessionId ?? null,
+        );
+      });
+
+      const submitTurn = (sessionId: SessionId, input: string, author: string | null) =>
+        protocolHost.submitTurn(sessionId, input, author);
+
+      const interruptTurn = (turnId: AgentTurnId) => protocolHost.interruptTurn(turnId);
+
+      const respondRequest = Effect.fn("SessionEngine.respondRequest")(function* (
+        requestId: AgentRequestId,
+        response:
+          | { readonly decision: AgentApprovalDecision; readonly answers?: never }
+          | { readonly answers: AgentInputAnswers; readonly decision?: never },
+        decidedBy: string,
+      ) {
+        const request = yield* conversations.byRequestId(requestId);
+        if (request === null) return yield* new AgentRequestNotFoundError({ requestId });
+        return yield* protocolHost.respondRequest(request, response, decidedBy);
       });
 
       const checkpointNow = Effect.fn("SessionEngine.checkpointNow")(function* (
@@ -2555,6 +2754,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           return yield* new LegacyBenchReadOnlyError({ sessionId });
         }
         if (yield* agentIsLive(session)) {
+          const liveProtocol = (yield* processes.listForSession(sessionId)).find(
+            (process) => process.kind === "agent-protocol" && isLiveProcess(process),
+          );
+          if (liveProtocol !== undefined && (yield* protocolHost.has(liveProtocol.id))) {
+            yield* protocolHost.submitTurn(sessionId, instruction, null, launchCorrelationId).pipe(
+              Effect.mapError(
+                (error) =>
+                  new SealantPlatformError({
+                    code: "agent_protocol_not_live",
+                    status: null,
+                    message: "The protocol process stopped before the follow-up was queued.",
+                    cause: error,
+                  }),
+              ),
+            );
+            return yield* sessions.byId(sessionId);
+          }
           return yield* new SealantPlatformError({
             code: "session_active",
             status: null,
@@ -2595,6 +2811,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           });
         }
         const target = harness ?? session.harness;
+        const priorAgent = currentAgentProcess(yield* processes.listForSession(sessionId));
+        if (priorAgent?.kind === "agent-protocol" && target === session.harness) {
+          return yield* launchProtocol(
+            sessionId,
+            { mode: "protocol", permissionMode: "bypass" },
+            null,
+          ).pipe(
+            Effect.catchTag("ProtocolHarnessUnsupportedError", (error) =>
+              Effect.fail(
+                new SealantPlatformError({
+                  code: "unknown_protocol_harness",
+                  status: null,
+                  message: error.message,
+                  cause: error,
+                }),
+              ),
+            ),
+          );
+        }
         const retainCurrentWorkspace = !fresh && (yield* retainedWorkspaceAvailable(session));
         // A shell resume reopens the worktree with no agent: saved state
         // restored when it exists — and none required, because the session
@@ -2717,6 +2952,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // hold the workspace, or settles `stopped` at once.
         const ended: Array<SessionProcess> = [];
         for (const agent of rows.filter(isLiveAgentProcess)) {
+          if (agent.kind === "agent-protocol") {
+            yield* protocolHost.detach(agent.id);
+            yield* conversations.cancelOpenForProcess(agent.id);
+          }
           if (agent.sealantSessionId !== null) {
             yield* closeProcessPty(agent.sealantWorkspaceId, agent.sealantSessionId);
           }
@@ -3849,6 +4088,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /** Re-attach to sessions that were live when the last process died. */
       const resume = Effect.fn("SessionEngine.resume")(function* () {
+        // Restart policy v1: adapter state is process-local. End live protocol rows on boot;
+        // an explicit session resume starts a fresh pipe process and resumes by provider id.
+        for (const protocolProcess of (yield* processes.listLive()).filter(
+          (process) => process.kind === "agent-protocol",
+        )) {
+          yield* protocolHost.detach(protocolProcess.id);
+          yield* conversations.cancelOpenForProcess(protocolProcess.id);
+          if (protocolProcess.sealantSessionId !== null) {
+            yield* closeProcessPty(
+              protocolProcess.sealantWorkspaceId,
+              protocolProcess.sealantSessionId,
+            ).pipe(Effect.ignore);
+          }
+          const recorded = yield* endAgentProcess(protocolProcess, {
+            how: "exited",
+            exitCode: null,
+            outcome: "failed",
+            summary: "Mend restarted before the protocol process settled.",
+          }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(false)));
+          if (recorded) yield* finishAgentProcess(protocolProcess, "turn-boundary");
+        }
         const activeRuns = yield* sessionRuns.listActive();
         const reattached = new Set<string>();
         for (const sessionRun of activeRuns) {
@@ -3871,7 +4131,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // kept running (a detached client is not intent to stop), so watch
         // them again — the watcher itself records the end if the workspace is
         // gone.
-        const liveProcesses = yield* processes.listLive();
+        const liveProcesses = (yield* processes.listLive()).filter(
+          (process) => process.kind !== "agent-protocol",
+        );
         const sessionsWithLiveProcesses = new Set(
           liveProcesses.map((liveProcess) => liveProcess.sessionId),
         );
@@ -4133,6 +4395,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         provision,
         attachRun,
         launch,
+        launchProtocol,
+        submitTurn,
+        interruptTurn,
+        respondRequest,
         launchFollowUp,
         reconcileHotSessions: requestHotReconcile,
         checkpointNow,

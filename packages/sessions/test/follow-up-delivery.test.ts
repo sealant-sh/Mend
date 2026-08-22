@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
+  AgentConversationRepo,
   FollowUpsRepo,
   ReviewCommentsRepo,
   ReviewSlicesRepo,
@@ -8,6 +9,7 @@ import {
   SessionsRepo,
 } from "@mend/db";
 import {
+  AgentTurnId,
   ChangeId,
   CheckpointId,
   FollowUpId,
@@ -21,6 +23,7 @@ import {
   Sha,
 } from "@mend/domain";
 import {
+  AgentTurn,
   Change,
   DiffDigest,
   FollowUp,
@@ -130,6 +133,55 @@ const updateFollowUp = (world: TestWorld, patch: Partial<FollowUp>): FollowUp =>
   world.followUp = updated;
   return updated;
 };
+
+const recordAcceptedProcess = (
+  world: TestWorld,
+  instruction: string,
+  correlationId: string,
+): void => {
+  if (world.process?.kind === "agent-protocol") return;
+  world.process = new SessionProcess({
+    id: SessionProcessId.make("process-1"),
+    sessionId: SESSION_ID,
+    sealantWorkspaceId: SealantWorkspaceId.make("workspace-1"),
+    sealantSessionId: "pty-1",
+    sealantRunId: SealantRunId.make("run-1"),
+    launchCorrelationId: correlationId,
+    serviceId: null,
+    attemptOrdinal: null,
+    kind: "agent-pty",
+    harness: "codex",
+    providerSessionId: null,
+    label: "codex",
+    argv: ["codex", instruction],
+    status: "running",
+    exitCode: null,
+    workspacePort: null,
+    protocol: "tcp",
+    hostPort: null,
+    createdAt: now(),
+    exitedAt: null,
+    updatedAt: now(),
+  });
+};
+
+const launchForWorld = (world: TestWorld, instruction: string, correlationId: string) =>
+  Effect.gen(function* () {
+    expect(world.insideSessionLock).toBe(false);
+    expect(world.followUp?.status).toBe("delivering");
+    expect(instruction).toBe("  Address only the selected comment.\nKeep this spacing.  ");
+    world.launches += 1;
+    if (world.launcherMode === "failure") {
+      return yield* new SessionNotLiveError({ sessionId: SESSION_ID });
+    }
+    if (world.launcherMode === "held") {
+      const gate = world.launchGate;
+      if (gate === null) return yield* Effect.die("launch gate missing");
+      yield* Deferred.await(gate);
+    }
+    recordAcceptedProcess(world, instruction, correlationId);
+    return world.session;
+  });
 
 const testLayer = (world: TestWorld) => {
   const change = new Change({
@@ -307,6 +359,53 @@ const testLayer = (world: TestWorld) => {
     annotationsForProject: () => Effect.die("not in test"),
   });
 
+  const conversationLayer = Layer.succeed(AgentConversationRepo, {
+    submitTurn: () => Effect.die("not in test"),
+    byTurnId: () => Effect.succeed(null),
+    byLaunchCorrelation: () =>
+      Effect.succeed(
+        world.process?.kind === "agent-protocol" && world.followUp !== null
+          ? new AgentTurn({
+              id: AgentTurnId.make("follow-up-turn"),
+              sessionId: SESSION_ID,
+              processId: world.process.id,
+              ordinal: 1,
+              author: null,
+              input: world.followUp.instruction,
+              status: "queued",
+              providerTurnId: null,
+              error: null,
+              usage: null,
+              createdAt: now(),
+              startedAt: null,
+              endedAt: null,
+            })
+          : null,
+      ),
+    byProviderTurnId: () => Effect.succeed(null),
+    listTurns: () => Effect.succeed([]),
+    claimNextTurn: () => Effect.succeed(null),
+    setProviderTurnId: () => Effect.die("not in test"),
+    bindRunningProviderTurn: () => Effect.succeed(null),
+    failTurn: () => Effect.die("not in test"),
+    completeTurn: () => Effect.succeed(null),
+    upsertItem: () => Effect.die("not in test"),
+    listItems: () => Effect.succeed([]),
+    openRequest: () => Effect.die("not in test"),
+    byRequestId: () => Effect.succeed(null),
+    listRequests: () => Effect.succeed([]),
+    hasPendingRequests: () => Effect.succeed(false),
+    prepareRequestResponse: () => Effect.die("not in test"),
+    completeRequestResponse: () => Effect.die("not in test"),
+    failRequestResponse: () => Effect.void,
+    resolveRequest: () => Effect.die("not in test"),
+    resolveProviderRequest: () => Effect.void,
+    cancelOpenForTurn: () => Effect.void,
+    cancelOpenForProcess: () => Effect.void,
+    protocolCursor: () => Effect.succeed({ nextSequence: 0n }),
+    saveProtocolCursor: () => Effect.void,
+  });
+
   const processesLayer = Layer.succeed(SessionProcessesRepo, {
     create: () => Effect.die("not in test"),
     byId: () => Effect.succeed(world.process),
@@ -356,49 +455,13 @@ const testLayer = (world: TestWorld) => {
 
   const launcherLayer = Layer.succeed(FollowUpLauncher, {
     launch: (_sessionId, instruction, correlationId) =>
-      Effect.gen(function* () {
-        expect(world.insideSessionLock).toBe(false);
-        expect(world.followUp?.status).toBe("delivering");
-        expect(instruction).toBe("  Address only the selected comment.\nKeep this spacing.  ");
-        world.launches += 1;
-        if (world.launcherMode === "failure") {
-          return yield* new SessionNotLiveError({ sessionId: SESSION_ID });
-        }
-        if (world.launcherMode === "held") {
-          const gate = world.launchGate;
-          if (gate === null) return yield* Effect.die("launch gate missing");
-          yield* Deferred.await(gate);
-        }
-        world.process = new SessionProcess({
-          id: SessionProcessId.make("process-1"),
-          sessionId: SESSION_ID,
-          sealantWorkspaceId: SealantWorkspaceId.make("workspace-1"),
-          sealantSessionId: "pty-1",
-          sealantRunId: SealantRunId.make("run-1"),
-          launchCorrelationId: correlationId,
-          serviceId: null,
-          attemptOrdinal: null,
-          kind: "agent-pty",
-          harness: "codex",
-          providerSessionId: null,
-          label: "codex",
-          argv: ["codex", instruction],
-          status: "running",
-          exitCode: null,
-          workspacePort: null,
-          protocol: "tcp",
-          hostPort: null,
-          createdAt: now(),
-          exitedAt: null,
-          updatedAt: now(),
-        });
-        return world.session;
-      }),
+      launchForWorld(world, instruction, correlationId),
   });
 
   return FollowUpDeliveryLive.pipe(
     Layer.provide(
       Layer.mergeAll(
+        conversationLayer,
         followUpsLayer,
         commentsLayer,
         slicesLayer,
@@ -495,6 +558,46 @@ describe("FollowUpDelivery", () => {
       }).pipe(Effect.provide(testLayer(world)));
     },
   );
+
+  it.effect("delivers a follow-up as a turn on the live protocol process", () => {
+    const world = makeWorld();
+    world.session = new Session({ ...world.session, status: "running", settledAt: null });
+    world.process = new SessionProcess({
+      id: SessionProcessId.make("protocol-process"),
+      sessionId: SESSION_ID,
+      sealantWorkspaceId: SealantWorkspaceId.make("workspace-1"),
+      sealantSessionId: "pipe-1",
+      sealantRunId: SealantRunId.make("protocol-run"),
+      launchCorrelationId: null,
+      serviceId: null,
+      attemptOrdinal: null,
+      kind: "agent-protocol",
+      harness: "codex",
+      providerSessionId: "thread-1",
+      label: "codex",
+      argv: ["codex", "app-server"],
+      status: "running",
+      exitCode: null,
+      workspacePort: null,
+      protocol: "tcp",
+      hostPort: null,
+      createdAt: now(),
+      exitedAt: null,
+      updatedAt: now(),
+    });
+    return Effect.gen(function* () {
+      const delivery = yield* FollowUpDelivery;
+      const result = yield* delivery.deliver(deliveryInput());
+      const replay = yield* delivery.deliver(deliveryInput());
+
+      expect(result.status).toBe("delivered");
+      expect(result.deliveryProcessId).toBe("protocol-process");
+      expect(result.deliverySealantRunId).toBe("protocol-run");
+      expect(replay.id).toBe(result.id);
+      expect(world.launches).toBe(1);
+      expect(world.comment.sentToSessionId).toBe(SESSION_ID);
+    }).pipe(Effect.provide(testLayer(world)));
+  });
 
   it.effect("persists a launch failure without sending the selected comment", () => {
     const world = makeWorld("failure");

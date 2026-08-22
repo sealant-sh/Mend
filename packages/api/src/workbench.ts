@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 
 import {
+  AgentConversationRepo,
   ChangePassesRepo,
   ChangeToursRepo,
   CheckpointsRepo,
@@ -103,6 +104,8 @@ import {
   DotfilesSnapshotView,
   DotfilesView,
   OpenReviewResult,
+  ProtocolSessionNotLive,
+  AgentRequestResolved,
   RemovalReport,
   ReviewDiffFileView,
   ReviewDiffHunkView,
@@ -1471,6 +1474,93 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         });
       }),
     )
+    .handle("submitTurn", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        const engine = yield* SessionEngine;
+        const caller = yield* CurrentUser;
+        yield* sessions
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        return yield* engine
+          .submitTurn(params.id, payload.input, caller.user.id)
+          .pipe(
+            Effect.catchTag("ProtocolHostNotLiveError", (error) =>
+              Effect.fail(new ProtocolSessionNotLive({ processId: error.processId })),
+            ),
+          );
+      }),
+    )
+    .handle("interruptTurn", ({ params }) =>
+      Effect.gen(function* () {
+        const conversation = yield* AgentConversationRepo;
+        const engine = yield* SessionEngine;
+        const turn = yield* conversation.byTurnId(params.id);
+        if (turn === null) return yield* new NotFound({ id: params.id });
+        yield* engine
+          .interruptTurn(params.id)
+          .pipe(
+            Effect.catchTag("ProtocolHostNotLiveError", (error) =>
+              Effect.fail(new ProtocolSessionNotLive({ processId: error.processId })),
+            ),
+          );
+      }),
+    )
+    .handle("listTurns", ({ params }) =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        const conversation = yield* AgentConversationRepo;
+        yield* sessions
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        return yield* conversation.listTurns(params.id);
+      }),
+    )
+    .handle("listItems", ({ params, query }) =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        const conversation = yield* AgentConversationRepo;
+        yield* sessions
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        const rawAfter = Number(query.after ?? "0");
+        const rawLimit = Number(query.limit ?? "100");
+        const after = Number.isSafeInteger(rawAfter) && rawAfter >= 0 ? rawAfter : 0;
+        const limit =
+          Number.isSafeInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 500) : 100;
+        return yield* conversation.listItems(params.id, after, limit);
+      }),
+    )
+    .handle("listAgentRequests", ({ params, query }) =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        const conversation = yield* AgentConversationRepo;
+        yield* sessions
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        return yield* conversation.listRequests(params.id, query.pending === "1");
+      }),
+    )
+    .handle("respondAgentRequest", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const conversation = yield* AgentConversationRepo;
+        const engine = yield* SessionEngine;
+        const caller = yield* CurrentUser;
+        const request = yield* conversation.byRequestId(params.id);
+        if (request === null) return yield* new NotFound({ id: params.id });
+        return yield* engine.respondRequest(params.id, payload, caller.user.id).pipe(
+          Effect.catchTag("ProtocolHostNotLiveError", (error) =>
+            Effect.fail(new ProtocolSessionNotLive({ processId: error.processId })),
+          ),
+          Effect.catchTag("AgentRequestNotFoundError", () =>
+            Effect.fail(new NotFound({ id: params.id })),
+          ),
+          Effect.catchTag("AgentRequestAlreadyResolvedError", () =>
+            Effect.fail(new AgentRequestResolved({ requestId: params.id })),
+          ),
+        );
+      }),
+    )
     .handle("listProcesses", ({ params }) =>
       Effect.gen(function* () {
         const sessions = yield* SessionsRepo;
@@ -1895,11 +1985,17 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
       Effect.gen(function* () {
         const engine = yield* SessionEngine;
         const sessions = yield* SessionsRepo;
+        const caller = yield* CurrentUser;
         const session = yield* sessions
           .byId(params.id)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-        // Verbatim argv wins; otherwise the structured start composes here —
-        // the one place harness flags are assembled for every surface.
+        if (payload.mode === "protocol" && payload.argv !== undefined) {
+          return yield* new StoreFailure({
+            message: "Protocol launches use the supported harness adapter and cannot take argv.",
+          });
+        }
+        // Verbatim argv wins only for PTY mode. Protocol flags and turn settings are split by the
+        // server because model and effort ride on provider turns, not the long-lived process argv.
         const argv = payload.argv ?? composeLaunchArgv(session.harness, payload);
         const prompt = payload.prompt?.trim() ?? "";
         const inlineNamePrompt =
@@ -1924,11 +2020,11 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           yield* jobs.enqueue({
             name: "name-session",
             payload:
-              inlineNamePrompt !== null
-                ? { sessionId: params.id, firstUserTurn: inlineNamePrompt }
-                : { sessionId: params.id },
+              inlineNamePrompt === null
+                ? { sessionId: params.id }
+                : { sessionId: params.id, firstUserTurn: inlineNamePrompt },
             idempotencyKey: `name-session:${params.id}`,
-            startAfterSeconds: inlineNamePrompt !== null ? 0 : 45,
+            startAfterSeconds: inlineNamePrompt === null ? 45 : 0,
             retryDelaySeconds: 30,
             retryLimit: 6,
           });
@@ -1945,8 +2041,12 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         // take minutes — enqueue before the launch so the label lands while
         // the workspace still provisions.
         if (inlineNamePrompt !== null) yield* queueAutoName;
-        return yield* engine.launch(params.id, argv).pipe(
-          Effect.tap(() => (inlineNamePrompt !== null ? Effect.void : queueAutoName)),
+        const launch =
+          payload.mode === "protocol"
+            ? engine.launchProtocol(params.id, payload, caller.user.id)
+            : engine.launch(params.id, argv);
+        return yield* launch.pipe(
+          Effect.tap(() => (inlineNamePrompt === null ? queueAutoName : Effect.void)),
           Effect.catchTag("SessionNotFoundError", () =>
             Effect.fail(new NotFound({ id: params.id })),
           ),
@@ -1957,6 +2057,9 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             Effect.fail(new NotFound({ id: params.id })),
           ),
           Effect.catchTag("SealantPlatformError", (error) =>
+            Effect.fail(new StoreFailure({ message: error.message })),
+          ),
+          Effect.catchTag("ProtocolHarnessUnsupportedError", (error) =>
             Effect.fail(new StoreFailure({ message: error.message })),
           ),
           Effect.catchTags({

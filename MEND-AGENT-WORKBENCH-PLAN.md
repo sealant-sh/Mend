@@ -275,14 +275,17 @@ A session's current Sealant workspace may also contain independently recorded su
 Service processes. They belong to the session because they can observe or mutate its worktree, but
 they are not additional sessions or coding-agent runs. The coding-agent state, workspace state, and
 each supporting process state are independent observations. A completed coding-agent run may leave
-the workspace retained by a shell or Service.
+the workspace retained by a shell or Service. A protocol-mode agent runs as a pipe session whose
+live conversation is projected into authored turns, ordered items, and agent-to-human requests. PTY
+remains the desktop and CLI default.
 
 Concretely (decided 2026-08-21, `docs/SESSION-SERVICES.md` "The model"): the session is the worktree
 plus its record, and everything that interacts with it is a process of one kind — `shell`,
-`agent-pty`, `agent-protocol` (reserved), `service` — with one lifecycle. A session holds several
-agent processes over its life; harness native state is harvested per agent process. Session status
-is a fold over live processes: any agent live → `running`; shells or Services only → `idle`; nothing
-live → settled from the last agent's outcome.
+`agent-pty`, `agent-protocol`, `service` — with one lifecycle. A session holds several agent
+processes over its life; harness native state is harvested per agent process. Session status is a
+fold over live processes: a pending request on a live protocol agent → `waiting`; any other live
+agent → `running`; shells or Services only → `idle`; nothing live → settled from the last agent's
+outcome.
 
 A session contains or references:
 
@@ -1312,6 +1315,13 @@ understand the work.
 ## 17. Open decisions
 
 ### Decided
+
+- **2026-08-21: protocol process restart policy v1.** Protocol adapters own pending provider calls
+  in memory. On Mend boot, live `agent-protocol` rows are ended instead of reconstructing adapter
+  state from the Sealant journal. An explicit resume starts a fresh pipe process and uses the
+  harvested provider id (`thread/resume` or `claude --resume`). Provider-keyed item upserts preserve
+  item identity and sequence if native events replay. Adapter-state reconstruction remains later
+  work.
 
 - **2026-08-20: desktop shells belong to visible sessions; hidden benches are retired.** A writable
   supporting shell runs in the focused coding-agent session's current workspace and contributes to

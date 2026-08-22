@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 
 import { MendApi, ProcessLogPage } from "./contract.ts";
 
+const conversationEndpointNames = new Set(["submitTurn", "interruptTurn", "respondAgentRequest"]);
+
 const typedEndpointNames = new Set([
   "followUpDeliver",
   "openReview",
@@ -34,6 +36,23 @@ describe("typed HTTP error contracts", () => {
       expect(endpointStatuses?.has(500), `${name} should not collapse its typed errors`).toBe(
         false,
       );
+    }
+  });
+
+  it("preserves conversation not-found and conflict statuses", () => {
+    const statuses = new Map<string, ReadonlySet<number>>();
+    HttpApi.reflect(MendApi, {
+      onGroup: () => {},
+      onEndpoint: ({ endpoint, errors }) => {
+        if (conversationEndpointNames.has(endpoint.name)) {
+          statuses.set(endpoint.name, new Set(errors.keys()));
+        }
+      },
+    });
+    for (const name of conversationEndpointNames) {
+      expect(statuses.get(name)?.has(404), `${name} should preserve NotFound`).toBe(true);
+      expect(statuses.get(name)?.has(409), `${name} should preserve conflict`).toBe(true);
+      expect(statuses.get(name)?.has(500), `${name} should not collapse errors`).toBe(false);
     }
   });
 

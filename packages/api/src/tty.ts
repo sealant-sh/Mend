@@ -67,6 +67,11 @@ export const TtyRoutes = HttpRouter.use((router) =>
           if (process === null) {
             return HttpServerResponse.text("unknown process", { status: 404 });
           }
+          if (process.kind === "agent-protocol") {
+            return HttpServerResponse.text("protocol agents use the structured conversation API", {
+              status: 409,
+            });
+          }
           const processPtyId = process.sealantSessionId;
           if (processPtyId === null) {
             // Adopted Services forward a port; there is no PTY to attach.
@@ -82,6 +87,11 @@ export const TtyRoutes = HttpRouter.use((router) =>
             return HttpServerResponse.text("unknown session", { status: 404 });
           }
           const agent = currentAgentProcess(yield* processes.listForSession(session.value.id));
+          if (agent?.kind === "agent-protocol") {
+            return HttpServerResponse.text("protocol agents use the structured conversation API", {
+              status: 409,
+            });
+          }
           const resolved =
             agent !== null && agent.sealantSessionId !== null
               ? {

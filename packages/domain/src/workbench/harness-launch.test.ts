@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { composeLaunchArgv } from "./harness-launch.ts";
+import {
+  ProtocolHarnessUnsupportedError,
+  composeLaunchArgv,
+  composeProtocolArgv,
+} from "./harness-launch.ts";
 
 describe("composeLaunchArgv", () => {
   it("composes the bare harness when every field is absent", () => {
@@ -96,5 +100,49 @@ describe("composeLaunchArgv", () => {
 
   it("treats whitespace-only prompt and model as absent", () => {
     expect(composeLaunchArgv("claude", { prompt: "  ", model: " " })).toEqual(["claude"]);
+  });
+});
+
+describe("composeProtocolArgv", () => {
+  it("keeps Codex model and effort off the app-server process argv", () => {
+    expect(
+      composeProtocolArgv("codex", {
+        mode: "protocol",
+        model: "gpt-test",
+        effort: "high",
+        permissionMode: "ask",
+      }),
+    ).toEqual(["codex", "app-server"]);
+  });
+
+  it("composes Claude stream-json resume flags and ask permissions", () => {
+    expect(
+      composeProtocolArgv(
+        "claude",
+        { mode: "protocol", model: "sonnet", effort: "high", permissionMode: "ask" },
+        "11111111-1111-4111-8111-111111111111",
+      ),
+    ).toEqual([
+      "claude",
+      "--print",
+      "--verbose",
+      "--input-format",
+      "stream-json",
+      "--output-format",
+      "stream-json",
+      "--include-partial-messages",
+      "--permission-prompt-tool",
+      "stdio",
+      "--resume",
+      "11111111-1111-4111-8111-111111111111",
+      "--model",
+      "sonnet",
+      "--effort",
+      "high",
+    ]);
+  });
+
+  it("rejects harnesses without a protocol shape", () => {
+    expect(composeProtocolArgv("opencode", {})).toBeInstanceOf(ProtocolHarnessUnsupportedError);
   });
 });
