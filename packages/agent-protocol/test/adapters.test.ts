@@ -359,7 +359,7 @@ describe("regression: reviewer findings", () => {
           .filter(([, item]) => item.kind === "assistant-message")
           .map(([id, item]) => ({ id, text: item.text }));
         expect(texts).toHaveLength(2);
-        expect(texts.map((item) => item.text).sort()).toEqual(["one", "two"]);
+        expect(texts.map((item) => item.text).toSorted()).toEqual(["one", "two"]);
         expect(new Set(texts.map((item) => item.id)).size).toBe(2);
         expect(texts.every((item) => item.id.startsWith(`${turnId}:m`))).toBe(true);
       }),
