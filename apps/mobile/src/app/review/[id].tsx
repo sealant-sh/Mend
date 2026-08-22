@@ -26,8 +26,8 @@ import { CommentCard } from "@/components/review-comment";
 import { ScreenHeader, SectionLabel } from "@/components/screen";
 import { BodyText, MonoText, UiText, useTextScale } from "@/components/typography";
 import {
-  ACTIVE,
-  canContinue,
+  agentIsActive,
+  canDeliverFollowUp,
   useChangeDiff,
   usePendingFollowUp,
   useSession,
@@ -527,17 +527,24 @@ function CommentComposer({
 function SendReviewModal({
   change,
   comments,
+  diffDigest,
   onClose,
 }: {
   readonly change: SessionChangeDto;
   readonly comments: ReadonlyArray<ReviewCommentDto>;
+  readonly diffDigest: string;
   readonly onClose: () => void;
 }) {
   const { colors } = useEvidenceTheme();
   const insets = useSafeAreaInsets();
-  const send = useSendReview(change.sessionId);
+  const send = useSendReview(
+    change.id,
+    change.sessionId,
+    comments.map((comment) => comment.id),
+    diffDigest,
+  );
   const [instruction, setInstruction] = useState(() => assembleInstruction(change, comments));
-  const [sent, setSent] = useState(false);
+  const [sentStatus, setSentStatus] = useState<string | null>(null);
   return (
     <Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
       <View style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -551,15 +558,17 @@ function SendReviewModal({
             gap: 12,
           }}
         >
-          {sent ? (
+          {sentStatus !== null ? (
             <>
               <UiText weight="medium" size={16}>
-                Follow-up saved for the session
+                {sentStatus === "delivered"
+                  ? "Review delivered"
+                  : "Follow-up saved for the session"}
               </UiText>
               <UiText size={13.5} tone="muted" style={{ lineHeight: 20 }}>
-                Deliver it with Deliver follow-up on the session screen (or mend continue from a
-                terminal). The comments in the bundle are marked sent; they stay open until the work
-                addresses them.
+                {sentStatus === "delivered"
+                  ? "The session accepted the instruction. The comments stay open until the work addresses them."
+                  : "The instruction is pinned to this Review. Deliver it from the session once the current agent stops."}
               </UiText>
               <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
                 <EvButton label="Done" onPress={onClose} />
@@ -609,7 +618,11 @@ function SendReviewModal({
                 <EvButton
                   label={send.isPending ? "Sending…" : "Send to session"}
                   disabled={send.isPending || instruction.trim() === ""}
-                  onPress={() => send.mutate(instruction, { onSuccess: () => setSent(true) })}
+                  onPress={() =>
+                    send.mutate(instruction, {
+                      onSuccess: (followUp) => setSentStatus(followUp.status),
+                    })
+                  }
                 />
               </View>
             </>
@@ -641,10 +654,11 @@ export default function ReviewScreen() {
   const { queuePass } = useReviewActions(changeId ?? "");
 
   const sessionId = change?.sessionId ?? null;
-  const session = useSession(sessionId).data?.session;
-  const sessionActive = session !== undefined && ACTIVE.has(session.status);
+  const sessionDetail = useSession(sessionId).data;
+  const session = sessionDetail?.session;
+  const sessionActive = agentIsActive(session, sessionDetail?.currentAgent ?? null);
   const followUp = usePendingFollowUp(sessionId ?? undefined).data ?? null;
-  const { continueFollowUp } = useSessionActions();
+  const { deliverFollowUp } = useSessionActions();
 
   const files = useMemo(() => parseFiles(diffText), [diffText]);
   // Past the render budget, later files start collapsed — a header with its
@@ -806,25 +820,35 @@ export default function ReviewScreen() {
               <PanelRow first>
                 <View style={{ gap: 8 }}>
                   <MonoText size={10.5} tone="label">
-                    follow-up · pending
+                    follow-up · {followUp.status.replaceAll("_", " ")}
                   </MonoText>
                   <UiText size={13} tone="ink2" numberOfLines={3} style={{ lineHeight: 18 }}>
                     {followUp.instruction}
                   </UiText>
-                  {session !== undefined && !sessionActive && canContinue(session.harness) ? (
+                  {followUp.deliveryError === null ? null : (
+                    <MonoText size={10.5} tone="danger">
+                      {followUp.deliveryError}
+                    </MonoText>
+                  )}
+                  {deliverFollowUp.isError ? (
+                    <MonoText size={10.5} tone="danger">
+                      {deliverFollowUp.error.message}
+                    </MonoText>
+                  ) : null}
+                  {session !== undefined && !sessionActive && canDeliverFollowUp(followUp) ? (
                     <View style={{ flexDirection: "row" }}>
                       <EvButton
                         size="sm"
                         variant="outline"
-                        disabled={continueFollowUp.isPending}
-                        label={continueFollowUp.isPending ? "delivering…" : "Deliver & relaunch"}
-                        onPress={() =>
-                          continueFollowUp.mutate({
-                            sessionId: session.id,
-                            harness: session.harness,
-                            instruction: followUp.instruction,
-                          })
+                        disabled={deliverFollowUp.isPending}
+                        label={
+                          deliverFollowUp.isPending
+                            ? "delivering…"
+                            : followUp.status === "delivery_failed"
+                              ? "Retry delivery"
+                              : "Deliver & relaunch"
                         }
+                        onPress={() => deliverFollowUp.mutate(followUp)}
                       />
                     </View>
                   ) : (
@@ -1020,7 +1044,12 @@ export default function ReviewScreen() {
       </View>
 
       {sendOpen && change !== null && (
-        <SendReviewModal change={change} comments={openUnsent} onClose={() => setSendOpen(false)} />
+        <SendReviewModal
+          change={change}
+          comments={openUnsent}
+          diffDigest={sha256Hex(diffText)}
+          onClose={() => setSendOpen(false)}
+        />
       )}
     </>
   );

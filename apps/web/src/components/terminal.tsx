@@ -30,9 +30,12 @@ const cssVar = (name: string, fallback: string): string => {
 
 export function SessionTerminal({
   sessionId,
+  processId,
   token,
 }: {
   readonly sessionId: string;
+  /** A supporting shell process. Omitted for the session's agent PTY. */
+  readonly processId?: string;
   /** Bearer for clients that cannot ride the cookie (the mobile WebView). */
   readonly token?: string;
 }) {
@@ -89,7 +92,10 @@ export function SessionTerminal({
         setState(attempt === 0 ? "connecting" : "reconnecting");
         const url = new URL("/api/tty", window.location.origin);
         url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-        url.searchParams.set("session", sessionId);
+        url.searchParams.set(
+          processId === undefined ? "session" : "process",
+          processId ?? sessionId,
+        );
         url.searchParams.set("from", "0");
         if (token !== undefined && token !== "") url.searchParams.set("token", token);
         const socket = new WebSocket(url);
@@ -178,7 +184,7 @@ export function SessionTerminal({
       cancelled = true;
       teardown?.();
     };
-  }, [sessionId]);
+  }, [sessionId, processId, token]);
 
   return (
     <div>

@@ -49,7 +49,7 @@ if (databaseUrl.includes("localhost:5434")) {
 // while the Effect server crash-waits on 3105 behind it.
 const children = [
   spawn("pnpm", ["exec", "vite", "dev", "--strictPort"], { stdio: "inherit" }),
-  spawn("node", ["--watch", "src/entry/main.ts"], { stdio: "inherit" }),
+  spawn("pnpm", ["exec", "tsx", "watch", "src/entry/main.ts"], { stdio: "inherit" }),
 ];
 
 const stop = (code) => {

@@ -82,12 +82,15 @@ export function GhosttyTerminal({
   serverUrl,
   token,
   sessionId,
+  processId,
   registerSend,
   transformInput,
 }: {
   readonly serverUrl: string;
   readonly token: string;
   readonly sessionId: string;
+  /** A supporting shell process. Omitted only for legacy agent-terminal links. */
+  readonly processId?: string;
   /** Hands the caller a raw-bytes sender (the accessory key bar uses it). */
   readonly registerSend?: (send: (data: string) => void) => void;
   /** Applied to keyboard input before it hits the wire (sticky modifiers). */
@@ -144,7 +147,10 @@ export function GhosttyTerminal({
   const tty = useTtySocket({
     serverUrl,
     token,
-    sessionId,
+    target:
+      processId === undefined
+        ? { kind: "session", id: sessionId }
+        : { kind: "process", id: processId },
     enabled: Native !== null,
     onBinary,
   });
@@ -155,7 +161,7 @@ export function GhosttyTerminal({
     return (
       <WebView
         source={{
-          uri: `${serverUrl}/tty-embed?session=${sessionId}&token=${encodeURIComponent(token)}`,
+          uri: `${serverUrl}/tty-embed?session=${sessionId}${processId === undefined ? "" : `&process=${encodeURIComponent(processId)}`}&token=${encodeURIComponent(token)}`,
         }}
         style={{ flex: 1, backgroundColor: colors.panel }}
         keyboardDisplayRequiresUserAction={false}
@@ -174,7 +180,7 @@ export function GhosttyTerminal({
     <View style={{ flex: 1, backgroundColor: colors.panel }}>
       <Native
         style={{ flex: 1 }}
-        terminalKey={sessionId}
+        terminalKey={processId ?? sessionId}
         initialBuffer={buffer}
         fontSize={12.5 * textScale}
         autoFocus

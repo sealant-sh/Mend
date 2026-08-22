@@ -5,8 +5,9 @@
 // quiet screen stays cheap.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useRef } from "react";
 
-import { api, type FollowUpDto } from "@/data/live";
+import { ApiError, api, requireFollowUpDelivery, type FollowUpDto } from "@/data/live";
 
 // ─── wire types (the server's DTOs, minimally) ──────────────────────────────
 
@@ -139,17 +140,54 @@ export const useReviewActions = (changeId: string) => {
   return { comment, setState, queuePass };
 };
 
-/**
- * Save the edited instruction as the session's pending follow-up. The server
- * marks every open, unsent comment as sent to this bundle — they stay open
- * until the work addresses them (sent ≠ resolved).
- */
-export const useSendReview = (sessionId: string | null) => {
+let reviewDeliverySequence = 0;
+
+const nextReviewDeliveryKey = (changeId: string): string => {
+  reviewDeliverySequence += 1;
+  return `mobile-review:${changeId}:${Date.now().toString(36)}:${reviewDeliverySequence.toString(36)}`;
+};
+
+interface OpenReviewResultDto {
+  readonly slice: {
+    readonly id: string;
+    readonly checkpointAId: string;
+    readonly checkpointBId: string;
+    readonly diffDigest: string;
+  };
+}
+
+/** Pin the current change, then hand the exact edited instruction to server-owned delivery. */
+export const useSendReview = (
+  changeId: string,
+  sessionId: string,
+  commentIds: ReadonlyArray<string>,
+  expectedDiffDigest: string,
+) => {
   const queryClient = useQueryClient();
+  const selectedCommentIds = useRef(commentIds);
+  const reviewedDiffDigest = useRef(expectedDiffDigest);
+  const idempotencyKey = useRef(nextReviewDeliveryKey(changeId));
   return useMutation({
-    mutationFn: (instruction: string) => {
-      if (sessionId === null) return Promise.reject(new Error("no session for this change"));
-      return api<FollowUpDto>("POST", `/sessions/${sessionId}/follow-up`, { instruction });
+    mutationFn: async (instruction: string) => {
+      const review = await api<OpenReviewResultDto>("POST", `/changes/${changeId}/reviews/open`, {
+        idempotencyKey: `open:${idempotencyKey.current}`,
+      });
+      if (review.slice.diffDigest !== reviewedDiffDigest.current) {
+        throw new ApiError(
+          "The worktree changed after these comments were written. Reopen Review before sending.",
+          0,
+        );
+      }
+      const followUp = await api<FollowUpDto>("POST", `/sessions/${sessionId}/follow-up/deliver`, {
+        reviewSliceId: review.slice.id,
+        checkpointAId: review.slice.checkpointAId,
+        checkpointBId: review.slice.checkpointBId,
+        diffDigest: review.slice.diffDigest,
+        commentIds: selectedCommentIds.current,
+        instruction,
+        idempotencyKey: idempotencyKey.current,
+      });
+      return requireFollowUpDelivery(followUp);
     },
     onSettled: () => queryClient.invalidateQueries(),
   });

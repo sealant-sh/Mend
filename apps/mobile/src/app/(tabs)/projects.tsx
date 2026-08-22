@@ -10,14 +10,13 @@ import { Screen, ScreenHeader } from "@/components/screen";
 import { SessionRow } from "@/components/session-row";
 import { MonoText, UiText } from "@/components/typography";
 import {
+  PROTOCOL_HARNESSES,
   annotationDetail,
   toSession,
   useAllSessions,
   useProjects,
   useSessionActions,
 } from "@/data/live";
-
-const HARNESSES = ["claude", "codex", "opencode"] as const;
 
 export default function ProjectsScreen() {
   const router = useRouter();
@@ -30,7 +29,10 @@ export default function ProjectsScreen() {
       { projectId, harness },
       {
         onSuccess: (session) =>
-          router.push({ pathname: "/session/[id]", params: { id: session.id } }),
+          router.push({
+            pathname: "/session/[id]",
+            params: { id: session.id, mode: "protocol" },
+          }),
       },
     );
   };
@@ -71,7 +73,7 @@ export default function ProjectsScreen() {
             </PanelRow>
             <PanelRow>
               <View style={{ flexDirection: "row", gap: 8 }}>
-                {HARNESSES.map((harness) => (
+                {PROTOCOL_HARNESSES.map((harness) => (
                   <EvButton
                     key={harness}
                     variant="outline"

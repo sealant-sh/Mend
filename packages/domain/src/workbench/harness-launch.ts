@@ -130,9 +130,11 @@ export const composeLaunchArgv = (harness: string, start: LaunchStart): Readonly
 /** A harness has no supported structured byte protocol in Mend. */
 export class ProtocolHarnessUnsupportedError extends Error {
   readonly _tag = "ProtocolHarnessUnsupportedError" as const;
+  readonly harness: string;
 
-  constructor(readonly harness: string) {
+  constructor(harness: string) {
     super(`Harness "${harness}" does not support protocol mode.`);
+    this.harness = harness;
   }
 }
 

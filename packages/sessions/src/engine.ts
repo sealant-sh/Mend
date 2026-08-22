@@ -28,8 +28,8 @@ import {
   UserDotfilesRepo,
 } from "@mend/db";
 import {
-  AgentRequestId,
-  AgentTurnId,
+  type AgentRequestId,
+  type AgentTurnId,
   SealantRunId,
   SealantWorkspaceId,
   type ServiceForwardId,
@@ -113,7 +113,7 @@ import {
   ingestNativeSession,
   type ConvertedNativeSession,
 } from "./native-convert.ts";
-import { ProtocolHost, ProtocolHostNotLiveError } from "./protocol-host.ts";
+import { ProtocolHost, type ProtocolHostNotLiveError } from "./protocol-host.ts";
 import { mergeRecipes, readServiceRecipes } from "./recipes.ts";
 import { ServiceBindError, ServiceHost } from "./service-host.ts";
 import {
@@ -419,6 +419,7 @@ export class SessionEngine extends Context.Service<
       sessionId: SessionId,
       start: LaunchStart,
       author: string | null,
+      launchCorrelationId?: string | null,
     ) => Effect.Effect<
       Session,
       | SessionNotFoundError
@@ -2502,6 +2503,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sessionId: SessionId,
         start: LaunchStart,
         author: string | null,
+        launchCorrelationId: string | null = null,
       ) {
         const session = yield* sessions.byId(sessionId);
         const rows = yield* processes.listForSession(sessionId);
@@ -2519,7 +2521,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           composed,
           null,
           null,
-          null,
+          launchCorrelationId,
           start,
           author,
           providerSessionId ?? null,
@@ -2777,6 +2779,26 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             message: "The session became active before this follow-up could be delivered.",
             cause: null,
           });
+        }
+        const priorAgent = currentAgentProcess(yield* processes.listForSession(sessionId));
+        if (priorAgent?.kind === "agent-protocol") {
+          return yield* launchProtocol(
+            sessionId,
+            { mode: "protocol", prompt: instruction, permissionMode: "bypass" },
+            null,
+            launchCorrelationId,
+          ).pipe(
+            Effect.catchTag("ProtocolHarnessUnsupportedError", (error) =>
+              Effect.fail(
+                new SealantPlatformError({
+                  code: "unknown_protocol_harness",
+                  status: null,
+                  message: error.message,
+                  cause: error,
+                }),
+              ),
+            ),
+          );
         }
         const argv = promptArgv(session.harness, instruction);
         if (argv === null) {

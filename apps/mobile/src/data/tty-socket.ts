@@ -23,6 +23,11 @@ const LADDER_MS = [3_000, 4_000, 8_000, 16_000] as const;
 const STABLE_AFTER_MS = 30_000;
 const BACKGROUND_REPLACE_AFTER_MS = 10_000;
 
+export interface TtyTarget {
+  readonly kind: "session" | "process";
+  readonly id: string;
+}
+
 export interface TtySocket {
   readonly phase: TtyPhase;
   /** True exactly when an input frame would reach the PTY right now. */
@@ -37,14 +42,14 @@ export interface TtySocket {
 export function useTtySocket({
   serverUrl,
   token,
-  sessionId,
+  target,
   enabled,
   onBinary,
   onEnd,
 }: {
   readonly serverUrl: string | null;
   readonly token: string | null;
-  readonly sessionId: string | undefined;
+  readonly target: TtyTarget | null;
   readonly enabled: boolean;
   /**
    * PTY output bytes. `generation` increments on every fresh connection —
@@ -64,7 +69,7 @@ export function useTtySocket({
   onEndRef.current = onEnd;
 
   useEffect(() => {
-    if (!enabled || serverUrl === null || token === null || sessionId === undefined) {
+    if (!enabled || serverUrl === null || token === null || target === null) {
       setPhase("idle");
       return;
     }
@@ -79,9 +84,15 @@ export function useTtySocket({
     const connect = () => {
       if (disposed || ended) return;
       setPhase(attempt === 0 ? "connecting" : "reconnecting");
-      const url = new URL(`${serverUrl}/api/tty`);
+      let url: URL;
+      try {
+        url = new URL(`${serverUrl}/api/tty`);
+      } catch {
+        setPhase("idle");
+        return;
+      }
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-      url.searchParams.set("session", sessionId);
+      url.searchParams.set(target.kind, target.id);
       url.searchParams.set("from", "0");
       url.searchParams.set("token", token);
       const socket = new WebSocket(url.toString());
@@ -170,7 +181,7 @@ export function useTtySocket({
       wsRef.current = null;
       current?.close();
     };
-  }, [serverUrl, token, sessionId, enabled]);
+  }, [serverUrl, token, target?.kind, target?.id, enabled]);
 
   const send = useCallback((data: string): boolean => {
     const socket = wsRef.current;
