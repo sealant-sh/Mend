@@ -56,12 +56,14 @@ err() { printf '\033[1;31m✗\033[0m %s\n' "$1" >&2; }
 die() { err "$1"; exit 1; }
 
 # Every state-changing command goes through `run`; reads (curl to stdout, docker inspect, grep) run
-# as-is so a dry run resolves the same versions and ports a real run would.
+# as-is so a dry run resolves the same versions and ports a real run would. Stdin is detached: under
+# `curl … | sh` stdin IS the script, and anything that reads it (docker compose attaches it by
+# default) would swallow the unexecuted tail and end the install mid-way, silently.
 run() {
   if [ "$DRY_RUN" = 1 ]; then
     printf '  + %s\n' "$*" >&2
   else
-    "$@"
+    "$@" </dev/null
   fi
 }
 
@@ -157,6 +159,9 @@ reachable_ipv4() {
     printf '%s\n' "$addrs" | head -n 1
 }
 
+# The whole install lives in main() so the shell parses the entire script before running any of it:
+# piped through `sh`, a partial read can then never execute a partial script.
+main() {
 printf '\n  \033[1mMend\033[0m installer\n\n'
 if [ "$DRY_RUN" = 1 ]; then
   DRY_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/mend-install-dry.XXXXXX")"
@@ -196,7 +201,7 @@ if sort -V </dev/null >/dev/null 2>&1; then
 else
   HAVE_SORT_V=0
 fi
-ok "Docker $compose_version, $OS/$ARCH"
+ok "Docker Compose $compose_version, $OS/$ARCH"
 
 # Node: a system Node 22+ runs the server (TypeScript goes through Node's type stripping);
 # otherwise a private Node goes under ~/.local/share/mend — no sudo, no version manager. The private
@@ -323,7 +328,7 @@ for image_name in sealant-api sealant-worker sealant-ssh-gateway; do
   fi
 done
 info "Applying Sealant migrations…"
-sealant_compose run --rm migrate >/dev/null || die "Sealant migrations failed. Inspect with: docker compose --project-directory $SEALANT_DIR logs postgres"
+sealant_compose run --rm -T migrate >/dev/null || die "Sealant migrations failed. Inspect with: docker compose --project-directory $SEALANT_DIR logs postgres"
 info "Starting Sealant…"
 # By name, not `up -d --scale web=0`: naming the services leaves an operator's existing Sealant web
 # container exactly as it is (scaling it to 0 would stop it), and pulls nothing extra.
@@ -331,7 +336,7 @@ mount_hint=""
 [ "$OS" != darwin ] || mount_hint=" On Docker Desktop, share /run/sealant/sockets first: Settings → Resources → File sharing."
 sealant_compose up -d postgres rabbitmq zot api worker ssh-gateway ||
   die "Sealant failed to start. Inspect with: docker compose --project-directory $SEALANT_DIR logs.$mount_hint"
-if [ -n "$(docker compose --project-directory "$SEALANT_DIR" -f "$SEALANT_COMPOSE" ps -a -q web 2>/dev/null)" ]; then
+if [ -n "$(docker compose --project-directory "$SEALANT_DIR" -f "$SEALANT_COMPOSE" ps -a -q web 2>/dev/null </dev/null)" ]; then
   info "Sealant's own web container is left as it is. This run wrote SEALANT_SERVICE_KEYS to $SEALANT_ENV, which changes how the API authenticates callers — check that web app after the install."
 fi
 wait_for "http://127.0.0.1:$SEALANT_API_PORT/healthz" "The Sealant API did not become healthy. Check: docker compose --project-directory $SEALANT_DIR logs api"
@@ -520,3 +525,6 @@ printf '                docker compose --project-directory %s down -v\n' "$MEND_
 printf '                docker compose --project-directory %s down -v\n' "$SEALANT_DIR"
 printf '                rm -rf %s %s %s %s\n\n' "$MEND_DIR" "$SEALANT_DIR" "$MEND_SRC" "$DATA_HOME/mend"
 [ "$DRY_RUN" != 1 ] || info "Dry run complete — nothing on this machine changed. Staged files: $DRY_STAGE"
+}
+
+main "$@"
