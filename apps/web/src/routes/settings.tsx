@@ -5,7 +5,9 @@ import { useReducer, useState } from "react";
 
 import { AppShell } from "#/components/shell";
 import {
+  connectAccount,
   deleteDotfilesSnapshot,
+  disconnectAccount,
   postDotfilesSnapshot,
   putDotfilesRepository,
   putSettings,
@@ -15,10 +17,12 @@ import {
   type DotfilesDto,
   type DotfilesRepositoryDto,
   type HostEnvironmentSuggestionsDto,
+  type ConnectedAccountDto,
+  type ConnectedAccountProviderDto,
   type SealantConnectionDto,
   type SettingsDto,
 } from "#/lib/api";
-import { dotfilesQuery, queryClient, settingsQuery } from "#/lib/queries";
+import { dotfilesQuery, queryClient, sealantIdentityQuery, settingsQuery } from "#/lib/queries";
 import { setThemePreference, useThemePreference, type ThemePreference } from "#/lib/theme";
 import {
   createWorkspaceEnvironmentForm,
@@ -36,6 +40,7 @@ export const Route = createFileRoute("/settings")({
     await Promise.all([
       queryClient.ensureQueryData(settingsQuery),
       queryClient.ensureQueryData(dotfilesQuery),
+      queryClient.ensureQueryData(sealantIdentityQuery),
     ]);
     return sealantConnection();
   },
@@ -60,6 +65,7 @@ function SettingsPage() {
         <WorkspaceEnvironmentPanel />
         <DotfilesPanel />
         <ReviewAutomationPanel />
+        <ConnectedAccountsPanel />
         <SealantConnectionPanel connection={connection} />
       </div>
     </AppShell>
@@ -940,6 +946,212 @@ function ThemePanel() {
             {option.label}
           </button>
         ))}
+      </div>
+    </section>
+  );
+}
+
+const PROVIDERS: ReadonlyArray<{
+  readonly provider: ConnectedAccountProviderDto;
+  readonly label: string;
+  readonly detail: string;
+  readonly placeholder: string;
+  readonly multiline: boolean;
+}> = [
+  {
+    provider: "claude",
+    label: "Claude",
+    detail:
+      "What `mend claude` and Mend's own reads of a change run on. Paste a setup token from `claude setup-token`, or the contents of ~/.claude/.credentials.json.",
+    placeholder: 'sk-ant-oat01-…  or  { "claudeAiOauth": { … } }',
+    multiline: true,
+  },
+  {
+    provider: "codex",
+    label: "Codex",
+    detail:
+      "What `mend codex` runs on. Paste the contents of ~/.codex/auth.json from a machine where `codex login` has run.",
+    placeholder: '{ "OPENAI_API_KEY": null, "tokens": { … } }',
+    multiline: true,
+  },
+  {
+    provider: "github",
+    label: "GitHub",
+    detail: "Gives `gh` inside every session a GH_TOKEN. Paste the output of `gh auth token`.",
+    placeholder: "gho_…",
+    multiline: false,
+  },
+];
+
+/** The one line the row shows about an account: the platform's non-secret metadata. */
+const accountHint = (account: ConnectedAccountDto): string => {
+  const meta = account.metadata;
+  const pick = (key: string) => (typeof meta[key] === "string" ? String(meta[key]) : null);
+  const identity = pick("login") ?? pick("email") ?? pick("accountEmail") ?? pick("accountId");
+  const suffix = pick("tokenSuffix");
+  const parts = [
+    identity,
+    suffix === null ? null : `…${suffix}`,
+    account.status === "invalid" ? "rejected by the provider — reconnect" : null,
+  ].filter((part): part is string => part !== null);
+  return parts.length === 0 ? account.kind : parts.join(" · ");
+};
+
+/**
+ * The signed-in user's own provider accounts (docs/SEALANT-IDENTITY.md). Each
+ * person connects their own subscription; the credential goes to the platform
+ * under their Sealant user and is never shown again.
+ */
+const refreshIdentity = () => queryClient.invalidateQueries({ queryKey: ["sealant-identity"] });
+
+function ConnectedAccountsPanel() {
+  const identity = useSuspenseQuery(sealantIdentityQuery).data;
+  const [editing, setEditing] = useState<ConnectedAccountProviderDto | null>(null);
+  const [secret, setSecret] = useState("");
+  const [pending, setPending] = useState<ConnectedAccountProviderDto | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = refreshIdentity;
+  const submit = (provider: ConnectedAccountProviderDto) => {
+    const value = secret.trim();
+    if (value === "") return;
+    setPending(provider);
+    setError(null);
+    void connectAccount({ provider, secret: value })
+      .then(() => {
+        setEditing(null);
+        setSecret("");
+        return refresh();
+      })
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+      .finally(() => setPending(null));
+  };
+  const disconnect = (account: ConnectedAccountDto) => {
+    setPending(account.provider);
+    setError(null);
+    void disconnectAccount(account.id)
+      .then(() => refresh())
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+      .finally(() => setPending(null));
+  };
+
+  return (
+    <section className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
+      <h2 className="font-sans text-sm font-semibold">Connected accounts</h2>
+      <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+        Your own subscriptions. Sessions and Mend's model calls run on these, under your platform
+        user <span className="font-mono text-[12px] text-ink-2">{identity.sealantUserId}</span>.
+        Credentials go straight to Sealant and are not kept here.
+      </p>
+      <div className="mt-5 space-y-5 border-t border-[var(--sw-faint-rule)] pt-5">
+        {PROVIDERS.map((row) => {
+          const account =
+            identity.accounts.find(
+              (candidate) => candidate.provider === row.provider && candidate.name === "default",
+            ) ?? identity.accounts.find((candidate) => candidate.provider === row.provider);
+          const isEditing = editing === row.provider;
+          const busy = pending === row.provider;
+          return (
+            <div key={row.provider} className="space-y-3">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2.5">
+                    <span
+                      className={`size-2 rounded-full ${
+                        account === undefined
+                          ? "bg-[var(--sw-faint-rule)]"
+                          : account.status === "active"
+                            ? "bg-success-dot"
+                            : "bg-[var(--sw-amber)]"
+                      }`}
+                      aria-hidden="true"
+                    />
+                    <p className="font-sans text-sm font-medium text-foreground">{row.label}</p>
+                    <span className="font-mono text-[12px] text-label">
+                      {account === undefined ? "not connected" : accountHint(account)}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+                    {row.detail}
+                  </p>
+                </div>
+                <div className="flex shrink-0 gap-2">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    className="rounded-xl border border-border bg-card px-3.5 py-1.5 font-sans text-xs font-medium text-foreground shadow-xs transition-colors hover:border-input disabled:opacity-60"
+                    onClick={() => {
+                      setError(null);
+                      setSecret("");
+                      setEditing(isEditing ? null : row.provider);
+                    }}
+                  >
+                    {isEditing ? "Cancel" : account === undefined ? "Connect" : "Replace"}
+                  </button>
+                  {account === undefined ? null : (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      className="rounded-xl border border-border bg-card px-3.5 py-1.5 font-sans text-xs font-medium text-muted-foreground shadow-xs transition-colors hover:text-foreground disabled:opacity-60"
+                      onClick={() => disconnect(account)}
+                    >
+                      {busy ? "…" : "Disconnect"}
+                    </button>
+                  )}
+                </div>
+              </div>
+              {isEditing ? (
+                <form
+                  className="space-y-2"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    submit(row.provider);
+                  }}
+                >
+                  {row.multiline ? (
+                    <textarea
+                      autoFocus
+                      rows={4}
+                      value={secret}
+                      onChange={(event) => setSecret(event.target.value)}
+                      placeholder={row.placeholder}
+                      spellCheck={false}
+                      className="w-full rounded-xl border border-border bg-card px-3 py-2 font-mono text-[12.5px] text-foreground shadow-xs outline-none placeholder:text-label focus:border-input"
+                    />
+                  ) : (
+                    <input
+                      autoFocus
+                      type="password"
+                      value={secret}
+                      onChange={(event) => setSecret(event.target.value)}
+                      placeholder={row.placeholder}
+                      spellCheck={false}
+                      autoComplete="off"
+                      className="w-full rounded-xl border border-border bg-card px-3 py-2 font-mono text-[12.5px] text-foreground shadow-xs outline-none placeholder:text-label focus:border-input"
+                    />
+                  )}
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="submit"
+                      disabled={busy || secret.trim() === ""}
+                      className="rounded-xl border border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash px-3.5 py-1.5 font-sans text-xs font-medium text-foreground shadow-xs disabled:opacity-60"
+                    >
+                      {busy ? "Connecting…" : "Connect"}
+                    </button>
+                    <span className="font-mono text-[12px] text-label">
+                      sent once to the platform · not stored by Mend
+                    </span>
+                  </div>
+                </form>
+              ) : null}
+            </div>
+          );
+        })}
+        {error === null ? null : (
+          <p className="font-mono text-[12.5px] text-warning" role="alert">
+            {error}
+          </p>
+        )}
       </div>
     </section>
   );

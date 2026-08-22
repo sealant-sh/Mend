@@ -277,6 +277,61 @@ export const moveIssue = (id: string, stage: "triage" | "queued", position: numb
 
 export const sealantConnection = () => request<SealantConnectionDto>("/api/sealant/connection");
 
+export type ConnectedAccountProviderDto = "claude" | "codex" | "github";
+
+/** A connected account as the platform reports it — never carries the secret. */
+export interface ConnectedAccountDto {
+  readonly id: string;
+  readonly provider: ConnectedAccountProviderDto;
+  readonly name: string;
+  readonly kind: string;
+  readonly status: "active" | "invalid" | "archived";
+  readonly metadata: Readonly<Record<string, unknown>>;
+  readonly connectedAt: string;
+  readonly updatedAt: string;
+  readonly lastUsedAt: string | null;
+}
+
+/** The signed-in user's platform identity: their own Sealant user and its accounts. */
+export interface SealantIdentityDto {
+  readonly sealantUserId: string;
+  readonly accounts: ReadonlyArray<ConnectedAccountDto>;
+}
+
+export const getSealantIdentity = () => request<SealantIdentityDto>("/api/me/sealant");
+
+/** Forwards the credential to the platform under the user's own identity; Mend keeps nothing. */
+export const connectAccount = (input: {
+  readonly provider: ConnectedAccountProviderDto;
+  readonly secret: string;
+}) => postWithMessage<ConnectedAccountDto>("/api/me/sealant/accounts", input);
+
+export const disconnectAccount = (id: string) =>
+  del<ConnectedAccountDto>(`/api/me/sealant/accounts/${id}`);
+
+/** Like `post`, but surfaces the server's own sentence on a 4xx — the provider's verdict. */
+async function postWithMessage<A>(path: string, payload: unknown): Promise<A> {
+  const response = await fetch(path, {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (response.status === 401) throw redirect({ to: "/login" });
+  if (!response.ok) {
+    let message = `POST ${path} responded ${response.status}`;
+    try {
+      const body: { readonly message?: unknown } = await response.json();
+      if (typeof body.message === "string") message = body.message;
+    } catch {
+      // not JSON — keep the status line
+    }
+    throw new Error(message);
+  }
+  const body: A = await response.json();
+  return body;
+}
+
 /** The machine Mend runs on — hostname · platform, and whether a tailnet address is bound. */
 export interface MachineDto {
   readonly hostname: string;

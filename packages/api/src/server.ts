@@ -9,7 +9,14 @@ import {
 } from "@mend/db";
 import type { RunId } from "@mend/domain";
 import { JobRunner } from "@mend/jobs";
-import { SealantClient } from "@mend/sealant";
+import {
+  asFirstSealantUser,
+  SealantClient,
+  SealantClients,
+  SealantIdentity,
+  SealantPlatformError,
+  SealantPrincipal,
+} from "@mend/sealant";
 import { Config, Effect, Layer, Option, Stream } from "effect";
 import { HttpServerRequest } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
@@ -17,7 +24,9 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 import {
   AuthMiddleware,
   BriefDetail,
+  AccountRejected,
   CurrentUser,
+  SealantUnavailable,
   HealthStatus,
   IssueDetail,
   LossReportView,
@@ -58,7 +67,12 @@ export const AuthMiddlewareLive = Layer.effect(AuthMiddleware)(
         const headers = new Headers(Object.entries(request.headers));
         const session = yield* auth.getSession(headers);
         if (Option.isNone(session)) return yield* Effect.fail(new Unauthorized());
-        return yield* httpEffect.pipe(Effect.provideService(CurrentUser, session.value));
+        // The request's platform principal is the caller; session-scoped handlers re-bind to
+        // the session owner underneath (docs/SEALANT-IDENTITY.md).
+        return yield* httpEffect.pipe(
+          Effect.provideService(CurrentUser, session.value),
+          Effect.provideService(SealantPrincipal, { kind: "user", userId: session.value.user.id }),
+        );
       });
   }),
 );
@@ -82,6 +96,47 @@ export const SealantGroupLive = HttpApiBuilder.group(MendApi, "sealant", (handle
       return yield* sealant.connectionCheck();
     }),
   ),
+);
+
+/** A platform failure as the accounts endpoints report it: the provider's own words for 4xx. */
+const accountFailure = (error: SealantPlatformError) =>
+  error.status !== null && error.status >= 400 && error.status < 500
+    ? new AccountRejected({ message: error.message })
+    : new SealantUnavailable({ code: error.code, message: error.message });
+
+export const AccountsGroupLive = HttpApiBuilder.group(MendApi, "accounts", (handlers) =>
+  handlers
+    .handle("identity", () =>
+      Effect.gen(function* () {
+        const clients = yield* SealantClients;
+        const caller = yield* CurrentUser;
+        const sealantUserId = yield* clients.sealantUserId(caller.user.id);
+        const accounts = yield* clients.connectedAccounts(caller.user.id).list();
+        return new SealantIdentity({ sealantUserId, accounts });
+      }).pipe(
+        Effect.catchTag("SealantPlatformError", (error) =>
+          Effect.fail(new SealantUnavailable({ code: error.code, message: error.message })),
+        ),
+      ),
+    )
+    .handle("connect", ({ payload }) =>
+      Effect.gen(function* () {
+        const clients = yield* SealantClients;
+        const caller = yield* CurrentUser;
+        return yield* clients.connectedAccounts(caller.user.id).connect(payload);
+      }).pipe(
+        Effect.catchTag("SealantPlatformError", (error) => Effect.fail(accountFailure(error))),
+      ),
+    )
+    .handle("disconnect", ({ params }) =>
+      Effect.gen(function* () {
+        const clients = yield* SealantClients;
+        const caller = yield* CurrentUser;
+        return yield* clients.connectedAccounts(caller.user.id).disconnect(params.id);
+      }).pipe(
+        Effect.catchTag("SealantPlatformError", (error) => Effect.fail(accountFailure(error))),
+      ),
+    ),
 );
 
 export const IssuesGroupLive = HttpApiBuilder.group(MendApi, "issues", (handlers) =>
@@ -193,6 +248,7 @@ const SOURCE_KINDS = new Set(["networkRequest", "networkSourceObserved"]);
 const SOURCE_SCAN_LIMIT = 20_000;
 
 /** The run's SDK handle, or NotFound — shared by every audit endpoint. */
+// Legacy issue runs (the retired queue) were started as the operator; read them as the operator.
 const openRecord = (id: RunId) =>
   Effect.gen(function* () {
     const runs = yield* RunsRepo;
@@ -208,168 +264,174 @@ const openRecord = (id: RunId) =>
 export const RunsGroupLive = HttpApiBuilder.group(MendApi, "runs", (handlers) =>
   handlers
     .handle("detail", ({ params }) =>
-      Effect.gen(function* () {
-        const runs = yield* RunsRepo;
-        const sealant = yield* SealantClient;
-        const run = yield* runs
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+      asFirstSealantUser(
+        Effect.gen(function* () {
+          const runs = yield* RunsRepo;
+          const sealant = yield* SealantClient;
+          const run = yield* runs
+            .byId(params.id)
+            .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
 
-        if (run.sealantRunId === null) {
-          return new RunDetail({
-            run,
-            commands: [],
-            transcript: null,
-            loss: null,
-            recordError: null,
-          });
-        }
+          if (run.sealantRunId === null) {
+            return new RunDetail({
+              run,
+              commands: [],
+              transcript: null,
+              loss: null,
+              recordError: null,
+            });
+          }
 
-        // The SDK read surface backs the view; a read failure is shown, not hidden.
-        const record = yield* sealant.getRun(run.sealantRunId).pipe(
-          Effect.flatMap((sdkRun) =>
-            Effect.all({
-              commands: Effect.tryPromise({
-                try: () => sdkRun.record.commands(),
-                catch: (cause) => (cause instanceof Error ? cause.message : String(cause)),
-              }),
-              transcript: Effect.tryPromise({
-                try: () => sdkRun.record.transcript(),
-                catch: (cause) => (cause instanceof Error ? cause.message : String(cause)),
-              }),
-              loss: Effect.tryPromise({
-                try: () => sdkRun.record.loss(),
-                catch: (cause) => (cause instanceof Error ? cause.message : String(cause)),
-              }),
-            }),
-          ),
-          Effect.mapError((error) => (typeof error === "string" ? error : error.message)),
-          Effect.map(({ commands, transcript, loss }) => ({
-            commands: commands.map(
-              (command) =>
-                new RunCommandView({
-                  command: command.command,
-                  exitCode: command.exitCode ?? null,
-                  durationMs: command.durationMs ?? null,
+          // The SDK read surface backs the view; a read failure is shown, not hidden.
+          const record = yield* sealant.getRun(run.sealantRunId).pipe(
+            Effect.flatMap((sdkRun) =>
+              Effect.all({
+                commands: Effect.tryPromise({
+                  try: () => sdkRun.record.commands(),
+                  catch: (cause) => (cause instanceof Error ? cause.message : String(cause)),
                 }),
+                transcript: Effect.tryPromise({
+                  try: () => sdkRun.record.transcript(),
+                  catch: (cause) => (cause instanceof Error ? cause.message : String(cause)),
+                }),
+                loss: Effect.tryPromise({
+                  try: () => sdkRun.record.loss(),
+                  catch: (cause) => (cause instanceof Error ? cause.message : String(cause)),
+                }),
+              }),
             ),
-            transcript,
-            loss: new LossReportView({
-              complete: loss.complete,
-              spans: loss.spans.map(
-                (span) =>
-                  new LossSpanView({
-                    fromSequence:
-                      span.fromSequence === undefined ? null : String(span.fromSequence),
-                    toSequence: span.toSequence === undefined ? null : String(span.toSequence),
+            Effect.mapError((error) => (typeof error === "string" ? error : error.message)),
+            Effect.map(({ commands, transcript, loss }) => ({
+              commands: commands.map(
+                (command) =>
+                  new RunCommandView({
+                    command: command.command,
+                    exitCode: command.exitCode ?? null,
+                    durationMs: command.durationMs ?? null,
                   }),
               ),
-            }) as LossReportView | null,
-            recordError: null as string | null,
-          })),
-          Effect.catch((message) =>
-            Effect.succeed({
-              commands: [] as ReadonlyArray<RunCommandView>,
-              transcript: null as string | null,
-              loss: null as LossReportView | null,
-              recordError: message,
-            }),
-          ),
-        );
+              transcript,
+              loss: new LossReportView({
+                complete: loss.complete,
+                spans: loss.spans.map(
+                  (span) =>
+                    new LossSpanView({
+                      fromSequence:
+                        span.fromSequence === undefined ? null : String(span.fromSequence),
+                      toSequence: span.toSequence === undefined ? null : String(span.toSequence),
+                    }),
+                ),
+              }) as LossReportView | null,
+              recordError: null as string | null,
+            })),
+            Effect.catch((message) =>
+              Effect.succeed({
+                commands: [] as ReadonlyArray<RunCommandView>,
+                transcript: null as string | null,
+                loss: null as LossReportView | null,
+                recordError: message,
+              }),
+            ),
+          );
 
-        return new RunDetail({ run, ...record });
-      }),
+          return new RunDetail({ run, ...record });
+        }),
+      ),
     )
     .handle("trace", ({ params, query }) =>
-      Effect.gen(function* () {
-        const sealant = yield* SealantClient;
-        const { sdkRun } = yield* openRecord(params.id);
-        if (sdkRun === null) return new TracePage({ entries: [], nextFrom: null });
+      asFirstSealantUser(
+        Effect.gen(function* () {
+          const sealant = yield* SealantClient;
+          const { sdkRun } = yield* openRecord(params.id);
+          if (sdkRun === null) return new TracePage({ entries: [], nextFrom: null });
 
-        const from = query.from === undefined ? 0n : BigInt(query.from);
-        const entries = yield* sealant.recordTimeline(sdkRun, { from }).pipe(
-          Stream.take(TRACE_PAGE_SIZE + 1),
-          Stream.runCollect,
-          Effect.mapError(() => new NotFound({ id: params.id })),
-        );
+          const from = query.from === undefined ? 0n : BigInt(query.from);
+          const entries = yield* sealant.recordTimeline(sdkRun, { from }).pipe(
+            Stream.take(TRACE_PAGE_SIZE + 1),
+            Stream.runCollect,
+            Effect.mapError(() => new NotFound({ id: params.id })),
+          );
 
-        const page = entries.slice(0, TRACE_PAGE_SIZE);
-        const overflow = entries[TRACE_PAGE_SIZE];
-        return new TracePage({
-          entries: page.map(
-            (entry) =>
-              new TraceEntryView({
-                sequence: String(entry.sequence),
-                occurredAt: entry.occurredAt,
-                kind: entry.kind,
-                summary: entry.summary,
-                processId: entry.processId ?? null,
-              }),
-          ),
-          nextFrom: overflow === undefined ? null : String(overflow.sequence),
-        });
-      }),
+          const page = entries.slice(0, TRACE_PAGE_SIZE);
+          const overflow = entries[TRACE_PAGE_SIZE];
+          return new TracePage({
+            entries: page.map(
+              (entry) =>
+                new TraceEntryView({
+                  sequence: String(entry.sequence),
+                  occurredAt: entry.occurredAt,
+                  kind: entry.kind,
+                  summary: entry.summary,
+                  processId: entry.processId ?? null,
+                }),
+            ),
+            nextFrom: overflow === undefined ? null : String(overflow.sequence),
+          });
+        }),
+      ),
     )
     .handle("sources", ({ params }) =>
-      Effect.gen(function* () {
-        const sealant = yield* SealantClient;
-        const { sdkRun } = yield* openRecord(params.id);
-        if (sdkRun === null) return [];
+      asFirstSealantUser(
+        Effect.gen(function* () {
+          const sealant = yield* SealantClient;
+          const { sdkRun } = yield* openRecord(params.id);
+          if (sdkRun === null) return [];
 
-        const events = yield* sealant.recordTimeline(sdkRun).pipe(
-          Stream.take(SOURCE_SCAN_LIMIT),
-          Stream.filter((entry) => SOURCE_KINDS.has(entry.kind)),
-          Stream.runCollect,
-          Effect.mapError(() => new NotFound({ id: params.id })),
-        );
-
-        const sources = new Map<
-          string,
-          {
-            host: string;
-            method: string | null;
-            path: string | null;
-            status: number | null;
-            count: number;
-            firstSequence: bigint;
-          }
-        >();
-        for (const entry of events) {
-          if (entry.kind !== "networkRequest" && entry.kind !== "networkSourceObserved") continue;
-          const data = entry.data;
-          const method = data.method ?? null;
-          const path = data.path ?? null;
-          const status = data.status ?? null;
-          const key = `${data.host} ${method ?? ""} ${path ?? ""} ${status ?? ""}`;
-          const existing = sources.get(key);
-          if (existing === undefined) {
-            sources.set(key, {
-              host: data.host,
-              method,
-              path,
-              status,
-              count: 1,
-              firstSequence: entry.sequence,
-            });
-          } else {
-            existing.count += 1;
-          }
-        }
-
-        return [...sources.values()]
-          .toSorted((a, b) => (a.firstSequence < b.firstSequence ? -1 : 1))
-          .map(
-            (source) =>
-              new RunSourceView({
-                host: source.host,
-                method: source.method,
-                path: source.path,
-                status: source.status,
-                count: source.count,
-                firstSequence: String(source.firstSequence),
-              }),
+          const events = yield* sealant.recordTimeline(sdkRun).pipe(
+            Stream.take(SOURCE_SCAN_LIMIT),
+            Stream.filter((entry) => SOURCE_KINDS.has(entry.kind)),
+            Stream.runCollect,
+            Effect.mapError(() => new NotFound({ id: params.id })),
           );
-      }),
+
+          const sources = new Map<
+            string,
+            {
+              host: string;
+              method: string | null;
+              path: string | null;
+              status: number | null;
+              count: number;
+              firstSequence: bigint;
+            }
+          >();
+          for (const entry of events) {
+            if (entry.kind !== "networkRequest" && entry.kind !== "networkSourceObserved") continue;
+            const data = entry.data;
+            const method = data.method ?? null;
+            const path = data.path ?? null;
+            const status = data.status ?? null;
+            const key = `${data.host} ${method ?? ""} ${path ?? ""} ${status ?? ""}`;
+            const existing = sources.get(key);
+            if (existing === undefined) {
+              sources.set(key, {
+                host: data.host,
+                method,
+                path,
+                status,
+                count: 1,
+                firstSequence: entry.sequence,
+              });
+            } else {
+              existing.count += 1;
+            }
+          }
+
+          return [...sources.values()]
+            .toSorted((a, b) => (a.firstSequence < b.firstSequence ? -1 : 1))
+            .map(
+              (source) =>
+                new RunSourceView({
+                  host: source.host,
+                  method: source.method,
+                  path: source.path,
+                  status: source.status,
+                  count: source.count,
+                  firstSequence: String(source.firstSequence),
+                }),
+            );
+        }),
+      ),
     ),
 );
 
@@ -392,9 +454,10 @@ export const DevicesGroupLive = HttpApiBuilder.group(MendApi, "devices", (handle
 
 /** Every group implementation plus the API registration, ready for the boundary. */
 export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
-  Layer.provide(HealthGroupLive),
-  Layer.provide(MachineGroupLive),
-  Layer.provide(SealantGroupLive),
+  // `pipe` takes at most twenty steps; the identity groups ride one merged layer.
+  Layer.provide(
+    Layer.mergeAll(HealthGroupLive, MachineGroupLive, SealantGroupLive, AccountsGroupLive),
+  ),
   Layer.provide(SettingsGroupLive),
   Layer.provide(DotfilesGroupLive),
   Layer.provide(IssuesGroupLive),

@@ -1112,6 +1112,20 @@ const agentConversation = Effect.gen(function* () {
       ON agent_requests (process_id, status)`;
 });
 
+/**
+ * Per-user Sealant identity (docs/SEALANT-IDENTITY.md): each Mend account acts as
+ * its own Sealant user, provisioned on first use; this is the mapping.
+ */
+const userSealantIdentities = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE user_sealant_identities (
+      user_id text PRIMARY KEY,
+      sealant_user_id text NOT NULL UNIQUE,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -1150,4 +1164,5 @@ export const migrations = {
   "0034_workspace_ttl_renewal": workspaceTtlRenewal,
   "0035_session_process_kinds": sessionProcessKinds,
   "0036_agent_conversation": agentConversation,
+  "0037_user_sealant_identities": userSealantIdentities,
 };

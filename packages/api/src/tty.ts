@@ -2,7 +2,7 @@ import { Auth } from "@mend/auth";
 import { SessionProcessesRepo, SessionsRepo } from "@mend/db";
 import { SessionId, SessionProcessId, type SealantWorkspaceId } from "@mend/domain";
 import { currentAgentProcess } from "@mend/domain/workbench";
-import { SealantClient } from "@mend/sealant";
+import { asSealantUser, SealantClient } from "@mend/sealant";
 import { Effect, Option } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { Socket } from "effect/unstable/socket";
@@ -61,6 +61,8 @@ export const TtyRoutes = HttpRouter.use((router) =>
         let target: {
           readonly sealantWorkspaceId: SealantWorkspaceId;
           readonly sealantSessionId: string;
+          /** The session owner: the PTY belongs to THEIR Sealant user, whoever attaches. */
+          readonly ownerUserId: string | null;
         };
         if (processParam !== null) {
           const process = yield* processes.byId(SessionProcessId.make(processParam));
@@ -77,9 +79,11 @@ export const TtyRoutes = HttpRouter.use((router) =>
             // Adopted Services forward a port; there is no PTY to attach.
             return HttpServerResponse.text("process has no platform PTY", { status: 409 });
           }
+          const owner = yield* sessions.byId(process.sessionId).pipe(Effect.option);
           target = {
             sealantWorkspaceId: process.sealantWorkspaceId,
             sealantSessionId: processPtyId,
+            ownerUserId: Option.isSome(owner) ? owner.value.ownerUserId : null,
           };
         } else if (sessionParam !== null) {
           const session = yield* sessions.byId(SessionId.make(sessionParam)).pipe(Effect.option);
@@ -92,16 +96,19 @@ export const TtyRoutes = HttpRouter.use((router) =>
               status: 409,
             });
           }
+          const ownerUserId = session.value.ownerUserId;
           const resolved =
             agent !== null && agent.sealantSessionId !== null
               ? {
                   sealantWorkspaceId: agent.sealantWorkspaceId,
                   sealantSessionId: agent.sealantSessionId,
+                  ownerUserId,
                 }
               : session.value.sealantWorkspaceId !== null && session.value.sealantSessionId !== null
                 ? {
                     sealantWorkspaceId: session.value.sealantWorkspaceId,
                     sealantSessionId: session.value.sealantSessionId,
+                    ownerUserId,
                   }
                 : null;
           if (resolved === null) {
@@ -111,7 +118,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
         } else {
           return HttpServerResponse.text("missing ?process or ?session", { status: 400 });
         }
-        const { sealantWorkspaceId, sealantSessionId } = target;
+        const { sealantWorkspaceId, sealantSessionId, ownerUserId } = target;
         const from = BigInt(url.searchParams.get("from") ?? "0");
 
         const resolved = yield* Effect.gen(function* () {
@@ -124,6 +131,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
           });
           return { ok: true as const, attachment };
         }).pipe(
+          asSealantUser(ownerUserId),
           Effect.catch((error) =>
             Effect.succeed({ ok: false as const, message: String(error.message) }),
           ),

@@ -302,6 +302,13 @@ export const hotWorkspaces = pgTable(
  * Per-user dotfiles configuration — the repository knob only. Snapshot CONTENT lives in the
  * dotfiles store (a bare git repo per user under the store root), never in the database.
  */
+/** Mend user → Sealant user (docs/SEALANT-IDENTITY.md). `user` is better-auth's table. */
+export const userSealantIdentities = pgTable("user_sealant_identities", {
+  userId: text().primaryKey(),
+  sealantUserId: text().notNull().unique(),
+  createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
 export const userDotfiles = pgTable("user_dotfiles", {
   userId: text().primaryKey(),
   repository: jsonb().$type<typeof DotfilesRepository.Encoded>(),

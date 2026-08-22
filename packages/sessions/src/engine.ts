@@ -72,7 +72,7 @@ import {
   SessionExtraMount,
   SessionReferenceMount,
 } from "@mend/domain/workbench";
-import { SealantClient, SealantPlatformError } from "@mend/sealant";
+import { asSealantUser, SealantClient, SealantPlatformError } from "@mend/sealant";
 import {
   AgentBridge,
   DotfilesStore,
@@ -88,7 +88,7 @@ import {
 } from "@mend/store";
 import type { Harness, Run as SdkRun, Workspace, WorkspaceCredentialsOptions } from "@sealant/sdk";
 import { claudeCode, codex, opencode } from "@sealant/sdk";
-import { Duration, Effect, Layer, Schedule, Schema, Stream } from "effect";
+import { Duration, Effect, Layer, Option, Schedule, Schema, Stream } from "effect";
 import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
 
@@ -644,6 +644,56 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
     SessionEngine,
     Effect.gen(function* () {
       const sealant = yield* SealantClient;
+
+      // ── Principals ──────────────────────────────────────────────────────────────
+      // A session's platform resources belong to its owner's Sealant user. These
+      // resolve the owner (the operator for rows that predate ownership) and run
+      // the effect as them; a missing row changes nothing — the effect then fails
+      // its own way.
+      const owned =
+        (sessionId: SessionId) =>
+        <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+          sessions.byId(sessionId).pipe(
+            Effect.option,
+            Effect.flatMap((session) =>
+              self.pipe(asSealantUser(Option.isSome(session) ? session.value.ownerUserId : null)),
+            ),
+          );
+      const ownedByProcess =
+        (processId: SessionProcessId) =>
+        <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+          processes
+            .byId(processId)
+            .pipe(
+              Effect.flatMap((process) =>
+                process === null ? self.pipe(asSealantUser(null)) : owned(process.sessionId)(self),
+              ),
+            );
+      const ownedByService =
+        (serviceId: ServiceId) =>
+        <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+          services
+            .byId(serviceId)
+            .pipe(
+              Effect.flatMap((service) =>
+                service === null ? self.pipe(asSealantUser(null)) : owned(service.sessionId)(self),
+              ),
+            );
+      /** The in-workspace socket's closures, each run as the session owner. */
+      const ownedSocketApi = (sessionId: SessionId, api: SessionSocketApi): SessionSocketApi => ({
+        recipes: () => owned(sessionId)(api.recipes()),
+        listServices: () => owned(sessionId)(api.listServices()),
+        runServiceRecipe: (name) => owned(sessionId)(api.runServiceRecipe(name)),
+        runService: (argv, port, name, protocol) =>
+          owned(sessionId)(api.runService(argv, port, name, protocol)),
+        addService: (port, name, protocol) =>
+          owned(sessionId)(api.addService(port, name, protocol)),
+        stopService: (reference) => owned(sessionId)(api.stopService(reference)),
+        restartService: (reference) => owned(sessionId)(api.restartService(reference)),
+        gitTransport: (input) => owned(sessionId)(api.gitTransport(input)),
+        gitTransportDone: (opId, exitCode, refUpdates) =>
+          owned(sessionId)(api.gitTransportDone(opId, exitCode, refUpdates)),
+      });
       const conversations = yield* AgentConversationRepo;
       const protocolHost = yield* ProtocolHost;
       const sessions = yield* SessionsRepo;
@@ -872,8 +922,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             );
             return;
           }
-          const sdkRun = yield* sealant.getRun(sealantRunId);
-          yield* supervise(current, sessionRun, sdkRun);
+          yield* Effect.gen(function* () {
+            const sdkRun = yield* sealant.getRun(sealantRunId);
+            yield* supervise(current, sessionRun, sdkRun);
+          }).pipe(asSealantUser(current.ownerUserId));
         }).pipe(
           Effect.tapError((error) =>
             Effect.logWarning("session engine: supervision interrupted; retrying").pipe(
@@ -896,7 +948,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const forkSupervision = (sessionId: SessionId, sealantRunId: SealantRunId) =>
         Effect.forkIn(superviseExisting(sessionId, sealantRunId), scope);
 
-      const provision = Effect.fn("SessionEngine.provision")(function* (input: ProvisionInput) {
+      const provision = Effect.fn("SessionEngine.provision")(
+        function* (input: ProvisionInput) {
+          return yield* provisionAs(input);
+        },
+        (effect, input) => effect.pipe(asSealantUser(input.ownerUserId)),
+      );
+
+      const provisionAs = Effect.fn("SessionEngine.provisionAs")(function* (input: ProvisionInput) {
         const project = yield* projects.byId(input.projectId);
         // Hot path: adopt a pre-provisioned skeleton when the project keeps them ready. Any
         // failure here falls back to the cold path — a claim must never cost a session.
@@ -1277,7 +1336,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
           yield* Effect.forEach(
             owners,
-            ([workspaceId, sessionId]) => renewWorkspaceLease(sessionId, workspaceId),
+            ([workspaceId, sessionId]) =>
+              owned(sessionId)(renewWorkspaceLease(sessionId, workspaceId)),
             { concurrency: 4, discard: true },
           );
         },
@@ -3723,157 +3783,163 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * that one session; ownership guards make cross-session ids a 404-shaped
        * error rather than a capability.
        */
-      const socketApiFor = (sessionId: SessionId): SessionSocketApi => ({
-        recipes: () =>
-          Effect.gen(function* () {
-            const session = yield* sessions.byId(sessionId);
-            const project = yield* projects.byId(session.projectId);
-            const fromFile = yield* readServiceRecipes(
-              worktreePathOf(project.storePath, session.worktree),
-            );
-            return mergeRecipes(fromFile, yield* projectRecipes.listForProject(session.projectId));
-          }).pipe(
-            Effect.mapError((error) => new Error(String(error.message))),
-            Effect.orDie,
-          ),
-        listServices: () =>
-          services
-            .listForSession(sessionId)
-            .pipe(Effect.flatMap((rows) => Effect.forEach(rows, (row) => readServiceView(row.id)))),
-        runServiceRecipe: (name) =>
-          runServiceRecipe(sessionId, name).pipe(
-            Effect.mapError((error) => new Error(error.message)),
-            Effect.orDie,
-          ),
-        runService: (argv, port, name, protocol) =>
-          runService(sessionId, argv, port, name, protocol).pipe(
-            Effect.mapError((error) => new Error(error.message)),
-            Effect.orDie,
-          ),
-        addService: (port, name, protocol) =>
-          addService(sessionId, port, name, protocol).pipe(
-            Effect.mapError((error) => new Error(error.message)),
-            Effect.orDie,
-          ),
-        stopService: (serviceReference) =>
-          Effect.gen(function* () {
-            const service = yield* services.byReference(serviceReference);
-            if (service === null || service.sessionId !== sessionId) {
-              return yield* new ServiceNotFoundError({ processId: serviceReference });
-            }
-            return yield* stopService(service.id);
-          }).pipe(
-            Effect.mapError((error) => new Error(String(error.message))),
-            Effect.orDie,
-          ),
-        restartService: (serviceReference) =>
-          Effect.gen(function* () {
-            const service = yield* services.byReference(serviceReference);
-            if (service === null || service.sessionId !== sessionId) {
-              return yield* new ServiceNotFoundError({ processId: serviceReference });
-            }
-            return yield* restartService(service.id);
-          }).pipe(
-            Effect.mapError((error) => new Error(String(error.message))),
-            Effect.orDie,
-          ),
-        // The credential seam (docs/GIT-ACCESS.md): session → project → auth
-        // mode, resolved per request so a mode change applies to the next op
-        // without touching the workspace. The op is recorded before the
-        // connection opens — a transport that dies mid-pump still has a row.
-        gitTransport: ({ host, port, command }) =>
-          Effect.gen(function* () {
-            const session = yield* sessions.byId(sessionId);
-            const project = yield* projects.byId(session.projectId);
-            const parsed = parseGitRemoteCommand(command);
-            if (parsed === null) {
-              return yield* Effect.fail(
-                new Error(
-                  "this socket carries git transport only (git-upload-pack, git-receive-pack, git-upload-archive)",
-                ),
+      const socketApiFor = (sessionId: SessionId): SessionSocketApi =>
+        ownedSocketApi(sessionId, {
+          recipes: () =>
+            Effect.gen(function* () {
+              const session = yield* sessions.byId(sessionId);
+              const project = yield* projects.byId(session.projectId);
+              const fromFile = yield* readServiceRecipes(
+                worktreePathOf(project.storePath, session.worktree),
               );
-            }
-            if (host.startsWith("-")) {
-              return yield* Effect.fail(
-                new Error(`refusing ssh target "${host}" — it reads as an option`),
+              return mergeRecipes(
+                fromFile,
+                yield* projectRecipes.listForProject(session.projectId),
               );
-            }
-            const mode = project.gitAuthMode;
-            const keyPath =
-              mode === "mend-key"
-                ? (yield* mendKeys
-                    .ensure()
-                    .pipe(
-                      Effect.mapError(
-                        (error) => new Error(`could not create the Mend key: ${error.stderr}`),
-                      ),
-                    )).privateKeyPath
-                : null;
-            // Bridge mode signs on another machine: require the signer NOW —
-            // an honest fast refusal in the workspace terminal beats an ssh
-            // that hangs against an agent socket nobody serves.
-            let env: Record<string, string> | undefined;
-            if (mode === "bridge") {
-              const bridgeStatus = yield* agentBridge.status();
-              if (!bridgeStatus.connected) {
-                return yield* Effect.fail(new Error(NO_SIGNER_MESSAGE));
+            }).pipe(
+              Effect.mapError((error) => new Error(String(error.message))),
+              Effect.orDie,
+            ),
+          listServices: () =>
+            services
+              .listForSession(sessionId)
+              .pipe(
+                Effect.flatMap((rows) => Effect.forEach(rows, (row) => readServiceView(row.id))),
+              ),
+          runServiceRecipe: (name) =>
+            runServiceRecipe(sessionId, name).pipe(
+              Effect.mapError((error) => new Error(error.message)),
+              Effect.orDie,
+            ),
+          runService: (argv, port, name, protocol) =>
+            runService(sessionId, argv, port, name, protocol).pipe(
+              Effect.mapError((error) => new Error(error.message)),
+              Effect.orDie,
+            ),
+          addService: (port, name, protocol) =>
+            addService(sessionId, port, name, protocol).pipe(
+              Effect.mapError((error) => new Error(error.message)),
+              Effect.orDie,
+            ),
+          stopService: (serviceReference) =>
+            Effect.gen(function* () {
+              const service = yield* services.byReference(serviceReference);
+              if (service === null || service.sessionId !== sessionId) {
+                return yield* new ServiceNotFoundError({ processId: serviceReference });
               }
-              env = { SSH_AUTH_SOCK: agentBridge.socketPath() };
-            }
-            const op = yield* gitOps.record({
-              sessionId,
-              projectId: project.id,
-              host,
-              port,
-              kind: parsed.kind,
-              command,
-              authMode: mode,
-            });
-            // Attribution for the share CLI: ended in gitTransportDone.
-            if (mode === "bridge") {
-              const end = yield* agentBridge.begin(
-                `project ${project.name} → ${host} (${parsed.kind})`,
-              );
-              bridgeContexts.set(op.id, end);
-            }
-            yield* Effect.logInfo("session git transport").pipe(
-              Effect.annotateLogs({
+              return yield* stopService(service.id);
+            }).pipe(
+              Effect.mapError((error) => new Error(String(error.message))),
+              Effect.orDie,
+            ),
+          restartService: (serviceReference) =>
+            Effect.gen(function* () {
+              const service = yield* services.byReference(serviceReference);
+              if (service === null || service.sessionId !== sessionId) {
+                return yield* new ServiceNotFoundError({ processId: serviceReference });
+              }
+              return yield* restartService(service.id);
+            }).pipe(
+              Effect.mapError((error) => new Error(String(error.message))),
+              Effect.orDie,
+            ),
+          // The credential seam (docs/GIT-ACCESS.md): session → project → auth
+          // mode, resolved per request so a mode change applies to the next op
+          // without touching the workspace. The op is recorded before the
+          // connection opens — a transport that dies mid-pump still has a row.
+          gitTransport: ({ host, port, command }) =>
+            Effect.gen(function* () {
+              const session = yield* sessions.byId(sessionId);
+              const project = yield* projects.byId(session.projectId);
+              const parsed = parseGitRemoteCommand(command);
+              if (parsed === null) {
+                return yield* Effect.fail(
+                  new Error(
+                    "this socket carries git transport only (git-upload-pack, git-receive-pack, git-upload-archive)",
+                  ),
+                );
+              }
+              if (host.startsWith("-")) {
+                return yield* Effect.fail(
+                  new Error(`refusing ssh target "${host}" — it reads as an option`),
+                );
+              }
+              const mode = project.gitAuthMode;
+              const keyPath =
+                mode === "mend-key"
+                  ? (yield* mendKeys
+                      .ensure()
+                      .pipe(
+                        Effect.mapError(
+                          (error) => new Error(`could not create the Mend key: ${error.stderr}`),
+                        ),
+                      )).privateKeyPath
+                  : null;
+              // Bridge mode signs on another machine: require the signer NOW —
+              // an honest fast refusal in the workspace terminal beats an ssh
+              // that hangs against an agent socket nobody serves.
+              let env: Record<string, string> | undefined;
+              if (mode === "bridge") {
+                const bridgeStatus = yield* agentBridge.status();
+                if (!bridgeStatus.connected) {
+                  return yield* Effect.fail(new Error(NO_SIGNER_MESSAGE));
+                }
+                env = { SSH_AUTH_SOCK: agentBridge.socketPath() };
+              }
+              const op = yield* gitOps.record({
                 sessionId,
-                project: project.name,
+                projectId: project.id,
                 host,
+                port,
                 kind: parsed.kind,
                 command,
                 authMode: mode,
+              });
+              // Attribution for the share CLI: ended in gitTransportDone.
+              if (mode === "bridge") {
+                const end = yield* agentBridge.begin(
+                  `project ${project.name} → ${host} (${parsed.kind})`,
+                );
+                bridgeContexts.set(op.id, end);
+              }
+              yield* Effect.logInfo("session git transport").pipe(
+                Effect.annotateLogs({
+                  sessionId,
+                  project: project.name,
+                  host,
+                  kind: parsed.kind,
+                  command,
+                  authMode: mode,
+                  opId: op.id,
+                }),
+              );
+              return {
                 opId: op.id,
-              }),
-            );
-            return {
-              opId: op.id,
-              kind: parsed.kind,
-              argv: ["ssh", ...sshTransportArgs(mode, keyPath, port), "--", host, command],
-              ...(env === undefined ? {} : { env }),
-            };
-          }).pipe(
-            Effect.mapError((error) => new Error(String(error.message))),
-            Effect.orDie,
-          ),
-        gitTransportDone: (opId, exitCode, refUpdates) =>
-          Effect.gen(function* () {
-            yield* Effect.sync(() => {
-              bridgeContexts.get(opId)?.();
-              bridgeContexts.delete(opId);
-            });
-            yield* gitOps.finish(SessionGitOpId.make(opId), exitCode, refUpdates);
-            yield* Effect.logInfo("session git transport closed").pipe(
-              Effect.annotateLogs({
-                sessionId,
-                opId,
-                exitCode,
-                refUpdates: refUpdates === null ? undefined : refUpdates.join(", "),
-              }),
-            );
-          }).pipe(Effect.ignore),
-      });
+                kind: parsed.kind,
+                argv: ["ssh", ...sshTransportArgs(mode, keyPath, port), "--", host, command],
+                ...(env === undefined ? {} : { env }),
+              };
+            }).pipe(
+              Effect.mapError((error) => new Error(String(error.message))),
+              Effect.orDie,
+            ),
+          gitTransportDone: (opId, exitCode, refUpdates) =>
+            Effect.gen(function* () {
+              yield* Effect.sync(() => {
+                bridgeContexts.get(opId)?.();
+                bridgeContexts.delete(opId);
+              });
+              yield* gitOps.finish(SessionGitOpId.make(opId), exitCode, refUpdates);
+              yield* Effect.logInfo("session git transport closed").pipe(
+                Effect.annotateLogs({
+                  sessionId,
+                  opId,
+                  exitCode,
+                  refUpdates: refUpdates === null ? undefined : refUpdates.join(", "),
+                }),
+              );
+            }).pipe(Effect.ignore),
+        });
 
       const stopServiceUnlocked = Effect.fn("SessionEngine.stopService")(function* (
         serviceId: ServiceId,
@@ -3971,6 +4037,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* sealant.getWorkspace(entry.sealantWorkspaceId).pipe(
             Effect.flatMap((workspace) => sealant.stopWorkspace(workspace)),
             Effect.ignore,
+            asSealantUser(entry.ownerUserId),
           );
         }
         if (options?.keepWorktree !== true) {
@@ -4113,7 +4180,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           else yield* drainHotWorkspace(entry);
         }
         while (count < target) {
-          const provisioned = yield* provisionHotWorkspace(project, ownerUserId, fingerprint);
+          const provisioned = yield* provisionHotWorkspace(project, ownerUserId, fingerprint).pipe(
+            asSealantUser(ownerUserId),
+          );
           // A failure leaves its row `failed` for the setup page; the next trigger retries.
           if (!provisioned) break;
           count += 1;
@@ -4163,7 +4232,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) {
         const ownerUserId = input.ownerUserId ?? (yield* userDotfilesRepo.firstUserId());
         const inputs = yield* hotInputsFor(project, ownerUserId);
-        const entry = yield* hotWorkspaces.claim(project.id, hotFingerprint(inputs));
+        const entry = yield* hotWorkspaces.claim(project.id, hotFingerprint(inputs), ownerUserId);
         if (entry === null) return null;
         // The replacement warms in the background while this session launches.
         yield* requestHotReconcile(project.id);
@@ -4235,7 +4304,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* closeProcessPty(
               protocolProcess.sealantWorkspaceId,
               protocolProcess.sealantSessionId,
-            ).pipe(Effect.ignore);
+            ).pipe(Effect.ignore, owned(protocolProcess.sessionId));
           }
           const recorded = yield* endAgentProcess(protocolProcess, {
             how: "exited",
@@ -4488,6 +4557,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             );
             yield* sweepWorkspace(session.id);
           }).pipe(
+            asSealantUser(session.ownerUserId),
             Effect.catch(() => Effect.void),
             Effect.catchDefect(() => Effect.void),
           );
@@ -4527,27 +4597,35 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const launch = (sessionId: SessionId, argv: ReadonlyArray<string>) =>
         launchInternal(sessionId, argv, null);
 
+      // Every public verb about a session runs AS ITS OWNER (docs/SEALANT-IDENTITY.md): the
+      // platform resources belong to the owner's Sealant user, whoever is at the keyboard.
+      // Fibers forked underneath inherit the principal.
       return {
         provision,
-        attachRun,
-        launch,
-        launchProtocol,
-        submitTurn,
+        attachRun: (sessionId, sealantRunId, workspaceId) =>
+          owned(sessionId)(attachRun(sessionId, sealantRunId, workspaceId)),
+        launch: (sessionId, argv) => owned(sessionId)(launch(sessionId, argv)),
+        launchProtocol: (sessionId, ...rest) =>
+          owned(sessionId)(launchProtocol(sessionId, ...rest)),
+        submitTurn: (sessionId, input, author) =>
+          owned(sessionId)(submitTurn(sessionId, input, author)),
         interruptTurn,
         respondRequest,
-        launchFollowUp,
+        launchFollowUp: (sessionId, instruction, launchCorrelationId) =>
+          owned(sessionId)(launchFollowUp(sessionId, instruction, launchCorrelationId)),
         reconcileHotSessions: requestHotReconcile,
-        checkpointNow,
-        stop,
-        openShell,
-        stopShell,
-        renameShell,
-        addService,
-        runService,
-        runServiceRecipe,
-        restartService,
-        stopService,
-        resumeSession,
+        checkpointNow: (sessionId, trigger) => owned(sessionId)(checkpointNow(sessionId, trigger)),
+        stop: (sessionId) => owned(sessionId)(stop(sessionId)),
+        openShell: (sessionId) => owned(sessionId)(openShell(sessionId)),
+        stopShell: (processId) => ownedByProcess(processId)(stopShell(processId)),
+        renameShell: (processId, label) => ownedByProcess(processId)(renameShell(processId, label)),
+        addService: (sessionId, ...rest) => owned(sessionId)(addService(sessionId, ...rest)),
+        runService: (sessionId, ...rest) => owned(sessionId)(runService(sessionId, ...rest)),
+        runServiceRecipe: (sessionId, name) => owned(sessionId)(runServiceRecipe(sessionId, name)),
+        restartService: (serviceId) => ownedByService(serviceId)(restartService(serviceId)),
+        stopService: (serviceId) => ownedByService(serviceId)(stopService(serviceId)),
+        resumeSession: (sessionId, harness, fresh) =>
+          owned(sessionId)(resumeSession(sessionId, harness, fresh)),
         transcript,
       };
     }),

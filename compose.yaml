@@ -2,7 +2,7 @@
 # Sealant control plane. Nothing leaves your machines.
 #
 #   SEALANT_BASE_URL=http://host.docker.internal:8080 \
-#   SEALANT_API_KEY=... \
+#   SEALANT_SERVICE_KEY=... \
 #   BETTER_AUTH_SECRET=$(openssl rand -base64 32) \
 #   docker compose up
 services:
@@ -19,10 +19,9 @@ services:
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-mend-compose-secret-change-me-please}
       # Your Sealant control plane; host.docker.internal reaches the host.
       SEALANT_BASE_URL: ${SEALANT_BASE_URL:-http://host.docker.internal:8080}
-      SEALANT_API_KEY: ${SEALANT_API_KEY:-}
-      # Pre-auth owner principal: must be the user id your Sealant web UI
-      # writes connected accounts under, or Mend sees none (PLATFORM-FEEDBACK).
-      SEALANT_OWNER_USER_ID: ${SEALANT_OWNER_USER_ID:-}
+      # Mend's service key (one of the control plane's SEALANT_SERVICE_KEYS):
+      # each Mend user gets their own Sealant user (docs/SEALANT-IDENTITY.md).
+      SEALANT_SERVICE_KEY: ${SEALANT_SERVICE_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

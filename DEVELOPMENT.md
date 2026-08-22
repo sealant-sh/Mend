@@ -19,7 +19,7 @@ is just the mechanics.
 ```sh
 direnv allow                               # first checkout only
 pnpm install --lockfile=false              # pnpm-lock.yaml is intentionally not updated
-cp .env.example .env                       # then fill in SEALANT_OWNER_USER_ID
+cp .env.example .env                       # then point SEALANT_BASE_URL at your stack
 pnpm --filter @mend/web dev                # Postgres (docker, 5434) + vite (3101) + the Effect server (3105)
 ```
 
@@ -39,33 +39,32 @@ yours.
 
 All optional in dev — the defaults match `compose.dev.yaml` and a localhost Sealant:
 
-| Variable                        | Default                                    | What                                                                                                                                                                                                                                                                 |
-| ------------------------------- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`                  | `postgres://mend:mend@localhost:5434/mend` | Product Postgres                                                                                                                                                                                                                                                     |
-| `SEALANT_BASE_URL`              | `http://localhost:8080`                    | Sealant control plane (a self-host stack serves **4000**)                                                                                                                                                                                                            |
-| `SEALANT_API_KEY`               | unset                                      | Bearer for authenticated deployments                                                                                                                                                                                                                                 |
-| `SEALANT_OWNER_USER_ID`         | SDK default (`usr_local`)                  | **Must be the user id your Sealant web UI writes connected accounts under**, or inference/workspaces see nothing. Find it: `SELECT owner_user_id FROM connected_accounts` in Sealant's `sealant_control_plane` DB. Pre-auth wart; goes away when Sealant auth lands. |
-| `MEND_MODE`                     | `all`                                      | `all` · `web` · `worker`                                                                                                                                                                                                                                             |
-| `PORT`                          | `3105`                                     | The Effect server                                                                                                                                                                                                                                                    |
-| `APP_URL`                       | `http://localhost:3101`                    | better-auth origin — set to `http://localhost:3105` when serving the built app directly                                                                                                                                                                              |
-| `BETTER_AUTH_SECRET`            | dev-grade constant                         | Generate for anything real: `openssl rand -base64 32`                                                                                                                                                                                                                |
-| `MEND_INFERENCE_CLAUDE_ACCOUNT` | the account named `default`                | Which connected claude account inference uses                                                                                                                                                                                                                        |
-| `MEND_DISPATCH_INTERVAL`        | `5 seconds`                                | Dispatcher poll                                                                                                                                                                                                                                                      |
+| Variable                        | Default                                    | What                                                                                                                                                                                                                                                                                     |
+| ------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                  | `postgres://mend:mend@localhost:5434/mend` | Product Postgres                                                                                                                                                                                                                                                                         |
+| `SEALANT_BASE_URL`              | `http://localhost:8080`                    | Sealant control plane (a self-host stack serves **4000**)                                                                                                                                                                                                                                |
+| `SEALANT_SERVICE_KEY`           | unset                                      | Mend's service key — one of the control plane's `SEALANT_SERVICE_KEYS`. Mend acts on behalf of each signed-in user under their own Sealant user, provisioned on first use (`docs/SEALANT-IDENTITY.md`). An open local stack needs none. `SEALANT_API_KEY` still works as the older name. |
+| `MEND_MODE`                     | `all`                                      | `all` · `web` · `worker`                                                                                                                                                                                                                                                                 |
+| `PORT`                          | `3105`                                     | The Effect server                                                                                                                                                                                                                                                                        |
+| `APP_URL`                       | `http://localhost:3101`                    | better-auth origin — set to `http://localhost:3105` when serving the built app directly                                                                                                                                                                                                  |
+| `BETTER_AUTH_SECRET`            | dev-grade constant                         | Generate for anything real: `openssl rand -base64 32`                                                                                                                                                                                                                                    |
+| `MEND_INFERENCE_CLAUDE_ACCOUNT` | the account named `default`                | Which connected claude account inference uses                                                                                                                                                                                                                                            |
+| `MEND_DISPATCH_INTERVAL`        | `5 seconds`                                | Dispatcher poll                                                                                                                                                                                                                                                                          |
 
 Against a local self-host stack, put these in the root `.env` (loaded by `pnpm dev`; see
 `.env.example`):
 
 ```sh
 SEALANT_BASE_URL=http://localhost:4000
-SEALANT_OWNER_USER_ID=<your sealant web user id>
 ```
 
 ## The loop, locally
 
 1. Settings → the Sealant connection check must be green ("Connected · observed").
-2. For real mends: connect a Claude account in the Sealant web UI (`/settings/connected-accounts`,
-   paste a `claude setup-token` token). Inference and harness runs both bill your subscription —
-   Mend ships no model keys.
+2. Connect your own accounts: Settings → Connected accounts (web or desktop), or from a machine
+   where the agent CLIs are logged in, `mend connect codex` / `mend connect claude` /
+   `mend connect github` (`mend accounts` lists them). Each person's sessions and Mend's model calls
+   run on their own subscription — Mend ships no model keys, and the Sealant web UI is not involved.
 3. New issue → give it a **real, cloneable repository** → drag it into Queued. The dispatcher (5s
    poll) takes the top card into Mending; the card streams the recording live; a failed run returns
    to Triage carrying the failure.
@@ -73,9 +72,9 @@ SEALANT_OWNER_USER_ID=<your sealant web user id>
 ## Production-shaped run
 
 `docker compose up` (see `compose.yaml`): the Mend image + Postgres, pointed at your Sealant via
-`SEALANT_BASE_URL` / `SEALANT_API_KEY` / `SEALANT_OWNER_USER_ID`. Container listens on 3000; host
-port via `MEND_PORT`. Note: a loopback-bound Sealant (`SEALANT_BIND_HOST=127.0.0.1`, the installer
-default) is not reachable through `host.docker.internal` — bind it wider or share a network.
+`SEALANT_BASE_URL` / `SEALANT_SERVICE_KEY`. Container listens on 3000; host port via `MEND_PORT`.
+Note: a loopback-bound Sealant (`SEALANT_BIND_HOST=127.0.0.1`, the installer default) is not
+reachable through `host.docker.internal` — bind it wider or share a network.
 
 ## Conventions & gotchas
 
