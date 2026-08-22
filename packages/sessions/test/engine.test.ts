@@ -96,7 +96,7 @@ import type {
   SessionOptions,
   Workspace,
 } from "@sealant/sdk";
-import { Duration, Effect, Layer, Schedule, Stream } from "effect";
+import { Duration, Effect, Fiber, Layer, Schedule, Stream } from "effect";
 
 /** Every platform method dies — these tests exercise the platform-free paths. */
 const sealantDeadLayer = Layer.succeed(SealantClient, {
@@ -158,6 +158,9 @@ const sealantLaunchLayer = (
   /** Per-PTY observed state a test flips to simulate an exit the watcher must notice. */
   ptyStates?: Map<string, InteractiveSessionStatus>,
   openedOptions?: SessionOptions[],
+  createWorkspaceOverride?: (
+    options: CreateOptions,
+  ) => Effect.Effect<Workspace, SealantPlatformError>,
 ) => {
   let nextPty = 0;
   const ptys = new Map<string, InteractiveSession>();
@@ -215,6 +218,9 @@ const sealantLaunchLayer = (
     createWorkspace: (options) =>
       Effect.suspend(() => {
         created.push(options);
+        if (createWorkspaceOverride !== undefined) {
+          return createWorkspaceOverride(options);
+        }
         return rejectCredentials(options.credentials)
           ? Effect.fail(
               new SealantPlatformError({
@@ -1343,6 +1349,50 @@ describe("SessionEngine", () => {
           openedOptions,
         ),
         protocolHostLayer: recordingProtocolHostLayer(attached, submitted),
+      },
+    );
+  });
+
+  it("settles a protocol launch interrupted during workspace provisioning", async () => {
+    const created: CreateOptions[] = [];
+    let notifyStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      notifyStarted = resolve;
+    });
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            ownerUserId: null,
+            base: null,
+          });
+          const launch = yield* engine
+            .launchProtocol(session.id, { mode: "protocol", permissionMode: "bypass" }, "user-1")
+            .pipe(Effect.forkChild);
+          yield* Effect.promise(() => started);
+          yield* Fiber.interrupt(launch);
+
+          const interrupted = world.sessions.get(session.id);
+          expect(interrupted?.status).toBe("failed");
+          expect(interrupted?.summary).toContain("interrupted");
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          () => Effect.sync(() => notifyStarted?.()).pipe(Effect.andThen(Effect.never)),
+        ),
       },
     );
   });

@@ -87,6 +87,14 @@ describe("buildAgentConversation", () => {
     ]);
   });
 
+  it("builds on runtimes without change-array-by-copy methods", () => {
+    const legacyTurns = new Proxy(conversation.turns, {
+      get: (target, property, receiver) =>
+        property === "toSorted" ? undefined : Reflect.get(target, property, receiver),
+    });
+    expect(() => buildAgentConversation({ ...conversation, turns: legacyTurns })).not.toThrow();
+  });
+
   it("replaces cursor updates in place and appends new items", () => {
     const original = conversation.items.find((item) => item.id === "assistant-1");
     const seed = conversation.items.find((item) => item.id === "orphan-warning");
