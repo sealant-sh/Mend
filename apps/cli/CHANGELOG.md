@@ -1,5 +1,37 @@
 # @sealant/mend
 
+## 0.5.0
+
+### Minor Changes
+
+- d60fc4b: Start a session with a prompt: `mend claude "fix the auth test"` opens the harness with
+  the quoted prompt as its first message, and the session is named from it immediately instead of
+  after the 45-second transcript poll. New flags on `mend claude|codex|opencode`: `--model <id>` and
+  `--effort low|medium|high|xhigh|max` map to the harness's own model and reasoning flags,
+  `--base <ref>` bases the worktree on a branch or sha, `--ask` restores the harness's permission
+  prompts instead of the default bypass, and `--fast` requests priority processing (codex
+  `service_tier=priority` — 1.5x speed at increased usage). The server composes the harness argv
+  from the structured start, so the same launch path backs the web composer. Bare `mend claude` and
+  `mend run -- <command...>` are unchanged.
+- 196b2c7: Protocol-mode agent sessions: launch codex or claude as a structured byte protocol
+  (`codex app-server`, claude stream-json) instead of a PTY. The conversation becomes rows Mend owns
+  — authored turns, streamed items, and agent requests (approvals, questions) that block until a
+  person answers — with new session endpoints to submit and interrupt turns, list items and requests
+  by cursor, and respond to a pending request. A session with a live protocol agent reads `waiting`
+  while a request is pending. PTY launches are unchanged and remain the default; protocol mode
+  requires a workspace image with sealantd ≥ 0.11.
+
+### Patch Changes
+
+- 06beffc: The CLI now resolves the cwd's project the way you expect: a project adopted from GitHub
+  matches any clone of the same remote (https, ssh, `.git` spellings compared equal), and the
+  directory-name fallback goes through the same normalization `mend adopt` uses, so a checkout
+  called `Mend` matches the project `mend`. Previously a GitHub-adopted project only matched when
+  the folder name was spelled exactly like the store name, and `mend claude` from a mismatched
+  folder would try to adopt the repository again. The guess is now visible:
+  `mend claude|codex|opencode` print `✓ project mend · main · from cwd` before creating anything,
+  and `mend projects` marks the cwd's project with `▸`.
+
 ## 0.4.0
 
 ### Minor Changes
