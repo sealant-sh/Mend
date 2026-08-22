@@ -28,10 +28,17 @@ COPY packages/auth/package.json packages/auth/
 COPY packages/jobs/package.json packages/jobs/
 COPY packages/sealant/package.json packages/sealant/
 COPY packages/inference/package.json packages/inference/
+COPY packages/sessions/package.json packages/sessions/
+COPY packages/store/package.json packages/store/
+COPY packages/agent-protocol/package.json packages/agent-protocol/
 COPY apps/web/package.json apps/web/
 RUN pnpm install --prod --lockfile=false --ignore-scripts
 
 FROM base AS runtime
+# The store shells out to git (adopt, worktrees, checkpoints, diffs) and spawns ssh for the
+# workspace git transport; slim images carry neither.
+RUN apt-get update && apt-get install -y --no-install-recommends git openssh-client ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production MEND_MODE=all PORT=3000
 COPY --from=prod-deps /app/node_modules node_modules
 COPY --from=prod-deps /app/packages packages

@@ -1,0 +1,66 @@
+# Mend on Kubernetes (docs/KUBERNETES.md). Cluster-internal by default: no Ingress.
+
+image:
+  repository: ghcr.io/sealant-sh/mend
+  tag: "" # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# Referenced, never rendered. Keys: DATABASE_URL (when postgres.enabled=false),
+# BETTER_AUTH_SECRET, SEALANT_SERVICE_KEY, MEND_DB_PASSWORD (when postgres.enabled=true).
+secrets:
+  existingSecret: mend-secrets
+
+# The central store: ONE RWX, POSIX-semantics claim. Bring your own (Longhorn, CephFS, NFS, EFS...).
+store:
+  existingClaim: mend-store
+  # Set to create the claim here instead (storageClassName must be an RWX class on your cluster).
+  create:
+    enabled: false
+    storageClassName: ""
+    size: 100Gi
+  mountPath: /var/lib/mend/store
+
+postgres:
+  enabled: true
+  image: postgres:17-alpine
+  storage: 20Gi
+  storageClassName: ""
+
+sealant:
+  # The Sealant API inside the cluster (the sealant chart's API Service).
+  baseUrl: http://sealant-api.sealant.svc:4000
+
+# ONE Mend process (MEND_MODE=all): the API handlers construct the session engine, so the web
+# and worker tiers cannot be split until the engine is extracted behind a service boundary
+# (docs/KUBERNETES.md). Keep replicaCount at 1 — in-memory supervision, no leases.
+app:
+  replicaCount: 1
+  resources: { requests: { cpu: 500m, memory: 1Gi }, limits: { cpu: "4", memory: 4Gi } }
+
+web:
+  service:
+    type: ClusterIP
+    annotations: {}
+  appUrl: http://localhost:3105
+
+# The network session channel workspaces use instead of the per-session socket.
+sessionChannel:
+  port: 3106
+  tls:
+    enabled: false
+    secretName: "" # kubernetes.io/tls secret with tls.crt/tls.key
+
+networkPolicies:
+  enabled: true
+  # Client networks allowed to reach the UI/API (3105) through your exposure. Empty = in-cluster.
+  # With `externalTrafficPolicy: Cluster` a cross-node hop SNATs the source to the cluster's POD
+  # CIDR — include it, or use externalTrafficPolicy: Local for real client addresses.
+  clientCidrs: []
+  # Where Sealant workspace Pods live (they are the only clients of the session channel).
+  workspaceNamespace: sealant
+  # Where the Sealant API lives (the worker and web call it).
+  sealantNamespace: sealant
+
+# Extra env for both tiers (plain values only).
+extraEnv: []
