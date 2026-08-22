@@ -12,7 +12,7 @@
 #
 # Host requirements: curl, git, a running Docker daemon with Compose >= 2.23.1. Node 22+ on PATH is
 # used; otherwise a private Node 26 is downloaded (26 is what the CLI's dashboard needs for
-# node:ffi). No sudo, no system-wide prefix, loopback only. Linux is what this is tested on; macOS
+# node:ffi; official Node 25+ builds need libatomic1 on Debian/Ubuntu). No sudo, no system-wide prefix, loopback only. Linux is what this is tested on; macOS
 # is untested — Sealant's containers bind-mount /run/sealant/sockets, which Docker Desktop does not
 # share by default, so Darwin needs MEND_ALLOW_MACOS=1 to proceed.
 #
@@ -235,6 +235,15 @@ else
 fi
 export PATH="$NPM_PREFIX/bin:$(dirname "$NODE_BIN"):$PATH"
 NODE_DIR_BIN="$(dirname "$NODE_BIN")"
+# The service runs this binary with no login environment: no LD_LIBRARY_PATH, no version manager.
+# Prove it starts that way now, or the install would end with a unit in a restart loop. Node 25+
+# official builds need libatomic.so.1, which minimal Debian/Ubuntu images lack.
+if ! env -i HOME="$HOME" PATH="$NODE_DIR_BIN" node -e 0 2>/dev/null; then
+  node_err="$(env -i HOME="$HOME" PATH="$NODE_DIR_BIN" node -e 0 2>&1 | tail -n 1)"
+  hint=""
+  case "$node_err" in *libatomic*) hint=" Missing libatomic: sudo apt install libatomic1 (Debian/Ubuntu), dnf install libatomic (Fedora)." ;; esac
+  die "$NODE_BIN cannot start outside your shell environment: $node_err.$hint"
+fi
 ok "Node: $NODE_BIN"
 if [ "$(node_major "$NODE_BIN")" -lt "$NODE_MAJOR" ] 2>/dev/null; then
   info "This Node runs every command except the dashboard (bare \`mend\`), which needs Node $NODE_MAJOR for node:ffi."
