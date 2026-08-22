@@ -1,3 +1,14 @@
+const sortedCopy = <T>(
+  values: ReadonlyArray<T>,
+  compare: (left: T, right: T) => number,
+): ReadonlyArray<T> =>
+  values.reduce<ReadonlyArray<T>>((ordered, value) => {
+    const insertion = ordered.findIndex((existing) => compare(value, existing) < 0);
+    return insertion === -1
+      ? [...ordered, value]
+      : [...ordered.slice(0, insertion), value, ...ordered.slice(insertion)];
+  }, []);
+
 export interface AgentTurnDto {
   readonly id: string;
   readonly ordinal: number;
@@ -74,7 +85,7 @@ export const buildAgentConversation = (
   conversation: AgentConversationDto,
 ): ReadonlyArray<AgentConversationEntry> => {
   const entries: Array<AgentConversationEntry> = [];
-  const turns = conversation.turns.toSorted((a, b) => a.ordinal - b.ordinal);
+  const turns = sortedCopy(conversation.turns, (a, b) => a.ordinal - b.ordinal);
   const seenItems = new Set<string>();
   const seenRequests = new Set<string>();
 
@@ -92,9 +103,13 @@ export const buildAgentConversation = (
           id: request.id,
           request,
         })),
-    ].toSorted((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id));
+    ];
+    const orderedChildren = sortedCopy(
+      children,
+      (a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id),
+    );
 
-    for (const child of children) {
+    for (const child of orderedChildren) {
       if (child.kind === "item") {
         seenItems.add(child.item.id);
         entries.push({ kind: "item", key: `item:${child.item.id}`, item: child.item });

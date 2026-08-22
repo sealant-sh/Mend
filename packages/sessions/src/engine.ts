@@ -1874,6 +1874,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // Try the complete identity first, then each useful subset before interactive auth.
         const workspace = yield* createWithCredentialFallback(shape.credentialAttempts).pipe(
           report,
+          Effect.onInterrupt(() =>
+            input.onFailure("workspace provisioning was interrupted").pipe(Effect.ignore),
+          ),
         );
         // Custom-image setup commands run in the fresh workspace BEFORE anything else (state
         // restore, harness launch). They are part of the image contract, so a failing one fails

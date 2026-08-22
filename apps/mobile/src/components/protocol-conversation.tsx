@@ -17,6 +17,7 @@ import {
   type AgentRequestResponse,
   type AgentTurnDto,
 } from "@/data/agent-conversation";
+import { findLastMatching } from "@/data/collections";
 import { radius, spacing, useEvidenceTheme } from "@/theme/evidence";
 
 const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
@@ -429,7 +430,8 @@ export function ProtocolConversation({
       ),
     [conversation.data],
   );
-  const openTurn = conversation.data?.turns.findLast(
+  const openTurn = findLastMatching(
+    conversation.data?.turns ?? [],
     (turn) => turn.status === "queued" || turn.status === "running",
   );
   const pendingRequest = conversation.data?.requests.find(

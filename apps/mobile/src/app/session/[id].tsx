@@ -14,6 +14,7 @@ import { MendMarkdown } from "@/components/markdown";
 import { ProtocolConversation } from "@/components/protocol-conversation";
 import { StatusWord } from "@/components/status";
 import { DisplayTitle, MonoText, UiText } from "@/components/typography";
+import { findLastMatching } from "@/data/collections";
 import {
   agentIsActive,
   canDeliverFollowUp,
@@ -337,7 +338,8 @@ export default function SessionScreen() {
         pathname: "/terminal/[id]",
         params: { id: session.id, process: processId },
       });
-    const reusable = detail.data?.processes.findLast(
+    const reusable = findLastMatching(
+      detail.data?.processes ?? [],
       (process) => process.kind === "shell" && process.exitedAt === null,
     );
     if (reusable !== undefined) {
