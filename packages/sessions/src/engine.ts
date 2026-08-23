@@ -3424,6 +3424,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           supersedesForwardId: previous?.id ?? null,
         });
         yield* renewWorkspaceLease(service.sessionId, workspaceId);
+        // Captured for the host's detached work (probe timer, connection dials): those run
+        // outside any request context and must still act as the session owner.
+        const ownerSession = yield* sessions.byId(service.sessionId).pipe(Effect.option);
         const binding = yield* serviceHost
           .start({
             serviceId,
@@ -3432,6 +3435,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             workspacePort,
             protocol,
             bindAddresses,
+            ownerUserId: Option.isSome(ownerSession) ? ownerSession.value.ownerUserId : null,
             ...(forward.preferredHostPort === null
               ? {}
               : { preferredHostPort: forward.preferredHostPort }),
@@ -4514,6 +4518,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 yield* services.compareAndSetCurrentForward(service.id, forward.id, null);
                 return;
               }
+              const ownerSession = yield* sessions.byId(service.sessionId).pipe(Effect.option);
               const binding = yield* serviceHost
                 .start({
                   serviceId: service.id,
@@ -4522,6 +4527,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   workspacePort: service.workspacePort,
                   protocol: service.transport,
                   bindAddresses,
+                  ownerUserId: Option.isSome(ownerSession) ? ownerSession.value.ownerUserId : null,
                   ...(forward.preferredHostPort === null
                     ? {}
                     : { preferredHostPort: forward.preferredHostPort }),
@@ -4551,6 +4557,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               }
             }),
           ).pipe(
+            // Boot runs with no request context; the platform calls inside (workspace status,
+            // the probe) must act as the Service's session owner.
+            ownedByService(serviceStub.id),
             Effect.catch((error) =>
               Effect.logWarning("session engine: Service forward reconcile failed").pipe(
                 Effect.annotateLogs({ serviceId: serviceStub.id, error: String(error) }),
