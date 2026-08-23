@@ -44,6 +44,22 @@ web:
     annotations: {}
   appUrl: http://localhost:3105
 
+# Supervised Service listeners (`mend service run/add`) — the same operator policy as
+# everywhere else (MEND_SERVICE_HOSTS, MEND_SERVICE_PORT_MIN/MAX). Defaults match local mode:
+# loopback only, nothing exposed — Services then answer only inside the Pod. To reach them from
+# client networks, bind 0.0.0.0, keep the range small (each port is one entry on the exposure
+# Service), and enable `expose`. Connections on these ports carry no Mend auth; reachability is
+# your gate — networkPolicies.clientCidrs applies to the range when expose is enabled.
+serviceHost:
+  bindAddresses: [] # e.g. ["0.0.0.0"]; empty keeps the loopback default
+  portMin: 43100
+  portMax: 43999
+  expose:
+    enabled: false
+    service:
+      type: LoadBalancer
+      annotations: {}
+
 # The network session channel workspaces use instead of the per-session socket.
 sessionChannel:
   port: 3106

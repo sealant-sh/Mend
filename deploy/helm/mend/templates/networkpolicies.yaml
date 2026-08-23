@@ -25,6 +25,14 @@ spec:
         {{- end }}
       ports: [{ protocol: TCP, port: 3105 }]
     {{- end }}
+    {{- if and .Values.serviceHost.expose.enabled .Values.networkPolicies.clientCidrs }}
+    - from:
+        {{- range .Values.networkPolicies.clientCidrs }}
+        - ipBlock: { cidr: {{ . }} }
+        {{- end }}
+      ports:
+        - { protocol: TCP, port: {{ .Values.serviceHost.portMin }}, endPort: {{ .Values.serviceHost.portMax }} }
+    {{- end }}
   egress:
     - {}
 {{- end }}

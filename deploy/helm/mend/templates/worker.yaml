@@ -47,6 +47,11 @@ spec:
             # The machine git key (`mend keys init`) must survive Pod replacement: it lives on
             # the store claim, mounted at its own path so it never sits inside the store tree.
             - { name: MEND_KEYS_ROOT, value: /var/lib/mend/keys }
+            {{- with .Values.serviceHost.bindAddresses }}
+            - { name: MEND_SERVICE_HOSTS, value: {{ join "," . | quote }} }
+            {{- end }}
+            - { name: MEND_SERVICE_PORT_MIN, value: {{ .Values.serviceHost.portMin | quote }} }
+            - { name: MEND_SERVICE_PORT_MAX, value: {{ .Values.serviceHost.portMax | quote }} }
             - { name: MEND_SESSION_ENDPOINT_LISTEN, value: "0.0.0.0:{{ .Values.sessionChannel.port }}" }
             - { name: MEND_SESSION_ENDPOINT_URL, value: {{ include "mend.sessionEndpointUrl" . | quote }} }
             {{- if .Values.sessionChannel.tls.enabled }}

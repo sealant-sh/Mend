@@ -129,6 +129,27 @@ _agent's_ credentials inside session workspaces, never the server's git access. 
 (`mend keys share`) also works when you want adoption signed by your own local ssh-agent instead of
 a deploy key.
 
+## Reaching supervised Services
+
+`mend service run/add` binds its listeners on the **server's** interfaces — operator policy
+(`MEND_SERVICE_HOSTS`, loopback by default), same as on a plain host. Inside a Pod the loopback
+default means Services answer only in-Pod; to reach them from your network, widen the policy and
+expose the range:
+
+```yaml
+serviceHost:
+  bindAddresses: ["0.0.0.0"]
+  portMin: 43100
+  portMax: 43119 # keep it narrow — each port is one entry on the exposure Service
+  expose:
+    enabled: true
+    service: { type: LoadBalancer }
+```
+
+These ports carry no Mend auth (by design, since #45): reachability is the gate. The chart applies
+`networkPolicies.clientCidrs` to the exposed range; put the LB on a private network you trust (a
+tailnet, a VPN) or leave `expose` off.
+
 ## Upgrade
 
 `helm upgrade mend deploy/helm/mend -n mend -f values.yaml`. Migrations run at process start (the
