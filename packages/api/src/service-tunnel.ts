@@ -63,18 +63,27 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
             status: 409,
           });
         }
+        // The tunnel needs the WORKSPACE, not a healthy server-side listener: a live
+        // forward names it, else the session row does (the listener can be legitimately
+        // unbindable — e.g. a stale Pod-IP policy — while the Service process runs on).
         const forward =
           service.currentForwardId === null ? null : yield* forwards.byId(service.currentForwardId);
-        if (forward === null || (forward.state !== "binding" && forward.state !== "bound")) {
-          return HttpServerResponse.text("the Service is not running", { status: 409 });
-        }
         const owner = yield* sessions.byId(service.sessionId).pipe(Effect.option);
         const ownerUserId = Option.isSome(owner) ? owner.value.ownerUserId : null;
+        const workspaceId =
+          forward !== null && (forward.state === "binding" || forward.state === "bound")
+            ? forward.sealantWorkspaceId
+            : Option.isSome(owner)
+              ? owner.value.sealantWorkspaceId
+              : null;
+        if (workspaceId === null) {
+          return HttpServerResponse.text("the Service has no live workspace", { status: 409 });
+        }
 
         // The same two-element dial chain as the server-side listener: the
         // container loopback first, then the workspace-scoped dind sidecar.
         const dialed = yield* Effect.gen(function* () {
-          const workspace = yield* sealant.getWorkspace(forward.sealantWorkspaceId);
+          const workspace = yield* sealant.getWorkspace(workspaceId);
           const pipe = yield* sealant
             .forward(workspace, service.workspacePort, "127.0.0.1")
             .pipe(Effect.catch(() => sealant.forward(workspace, service.workspacePort, "docker")));
