@@ -34,6 +34,7 @@ export interface DashboardContext {
   readonly attachTty: (
     sessionId: string,
     harness: string,
+    processId?: string,
   ) => Promise<"detached" | "ended" | "unavailable">;
 }
 
@@ -511,6 +512,17 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     let outcome: "detached" | "ended" | "unavailable";
     try {
       outcome = await ctx.attachTty(session.id, session.harness);
+      if (outcome === "unavailable") {
+        // A live session whose terminal ended (idle: a workspace held open,
+        // no PTY behind it). Enter still means "get me in" — open a fresh
+        // shell in the same workspace and attach to that.
+        const shell = await ctx.api<{ readonly id: string }>(
+          "POST",
+          `/sessions/${session.id}/shell`,
+        );
+        process.stdout.write(`no live terminal — opened a shell in the workspace\n\n`);
+        outcome = await ctx.attachTty(session.id, "shell", shell.id);
+      }
     } catch (error) {
       say(error instanceof Error ? error.message : String(error));
       return;

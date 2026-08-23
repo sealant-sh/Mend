@@ -837,18 +837,43 @@ const mutateService = async (
 ): Promise<ServiceDto> =>
   flattenService(await api<ServiceViewDto>(config, method, endpointPath, body));
 
+/** Is the configured server this machine? Only then is its bind authority OUR address. */
+const serverIsLocal = (config: CliConfig): boolean => {
+  const host = parseMendUrl(config.url).hostname;
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+};
+
 const serviceUrl = (service: ServiceDto): string =>
   service.browserUrl ??
   (service.authority === null
     ? "unbound"
     : `${service.authority}${service.protocol === "udp" ? " (udp)" : ""}`);
 
-const serviceExposure = (service: ServiceDto): string => {
-  if (service.exposureScope === null) return "";
-  if (service.exposureScope === "private") {
-    return "No Mend sign-in protects this port. Anyone who can reach this private address can connect.";
+/**
+ * Where THIS terminal reaches the Service. On a local server the bind
+ * authority is our own address; on a remote one it is an address on the
+ * server's network — the honest client path is the authenticated tunnel.
+ */
+const printServiceAccess = (config: CliConfig, service: ServiceDto): void => {
+  const gate = "no Mend sign-in on this port — network reach is the only gate";
+  if (serverIsLocal(config)) {
+    if (service.authority !== null) say(`  ${cobalt(serviceUrl(service))}  ${dim(gate)}`);
+    return;
   }
-  return `Loopback only · Mend auth: ${service.mendAuthentication ?? "unknown"}`;
+  if (service.protocol === "udp") {
+    // No tunnel for UDP: the server-side listener is the only path.
+    if (service.authority !== null) {
+      say(`  ${cobalt(serviceUrl(service))} ${dim(`on the server's network · ${gate}`)}`);
+    }
+    return;
+  }
+  const local = service.hostPort ?? service.workspacePort;
+  say(
+    `  ${cobalt(`mend service connect ${service.label}`)} ${dim(`→ 127.0.0.1:${local} on this machine, authenticated as you`)}`,
+  );
+  if (service.authority !== null) {
+    say(`  ${dim(`server-side listener ${service.authority} · ${gate}`)}`);
+  }
 };
 
 const printWorkspaceTtlFailure = (service: ServiceDto): void => {
@@ -861,18 +886,20 @@ const printWorkspaceTtlFailure = (service: ServiceDto): void => {
   );
 };
 
-const printServiceEndpoint = (service: ServiceDto): void => {
-  const exposure = serviceExposure(service);
-  say(`  ${cobalt(serviceUrl(service))}${exposure === "" ? "" : `  ${dim(exposure)}`}`);
+const printServiceEndpoint = (config: CliConfig, service: ServiceDto): void => {
+  printServiceAccess(config, service);
   printWorkspaceTtlFailure(service);
 };
 
-const printService = (service: ServiceDto) => {
+const printService = (config: CliConfig, service: ServiceDto) => {
   const status = service.status === "reachable" ? green(service.status) : amber(service.status);
-  const exposure = serviceExposure(service);
+  const port = `:${service.workspacePort ?? "?"}${service.protocol === "udp" ? "/udp" : ""}`;
+  // Pad around the colored status by its bare length — ANSI codes break padEnd.
+  const statusPad = " ".repeat(Math.max(1, 12 - service.status.length));
   say(
-    `${(service.label ?? service.id.slice(0, 8)).padEnd(12)}  ${dim(`:${service.workspacePort ?? "?"}${service.protocol === "udp" ? "/udp" : ""} →`)} ${serviceUrl(service)}  ${status}  ${dim(service.id.slice(0, 8))}${exposure === "" ? "" : `  ${dim(exposure)}`}`,
+    `${(service.label ?? service.id.slice(0, 8)).padEnd(14)} ${status}${statusPad}${dim(port.padEnd(7))} ${dim(service.id.slice(0, 8))}`,
   );
+  printServiceAccess(config, service);
   printWorkspaceTtlFailure(service);
 };
 
@@ -914,7 +941,7 @@ const serviceAdd = async (config: CliConfig, args: ReadonlyArray<string>) => {
     browserScheme,
   });
   say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
-  printServiceEndpoint(service);
+  printServiceEndpoint(config, service);
   if (protocol === "udp") {
     say(dim(`  udp — a reply is the only reachability signal; silence just relays`));
   } else if (service.status !== "reachable") {
@@ -928,7 +955,7 @@ const serviceList = async (config: CliConfig) => {
     say(dim("no live services — mend service add <port> adopts a listening one"));
     return;
   }
-  for (const service of services) printService(service);
+  for (const service of services) printService(config, service);
 };
 
 const serviceStop = async (config: CliConfig, args: ReadonlyArray<string>) => {
@@ -1004,7 +1031,7 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
       }),
     );
     say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
-    printServiceEndpoint(service);
+    printServiceEndpoint(config, service);
     say(dim(`  logs: mend service logs ${service.label ?? service.id.slice(0, 8)}`));
     return;
   }
@@ -1041,7 +1068,7 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
     }),
   );
   say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
-  printServiceEndpoint(service);
+  printServiceEndpoint(config, service);
   say(dim(`  logs: mend service logs ${service.label ?? service.id.slice(0, 8)}`));
 };
 
@@ -1131,7 +1158,7 @@ const serviceRestart = async (config: CliConfig, args: ReadonlyArray<string>) =>
     mutateService(config, "POST", `/services/${service.id}/restart`),
   );
   say(`${green("✓")} restarted · ${restarted.status}`);
-  printServiceEndpoint(restarted);
+  printServiceEndpoint(config, restarted);
 };
 
 /**
@@ -2564,7 +2591,8 @@ const dashboard = async (config: CliConfig) => {
     cwd: process.cwd(),
     api: <T>(method: "GET" | "POST", route: string, body?: unknown) =>
       request<T>(config, method, route, body),
-    attachTty: (sessionId: string, harness: string) => attachTty(config, sessionId, harness, 0n),
+    attachTty: (sessionId: string, harness: string, processId?: string) =>
+      attachTty(config, sessionId, harness, 0n, processId),
   });
 };
 
