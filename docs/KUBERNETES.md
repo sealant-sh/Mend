@@ -138,7 +138,7 @@ expose the range:
 
 ```yaml
 serviceHost:
-  bindAddresses: ["0.0.0.0"]
+  bindAddresses: ["podIP"]
   portMin: 43100
   portMax: 43119 # keep it narrow — each port is one entry on the exposure Service
   expose:

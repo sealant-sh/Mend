@@ -51,7 +51,10 @@ web:
 # Service), and enable `expose`. Connections on these ports carry no Mend auth; reachability is
 # your gate — networkPolicies.clientCidrs applies to the range when expose is enabled.
 serviceHost:
-  bindAddresses: [] # e.g. ["0.0.0.0"]; empty keeps the loopback default
+  # Entries are literal private IPs, plus the sentinel "podIP" — the Pod's own address via the
+  # downward API (wildcards are refused by the bind policy; the Pod IP is what the exposure
+  # Service targets anyway).
+  bindAddresses: [] # e.g. ["podIP"]; empty keeps the loopback default
   portMin: 43100
   portMax: 43999
   expose:

@@ -38,3 +38,10 @@ app.kubernetes.io/component: {{ .name }}
 - { name: {{ .name | quote }}, value: {{ .value | quote }} }
 {{- end }}
 {{- end -}}
+{{- define "mend.serviceBindList" -}}
+{{- $out := list -}}
+{{- range .Values.serviceHost.bindAddresses -}}
+{{- $out = append $out (ternary "$(MEND_POD_IP)" . (eq . "podIP")) -}}
+{{- end -}}
+{{- join "," $out -}}
+{{- end -}}

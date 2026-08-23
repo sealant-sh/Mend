@@ -47,8 +47,15 @@ spec:
             # The machine git key (`mend keys init`) must survive Pod replacement: it lives on
             # the store claim, mounted at its own path so it never sits inside the store tree.
             - { name: MEND_KEYS_ROOT, value: /var/lib/mend/keys }
-            {{- with .Values.serviceHost.bindAddresses }}
-            - { name: MEND_SERVICE_HOSTS, value: {{ join "," . | quote }} }
+            {{- if .Values.serviceHost.bindAddresses }}
+            {{- if has "podIP" .Values.serviceHost.bindAddresses }}
+            # The bind policy refuses wildcards and requires assigned addresses; the Pod's own
+            # IP is the assigned private interface, resolved at start via the downward API.
+            - name: MEND_POD_IP
+              valueFrom: { fieldRef: { fieldPath: status.podIP } }
+            {{- end }}
+            - name: MEND_SERVICE_HOSTS
+              value: {{ join "," (compact (list (include "mend.serviceBindList" .))) | quote }}
             {{- end }}
             - { name: MEND_SERVICE_PORT_MIN, value: {{ .Values.serviceHost.portMin | quote }} }
             - { name: MEND_SERVICE_PORT_MAX, value: {{ .Values.serviceHost.portMax | quote }} }
