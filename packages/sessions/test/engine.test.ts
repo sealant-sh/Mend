@@ -1227,15 +1227,20 @@ const withEngine = <A, E>(
     Layer.provide(sessionSocketStubLayer),
     Layer.provide(SessionChannelTokensRepoMemory),
     Layer.provide(DeploymentConfigLocal),
-    Layer.provide(mendKeysStubLayer),
-    Layer.provide(agentBridgeStubLayer),
-    Layer.provide(gitOpsStubLayer),
-    Layer.provide(changesLayer(world)),
-    Layer.provide(checkpointsLayer(world)),
-    Layer.provide(referencesEmptyLayer),
-    Layer.provide(projectMountsEmptyLayer),
-    Layer.provide(projectRecipesEmptyLayer),
-    Layer.provide(options.hotWorkspacesLayer ?? hotWorkspacesEmptyLayer),
+    Layer.provide(
+      // One merged provide: `pipe` is typed to 20 operators and this list outgrew it.
+      Layer.mergeAll(
+        mendKeysStubLayer,
+        agentBridgeStubLayer,
+        gitOpsStubLayer,
+        changesLayer(world),
+        checkpointsLayer(world),
+        referencesEmptyLayer,
+        projectMountsEmptyLayer,
+        projectRecipesEmptyLayer,
+        options.hotWorkspacesLayer ?? hotWorkspacesEmptyLayer,
+      ),
+    ),
     Layer.provide(
       Layer.mergeAll(
         projectEnvironmentLayer(options.environment ?? emptyEnvironment),
@@ -3047,14 +3052,19 @@ describe("SessionEngine", () => {
       Layer.provide(SessionChannelTokensRepoMemory),
       Layer.provide(DeploymentConfigLocal),
       Layer.provide(mendKeysStubLayer),
-      Layer.provide(agentBridgeStubLayer),
-      Layer.provide(gitOpsStubLayer),
-      Layer.provide(changesLayer(world)),
-      Layer.provide(checkpointsLayer(world)),
-      Layer.provide(referencesEmptyLayer),
-      Layer.provide(projectMountsEmptyLayer),
-      Layer.provide(projectRecipesEmptyLayer),
-      Layer.provide(hotWorkspacesEmptyLayer),
+      Layer.provide(
+        // One merged provide: `pipe` is typed to 20 operators and this list outgrew it.
+        Layer.mergeAll(
+          agentBridgeStubLayer,
+          gitOpsStubLayer,
+          changesLayer(world),
+          checkpointsLayer(world),
+          referencesEmptyLayer,
+          projectMountsEmptyLayer,
+          projectRecipesEmptyLayer,
+          hotWorkspacesEmptyLayer,
+        ),
+      ),
       Layer.provide(
         Layer.mergeAll(
           projectEnvironmentLayer(emptyEnvironment),

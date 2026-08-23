@@ -117,7 +117,7 @@ import {
 } from "./native-convert.ts";
 import { ProtocolHost, type ProtocolHostNotLiveError } from "./protocol-host.ts";
 import { mergeRecipes, readServiceRecipes } from "./recipes.ts";
-import { ServiceBindError, ServiceHost } from "./service-host.ts";
+import { ServiceBindError, ServiceHost, validateServiceBindAddresses } from "./service-host.ts";
 import {
   SESSION_SOCKET_MOUNT_PATH,
   SessionSocketHost,
@@ -3411,12 +3411,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           service.currentForwardId === null
             ? null
             : yield* serviceForwards.byId(service.currentForwardId);
-        const bindAddresses = service.bindAddresses ?? previous?.boundAddresses ?? null;
-        if (bindAddresses === null) {
-          return yield* new ServiceBindError({
-            message: "The Service has no recorded bind policy. Start it again explicitly.",
-          });
-        }
+        // The row's snapshot keeps URLs stable, but operator policy can move under it — a
+        // Pod gets a new IP on every replacement. A snapshot that no longer validates
+        // re-resolves from the CURRENT policy instead of failing the restart.
+        const recorded = service.bindAddresses ?? previous?.boundAddresses ?? null;
+        const bindAddresses =
+          recorded !== null && validateServiceBindAddresses(recorded).ok
+            ? recorded
+            : yield* serviceHost.bindAddresses();
         const forward = yield* serviceForwards.createAndSelect({
           serviceId,
           sealantWorkspaceId: workspaceId,
@@ -4509,15 +4511,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 }
                 return;
               }
-              const bindAddresses = service.bindAddresses ?? previous.boundAddresses;
-              if (bindAddresses === null) {
-                yield* serviceForwards.markFailed(
-                  forward.id,
-                  "The Service has no recorded bind policy and cannot be recovered.",
-                );
-                yield* services.compareAndSetCurrentForward(service.id, forward.id, null);
-                return;
-              }
+              const recorded = service.bindAddresses ?? previous.boundAddresses;
+              const bindAddresses =
+                recorded !== null && validateServiceBindAddresses(recorded).ok
+                  ? recorded
+                  : yield* serviceHost
+                      .bindAddresses()
+                      .pipe(
+                        Effect.tapError((error) =>
+                          serviceForwards
+                            .markFailed(forward.id, error.message)
+                            .pipe(
+                              Effect.andThen(
+                                services.compareAndSetCurrentForward(service.id, forward.id, null),
+                              ),
+                            ),
+                        ),
+                      );
               const ownerSession = yield* sessions.byId(service.sessionId).pipe(Effect.option);
               const binding = yield* serviceHost
                 .start({
