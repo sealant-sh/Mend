@@ -111,6 +111,24 @@ egress policy allows the Mend session port by namespace/pod selector
 
 The images come from `ghcr.io/sealant-sh/mend` (`.github/workflows/image.yml`).
 
+## Adopting projects (git auth)
+
+The server clones and fetches; a Pod has no ambient git identity, so `--auth ambient` (the default,
+right for a laptop) fails on Kubernetes with "could not read Username" / "permission denied". Use
+the machine key instead:
+
+```sh
+mend keys init                                   # prints the server's public key
+# add it as a deploy key (or to a machine user) on the git host, then:
+mend adopt git@github.com:you/repo.git --auth mend-key
+```
+
+The key lives on the store claim (`MEND_KEYS_ROOT`, mounted from the claim's `.mend-keys` subPath),
+so it survives Pod replacement. `mend connect github` is unrelated: connected accounts provision the
+_agent's_ credentials inside session workspaces, never the server's git access. `--auth bridge`
+(`mend keys share`) also works when you want adoption signed by your own local ssh-agent instead of
+a deploy key.
+
 ## Upgrade
 
 `helm upgrade mend deploy/helm/mend -n mend -f values.yaml`. Migrations run at process start (the

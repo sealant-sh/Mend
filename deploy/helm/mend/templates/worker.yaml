@@ -44,6 +44,9 @@ spec:
             {{- include "mend.commonEnv" . | nindent 12 }}
             - { name: MEND_MODE, value: all }
             - { name: PORT, value: "3105" }
+            # The machine git key (`mend keys init`) must survive Pod replacement: it lives on
+            # the store claim, mounted at its own path so it never sits inside the store tree.
+            - { name: MEND_KEYS_ROOT, value: /var/lib/mend/keys }
             - { name: MEND_SESSION_ENDPOINT_LISTEN, value: "0.0.0.0:{{ .Values.sessionChannel.port }}" }
             - { name: MEND_SESSION_ENDPOINT_URL, value: {{ include "mend.sessionEndpointUrl" . | quote }} }
             {{- if .Values.sessionChannel.tls.enabled }}
@@ -52,6 +55,7 @@ spec:
             {{- end }}
           volumeMounts:
             - { name: store, mountPath: {{ .Values.store.mountPath }} }
+            - { name: store, mountPath: /var/lib/mend/keys, subPath: .mend-keys }
             {{- if .Values.sessionChannel.tls.enabled }}
             - { name: session-tls, mountPath: /etc/mend/session-tls, readOnly: true }
             {{- end }}
