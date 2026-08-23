@@ -67,18 +67,21 @@ export const MAX_BODY_BYTES = 64 * 1024;
 const readBody = (request: http.IncomingMessage): Promise<unknown> =>
   new Promise((resolve) => {
     let text = "";
-    let overflow = false;
+    let settled = false;
+    const settle = (value: unknown) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
     request.on("data", (chunk: Buffer | string) => {
-      if (overflow) return;
+      if (settled) return;
       text += String(chunk);
       if (text.length > MAX_BODY_BYTES) {
-        overflow = true;
         request.destroy();
-        resolve({});
+        settle({});
       }
     });
     request.on("end", () => {
-      if (overflow) return;
       let parsed: unknown = {};
       if (text !== "") {
         try {
@@ -87,7 +90,7 @@ const readBody = (request: http.IncomingMessage): Promise<unknown> =>
           parsed = {};
         }
       }
-      resolve(parsed);
+      settle(parsed);
     });
   });
 

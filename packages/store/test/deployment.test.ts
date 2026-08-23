@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { DeploymentConfigError, resolveDeploymentConfig } from "../src/deployment.ts";
+import { resolveDeploymentConfig } from "../src/deployment.ts";
 
 describe("resolveDeploymentConfig", () => {
   it("defaults to local with no endpoint", () => {
