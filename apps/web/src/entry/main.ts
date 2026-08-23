@@ -10,6 +10,7 @@ import {
   HostEnvironmentLive,
   KeysBridgeRoutes,
   MendApiLive,
+  ServiceTunnelRoutes,
   TtyRoutes,
 } from "@mend/api";
 import { Auth } from "@mend/auth";
@@ -273,6 +274,7 @@ const ServerLive = Layer.unwrap(
         AuthRoutes,
         EventsRoutes,
         TtyRoutes,
+        ServiceTunnelRoutes,
         KeysBridgeRoutes,
         WebAppRoutes,
       ),
