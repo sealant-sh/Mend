@@ -81,3 +81,98 @@ Sealant's worker must map the same path: `SEALANT_K8S_VOLUME_MAPPINGS` includes
 - The network channel is cluster-internal HTTP by default; the bearer token authenticates, a
   NetworkPolicy limits who can reach the listener, and TLS is optional. That is the whole statement;
   nothing stronger is claimed.
+
+## Install with the chart
+
+```sh
+kubectl create namespace mend
+kubectl -n mend create secret generic mend-secrets \
+  --from-literal=BETTER_AUTH_SECRET="$(openssl rand -hex 32)" \
+  --from-literal=MEND_DB_PASSWORD="$(openssl rand -hex 32)" \
+  --from-literal=SEALANT_SERVICE_KEY="<service key from the Sealant deployment>"
+# One RWX claim for the store. Either create it (any RWX class) or let the chart create it:
+helm install mend deploy/helm/mend -n mend \
+  --set store.create.enabled=true --set store.create.storageClassName=<your RWX class>
+# …or, with an existing claim:
+helm install mend deploy/helm/mend -n mend --set store.existingClaim=mend-store
+```
+
+The chart renders: the web/API Deployment (`MEND_MODE=web`), **one** worker Deployment
+(`MEND_MODE=worker`, `Recreate`) that owns the session engine and listens on the internal
+`<release>-session` Service for the session channel, Postgres (or `DATABASE_URL` from the secret), a
+NetworkPolicy admitting the session port only from Sealant workspace Pods, and a PodDisruptionBudget
+for the web tier. No Ingress; port-forward or bring your own.
+
+Pair it with the Sealant chart by mapping the same claim:
+`workspaces.volumeMappings[0]={logicalRoot: /var/lib/mend/store, claimName: <the claim>}` and the
+Sealant API's `SEALANT_MOUNT_ALLOWED_STORE_ROOTS=/var/lib/mend/store`. The Sealant chart's workspace
+egress policy allows the Mend session port by namespace/pod selector
+(`networkPolicies.workspaceEgressAllow`).
+
+The images come from `ghcr.io/sealant-sh/mend` (`.github/workflows/image.yml`).
+
+## Adopting projects (git auth)
+
+The server clones and fetches; a Pod has no ambient git identity, so `--auth ambient` (the default,
+right for a laptop) fails on Kubernetes with "could not read Username" / "permission denied". Use
+the machine key instead:
+
+```sh
+mend keys init                                   # prints the server's public key
+# add it as a deploy key (or to a machine user) on the git host, then:
+mend adopt git@github.com:you/repo.git --auth mend-key
+```
+
+The key lives on the store claim (`MEND_KEYS_ROOT`, mounted from the claim's `.mend-keys` subPath),
+so it survives Pod replacement. `mend connect github` is unrelated: connected accounts provision the
+_agent's_ credentials inside session workspaces, never the server's git access. `--auth bridge`
+(`mend keys share`) also works when you want adoption signed by your own local ssh-agent instead of
+a deploy key.
+
+## Reaching supervised Services
+
+`mend service run/add` binds its listeners on the **server's** interfaces — operator policy
+(`MEND_SERVICE_HOSTS`, loopback by default), same as on a plain host. Inside a Pod the loopback
+default means Services answer only in-Pod; to reach them from your network, widen the policy and
+expose the range:
+
+```yaml
+serviceHost:
+  bindAddresses: ["podIP"]
+  portMin: 43100
+  portMax: 43119 # keep it narrow — each port is one entry on the exposure Service
+  expose:
+    enabled: true
+    service: { type: LoadBalancer }
+```
+
+These ports carry no Mend auth (by design, since #45): reachability is the gate. The chart applies
+`networkPolicies.clientCidrs` to the exposed range; put the LB on a private network you trust (a
+tailnet, a VPN) or leave `expose` off.
+
+## Upgrade
+
+`helm upgrade mend deploy/helm/mend -n mend -f values.yaml`. Migrations run at process start (the
+`mend_migrations` table) inside a transaction, so the first Pod of the new version migrates and the
+rest wait on the lock. The worker is `Recreate`: sessions are re-attached by the boot reconciliation
+(hot-pool sweep, socket re-staging, token verification from the hash) — the workspaces themselves
+keep running in Sealant.
+
+## Roll back
+
+`helm rollback mend <revision> -n mend`. Migrations are forward-only TypeScript effects; roll back
+only to a version whose schema the data still satisfies (the CHANGELOG marks breaking migrations).
+Tokens issued by the newer version remain valid to an older one as long as `session_channel_tokens`
+exists (0039+).
+
+## Troubleshooting
+
+| Symptom                                                                                  | Where to look                                                                                                                                                  |
+| ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Mend starts with `MEND_DEPLOYMENT_MODE=kubernetes requires MEND_SESSION_ENDPOINT_LISTEN` | The worker needs the listen address and the advertised URL; the chart sets both from `sessionChannel`.                                                         |
+| `GET /api/health` shows `sessionChannel.mode: unix-socket` on Kubernetes                 | The endpoint env is missing on that Pod (the web tier reports `unix-socket` by design — only the worker listens).                                              |
+| `mend service list` in a workspace prints `no session channel in this workspace`         | The workspace was launched without `MEND_SESSION_ENDPOINT`/`MEND_SESSION_ID`/`MEND_SESSION_TOKEN` — the worker that provisioned it had no endpoint configured. |
+| `the session token was not accepted`                                                     | The token was revoked (workspace stopped/replaced) or the session row was re-provisioned; relaunch the session.                                                |
+| `this session is not live on this Mend instance`                                         | The worker restarted and has not re-registered the session yet (boot sweep), or a second worker replica is running — keep `worker.replicaCount: 1`.            |
+| Launch fails in Sealant with `mount source … is not under any configured logical root`   | The Sealant worker's `SEALANT_K8S_VOLUME_MAPPINGS` must include `MEND_STORE_ROOT`.                                                                             |
+| Git in the workspace says `fatal: not a git repository`                                  | The common dir was not mounted path-identically; confirm the Sealant SDK version discovers `gitdir:` and the claim is mapped at the same absolute path.        |

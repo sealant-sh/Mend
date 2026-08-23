@@ -1,0 +1,23 @@
+{{- if .Values.serviceHost.expose.enabled }}
+{{- if gt (int (sub .Values.serviceHost.portMax .Values.serviceHost.portMin)) 63 }}
+{{- fail "serviceHost.expose: narrow the port range (portMax - portMin must be <= 63) — every port is one Service entry" }}
+{{- end }}
+# Supervised Service listeners, exposed one port per entry (Kubernetes Services cannot express
+# a range). Unauthenticated by design — reachability (LB placement + networkPolicies.clientCidrs)
+# is the gate, as with MEND_SERVICE_HOSTS on a plain host.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-services
+  labels: {{ include "mend.labels" . | nindent 4 }}
+  {{- with .Values.serviceHost.expose.service.annotations }}
+  annotations: {{ toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.serviceHost.expose.service.type }}
+  selector: {{ include "mend.component" (dict "root" . "name" "app") | nindent 4 }}
+  ports:
+    {{- range untilStep (int .Values.serviceHost.portMin) (int (add .Values.serviceHost.portMax 1)) 1 }}
+    - { name: svc-{{ . }}, port: {{ . }}, targetPort: {{ . }} }
+    {{- end }}
+{{- end }}
