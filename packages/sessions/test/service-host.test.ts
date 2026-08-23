@@ -190,6 +190,7 @@ describe("ServiceHost", () => {
           workspaceId: WORKSPACE_ID,
           workspacePort: 3000,
           protocol: "tcp",
+          ownerUserId: null,
           bindAddresses: ["127.0.0.1"],
         });
 
@@ -233,6 +234,7 @@ describe("ServiceHost", () => {
           workspaceId: WORKSPACE_ID,
           workspacePort: 3000,
           protocol: "tcp",
+          ownerUserId: null,
           bindAddresses: ["127.0.0.1"],
         });
         yield* host.stop(SERVICE_ID);
@@ -242,6 +244,7 @@ describe("ServiceHost", () => {
           workspaceId: WORKSPACE_ID,
           workspacePort: 3000,
           protocol: "tcp",
+          ownerUserId: null,
           bindAddresses: ["127.0.0.1"],
           preferredHostPort: first.hostPort,
         });

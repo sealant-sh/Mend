@@ -32,6 +32,7 @@ import {
   type NewSession,
   type NewSessionProcess,
   type NewSessionRun,
+  SessionChannelTokensRepoMemory,
 } from "@mend/db";
 import {
   AgentTurnId,
@@ -88,6 +89,7 @@ import {
   SecretCipher,
   Store,
   StoreConfig,
+  DeploymentConfigLocal,
 } from "@mend/store";
 import type {
   CreateOptions,
@@ -1223,15 +1225,22 @@ const withEngine = <A, E>(
     ),
     Layer.provide(serviceHostStubLayer),
     Layer.provide(sessionSocketStubLayer),
-    Layer.provide(mendKeysStubLayer),
-    Layer.provide(agentBridgeStubLayer),
-    Layer.provide(gitOpsStubLayer),
-    Layer.provide(changesLayer(world)),
-    Layer.provide(checkpointsLayer(world)),
-    Layer.provide(referencesEmptyLayer),
-    Layer.provide(projectMountsEmptyLayer),
-    Layer.provide(projectRecipesEmptyLayer),
-    Layer.provide(options.hotWorkspacesLayer ?? hotWorkspacesEmptyLayer),
+    Layer.provide(SessionChannelTokensRepoMemory),
+    Layer.provide(DeploymentConfigLocal),
+    Layer.provide(
+      // One merged provide: `pipe` is typed to 20 operators and this list outgrew it.
+      Layer.mergeAll(
+        mendKeysStubLayer,
+        agentBridgeStubLayer,
+        gitOpsStubLayer,
+        changesLayer(world),
+        checkpointsLayer(world),
+        referencesEmptyLayer,
+        projectMountsEmptyLayer,
+        projectRecipesEmptyLayer,
+        options.hotWorkspacesLayer ?? hotWorkspacesEmptyLayer,
+      ),
+    ),
     Layer.provide(
       Layer.mergeAll(
         projectEnvironmentLayer(options.environment ?? emptyEnvironment),
@@ -3040,15 +3049,22 @@ describe("SessionEngine", () => {
       ),
       Layer.provide(serviceHostStubLayer),
       Layer.provide(sessionSocketStubLayer),
+      Layer.provide(SessionChannelTokensRepoMemory),
+      Layer.provide(DeploymentConfigLocal),
       Layer.provide(mendKeysStubLayer),
-      Layer.provide(agentBridgeStubLayer),
-      Layer.provide(gitOpsStubLayer),
-      Layer.provide(changesLayer(world)),
-      Layer.provide(checkpointsLayer(world)),
-      Layer.provide(referencesEmptyLayer),
-      Layer.provide(projectMountsEmptyLayer),
-      Layer.provide(projectRecipesEmptyLayer),
-      Layer.provide(hotWorkspacesEmptyLayer),
+      Layer.provide(
+        // One merged provide: `pipe` is typed to 20 operators and this list outgrew it.
+        Layer.mergeAll(
+          agentBridgeStubLayer,
+          gitOpsStubLayer,
+          changesLayer(world),
+          checkpointsLayer(world),
+          referencesEmptyLayer,
+          projectMountsEmptyLayer,
+          projectRecipesEmptyLayer,
+          hotWorkspacesEmptyLayer,
+        ),
+      ),
       Layer.provide(
         Layer.mergeAll(
           projectEnvironmentLayer(emptyEnvironment),

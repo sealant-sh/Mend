@@ -26,6 +26,7 @@ import {
   SessionsRepo,
   SettingsRepo,
   UserDotfilesRepo,
+  SessionChannelTokensRepo,
 } from "@mend/db";
 import {
   type AgentRequestId,
@@ -85,6 +86,7 @@ import {
   sessionStatePathOf,
   sshTransportArgs,
   worktreePathOf,
+  DeploymentConfig,
 } from "@mend/store";
 import type { Harness, Run as SdkRun, Workspace, WorkspaceCredentialsOptions } from "@sealant/sdk";
 import { claudeCode, codex, opencode } from "@sealant/sdk";
@@ -115,7 +117,7 @@ import {
 } from "./native-convert.ts";
 import { ProtocolHost, type ProtocolHostNotLiveError } from "./protocol-host.ts";
 import { mergeRecipes, readServiceRecipes } from "./recipes.ts";
-import { ServiceBindError, ServiceHost } from "./service-host.ts";
+import { ServiceBindError, ServiceHost, validateServiceBindAddresses } from "./service-host.ts";
 import {
   SESSION_SOCKET_MOUNT_PATH,
   SessionSocketHost,
@@ -611,6 +613,8 @@ export class SessionEngine extends Context.Service<
 
 type SessionEngineRequirements =
   | SealantClient
+  | SessionChannelTokensRepo
+  | DeploymentConfig
   | AgentConversationRepo
   | ProtocolHost
   | SessionsRepo
@@ -695,6 +699,31 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           owned(sessionId)(api.gitTransportDone(opId, exitCode, refUpdates)),
       });
       const conversations = yield* AgentConversationRepo;
+      const channelTokens = yield* SessionChannelTokensRepo;
+      const deployment = yield* DeploymentConfig;
+      if (deployment.mode === "kubernetes" && deployment.sessionEndpoint === undefined) {
+        return yield* Effect.die(
+          "MEND_DEPLOYMENT_MODE=kubernetes requires MEND_SESSION_ENDPOINT_LISTEN / _URL on the session worker — a workspace Pod on another node cannot reach a Unix socket, so without the network channel every session would be unreachable.",
+        );
+      }
+      /**
+       * The network session channel (docs/KUBERNETES.md): when configured, every workspace is
+       * told where the channel is and handed a per-session bearer token through the SECRET env
+       * channel (so the platform's recorder redacts it). The token grants exactly what the
+       * socket grants — this session's closures — and is revoked with the workspace.
+       */
+      const sessionChannelLaunchEnv = (sessionId: SessionId) =>
+        Effect.gen(function* () {
+          const endpoint = deployment.sessionEndpoint;
+          if (endpoint === undefined) {
+            return { env: {}, secretEnv: {} };
+          }
+          const token = yield* channelTokens.issue(sessionId);
+          return {
+            env: { MEND_SESSION_ENDPOINT: endpoint.url, MEND_SESSION_ID: sessionId },
+            secretEnv: { MEND_SESSION_TOKEN: token },
+          };
+        });
       const protocolHost = yield* ProtocolHost;
       const sessions = yield* SessionsRepo;
       const hotWorkspaces = yield* HotWorkspacesRepo;
@@ -1382,6 +1411,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // in-workspace socket has nobody left to serve.
           yield* processes.reapLiveForWorkspace(workspaceId);
           yield* socketHost.stop(sessionId);
+          yield* channelTokens.revoke(sessionId).pipe(Effect.ignore);
         }).pipe(
           Effect.catch((error) =>
             Effect.logWarning("session engine: workspace stop failed").pipe(
@@ -1873,9 +1903,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.map((pairs) => Object.fromEntries(pairs)),
           report,
         );
-        const env = Object.fromEntries(
-          environment.variables.map((variable) => [variable.name, variable.value] as const),
-        );
+        const channel = yield* sessionChannelLaunchEnv(sessionId);
+        const env = {
+          ...Object.fromEntries(
+            environment.variables.map((variable) => [variable.name, variable.value] as const),
+          ),
+          ...channel.env,
+        };
+        Object.assign(secretEnv, channel.secretEnv);
         const environmentManifest = {
           environmentRevision: environment.revision,
           environmentVariableNames: environment.variables.map((variable) => variable.name),
@@ -3376,12 +3411,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           service.currentForwardId === null
             ? null
             : yield* serviceForwards.byId(service.currentForwardId);
-        const bindAddresses = service.bindAddresses ?? previous?.boundAddresses ?? null;
-        if (bindAddresses === null) {
-          return yield* new ServiceBindError({
-            message: "The Service has no recorded bind policy. Start it again explicitly.",
-          });
-        }
+        // The row's snapshot keeps URLs stable, but operator policy can move under it — a
+        // Pod gets a new IP on every replacement. A snapshot that no longer validates
+        // re-resolves from the CURRENT policy instead of failing the restart.
+        const recorded = service.bindAddresses ?? previous?.boundAddresses ?? null;
+        const bindAddresses =
+          recorded !== null && validateServiceBindAddresses(recorded).ok
+            ? recorded
+            : yield* serviceHost.bindAddresses();
         const forward = yield* serviceForwards.createAndSelect({
           serviceId,
           sealantWorkspaceId: workspaceId,
@@ -3389,6 +3426,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           supersedesForwardId: previous?.id ?? null,
         });
         yield* renewWorkspaceLease(service.sessionId, workspaceId);
+        // Captured for the host's detached work (probe timer, connection dials): those run
+        // outside any request context and must still act as the session owner.
+        const ownerSession = yield* sessions.byId(service.sessionId).pipe(Effect.option);
         const binding = yield* serviceHost
           .start({
             serviceId,
@@ -3397,6 +3437,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             workspacePort,
             protocol,
             bindAddresses,
+            ownerUserId: Option.isSome(ownerSession) ? ownerSession.value.ownerUserId : null,
             ...(forward.preferredHostPort === null
               ? {}
               : { preferredHostPort: forward.preferredHostPort }),
@@ -4040,6 +4081,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             asSealantUser(entry.ownerUserId),
           );
         }
+        yield* channelTokens.revoke(entry.id).pipe(Effect.ignore);
         if (options?.keepWorktree !== true) {
           yield* socketHost.stop(entry.id).pipe(Effect.ignore);
           yield* projects.byId(entry.projectId).pipe(
@@ -4469,15 +4511,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 }
                 return;
               }
-              const bindAddresses = service.bindAddresses ?? previous.boundAddresses;
-              if (bindAddresses === null) {
-                yield* serviceForwards.markFailed(
-                  forward.id,
-                  "The Service has no recorded bind policy and cannot be recovered.",
-                );
-                yield* services.compareAndSetCurrentForward(service.id, forward.id, null);
-                return;
-              }
+              const recorded = service.bindAddresses ?? previous.boundAddresses;
+              const bindAddresses =
+                recorded !== null && validateServiceBindAddresses(recorded).ok
+                  ? recorded
+                  : yield* serviceHost
+                      .bindAddresses()
+                      .pipe(
+                        Effect.tapError((error) =>
+                          serviceForwards
+                            .markFailed(forward.id, error.message)
+                            .pipe(
+                              Effect.andThen(
+                                services.compareAndSetCurrentForward(service.id, forward.id, null),
+                              ),
+                            ),
+                        ),
+                      );
+              const ownerSession = yield* sessions.byId(service.sessionId).pipe(Effect.option);
               const binding = yield* serviceHost
                 .start({
                   serviceId: service.id,
@@ -4486,6 +4537,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   workspacePort: service.workspacePort,
                   protocol: service.transport,
                   bindAddresses,
+                  ownerUserId: Option.isSome(ownerSession) ? ownerSession.value.ownerUserId : null,
                   ...(forward.preferredHostPort === null
                     ? {}
                     : { preferredHostPort: forward.preferredHostPort }),
@@ -4515,6 +4567,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               }
             }),
           ).pipe(
+            // Boot runs with no request context; the platform calls inside (workspace status,
+            // the probe) must act as the Service's session owner.
+            ownedByService(serviceStub.id),
             Effect.catch((error) =>
               Effect.logWarning("session engine: Service forward reconcile failed").pipe(
                 Effect.annotateLogs({ serviceId: serviceStub.id, error: String(error) }),

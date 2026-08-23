@@ -6,7 +6,7 @@ import * as os from "node:os";
 import { ServiceForwardsRepo, ServiceObservationsRepo } from "@mend/db";
 import type { SealantWorkspaceId, ServiceForwardId, ServiceId } from "@mend/domain";
 import type { ServiceObservationSource } from "@mend/domain/workbench";
-import { SealantClient } from "@mend/sealant";
+import { asSealantUser, SealantClient } from "@mend/sealant";
 import type { WorkspaceForward } from "@sealant/sdk";
 import { Effect, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -60,6 +60,12 @@ export interface ServiceStartInput {
   readonly bindAddresses: ReadonlyArray<string>;
   /** Reconciliation passes the recorded port so restarts keep URLs stable. */
   readonly preferredHostPort?: number;
+  /**
+   * The session owner. Detached work (the probe timer, per-connection dials) runs outside any
+   * request context, so the principal must be captured here — a dial without one fails on
+   * deployments where the platform requires an owner assertion (service-key auth).
+   */
+  readonly ownerUserId: string | null;
 }
 
 export interface ServiceHostBinding {
@@ -392,7 +398,12 @@ export const ServiceHostLive: Layer.Layer<
           entry.sockets.add(socket);
           socket.once("close", () => entry.sockets.delete(socket));
         }
-        void Effect.runPromise(dial(input.workspaceId, input.workspacePort).pipe(Effect.option))
+        void Effect.runPromise(
+          dial(input.workspaceId, input.workspacePort).pipe(
+            Effect.option,
+            asSealantUser(input.ownerUserId),
+          ),
+        )
           .then((forward) => {
             if (Option.isNone(forward)) {
               void observe(input, "unreachable", "connection");
@@ -453,7 +464,7 @@ export const ServiceHostLive: Layer.Layer<
               yield* Effect.promise(() =>
                 observe(input, reachable ? "reachable" : "unreachable", "probe"),
               );
-            }).pipe(Effect.ignore),
+            }).pipe(asSealantUser(input.ownerUserId), Effect.ignore),
           );
         }, PROBE_INTERVAL_MS);
         timer.unref();
@@ -481,12 +492,14 @@ export const ServiceHostLive: Layer.Layer<
       workspaceId: SealantWorkspaceId,
       workspacePort: number,
       host: "127.0.0.1" | "docker",
+      ownerUserId: string | null,
     ): Promise<WorkspaceForward | null> =>
       Effect.runPromise(
         Effect.gen(function* () {
           const workspace = yield* sealant.getWorkspace(workspaceId);
           return yield* sealant.forward(workspace, workspacePort, host, "udp");
         }).pipe(
+          asSealantUser(ownerUserId),
           Effect.map((forward): WorkspaceForward | null => forward),
           Effect.catch(() => Effect.succeed(null)),
         ),
@@ -544,8 +557,12 @@ export const ServiceHostLive: Layer.Layer<
             }
           })();
         };
-        void dialUdp(input.workspaceId, input.workspacePort, "127.0.0.1").then(attach);
-        void dialUdp(input.workspaceId, input.workspacePort, "docker").then(attach);
+        void dialUdp(input.workspaceId, input.workspacePort, "127.0.0.1", input.ownerUserId).then(
+          attach,
+        );
+        void dialUdp(input.workspaceId, input.workspacePort, "docker", input.ownerUserId).then(
+          attach,
+        );
         return flow;
       };
 
