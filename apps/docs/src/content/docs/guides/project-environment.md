@@ -1,0 +1,115 @@
+---
+title: Configure session environments
+description:
+  Configure images, variables, secrets, mounts, references, dotfiles, and Services for a project.
+sidebar:
+  order: 2
+---
+
+A project's setup controls how its future session workspaces launch. Open the project in Mend and
+choose **Setup** to configure it.
+
+Setup joins machine resources and personal identity at session launch:
+
+```mermaid
+flowchart LR
+  image[Workspace image]
+  env[Configuration and secrets]
+  refs[References and mounts]
+  identity[Accounts and dotfiles]
+  recipes[Service recipes]
+  launch[New session workspace]
+
+  image --> launch
+  env --> launch
+  refs --> launch
+  identity --> launch
+  recipes --> launch
+```
+
+Changes apply to new workspace launches, including a settled-session resume that needs a fresh
+workspace. Running workspaces keep the setup they started with.
+
+## Workspace image
+
+Choose a managed OS family or supply a custom OCI base image. Managed families let you select the
+OS, login shell, portable package names, and Docker service. Custom images accept a base reference,
+extra packages, setup commands, and the Docker service switch.
+
+A project can inherit the instance default or save its own override. Read
+[Workspace images](/guides/workspace-images/) for the exact fields and defaults.
+
+## Configuration and secrets
+
+Configuration values and secrets both become environment variables in future workspace processes.
+They differ in storage and display:
+
+- configuration is stored and displayed as plaintext;
+- secret values are accepted on write and never returned by the API or CLI;
+- names that look secret are routed to Secrets when importing a `.env` file;
+- URL-shaped names may still contain passwords, so route them explicitly when needed.
+
+Read [Environment variables and secrets](/guides/environment-variables/) for the web and CLI paths.
+
+## Reference repositories
+
+A reference is an upstream repository cloned into Mend's store for agents to read. Select references
+per project. Sessions mount the selected revisions read-only under:
+
+```text
+/workspace/ref/<name>
+```
+
+References do not become projects. They have no sessions or worktrees. They widen what the agent can
+read without widening the reviewable change.
+
+## Extra mounted folders
+
+Add a host folder when a session needs local material that does not belong in the project
+repository. Mend mounts it at:
+
+```text
+/workspace/home/<name>
+```
+
+Mounts are read-only by default. A read-write mount writes directly to the host folder, outside the
+session's reviewed worktree. Use read-write only when that is the intended behavior.
+
+## Dotfiles
+
+Dotfiles belong to each Mend user. The project setting only decides whether sessions apply the
+launching user's dotfiles.
+
+Managed OS-family images support dotfiles. Custom images do not apply them because the base image
+owns its environment. Read [Dotfiles](/guides/dotfiles/) for repository and local-sync options.
+
+## Services
+
+A Service is an explicitly declared development process associated with a session. Add recipes to
+`mend.toml` or start a command with `mend service run`. Mend records each attempt and forwards the
+declared port to the host.
+
+Services do not start or expose themselves automatically. HTTP and HTTPS are separate declarations;
+other transports provide an endpoint to copy rather than a browser action.
+
+## Hot sessions
+
+A project's hot-session count controls how many complete session skeletons Mend keeps ready. A
+skeleton includes the worktree, branch, session directories, and a workspace built from the current
+setup fingerprint.
+
+Changing the image, accounts, dotfiles, mounts, or related launch inputs drains incompatible ready
+workspaces and warms replacements. Status such as `2 ready · 1 warming` reports observation, not a
+launch guarantee.
+
+## Git access
+
+Git operations on the remote repository are host-owned. A project can use ambient host credentials,
+a Mend deploy key, or the SSH-agent bridge for a key that must remain on another machine. The
+workspace receives a Git transport shim, not the host credential.
+
+## Review automation
+
+Project switches can inherit instance defaults or override automatic session naming, review-tour
+composition, and suggestion generation. These jobs run after the relevant session event. They do not
+change the workspace environment.

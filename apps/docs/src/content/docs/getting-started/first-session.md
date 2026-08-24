@@ -1,0 +1,162 @@
+---
+title: Start a session
+description: Launch an agent in a project worktree, detach, reattach, and resume later.
+sidebar:
+  order: 5
+---
+
+A session is one supervised coding-agent conversation, its Git worktree, and its durable record. It
+can contain several agent processes over time plus supporting shells and Services.
+
+## Before you start
+
+You need:
+
+- a working Mend login;
+- an adopted project;
+- the provider CLI installed in the selected workspace image;
+- a connected provider account, or a harness that can complete its own login flow.
+
+Check the local setup:
+
+```sh
+mend doctor
+```
+
+## Launch from a checkout
+
+Move into a checkout whose remote matches the adopted project:
+
+```sh
+cd ~/Developer/my-project
+mend codex
+```
+
+Use another harness or command:
+
+```sh
+mend claude
+mend opencode
+mend run -- bash -i
+```
+
+If no adopted project matches but the current directory is a Git repository, a harness launch can
+auto-adopt it. Run `mend adopt` yourself when you want to choose the project name or Git
+authentication mode.
+
+Select a project explicitly from another directory:
+
+```sh
+mend codex --project my-project
+```
+
+## Send the first prompt
+
+Pass one quoted argument:
+
+```sh
+mend codex "Trace the session startup path and explain it before changing code"
+```
+
+The prompt becomes the first message and supplies the initial session name.
+
+Common options:
+
+```sh
+mend codex "Fix the failing test" --model gpt-5.5 --effort high --base main
+mend claude "Inspect the API boundary" --ask
+```
+
+Mend normally disables the harness's approval prompts because the workspace is the execution
+boundary. `--ask` restores provider prompts. `--fast` requests Codex priority processing. OpenCode
+currently ignores model, effort, permission, and speed options.
+
+## What Mend creates
+
+```mermaid
+flowchart LR
+  project[Adopted project]
+  worktree[Session worktree]
+  workspace[Sealant workspace]
+  agent[Agent process]
+  record[Durable record]
+
+  project --> worktree
+  worktree -->|mounted at /workspace/repo| workspace
+  workspace --> agent
+  agent --> record
+```
+
+Before the process starts, Mend resolves the workspace image, project environment, secrets,
+references, mounts, connected accounts, and dotfiles. It then opens a PTY or provider protocol
+process in the mounted worktree.
+
+## Detach without stopping
+
+Press:
+
+```text
+Ctrl+]
+```
+
+The CLI closes its attachment and leaves the agent running. A browser or desktop client can attach
+to the same session while the terminal is detached.
+
+## Reattach
+
+List active sessions:
+
+```sh
+mend sessions
+```
+
+Attach with a full ID or unique prefix:
+
+```sh
+mend attach 01MEND
+```
+
+Mend replays recorded terminal output before following live frames.
+
+## Open a supporting shell
+
+```sh
+mend shell 01MEND
+```
+
+The shell runs in the session's current workspace and sees the same worktree, installed packages,
+environment, and Services. Shell changes contribute to the same session change.
+
+Closing a shell tab can stop that shell process. A detached shell can keep the workspace retained
+after the agent settles.
+
+## Resume settled work
+
+Resume with the previous harness:
+
+```sh
+mend resume 01MEND
+```
+
+Switch harnesses while keeping the worktree and restored provider state:
+
+```sh
+mend resume 01MEND --with claude
+```
+
+`mend rejoin` chooses attach when the session is live and resume when it is settled:
+
+```sh
+mend rejoin 01MEND
+```
+
+A resumed agent is another process in the same Mend session. Its Sealant run has its own record
+sequence, while Mend preserves the ordered process and run membership.
+
+## See sessions from any client
+
+The CLI, browser, desktop app, and phone connect to the same Mend server. They do not create
+separate copies of the session.
+
+Read [Work from another device](/guides/remote-access/) for pairing and the private-network
+boundary.
