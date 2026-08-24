@@ -1,15 +1,14 @@
+import {
+  SettingsFailure,
+  WorkspaceEnvironmentSaveResult,
+  WorkspacePackageResolutionView,
+} from "@mend/api-contracts";
 import { SettingsRepo } from "@mend/db";
 import { MendSettings } from "@mend/domain";
 import type { WorkspaceImage, WorkspaceImageOs } from "@mend/domain";
 import { SealantClient } from "@mend/sealant";
 import type { WorkspacePackageResolution } from "@mend/sealant";
 import { Effect } from "effect";
-
-import {
-  SettingsFailure,
-  WorkspaceEnvironmentSaveResult,
-  WorkspacePackageResolutionView,
-} from "./contract.ts";
 
 export interface ResolvedWorkspaceEnvironment {
   readonly workspaceImage: WorkspaceImage | null;

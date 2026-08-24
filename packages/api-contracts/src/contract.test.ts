@@ -3,7 +3,7 @@ import { Schema } from "effect";
 import { HttpApi } from "effect/unstable/httpapi";
 import { describe, expect, it } from "vitest";
 
-import { MendApi, ProcessLogPage } from "./contract.ts";
+import { MendApi, ProcessLogPage } from "./index.ts";
 
 const conversationEndpointNames = new Set(["submitTurn", "interruptTurn", "respondAgentRequest"]);
 

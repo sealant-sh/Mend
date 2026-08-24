@@ -1,8 +1,8 @@
+import { MendApi, PairClaimRequest } from "@mend/api-contracts";
 import { Schema } from "effect";
 import { HttpApi } from "effect/unstable/httpapi";
 import { describe, expect, it } from "vitest";
 
-import { MendApi, PairClaimRequest } from "./contract.ts";
 import {
   DEVICE_TOKEN_PREFIX,
   claimAddress,

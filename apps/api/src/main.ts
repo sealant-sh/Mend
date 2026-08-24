@@ -1,15 +1,6 @@
 import { createServer } from "node:http";
 
 import { NodeHttpServer, NodeRuntime } from "@effect/platform-node";
-import {
-  EventsRoutes,
-  GhLive,
-  HostEnvironmentLive,
-  KeysBridgeRoutes,
-  MendApiLive,
-  ServiceTunnelRoutes,
-  TtyRoutes,
-} from "@mend/api";
 import { Auth } from "@mend/auth";
 import {
   AgentConversationRepoLive,
@@ -118,6 +109,14 @@ import {
   HttpServerRequest,
   HttpServerResponse,
 } from "effect/unstable/http";
+
+import { MendApiLive } from "./routes/api-live.ts";
+import { EventsRoutes } from "./routes/events.ts";
+import { GhLive } from "./routes/github.ts";
+import { KeysBridgeRoutes } from "./routes/keys-bridge.ts";
+import { ServiceTunnelRoutes } from "./routes/service-tunnel.ts";
+import { TtyRoutes } from "./routes/tty.ts";
+import { HostEnvironmentLive } from "./services/host-environment.ts";
 
 /**
  * The composition boundary (ARCHITECTURE.md §2): every service is wired here

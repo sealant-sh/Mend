@@ -1,6 +1,48 @@
 import * as fs from "node:fs";
 
 import {
+  ChangeDiff,
+  ChangedFileView,
+  ChangeStats,
+  CurrentUser,
+  GitBridgeStatusView,
+  GitKeyView,
+  EnvironmentLoadedEntry,
+  EnvironmentLoadReport,
+  EnvironmentRejected,
+  EnvironmentRejectedEntry,
+  EnvironmentStaleWrite,
+  MendApi,
+  NotFound,
+  ProjectDetail,
+  ProjectEnvironmentMutationResult,
+  ProjectFileListing,
+  ProjectHotSessionsStatus,
+  ProjectPullRequests,
+  ProjectSecretMutationResult,
+  ProjectWorkspaceImageSaveResult,
+  ProcessLogPage,
+  DotfilesSnapshotFileView,
+  DotfilesSnapshotView,
+  DotfilesView,
+  OpenReviewResult,
+  ProtocolSessionNotLive,
+  AgentRequestResolved,
+  RemovalReport,
+  ReviewDiffFileView,
+  ReviewDiffHunkView,
+  ReviewDiffView,
+  SessionActive,
+  SessionAnnotation,
+  SessionDetail,
+  SessionNotLive,
+  SettingsFailure,
+  StoreFailure,
+  SessionTranscript,
+  TranscriptEvent,
+  WorkspacePackageResolutionView,
+} from "@mend/api-contracts";
+import {
   AgentConversationRepo,
   ChangePassesRepo,
   ChangeToursRepo,
@@ -78,55 +120,13 @@ import {
 import { Effect, Option, Result } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
-import {
-  ChangeDiff,
-  ChangedFileView,
-  ChangeStats,
-  CurrentUser,
-  GitBridgeStatusView,
-  GitKeyView,
-  EnvironmentLoadedEntry,
-  EnvironmentLoadReport,
-  EnvironmentRejected,
-  EnvironmentRejectedEntry,
-  EnvironmentStaleWrite,
-  MendApi,
-  NotFound,
-  ProjectDetail,
-  ProjectEnvironmentMutationResult,
-  ProjectFileListing,
-  ProjectHotSessionsStatus,
-  ProjectPullRequests,
-  ProjectSecretMutationResult,
-  ProjectWorkspaceImageSaveResult,
-  ProcessLogPage,
-  DotfilesSnapshotFileView,
-  DotfilesSnapshotView,
-  DotfilesView,
-  OpenReviewResult,
-  ProtocolSessionNotLive,
-  AgentRequestResolved,
-  RemovalReport,
-  ReviewDiffFileView,
-  ReviewDiffHunkView,
-  ReviewDiffView,
-  SessionActive,
-  SessionAnnotation,
-  SessionDetail,
-  SessionNotLive,
-  SettingsFailure,
-  StoreFailure,
-  SessionTranscript,
-  TranscriptEvent,
-  WorkspacePackageResolutionView,
-} from "./contract.ts";
-import { classifyGhError, Gh, parseGithubRepo } from "./github.ts";
-import { HostEnvironment } from "./host-environment.ts";
-import { digestReviewPatch, lineAnchorExists, parseReviewDiff } from "./review-diff.ts";
+import { HostEnvironment } from "../services/host-environment.ts";
 import {
   resolveWorkspaceEnvironment,
   saveResolvedWorkspaceEnvironment,
-} from "./workspace-environment.ts";
+} from "../services/workspace-environment.ts";
+import { classifyGhError, Gh, parseGithubRepo } from "./github.ts";
+import { digestReviewPatch, lineAnchorExists, parseReviewDiff } from "./review-diff.ts";
 
 /**
  * The workbench handlers (plan §6): projects, sessions, and the session

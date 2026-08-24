@@ -1,33 +1,25 @@
 {
-  "name": "@mend/api",
+  "name": "@mend/api-contracts",
   "version": "0.0.0",
   "private": true,
-  "description": "The Mend HttpApi: contract first, server implementation beside it",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
   },
   "scripts": {
-    "lint": "oxlint . --no-error-on-unmatched-pattern",
+    "lint": "oxlint .",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@effect/sql-pg": "catalog:",
     "@mend/auth": "workspace:*",
     "@mend/db": "workspace:*",
     "@mend/domain": "workspace:*",
-    "@mend/jobs": "workspace:*",
     "@mend/sealant": "workspace:*",
-    "@mend/sessions": "workspace:*",
-    "@mend/store": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {
-    "@effect/vitest": "catalog:",
     "@mend/typescript": "workspace:*",
-    "@types/node": "catalog:",
-    "typescript": "catalog:",
     "vitest": "catalog:"
   }
 }

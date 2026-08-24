@@ -1,10 +1,9 @@
 import { execFile } from "node:child_process";
 
+import { GhFailure, GhRepoView, GhStatusView, MendApi, PullRequestView } from "@mend/api-contracts";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
-
-import { GhFailure, GhRepoView, GhStatusView, MendApi, PullRequestView } from "./contract.ts";
 
 /**
  * Adoption discovery through the host's own GitHub CLI (plan §17, decided

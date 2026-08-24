@@ -1,9 +1,8 @@
 import { hostname, networkInterfaces, platform } from "node:os";
 
+import { MachineView, MendApi } from "@mend/api-contracts";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
-
-import { MachineView, MendApi } from "./contract.ts";
 
 /**
  * Tailscale hands every node an IPv4 address in the CGNAT range 100.64.0.0/10.

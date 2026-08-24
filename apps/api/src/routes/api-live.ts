@@ -1,3 +1,23 @@
+import {
+  AuthMiddleware,
+  BriefDetail,
+  AccountRejected,
+  CurrentUser,
+  SealantUnavailable,
+  HealthStatus,
+  IssueDetail,
+  LossReportView,
+  LossSpanView,
+  MendApi,
+  NotFound,
+  RegisteredDevice,
+  RunCommandView,
+  RunDetail,
+  RunSourceView,
+  TraceEntryView,
+  TracePage,
+  Unauthorized,
+} from "@mend/api-contracts";
 import { Auth } from "@mend/auth";
 import {
   BriefCommentsRepo,
@@ -22,26 +42,6 @@ import { Config, Effect, Layer, Option, Stream } from "effect";
 import { HttpServerRequest } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
-import {
-  AuthMiddleware,
-  BriefDetail,
-  AccountRejected,
-  CurrentUser,
-  SealantUnavailable,
-  HealthStatus,
-  IssueDetail,
-  LossReportView,
-  LossSpanView,
-  MendApi,
-  NotFound,
-  RegisteredDevice,
-  RunCommandView,
-  RunDetail,
-  RunSourceView,
-  TraceEntryView,
-  TracePage,
-  Unauthorized,
-} from "./contract.ts";
 import { DevicePairingLive } from "./devices.ts";
 import { GithubGroupLive } from "./github.ts";
 import { MachineGroupLive } from "./machine.ts";

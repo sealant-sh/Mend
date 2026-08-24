@@ -1,10 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
 
-import { DevicesRepo, DevicesRepoLive, type PairedDevice } from "@mend/db";
-import { Config, Effect, Layer, Option } from "effect";
-import { HttpServerRequest } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
-
 import {
   CurrentUser,
   DeviceView,
@@ -15,7 +10,12 @@ import {
   PairingCodeSpent,
   PairingRateLimited,
   PairingView,
-} from "./contract.ts";
+} from "@mend/api-contracts";
+import { DevicesRepo, DevicesRepoLive, type PairedDevice } from "@mend/db";
+import { Config, Effect, Layer, Option } from "effect";
+import { HttpServerRequest } from "effect/unstable/http";
+import { HttpApiBuilder } from "effect/unstable/httpapi";
+
 import { candidateBaseUrls } from "./machine.ts";
 
 /**
