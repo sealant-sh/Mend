@@ -58,6 +58,42 @@ if (ssr === null) {
   console.warn("[web] no built app found (dist/server/server.js) — proxying /api only");
 }
 
+// ─── tRPC: the UI's typed surface; procedures forward to the API ────────────
+const handleTrpc = async (
+  request: http.IncomingMessage,
+  response: http.ServerResponse,
+): Promise<void> => {
+  const { fetchRequestHandler } = await import("@trpc/server/adapters/fetch");
+  const { appRouter } = await import("../server/router.ts");
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(request.headers)) {
+    if (typeof value === "string") headers.set(name, value);
+    else if (Array.isArray(value)) for (const item of value) headers.append(name, item);
+  }
+  const hasBody = request.method !== "GET" && request.method !== "HEAD";
+  const webRequest = new Request(new URL(request.url ?? "/", "http://mend.local"), {
+    method: request.method,
+    headers,
+    ...(hasBody ? { body: Readable.toWeb(request) as unknown as BodyInit, duplex: "half" } : {}),
+  } as RequestInit);
+  const webResponse = await fetchRequestHandler({
+    endpoint: "/trpc",
+    req: webRequest,
+    router: appRouter,
+    createContext: () => ({ headers, apiUrl: apiUrl.origin }),
+  });
+  response.writeHead(webResponse.status, Object.fromEntries(webResponse.headers.entries()));
+  if (webResponse.body === null) {
+    response.end();
+    return;
+  }
+  pipeline(
+    Readable.fromWeb(webResponse.body as unknown as import("node:stream/web").ReadableStream),
+    response,
+    () => {},
+  );
+};
+
 const hopByHop = new Set([
   "connection",
   "keep-alive",
@@ -103,6 +139,10 @@ const server = http.createServer((request, response) => {
   const url = request.url ?? "/";
   if (url === "/api" || url.startsWith("/api/")) {
     proxyRequest(request, response);
+    return;
+  }
+  if (url === "/trpc" || url.startsWith("/trpc/")) {
+    void handleTrpc(request, response);
     return;
   }
 

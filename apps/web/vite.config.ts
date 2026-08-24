@@ -27,6 +27,9 @@ const config = defineConfig({
       // ws: the terminal rides a WebSocket (/api/tty); the shorthand form
       // proxies only HTTP and leaves the upgrade hanging forever in dev.
       "/api": { target: "http://localhost:3101", ws: true },
+      // The tRPC surface lives on the web SERVER (it forwards to the API);
+      // dev runs that server on 3104 beside vite.
+      "/trpc": { target: "http://localhost:3104" },
     },
   },
   plugins: [

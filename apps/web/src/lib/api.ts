@@ -1,108 +1,135 @@
-import { redirect } from "@tanstack/react-router";
+import type { DotfilesRepositoryRequest } from "@mend/api-contracts";
+import type { WorkspaceImage } from "@mend/domain";
+import type { inferRouterOutputs } from "@trpc/server";
+
+import type { AppRouter } from "../server/router.ts";
+import { orLogin, trpc } from "./trpc.ts";
 
 /**
- * Wire shapes for the M1 surface, as JSON delivers them (dates are ISO
- * strings). The authoritative schemas live in @mend/api's contract; these
- * stay deliberately small — the client reads, it does not re-validate.
+ * The UI's data facade. Every type is the wire (Encoded) side of the real
+ * contract — @mend/api-contracts and @mend/domain, the same schemas the API
+ * encodes with — and every call rides the web tier's tRPC surface, which
+ * forwards to the API and validates responses against those schemas. Nothing
+ * here is hand-rolled; a wire change shows up as a compile error in this
+ * file, not a runtime surprise in a view.
  */
 
-export type IssueStage = "triage" | "queued" | "mending" | "review" | "merged";
+// ─── Wire types: exactly what the tRPC client delivers ──────────────────────
+// inferRouterOutputs applies tRPC's serialization to the router's contract-
+// validated outputs, so these are the true client-side shapes — brands and
+// Dates flattened to the JSON the browser actually holds. The router's
+// procedures decode every response against @mend/api-contracts, so a wire
+// change breaks THERE (loudly), and these types follow automatically.
 
-export interface IssueDto {
-  readonly id: string;
-  readonly source: "manual" | "github" | "linear" | "jira";
-  readonly externalRef: string | null;
-  readonly repository: string;
-  readonly title: string;
-  readonly body: string;
-  readonly stage: IssueStage;
-  readonly position: number | null;
-  readonly lastFailureRunId: string | null;
-  readonly createdAt: string;
-  readonly updatedAt: string;
-}
+type Outputs = inferRouterOutputs<AppRouter>;
 
-export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type IssueDto = Outputs["queue"]["listIssues"][number];
+export type IssueStage = IssueDto["stage"];
+export type IssueDetailDto = Outputs["queue"]["issueDetail"];
+export type RunDto = IssueDetailDto["runs"][number];
+export type RunStatus = RunDto["status"];
+export type FailureBriefDto = NonNullable<RunDto["failureBrief"]>;
+export type EvidencePointerDto = FailureBriefDto["evidence"][number];
+export type RunDetailDto = Outputs["queue"]["runDetail"];
+export type RunCommandDto = RunDetailDto["commands"][number];
+export type LossReportDto = NonNullable<RunDetailDto["loss"]>;
+export type TracePageDto = Outputs["queue"]["runTrace"];
+export type TraceEntryDto = TracePageDto["entries"][number];
+export type RunSourceDto = Outputs["queue"]["runSources"][number];
 
-/** The failure mini-brief: what was tried · what was observed · reproduction status. */
-export interface FailureBriefDto {
-  readonly whatWasTried: string;
-  readonly whatWasObserved: string;
-  readonly reproductionStatus: string;
-  readonly evidence: ReadonlyArray<EvidencePointerDto>;
-}
+export type BriefDetailDto = NonNullable<Outputs["queue"]["briefByIssue"]>;
+export type BriefDto = BriefDetailDto["brief"];
+export type ChangeDto = BriefDetailDto["change"];
+export type BriefDocumentDto = BriefDto["document"];
+export type BriefQuestionDto = BriefDocumentDto["questions"][number];
+export type BriefCalloutDto = BriefDocumentDto["attention"][number];
+export type BriefEvidenceSourceDto = BriefDocumentDto["evidenceUsed"][number];
+export type DispositionDto = BriefQuestionDto["disposition"];
+export type BriefCommentDto = Outputs["queue"]["listBriefComments"][number];
+export type RoutedActionDto = NonNullable<BriefCommentDto["routedAction"]>;
+export type BriefVersionDto = Outputs["queue"]["briefVersions"][number];
 
-export interface RunDto {
-  readonly id: string;
-  readonly issueId: string;
-  readonly kind: "initial" | "follow-up" | "verification";
-  readonly status: RunStatus;
-  readonly outcome: "completed" | "failed" | null;
-  readonly summary: string | null;
-  readonly failureBrief: FailureBriefDto | null;
-  readonly sealantRunId: string | null;
-  readonly startedAt: string | null;
-  readonly settledAt: string | null;
-  readonly createdAt: string;
-}
+export type SealantConnectionDto = Outputs["platform"]["sealantConnection"];
+export type SealantIdentityDto = Outputs["platform"]["sealantIdentity"];
+export type ConnectedAccountDto = SealantIdentityDto["accounts"][number];
+export type ConnectedAccountProviderDto = ConnectedAccountDto["provider"];
+export type MachineDto = Outputs["platform"]["machine"];
 
-export interface IssueDetailDto {
-  readonly issue: IssueDto;
-  readonly runs: ReadonlyArray<RunDto>;
-}
+/**
+ * The image's decoding defaults make `mode`/`shell`/`services` optional on
+ * the Encoded side, but the API always writes them when encoding — required
+ * is the true wire shape, and the discriminated union needs it to narrow.
+ */
+export type WorkspaceImageDto = WorkspaceImage;
 
-export interface RunCommandDto {
-  readonly command: string;
-  readonly exitCode: number | null;
-  readonly durationMs: number | null;
-}
+export type ProjectDto = Omit<Outputs["projects"]["list"][number], "workspaceImage"> & {
+  readonly workspaceImage: WorkspaceImageDto | null;
+};
+export type AutomationChoiceDto = ProjectDto["autoTour"];
+export type GitAuthModeDto = ProjectDto["gitAuthMode"];
+export type ProjectDetailDto = Omit<Outputs["projects"]["detail"], "project"> & {
+  readonly project: ProjectDto;
+};
+export type SessionDto = Outputs["sessions"]["listActive"][number];
+export type SessionStatusDto = SessionDto["status"];
+export type SessionAnnotationDto = ProjectDetailDto["annotations"][number];
+export type ChangeStatsDto = Outputs["changes"]["stats"];
+export type RemovalReportDto = Outputs["projects"]["remove"];
+export type SessionDetailDto = Outputs["sessions"]["detail"];
+export type CheckpointDto = SessionDetailDto["checkpoints"][number];
+export type SessionChangeDto = NonNullable<SessionDetailDto["change"]>;
+export type ChangeDiffDto = Outputs["changes"]["diff"];
+export type ChangedFileDto = ChangeDiffDto["files"][number];
+export type OpenReviewDto = Outputs["changes"]["openReview"];
+export type ReviewSliceDto = OpenReviewDto["slice"];
+export type ReviewDiffDto = Outputs["changes"]["reviewDiff"];
+export type ReviewDiffFileDto = ReviewDiffDto["files"][number];
+export type ReviewDiffHunkDto = ReviewDiffFileDto["hunks"][number];
+export type ReviewCommentDto = Outputs["changes"]["comments"][number];
+export type ReviewCommentAnchorDto = NonNullable<ReviewCommentDto["anchor"]>;
+export type RecordLinkDto = ReviewCommentDto["evidence"][number];
+export type ChangeTourDto = NonNullable<Outputs["changes"]["tour"]>;
+export type TourStopDto = ChangeTourDto["stops"][number];
+export type ChangePassDto = Outputs["changes"]["passes"][number];
+export type FollowUpDto = NonNullable<Outputs["sessions"]["pendingFollowUp"]>;
 
-export interface LossReportDto {
-  readonly complete: boolean;
-  readonly spans: ReadonlyArray<{
-    readonly fromSequence: string | null;
-    readonly toSequence: string | null;
-  }>;
-}
+export type SettingsDto = Omit<Outputs["settings"]["get"], "workspaceImage"> & {
+  readonly workspaceImage: WorkspaceImageDto;
+};
+export type WorkspaceEnvironmentSaveResultDto = Omit<
+  Outputs["settings"]["saveWorkspaceEnvironment"],
+  "settings"
+> & { readonly settings: SettingsDto };
+export type WorkspacePackageResolutionDto =
+  WorkspaceEnvironmentSaveResultDto["resolutions"][number];
+export type ProjectWorkspaceImageSaveResultDto = Outputs["projects"]["setWorkspaceImage"];
+export type DotfilesDto = Omit<Outputs["settings"]["dotfiles"], "repository"> & {
+  readonly repository: DotfilesRepositoryDto | null;
+};
+export type DotfilesRepositoryDto = NonNullable<DotfilesRepositoryRequest["repository"]>;
+export type DotfilesSnapshotDto = NonNullable<DotfilesDto["snapshot"]>;
+export type ProjectHotSessionsStatusDto = Outputs["projects"]["hotSessionsStatus"];
+export type HostEnvironmentSuggestionsDto = Outputs["settings"]["environmentSuggestions"];
 
-export interface RunDetailDto {
-  readonly run: RunDto;
-  readonly commands: ReadonlyArray<RunCommandDto>;
-  readonly transcript: string | null;
-  readonly loss: LossReportDto | null;
-  readonly recordError: string | null;
-}
+export type GitKeyDto = Outputs["git"]["key"];
+export type GitBridgeStatusDto = Outputs["git"]["bridgeStatus"];
+export type ReferenceDto = Outputs["git"]["references"][number];
+export type ProjectMountDto = Outputs["projects"]["mounts"][number];
 
-export interface TraceEntryDto {
-  readonly sequence: string;
-  readonly occurredAt: string;
-  readonly kind: string;
-  readonly summary: string;
-  readonly processId: string | null;
-}
+export type SessionProcessDto = Outputs["sessions"]["processes"][number];
+export type ServiceRecipeDto = Outputs["projects"]["recipes"][number];
+export type ServiceViewDto = Outputs["services"]["list"][number];
+export type StableServiceDto = ServiceViewDto["service"];
+export type ServiceForwardDto = NonNullable<ServiceViewDto["currentForward"]>;
+export type ServiceObservationDto = NonNullable<ServiceViewDto["latestObservation"]>;
+export type ServiceEndpointDto = ServiceViewDto["endpoints"][number];
+export type SessionTranscriptDto = Outputs["sessions"]["transcript"];
+export type TranscriptEventDto = SessionTranscriptDto["events"][number];
 
-export interface TracePageDto {
-  readonly entries: ReadonlyArray<TraceEntryDto>;
-  readonly nextFrom: string | null;
-}
+export type DeviceDto = Outputs["devices"]["list"][number];
+export type PairingDto = Outputs["devices"]["createPairing"];
 
-export interface RunSourceDto {
-  readonly host: string;
-  readonly method: string | null;
-  readonly path: string | null;
-  readonly status: number | null;
-  readonly count: number;
-  readonly firstSequence: string;
-}
-
-export interface SealantConnectionDto {
-  readonly status: "connected" | "unauthorized" | "mismatched" | "unreachable";
-  readonly baseUrl: string;
-  readonly detail: string | null;
-  readonly checkedAt: string;
-}
-
-/** The SSE payloads from /api/events — pointers, never data. */
+/** The SSE payloads from /api/events — pointers, never data (outside the typed contract). */
 export type MendEventDto =
   | { readonly type: "issue"; readonly issueId: string }
   | { readonly type: "run"; readonly runId: string; readonly issueId: string }
@@ -116,356 +143,288 @@ export type MendEventDto =
   | { readonly type: "brief"; readonly changeId: string; readonly issueId: string }
   | { readonly type: "brief-comment"; readonly briefId: string; readonly issueId: string };
 
-// ─── The brief (M2): sequences ride the wire as decimal strings ─────────────
-
-export type DispositionDto = "direct-evidence" | "not-executed" | "unrelated-change";
-
-export interface EvidencePointerDto {
-  readonly runId: string;
-  readonly sequence: string;
-  readonly excerpt: string;
+/** A workbench SSE event — pointers only; clients re-read through the API. */
+export interface WorkbenchEventDto {
+  readonly type: string;
+  readonly projectId?: string;
+  readonly sessionId?: string;
+  readonly changeId?: string;
+  readonly sequence?: string;
+  readonly line?: string;
 }
 
-export interface BriefQuestionDto {
-  readonly index: number;
-  readonly question: string;
-  readonly disposition: DispositionDto;
-  readonly evidence: ReadonlyArray<EvidencePointerDto>;
-}
+// ─── Queue-era surface ──────────────────────────────────────────────────────
 
-export interface BriefCalloutDto {
-  readonly severity: "not-executed" | "unrelated-change";
-  readonly text: string;
-  readonly evidence: ReadonlyArray<EvidencePointerDto>;
-}
-
-export interface BriefEvidenceSourceDto {
-  readonly source: string;
-  readonly established: string;
-  readonly pointers: ReadonlyArray<EvidencePointerDto>;
-}
-
-export interface BriefDocumentDto {
-  readonly header: {
-    readonly repository: string;
-    readonly prRef: string | null;
-    readonly issueRef: string;
-    readonly checksCount: number | null;
-    readonly headSha: string | null;
-    readonly freshness: "current" | "stale";
-  };
-  readonly causalProof: {
-    readonly baseFails: EvidencePointerDto | null;
-    readonly headPasses: EvidencePointerDto | null;
-    readonly revertFails: EvidencePointerDto | null;
-  };
-  readonly issueRestated: string;
-  readonly reproduction: string | null;
-  readonly whatWasDone: string;
-  readonly statusNow: string;
-  readonly monoFacts: string;
-  readonly questions: ReadonlyArray<BriefQuestionDto>;
-  readonly attention: ReadonlyArray<BriefCalloutDto>;
-  readonly evidenceUsed: ReadonlyArray<BriefEvidenceSourceDto>;
-}
-
-export interface BriefDto {
-  readonly id: string;
-  readonly changeId: string;
-  readonly currentVersion: number;
-  readonly document: BriefDocumentDto;
-  readonly createdAt: string;
-  readonly updatedAt: string;
-}
-
-export interface ChangeDto {
-  readonly id: string;
-  readonly issueId: string;
-  readonly branch: string;
-  readonly baseSha: string | null;
-  readonly headSha: string | null;
-  readonly prNumber: number | null;
-  readonly prUrl: string | null;
-  readonly freshness: "current" | "stale";
-}
-
-export interface BriefDetailDto {
-  readonly brief: BriefDto;
-  readonly change: ChangeDto;
-}
-
-export type RoutedActionDto = "follow-up-run" | "verification-run" | "question-back";
-
-export interface BriefCommentDto {
-  readonly id: string;
-  readonly briefId: string;
-  readonly thread: string;
-  readonly authorKind: "reviewer" | "mend";
-  readonly authorName: string;
-  readonly body: string;
-  readonly routedAction: RoutedActionDto | null;
-  readonly routedRunId: string | null;
-  readonly createdAt: string;
-}
-
-export interface BriefVersionDto {
-  readonly briefId: string;
-  readonly version: number;
-  readonly document: BriefDocumentDto;
-  readonly createdAt: string;
-}
-
-async function request<A>(path: string, init?: RequestInit): Promise<A> {
-  const response = await fetch(path, { credentials: "include", ...init });
-  if (response.status === 401) throw redirect({ to: "/login" });
-  if (!response.ok)
-    throw new Error(`${init?.method ?? "GET"} ${path} responded ${response.status}`);
-  const body: A = await response.json();
-  return body;
-}
-
-const post = <A>(path: string, payload: unknown) =>
-  request<A>(path, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-
-export const listIssues = () => request<ReadonlyArray<IssueDto>>("/api/issues");
-
-export const issueDetail = (id: string) => request<IssueDetailDto>(`/api/issues/${id}`);
-
-export const runDetail = (id: string) => request<RunDetailDto>(`/api/runs/${id}`);
-
-/** One page of the full trace; pass `from` to resume where the last page ended. */
+export const listIssues = () => orLogin(trpc.queue.listIssues.query());
+export const issueDetail = (id: string) => orLogin(trpc.queue.issueDetail.query({ id }));
+export const runDetail = (id: string) => orLogin(trpc.queue.runDetail.query({ id }));
 export const runTrace = (id: string, from?: string) =>
-  request<TracePageDto>(`/api/runs/${id}/trace${from === undefined ? "" : `?from=${from}`}`);
-
-export const runSources = (id: string) =>
-  request<ReadonlyArray<RunSourceDto>>(`/api/runs/${id}/sources`);
-
-/** The issue's living brief — null while no brief exists yet (404 is a state, not an error). */
-export const briefByIssue = async (issueId: string): Promise<BriefDetailDto | null> => {
-  const response = await fetch(`/api/issues/${issueId}/brief`, { credentials: "include" });
-  if (response.status === 401) throw redirect({ to: "/login" });
-  if (response.status === 404) return null;
-  if (!response.ok)
-    throw new Error(`GET /api/issues/${issueId}/brief responded ${response.status}`);
-  const body: BriefDetailDto = await response.json();
-  return body;
-};
-
+  orLogin(trpc.queue.runTrace.query({ id, ...(from === undefined ? {} : { from }) }));
+export const runSources = (id: string) => orLogin(trpc.queue.runSources.query({ id }));
+export const briefByIssue = (issueId: string) =>
+  orLogin(trpc.queue.briefByIssue.query({ issueId }));
 export const listBriefComments = (issueId: string) =>
-  request<ReadonlyArray<BriefCommentDto>>(`/api/issues/${issueId}/brief/comments`);
-
-/** Posting a comment is Gate-free — Mend reads it and routes the next action. */
+  orLogin(trpc.queue.listBriefComments.query({ issueId }));
 export const postBriefComment = (issueId: string, thread: string, body: string) =>
-  post<BriefCommentDto>(`/api/issues/${issueId}/brief/comments`, { thread, body });
-
+  orLogin(trpc.queue.postBriefComment.mutate({ issueId, thread, body }));
 export const briefVersions = (issueId: string) =>
-  request<ReadonlyArray<BriefVersionDto>>(`/api/issues/${issueId}/brief/versions`);
-
+  orLogin(trpc.queue.briefVersions.query({ issueId }));
 export const createIssue = (input: {
   readonly repository: string;
   readonly title: string;
   readonly body: string;
-}) => post<IssueDto>("/api/issues", { source: "manual", externalRef: null, ...input });
-
-/** Gate 1 — the drag. `position` is the target index within queued; null appends. */
+}) => orLogin(trpc.queue.createIssue.mutate(input));
 export const moveIssue = (id: string, stage: "triage" | "queued", position: number | null) =>
-  post<IssueDto>(`/api/issues/${id}/move`, { stage, position });
+  orLogin(trpc.queue.moveIssue.mutate({ id, stage, position }));
 
-export const sealantConnection = () => request<SealantConnectionDto>("/api/sealant/connection");
+// ─── Platform · identity · machine ──────────────────────────────────────────
 
-export type ConnectedAccountProviderDto = "claude" | "codex" | "github";
-
-/** A connected account as the platform reports it — never carries the secret. */
-export interface ConnectedAccountDto {
-  readonly id: string;
-  readonly provider: ConnectedAccountProviderDto;
-  readonly name: string;
-  readonly kind: string;
-  readonly status: "active" | "invalid" | "archived";
-  readonly metadata: Readonly<Record<string, unknown>>;
-  readonly connectedAt: string;
-  readonly updatedAt: string;
-  readonly lastUsedAt: string | null;
-}
-
-/** The signed-in user's platform identity: their own Sealant user and its accounts. */
-export interface SealantIdentityDto {
-  readonly sealantUserId: string;
-  readonly accounts: ReadonlyArray<ConnectedAccountDto>;
-}
-
-export const getSealantIdentity = () => request<SealantIdentityDto>("/api/me/sealant");
-
-/** Forwards the credential to the platform under the user's own identity; Mend keeps nothing. */
+export const sealantConnection = () => orLogin(trpc.platform.sealantConnection.query());
+export const getSealantIdentity = () => orLogin(trpc.platform.sealantIdentity.query());
 export const connectAccount = (input: {
   readonly provider: ConnectedAccountProviderDto;
   readonly secret: string;
-}) => postWithMessage<ConnectedAccountDto>("/api/me/sealant/accounts", input);
-
+}) => orLogin(trpc.platform.connectAccount.mutate(input));
 export const disconnectAccount = (id: string) =>
-  del<ConnectedAccountDto>(`/api/me/sealant/accounts/${id}`);
+  orLogin(trpc.platform.disconnectAccount.mutate({ id }));
+export const getMachine = () => orLogin(trpc.platform.machine.query());
 
-/** Like `post`, but surfaces the server's own sentence on a 4xx — the provider's verdict. */
-async function postWithMessage<A>(path: string, payload: unknown): Promise<A> {
-  const response = await fetch(path, {
-    method: "POST",
-    credentials: "include",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (response.status === 401) throw redirect({ to: "/login" });
-  if (!response.ok) {
-    let message = `POST ${path} responded ${response.status}`;
-    try {
-      const body: { readonly message?: unknown } = await response.json();
-      if (typeof body.message === "string") message = body.message;
-    } catch {
-      // not JSON — keep the status line
-    }
-    throw new Error(message);
-  }
-  const body: A = await response.json();
-  return body;
+// ─── Projects ───────────────────────────────────────────────────────────────
+
+export const listProjects = (): Promise<ReadonlyArray<ProjectDto>> =>
+  orLogin(trpc.projects.list.query()) as Promise<ReadonlyArray<ProjectDto>>;
+export const projectDetail = (id: string): Promise<ProjectDetailDto> =>
+  orLogin(trpc.projects.detail.query({ id })) as Promise<ProjectDetailDto>;
+export const adoptProject = (
+  name: string,
+  source: string,
+  gitAuthMode?: GitAuthModeDto,
+): Promise<ProjectDto> =>
+  orLogin(
+    trpc.projects.adopt.mutate({
+      name,
+      source,
+      ...(gitAuthMode === undefined ? {} : { gitAuthMode }),
+    }),
+  ) as Promise<ProjectDto>;
+export const removeProject = (id: string) => orLogin(trpc.projects.remove.mutate({ id }));
+export const setProjectAutomation = (
+  projectId: string,
+  choices: {
+    readonly autoTour: AutomationChoiceDto;
+    readonly autoSuggest: AutomationChoiceDto;
+    readonly autoName: AutomationChoiceDto;
+  },
+): Promise<ProjectDto> =>
+  orLogin(trpc.projects.setAutomation.mutate({ projectId, ...choices })) as Promise<ProjectDto>;
+export const setProjectWorkspaceImage = (
+  projectId: string,
+  workspaceImage: WorkspaceImageDto | null,
+) => orLogin(trpc.projects.setWorkspaceImage.mutate({ projectId, workspaceImage }));
+export const setProjectApplyDotfiles = (
+  projectId: string,
+  applyDotfiles: boolean,
+): Promise<ProjectDto> =>
+  orLogin(
+    trpc.projects.setApplyDotfiles.mutate({ projectId, applyDotfiles }),
+  ) as Promise<ProjectDto>;
+export const setProjectGitAuth = (
+  projectId: string,
+  gitAuthMode: GitAuthModeDto,
+): Promise<ProjectDto> =>
+  orLogin(trpc.projects.setGitAuth.mutate({ projectId, gitAuthMode })) as Promise<ProjectDto>;
+export const setProjectHotSessions = (
+  projectId: string,
+  hotSessions: number,
+): Promise<ProjectDto> =>
+  orLogin(trpc.projects.setHotSessions.mutate({ projectId, hotSessions })) as Promise<ProjectDto>;
+export const projectHotSessionsStatus = (projectId: string) =>
+  orLogin(trpc.projects.hotSessionsStatus.query({ projectId }));
+export const projectReferences = (projectId: string) =>
+  orLogin(trpc.projects.references.query({ projectId }));
+export const selectProjectReferences = (projectId: string, referenceIds: ReadonlyArray<string>) =>
+  orLogin(trpc.projects.selectReferences.mutate({ projectId, referenceIds }));
+export const projectMounts = (projectId: string) =>
+  orLogin(trpc.projects.mounts.query({ projectId }));
+export const addProjectMount = (
+  projectId: string,
+  input: { readonly name: string; readonly hostPath: string; readonly readOnly: boolean },
+) => orLogin(trpc.projects.addMount.mutate({ projectId, ...input }));
+export const removeProjectMount = async (projectId: string, mountId: string): Promise<void> => {
+  await orLogin(trpc.projects.removeMount.mutate({ projectId, mountId }));
+};
+export const projectRecipes = (projectId: string) =>
+  orLogin(trpc.projects.recipes.query({ projectId }));
+export const addProjectRecipe = (
+  projectId: string,
+  input: {
+    readonly name: string;
+    readonly command: string | null;
+    readonly port: number;
+    readonly protocol: "tcp" | "udp";
+    readonly browserScheme: "http" | "https" | null;
+  },
+) => orLogin(trpc.projects.addRecipe.mutate({ projectId, ...input }));
+export const removeProjectRecipe = async (projectId: string, name: string): Promise<void> => {
+  await orLogin(trpc.projects.removeRecipe.mutate({ projectId, name }));
+};
+
+// ─── References · git keys ──────────────────────────────────────────────────
+
+export const listReferences = () => orLogin(trpc.git.references.query());
+export const addReference = (name: string, source: string, ref: string | null) =>
+  orLogin(trpc.git.addReference.mutate({ name, source, ref }));
+export const removeReference = async (id: string): Promise<void> => {
+  await orLogin(trpc.git.removeReference.mutate({ id }));
+};
+export const refreshReference = (id: string) => orLogin(trpc.git.refreshReference.mutate({ id }));
+export const gitKey = () => orLogin(trpc.git.key.query());
+export const initGitKey = () => orLogin(trpc.git.initKey.mutate());
+export const gitBridgeStatus = () => orLogin(trpc.git.bridgeStatus.query());
+
+// ─── Sessions · processes · services ────────────────────────────────────────
+
+export const listActiveSessions = () => orLogin(trpc.sessions.listActive.query());
+export const sessionDetail = (id: string) => orLogin(trpc.sessions.detail.query({ id }));
+export const createSession = (projectId: string, harness: string, base: string | null = null) =>
+  orLogin(trpc.sessions.create.mutate({ projectId, harness, base }));
+export const launchSession = (id: string, argv: ReadonlyArray<string>) =>
+  orLogin(trpc.sessions.launch.mutate({ id, body: { argv } }));
+
+/** A composed start — the server turns this into the harness's own argv. */
+export interface LaunchStartDto {
+  readonly prompt?: string;
+  readonly model?: string;
+  readonly effort?: string;
+  readonly permissionMode?: string;
+  readonly speed?: string;
 }
-
-/** The machine Mend runs on — hostname · platform, and whether a tailnet address is bound. */
-export interface MachineDto {
-  readonly hostname: string;
-  readonly platform: string;
-  readonly tailnet: {
-    readonly status: "reachable" | "not-detected";
-    readonly address: string | null;
-  };
-}
-
-export const getMachine = () => request<MachineDto>("/api/machine");
-
-// ─── Workbench (MEND-AGENT-WORKBENCH-PLAN.md §5–§7) ─────────────────────────
-
-export type SessionStatusDto =
-  | "starting"
-  | "running"
-  | "waiting"
-  | "idle"
-  | "completed"
-  | "failed"
-  | "stopped";
-
-/** A project's stance on one review-automation switch; inherit follows Settings. */
-export type AutomationChoiceDto = "inherit" | "on" | "off";
-
-/** How host-side git reaches the project's remote (docs/GIT-ACCESS.md). */
-export type GitAuthModeDto = "ambient" | "mend-key" | "bridge";
-
-export interface ProjectDto {
-  readonly id: string;
-  readonly name: string;
-  readonly originUrl: string | null;
-  readonly storePath: string;
-  readonly defaultBranch: string;
-  readonly adoptedSha: string | null;
-  readonly autoTour: AutomationChoiceDto;
-  readonly autoSuggest: AutomationChoiceDto;
-  readonly autoName: AutomationChoiceDto;
-  readonly gitAuthMode: GitAuthModeDto;
-  readonly workspaceImage: WorkspaceImageDto | null;
-  readonly applyDotfiles: boolean;
-  readonly hotSessions: number;
-  readonly createdAt: string;
-}
-
-export interface SessionDto {
-  readonly id: string;
-  readonly projectId: string;
-  readonly harness: string;
-  readonly label: string | null;
-  readonly worktree: string;
-  readonly branch: string;
-  readonly baseSha: string;
-  readonly sealantRunId: string | null;
-  readonly sealantSessionId: string | null;
-  readonly status: SessionStatusDto;
-  readonly summary: string | null;
-  readonly startedAt: string | null;
-  readonly settledAt: string | null;
-  readonly createdAt: string;
-}
-
-/** List decoration for one session — DB-cheap review facts, no git involved. */
-export interface SessionAnnotationDto {
-  readonly sessionId: string;
-  readonly changeId: string | null;
-  readonly openComments: number;
-  readonly totalComments: number;
-  readonly pendingFollowUp: boolean;
-  /** The session's current agent process; null before the first launch. */
-  readonly currentAgent: SessionProcessDto | null;
-}
-
-export interface ProjectDetailDto {
-  readonly project: ProjectDto;
-  readonly sessions: ReadonlyArray<SessionDto>;
-  readonly annotations: ReadonlyArray<SessionAnnotationDto>;
-}
-
-/** Diff stats without the diff — cheap enough for a visible list row. */
-export interface ChangeStatsDto {
-  readonly files: number;
-  readonly additions: number;
-  readonly deletions: number;
-}
-
-export const changeStats = (id: string) => request<ChangeStatsDto>(`/api/changes/${id}/stats`);
-
-/** The outcome of a destructive removal — what went, what would not delete. */
-export interface RemovalReportDto {
-  readonly removed: boolean;
-  readonly leftover: string | null;
-}
-
-const del = <A>(path: string) => request<A>(path, { method: "DELETE" });
-
-/** Stops live sessions, deletes every row under the project, removes the store copy. */
-export const removeProject = (id: string) => del<RemovalReportDto>(`/api/projects/${id}`);
-
-/** Settled sessions only — a live one answers 409. Takes the worktree with it. */
-export const removeSession = (id: string) => del<RemovalReportDto>(`/api/sessions/${id}`);
-
+export const launchSessionStart = (id: string, start: LaunchStartDto) =>
+  orLogin(trpc.sessions.launch.mutate({ id, body: { ...start } }));
+export const stopSession = (id: string) => orLogin(trpc.sessions.stop.mutate({ id }));
+export const resumeSession = (id: string, harness: string | null) =>
+  orLogin(trpc.sessions.resume.mutate({ id, harness }));
+export const removeSession = (id: string) => orLogin(trpc.sessions.remove.mutate({ id }));
 export const setSessionLabel = (id: string, label: string | null) =>
-  post<SessionDto>(`/api/sessions/${id}/label`, { label });
+  orLogin(trpc.sessions.setLabel.mutate({ id, label }));
+export const checkpointSession = (id: string, trigger: "review-open" | "user-mark") =>
+  orLogin(trpc.sessions.checkpoint.mutate({ id, trigger }));
+export const sessionTranscript = (id: string) => orLogin(trpc.sessions.transcript.query({ id }));
+export const listSessionProcesses = (id: string) => orLogin(trpc.sessions.processes.query({ id }));
+export const listSessionRecipes = (id: string) => orLogin(trpc.sessions.recipes.query({ id }));
+export const pendingFollowUp = (sessionId: string) =>
+  orLogin(trpc.sessions.pendingFollowUp.query({ id: sessionId }));
 
-export interface CheckpointDto {
-  readonly id: string;
-  readonly sessionId: string;
-  readonly ref: string;
-  readonly sha: string;
-  readonly seq: string;
-  readonly trigger: string;
-  readonly createdAt: string;
+export interface DeliverFollowUpInput {
+  readonly reviewSliceId: string;
+  readonly checkpointAId: string;
+  readonly checkpointBId: string;
+  readonly diffDigest: string;
+  readonly commentIds: ReadonlyArray<string>;
+  readonly instruction: string;
+  readonly idempotencyKey: string;
 }
+export const deliverFollowUp = (sessionId: string, input: DeliverFollowUpInput) =>
+  orLogin(trpc.sessions.deliverFollowUp.mutate({ id: sessionId, request: input }));
 
-export interface SessionChangeDto {
-  readonly id: string;
-  readonly projectId: string;
-  readonly sessionId: string;
-  readonly branch: string;
-  readonly baseSha: string;
-  readonly headSha: string | null;
-}
+export const runServiceRecipe = (sessionId: string, name: string) =>
+  orLogin(trpc.sessions.runServiceRecipe.mutate({ sessionId, name }));
+export const runService = (
+  sessionId: string,
+  input: {
+    argv: ReadonlyArray<string>;
+    port: number;
+    name: string | null;
+    protocol?: "tcp" | "udp";
+    browserScheme?: "http" | "https" | null;
+  },
+) => orLogin(trpc.sessions.runService.mutate({ sessionId, ...input }));
+export const addService = (
+  sessionId: string,
+  input: {
+    port: number;
+    name: string | null;
+    protocol?: "tcp" | "udp";
+    browserScheme?: "http" | "https" | null;
+  },
+) => orLogin(trpc.sessions.addService.mutate({ sessionId, ...input }));
+export const listServices = (all = false) => orLogin(trpc.services.list.query({ all }));
+export const restartService = (id: string) => orLogin(trpc.services.restart.mutate({ id }));
+export const stopService = (id: string) => orLogin(trpc.services.stop.mutate({ id }));
 
-export interface SessionDetailDto {
-  readonly session: SessionDto;
-  readonly checkpoints: ReadonlyArray<CheckpointDto>;
-  readonly change: SessionChangeDto | null;
-  /** Every process the session has held, oldest first. */
-  readonly processes: ReadonlyArray<SessionProcessDto>;
-  /** The agent process "the session's agent" means right now; null before the first launch. */
-  readonly currentAgent: SessionProcessDto | null;
+// ─── Changes · review ───────────────────────────────────────────────────────
+
+export const changeStats = (id: string) => orLogin(trpc.changes.stats.query({ id }));
+export const changeDiff = (id: string) => orLogin(trpc.changes.diff.query({ id }));
+export const openReview = (id: string, idempotencyKey: string) =>
+  orLogin(trpc.changes.openReview.mutate({ id, idempotencyKey }));
+export const reviewDiff = (id: string, sliceId: string) =>
+  orLogin(trpc.changes.reviewDiff.query({ id, sliceId }));
+export const changeComments = (id: string) => orLogin(trpc.changes.comments.query({ id }));
+
+export interface SliceCommentTargetDto {
+  readonly oldPath: string | null;
+  readonly newPath: string | null;
+  readonly side: "old" | "new" | null;
+  readonly startLine: number | null;
+  readonly endLine: number | null;
+  readonly hunkContextHash: string | null;
 }
+export const postSliceReviewComment = (
+  changeId: string,
+  sliceId: string,
+  target: SliceCommentTargetDto,
+  body: string,
+) =>
+  orLogin(trpc.changes.postSliceComment.mutate({ changeId, sliceId, target: { ...target }, body }));
+export const setCommentState = (
+  changeId: string,
+  commentId: string,
+  state: "open" | "addressed" | "dismissed",
+) => orLogin(trpc.changes.setCommentState.mutate({ changeId, commentId, state }));
+export const changeTour = (changeId: string) => orLogin(trpc.changes.tour.query({ id: changeId }));
+export const changePasses = (changeId: string) =>
+  orLogin(trpc.changes.passes.query({ id: changeId }));
+export const readChange = (changeId: string) =>
+  orLogin(trpc.changes.queueRead.mutate({ id: changeId }));
+export const composeTour = (changeId: string) =>
+  orLogin(trpc.changes.queueTour.mutate({ id: changeId }));
+export const suggestChange = (changeId: string) =>
+  orLogin(trpc.changes.queueSuggest.mutate({ id: changeId }));
+
+// ─── Settings · dotfiles · devices ──────────────────────────────────────────
+
+export const getSettings = (): Promise<SettingsDto> =>
+  orLogin(trpc.settings.get.query()) as Promise<SettingsDto>;
+export const putSettings = (settings: SettingsDto) =>
+  orLogin(trpc.settings.put.mutate({ ...settings }));
+export const saveWorkspaceEnvironment = (
+  workspaceImage: WorkspaceImageDto,
+): Promise<WorkspaceEnvironmentSaveResultDto> =>
+  orLogin(
+    trpc.settings.saveWorkspaceEnvironment.mutate(workspaceImage),
+  ) as Promise<WorkspaceEnvironmentSaveResultDto>;
+export const scanHostEnvironment = () => orLogin(trpc.settings.environmentSuggestions.query());
+export const getDotfiles = (): Promise<DotfilesDto> =>
+  orLogin(trpc.settings.dotfiles.query()) as Promise<DotfilesDto>;
+export const putDotfilesRepository = (
+  repository: DotfilesRepositoryDto | null,
+): Promise<DotfilesDto> =>
+  orLogin(trpc.settings.putDotfilesRepository.mutate({ repository })) as Promise<DotfilesDto>;
+export const postDotfilesSnapshot = (payload: {
+  readonly files: ReadonlyArray<{ readonly path: string; readonly contentsBase64: string }>;
+  readonly source: string;
+  readonly merge: boolean;
+}): Promise<DotfilesDto> =>
+  orLogin(trpc.settings.postDotfilesSnapshot.mutate(payload)) as Promise<DotfilesDto>;
+export const deleteDotfilesSnapshot = (): Promise<DotfilesDto> =>
+  orLogin(trpc.settings.deleteDotfilesSnapshot.mutate()) as Promise<DotfilesDto>;
+
+export const listDevices = () => orLogin(trpc.devices.list.query());
+export const createPairing = () => orLogin(trpc.devices.createPairing.mutate());
+export const revokeDevice = (id: string) => orLogin(trpc.devices.revoke.mutate({ id }));
+
+// ─── Pure helpers (unchanged behavior) ──────────────────────────────────────
 
 /**
  * Whether the session's AGENT is live. Session status is a fold over every process — a session
@@ -486,745 +445,6 @@ export const agentIsLive = (session: SessionDto, currentAgent: SessionProcessDto
       (currentAgent.exitedAt === null &&
         (currentAgent.status === "starting" || currentAgent.status === "running"));
 
-export interface ChangedFileDto {
-  readonly path: string;
-  readonly additions: number;
-  readonly deletions: number;
-}
-
-export interface ChangeDiffDto {
-  readonly change: SessionChangeDto;
-  readonly diff: string;
-  readonly files: ReadonlyArray<ChangedFileDto>;
-}
-
-export interface ReviewSliceDto {
-  readonly id: string;
-  readonly changeId: string;
-  readonly checkpointAId: string;
-  readonly checkpointBId: string;
-  readonly diffDigest: string;
-  readonly createdAt: string;
-}
-
-export interface OpenReviewDto {
-  readonly slice: ReviewSliceDto;
-  readonly checkpointA: CheckpointDto;
-  readonly checkpointB: CheckpointDto;
-  readonly reused: boolean;
-}
-
-export interface ReviewDiffHunkDto {
-  readonly header: string;
-  readonly oldStart: number;
-  readonly oldLines: number;
-  readonly newStart: number;
-  readonly newLines: number;
-  readonly contextHash: string;
-  readonly patch: string;
-}
-
-export interface ReviewDiffFileDto {
-  readonly oldPath: string | null;
-  readonly newPath: string | null;
-  readonly status:
-    | "added"
-    | "modified"
-    | "deleted"
-    | "renamed"
-    | "copied"
-    | "type-changed"
-    | "unmerged"
-    | "unknown";
-  readonly additions: number;
-  readonly deletions: number;
-  readonly binary: boolean;
-  readonly patch: string;
-  readonly hunks: ReadonlyArray<ReviewDiffHunkDto>;
-}
-
-export interface ReviewDiffDto {
-  readonly change: SessionChangeDto;
-  readonly slice: ReviewSliceDto;
-  readonly checkpointA: CheckpointDto;
-  readonly checkpointB: CheckpointDto;
-  readonly patch: string;
-  readonly files: ReadonlyArray<ReviewDiffFileDto>;
-  readonly worktreeChangedSinceSnapshot: boolean;
-}
-
-/** A finding's link into the session record; sequence is a decimal string. */
-export interface RecordLinkDto {
-  readonly sealantRunId: string;
-  readonly sequence: string;
-  readonly excerpt: string;
-}
-
-export interface ReviewCommentAnchorDto {
-  readonly reviewSliceId: string;
-  readonly checkpointAId: string;
-  readonly checkpointBId: string;
-  readonly diffDigest: string;
-  readonly oldPath: string | null;
-  readonly newPath: string | null;
-  readonly side: "old" | "new" | null;
-  readonly startLine: number | null;
-  readonly endLine: number | null;
-  readonly hunkContextHash: string | null;
-  readonly mapping: "anchored" | "moved" | "not-found";
-}
-
-export interface ReviewCommentDto {
-  readonly id: string;
-  readonly changeId: string;
-  readonly file: string | null;
-  readonly line: number | null;
-  readonly endLine: number | null;
-  /** Null marks a comment created by the retired live-diff contract. */
-  readonly anchor: ReviewCommentAnchorDto | null;
-  readonly authorKind: "reviewer" | "mend";
-  readonly authorName: string;
-  readonly body: string;
-  /** `suggestion` carries a concrete replacement for the anchored lines. */
-  readonly kind: "note" | "suggestion";
-  readonly suggestion: string | null;
-  readonly state: "draft" | "open" | "addressed" | "dismissed";
-  readonly evidence: ReadonlyArray<RecordLinkDto>;
-  readonly sentToSessionId: string | null;
-  readonly createdAt: string;
-}
-
-/** Queue the machine pass; findings arrive as draft comments over SSE. */
-export const readChange = (changeId: string) =>
-  post<{ readonly queued: boolean }>(`/api/changes/${changeId}/read`, {});
-
-/** One stop of the composed review tour. */
-export interface TourStopDto {
-  readonly title: string;
-  readonly file: string | null;
-  readonly line: number | null;
-  readonly endLine: number | null;
-  readonly narration: string;
-  readonly evidence: ReadonlyArray<RecordLinkDto>;
-  readonly grounded: boolean;
-}
-
-/** Mend's composed guided walkthrough of a change. */
-export interface ChangeTourDto {
-  readonly id: string;
-  readonly changeId: string;
-  readonly sessionId: string;
-  readonly summary: string;
-  readonly approach: string | null;
-  readonly stops: ReadonlyArray<TourStopDto>;
-  readonly diffDigest: string;
-  readonly createdAt: string;
-}
-
-export const changeTour = (changeId: string) =>
-  request<ChangeTourDto | null>(`/api/changes/${changeId}/tour`);
-
-/** Queue tour composition; the tour arrives over SSE when written. */
-export const composeTour = (changeId: string) =>
-  post<{ readonly queued: boolean }>(`/api/changes/${changeId}/tour`, {});
-
-/** Queue the suggestion pass; suggestions land as draft comments over SSE. */
-export const suggestChange = (changeId: string) =>
-  post<{ readonly queued: boolean }>(`/api/changes/${changeId}/suggest`, {});
-
-/**
- * A machine pass's recorded outcome: what ran over this change and what came
- * of it. Zero findings on a completed pass is an outcome, not an absence.
- */
-export interface ChangePassDto {
-  readonly changeId: string;
-  readonly kind: "tour" | "read" | "suggest";
-  readonly status: "running" | "completed" | "failed";
-  readonly detail: string | null;
-  readonly findings: number | null;
-  readonly startedAt: string;
-  readonly finishedAt: string | null;
-}
-
-export const changePasses = (changeId: string) =>
-  request<ReadonlyArray<ChangePassDto>>(`/api/changes/${changeId}/passes`);
-
-/** The workspace image: a managed OS family, or a custom base with exactly three knobs. */
-export type WorkspaceImageDto =
-  | {
-      readonly mode: "family";
-      readonly os: "fedora" | "arch" | "nix" | "ubuntu";
-      readonly packages: ReadonlyArray<string>;
-      readonly shell: "bash" | "zsh" | "fish";
-      readonly services: { readonly docker: boolean };
-    }
-  | {
-      readonly mode: "custom";
-      readonly baseImage: string;
-      readonly packages: ReadonlyArray<string>;
-      readonly setupCommands: ReadonlyArray<string>;
-      readonly services: { readonly docker: boolean };
-    };
-
-/** The user's dotfiles repository knob — cloned by the server at every launch. */
-export interface DotfilesRepositoryDto {
-  readonly url: string;
-  readonly ref: string | null;
-  /** Null archives the repo root; otherwise the archive is re-rooted at this directory. */
-  readonly subdirectory: string | null;
-  readonly manager: "auto" | "chezmoi" | "stow" | "copy";
-  readonly bootstrap: boolean;
-}
-
-/** The current snapshot in the user's dotfiles store — an exact commit, source machine recorded. */
-export interface DotfilesSnapshotDto {
-  readonly sha: string;
-  readonly source: string;
-  readonly committedAt: string;
-  readonly files: ReadonlyArray<{ readonly path: string; readonly bytes: number }>;
-}
-
-/** The current user's dotfiles. Per-account: dotfiles are identity, not instance settings. */
-export interface DotfilesDto {
-  readonly repository: DotfilesRepositoryDto | null;
-  readonly snapshot: DotfilesSnapshotDto | null;
-}
-
-/** Product settings, one document; PUT replaces it (edit what GET returned). */
-export interface SettingsDto {
-  readonly prMode: "draft-immediately" | "pr-on-approval";
-  readonly concurrency: number;
-  readonly autoTour: boolean;
-  readonly autoSuggest: boolean;
-  readonly autoName: boolean;
-  readonly workspaceImage: WorkspaceImageDto;
-}
-
-export interface WorkspacePackageResolutionDto {
-  readonly requested: string;
-  readonly normalized: string;
-  readonly status: "resolved" | "ambiguous" | "unsupported" | "not-found" | "invalid";
-  readonly canonicalId: string | null;
-  readonly supported: boolean;
-  readonly packageName: string | null;
-  readonly alternatives: ReadonlyArray<string>;
-}
-
-export interface WorkspaceEnvironmentSaveResultDto {
-  readonly saved: boolean;
-  readonly settings: SettingsDto;
-  readonly resolutions: ReadonlyArray<WorkspacePackageResolutionDto>;
-}
-
-export interface HostEnvironmentSuggestionsDto {
-  readonly tools: ReadonlyArray<{
-    readonly executable: string;
-    readonly kind: "package" | "service";
-    readonly id: string;
-  }>;
-  readonly configs: ReadonlyArray<{ readonly label: string; readonly path: string }>;
-}
-
-export const getSettings = () => request<SettingsDto>("/api/settings");
-
-export const putSettings = (settings: SettingsDto) =>
-  request<SettingsDto>("/api/settings", {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(settings),
-  });
-
-export const saveWorkspaceEnvironment = (workspaceImage: SettingsDto["workspaceImage"]) =>
-  request<WorkspaceEnvironmentSaveResultDto>("/api/settings/workspace-environment", {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(workspaceImage),
-  });
-
-export const scanHostEnvironment = () =>
-  request<HostEnvironmentSuggestionsDto>("/api/settings/environment-suggestions");
-
-export const getDotfiles = () => request<DotfilesDto>("/api/dotfiles");
-
-export const putDotfilesRepository = (repository: DotfilesRepositoryDto | null) =>
-  request<DotfilesDto>("/api/dotfiles/repository", {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ repository }),
-  });
-
-export const postDotfilesSnapshot = (payload: {
-  readonly files: ReadonlyArray<{
-    readonly path: string;
-    readonly contentsBase64: string;
-  }>;
-  readonly source: string;
-  readonly merge: boolean;
-}) =>
-  request<DotfilesDto>("/api/dotfiles/snapshot", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-
-export const deleteDotfilesSnapshot = () =>
-  request<DotfilesDto>("/api/dotfiles/snapshot", { method: "DELETE" });
-
-/** The project's automation overrides, replaced together. */
-export const setProjectAutomation = (
-  projectId: string,
-  choices: {
-    readonly autoTour: AutomationChoiceDto;
-    readonly autoSuggest: AutomationChoiceDto;
-    readonly autoName: AutomationChoiceDto;
-  },
-) =>
-  request<ProjectDto>(`/api/projects/${projectId}/automation`, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(choices),
-  });
-
-export interface ProjectWorkspaceImageSaveResultDto {
-  readonly saved: boolean;
-  readonly project: ProjectDto | null;
-  readonly resolutions: ReadonlyArray<WorkspacePackageResolutionDto>;
-}
-
-/** The project's workspace-image override; null returns it to the Settings default. */
-export const setProjectWorkspaceImage = (
-  projectId: string,
-  workspaceImage: WorkspaceImageDto | null,
-) =>
-  request<ProjectWorkspaceImageSaveResultDto>(`/api/projects/${projectId}/workspace-image`, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ workspaceImage }),
-  });
-
-/** Whether sessions in this project receive the launching user's dotfiles. */
-export const setProjectApplyDotfiles = (projectId: string, applyDotfiles: boolean) =>
-  request<ProjectDto>(`/api/projects/${projectId}/apply-dotfiles`, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ applyDotfiles }),
-  });
-
-/** How many hot workspaces this project keeps ready for new sessions (0 = none). */
-export const setProjectHotSessions = (projectId: string, hotSessions: number) =>
-  request<ProjectDto>(`/api/projects/${projectId}/hot-sessions`, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ hotSessions }),
-  });
-
-/** Observed pool state: counts, plus the latest provisioning failure when one exists. */
-export interface ProjectHotSessionsStatusDto {
-  readonly hotSessions: number;
-  readonly ready: number;
-  readonly warming: number;
-  readonly failed: number;
-  readonly error: string | null;
-}
-
-export const projectHotSessionsStatus = (projectId: string) =>
-  request<ProjectHotSessionsStatusDto>(`/api/projects/${projectId}/hot-sessions`);
-
-/** A workbench SSE event — pointers only; clients re-read through the API. */
-export interface WorkbenchEventDto {
-  readonly type: string;
-  readonly projectId?: string;
-  readonly sessionId?: string;
-  readonly changeId?: string;
-  readonly sequence?: string;
-  readonly line?: string;
-}
-
-export const listProjects = () => request<ReadonlyArray<ProjectDto>>("/api/projects");
-
-export const projectDetail = (id: string) => request<ProjectDetailDto>(`/api/projects/${id}`);
-
-/** Adoption can fail for reasons worth reading (422 carries git's own words). */
-export const adoptProject = async (
-  name: string,
-  source: string,
-  gitAuthMode?: GitAuthModeDto,
-): Promise<ProjectDto> => {
-  const response = await fetch("/api/projects", {
-    method: "POST",
-    credentials: "include",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ name, source, ...(gitAuthMode === undefined ? {} : { gitAuthMode }) }),
-  });
-  if (response.status === 401) throw redirect({ to: "/login" });
-  if (!response.ok) {
-    const body: { readonly message?: string } = await response.json().catch(() => ({}));
-    throw new Error(body.message ?? `adoption failed (${response.status})`);
-  }
-  const body: ProjectDto = await response.json();
-  return body;
-};
-
-/** Switching to mend-key can fail readably (keygen refused on the host). */
-export const setProjectGitAuth = async (
-  projectId: string,
-  gitAuthMode: GitAuthModeDto,
-): Promise<ProjectDto> => {
-  const response = await fetch(`/api/projects/${projectId}/git-auth`, {
-    method: "PUT",
-    credentials: "include",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ gitAuthMode }),
-  });
-  if (response.status === 401) throw redirect({ to: "/login" });
-  if (!response.ok) {
-    const body: { readonly message?: string } = await response.json().catch(() => ({}));
-    throw new Error(body.message ?? `git auth change failed (${response.status})`);
-  }
-  const body: ProjectDto = await response.json();
-  return body;
-};
-
-/** The machine's Mend deploy key — public half only; the server never sends more. */
-export interface GitKeyDto {
-  readonly exists: boolean;
-  readonly publicKey: string | null;
-  readonly fingerprint: string | null;
-}
-
-export const gitKey = () => request<GitKeyDto>("/api/keys/git");
-
-/** The ssh-agent bridge as observed right now — presence, not a verdict. */
-export interface GitBridgeStatusDto {
-  readonly connected: boolean;
-  readonly clientName: string | null;
-  readonly since: string | null;
-}
-
-export const gitBridgeStatus = () => request<GitBridgeStatusDto>("/api/keys/bridge");
-
-/** Generate the machine key if missing; failure carries ssh-keygen's words. */
-export const initGitKey = async (): Promise<GitKeyDto> => {
-  const response = await fetch("/api/keys/git", { method: "POST", credentials: "include" });
-  if (response.status === 401) throw redirect({ to: "/login" });
-  if (!response.ok) {
-    const body: { readonly message?: string } = await response.json().catch(() => ({}));
-    throw new Error(body.message ?? `key generation failed (${response.status})`);
-  }
-  const body: GitKeyDto = await response.json();
-  return body;
-};
-
-export interface ReferenceDto {
-  readonly id: string;
-  readonly name: string;
-  readonly originUrl: string;
-  readonly path: string;
-  readonly pinnedRef: string | null;
-  readonly headSha: string | null;
-  readonly refreshedAt: string | null;
-  readonly createdAt: string;
-}
-
-export const listReferences = () => request<ReadonlyArray<ReferenceDto>>("/api/references");
-
-/** Cloning can fail for reasons worth reading (422 carries git's own words). */
-export const addReference = async (
-  name: string,
-  source: string,
-  ref: string | null,
-): Promise<ReferenceDto> => {
-  const response = await fetch("/api/references", {
-    method: "POST",
-    credentials: "include",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ name, source, ref }),
-  });
-  if (response.status === 401) throw redirect({ to: "/login" });
-  if (!response.ok) {
-    const body: { readonly message?: string } = await response.json().catch(() => ({}));
-    throw new Error(body.message ?? `clone failed (${response.status})`);
-  }
-  const body: ReferenceDto = await response.json();
-  return body;
-};
-
-/** 204 on success — no body to parse. */
-export const removeReference = async (id: string): Promise<void> => {
-  const response = await fetch(`/api/references/${id}`, {
-    method: "DELETE",
-    credentials: "include",
-  });
-  if (response.status === 401) throw redirect({ to: "/login" });
-  if (!response.ok) throw new Error(`DELETE /api/references/${id} responded ${response.status}`);
-};
-
-export const refreshReference = (id: string) =>
-  post<ReferenceDto>(`/api/references/${id}/refresh`, {});
-
-export const projectReferences = (projectId: string) =>
-  request<ReadonlyArray<ReferenceDto>>(`/api/projects/${projectId}/references`);
-
-/** Replace the project's selection as a set — what its next sessions will mount. */
-export const selectProjectReferences = (projectId: string, referenceIds: ReadonlyArray<string>) =>
-  request<ReadonlyArray<ReferenceDto>>(`/api/projects/${projectId}/references`, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ referenceIds }),
-  });
-
-export interface ProjectMountDto {
-  readonly id: string;
-  readonly projectId: string;
-  readonly name: string;
-  readonly hostPath: string;
-  readonly readOnly: boolean;
-  readonly createdAt: string;
-}
-
-export const projectMounts = (projectId: string) =>
-  request<ReadonlyArray<ProjectMountDto>>(`/api/projects/${projectId}/mounts`);
-
-/** Declaring a mount can fail for reasons worth reading (422 carries the check that refused). */
-export const addProjectMount = async (
-  projectId: string,
-  input: { readonly name: string; readonly hostPath: string; readonly readOnly: boolean },
-): Promise<ProjectMountDto> => {
-  const response = await fetch(`/api/projects/${projectId}/mounts`, {
-    method: "POST",
-    credentials: "include",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(input),
-  });
-  if (response.status === 401) throw redirect({ to: "/login" });
-  if (!response.ok) {
-    const body: { readonly message?: string } = await response.json().catch(() => ({}));
-    throw new Error(body.message ?? `mount failed (${response.status})`);
-  }
-  const body: ProjectMountDto = await response.json();
-  return body;
-};
-
-/** 204 on success — no body to parse. */
-export const removeProjectMount = async (projectId: string, mountId: string): Promise<void> => {
-  const response = await fetch(`/api/projects/${projectId}/mounts/${mountId}`, {
-    method: "DELETE",
-    credentials: "include",
-  });
-  if (response.status === 401) throw redirect({ to: "/login" });
-  if (!response.ok) throw new Error(`DELETE mount ${mountId} responded ${response.status}`);
-};
-
-export const listActiveSessions = () => request<ReadonlyArray<SessionDto>>("/api/sessions");
-
-export const sessionDetail = (id: string) => request<SessionDetailDto>(`/api/sessions/${id}`);
-
-export const createSession = (projectId: string, harness: string, base: string | null = null) =>
-  post<SessionDto>(`/api/projects/${projectId}/sessions`, { harness, label: null, base });
-
-/** Fire the supervised launch. Resolves when the workspace is ready (a first launch can take minutes). */
-export const launchSession = (id: string, argv: ReadonlyArray<string>) =>
-  post<SessionDto>(`/api/sessions/${id}/launch`, { argv });
-
-/** A composed start — the server turns this into the harness's own argv. */
-export interface LaunchStartDto {
-  readonly prompt?: string;
-  readonly model?: string;
-  readonly effort?: string;
-  readonly permissionMode?: string;
-  readonly speed?: string;
-}
-
-/** Launch with a structured start; the typed prompt opens the harness and seeds auto-naming. */
-export const launchSessionStart = (id: string, start: LaunchStartDto) =>
-  post<SessionDto>(`/api/sessions/${id}/launch`, start);
-
-export const stopSession = (id: string) => post<SessionDto>(`/api/sessions/${id}/stop`, {});
-
-/** Rejoin a settled session; harness null = the one it last ran with. */
-export const resumeSession = (id: string, harness: string | null) =>
-  post<SessionDto>(`/api/sessions/${id}/resume`, { harness });
-
-export const checkpointSession = (id: string, trigger: "review-open" | "user-mark") =>
-  post<CheckpointDto>(`/api/sessions/${id}/checkpoints`, { trigger });
-
-export const changeDiff = (id: string) => request<ChangeDiffDto>(`/api/changes/${id}/diff`);
-
-export const openReview = (id: string, idempotencyKey: string) =>
-  post<OpenReviewDto>(`/api/changes/${id}/reviews/open`, { idempotencyKey });
-
-export const reviewDiff = (id: string, sliceId: string) =>
-  request<ReviewDiffDto>(`/api/changes/${id}/reviews/${sliceId}/diff`);
-
-/** One workspace process — agent, shell, or Service (docs/SESSION-SERVICES.md). */
-export interface SessionProcessDto {
-  readonly id: string;
-  readonly sessionId: string;
-  readonly serviceId: string | null;
-  readonly attemptOrdinal: number | null;
-  /** `shell` · `agent-pty` · `agent-protocol` (reserved) · `service`. */
-  readonly kind: string;
-  /** The platform PTY id — the attach handle; null for adopted Services. */
-  readonly sealantSessionId: string | null;
-  /** Agent processes: the harness launched; null for shells and Services. */
-  readonly harness: string | null;
-  readonly label: string | null;
-  readonly argv: ReadonlyArray<string>;
-  readonly status: string;
-  readonly exitCode: number | null;
-  readonly workspacePort: number | null;
-  readonly protocol: "tcp" | "udp";
-  readonly hostPort: number | null;
-  readonly exitedAt: string | null;
-}
-
-/** A declared Service recipe from the worktree's mend.toml. */
-export interface ServiceRecipeDto {
-  readonly name: string;
-  readonly command: string | null;
-  readonly port: number;
-  readonly protocol: "tcp" | "udp";
-  readonly browserScheme: "http" | "https" | null;
-  readonly shadowedBy: "file" | "project" | null;
-  /** "file" = the repo's mend.toml (read-only here); "project" = declared on this machine. */
-  readonly source: "file" | "project";
-}
-
-export const projectRecipes = (projectId: string) =>
-  request<ReadonlyArray<ServiceRecipeDto>>(`/api/projects/${projectId}/service-recipes`);
-
-/** Declaring can be refused for readable reasons (name taken, bad port) — surface them. */
-export const addProjectRecipe = async (
-  projectId: string,
-  input: {
-    readonly name: string;
-    readonly command: string | null;
-    readonly port: number;
-    readonly protocol: "tcp" | "udp";
-    readonly browserScheme: "http" | "https" | null;
-  },
-): Promise<ServiceRecipeDto> => {
-  const response = await fetch(`/api/projects/${projectId}/service-recipes`, {
-    method: "POST",
-    credentials: "include",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(input),
-  });
-  if (response.status === 401) throw redirect({ to: "/login" });
-  if (!response.ok) {
-    const body: { readonly message?: string } = await response.json().catch(() => ({}));
-    throw new Error(body.message ?? `declare failed (${response.status})`);
-  }
-  const body: ServiceRecipeDto = await response.json();
-  return body;
-};
-
-/** 204 on success — no body to parse. */
-export const removeProjectRecipe = async (projectId: string, name: string): Promise<void> => {
-  const response = await fetch(
-    `/api/projects/${projectId}/service-recipes/${encodeURIComponent(name)}`,
-    { method: "DELETE", credentials: "include" },
-  );
-  if (response.status === 401) throw redirect({ to: "/login" });
-  if (!response.ok) throw new Error(`DELETE recipe ${name} responded ${response.status}`);
-};
-
-export const listSessionProcesses = (id: string) =>
-  request<ReadonlyArray<SessionProcessDto>>(`/api/sessions/${id}/processes`);
-
-export const listSessionRecipes = (id: string) =>
-  request<ReadonlyArray<ServiceRecipeDto>>(`/api/sessions/${id}/recipes`);
-
-export interface StableServiceDto {
-  readonly id: string;
-  readonly sessionId: string;
-  readonly name: string;
-  readonly declarationSource: string;
-  readonly workspacePort: number;
-  readonly transport: "tcp" | "udp";
-  readonly browserScheme: "http" | "https" | null;
-  readonly preferredHostPort: number | null;
-  readonly currentAttemptId: string | null;
-  readonly currentForwardId: string | null;
-  readonly attemptHistoryComplete: boolean;
-  readonly forwardHistoryComplete: boolean;
-  readonly observationHistoryComplete: boolean;
-}
-
-export interface ServiceForwardDto {
-  readonly id: string;
-  readonly serviceId: string;
-  readonly hostPort: number | null;
-  readonly state: "binding" | "bound" | "closed" | "failed";
-  readonly boundAddresses: ReadonlyArray<string> | null;
-  readonly error: string | null;
-}
-
-export interface ServiceObservationDto {
-  readonly id: string;
-  readonly forwardId: string;
-  readonly state: "reachable" | "unreachable";
-  readonly source: "probe" | "connection" | "udp-reply" | "legacy";
-  readonly error: string | null;
-  readonly lastObservedAt: string;
-}
-
-export interface ServiceEndpointDto {
-  readonly address: string;
-  readonly authority: string;
-  readonly hostPort: number;
-  readonly transport: "tcp" | "udp";
-  readonly scope: "loopback" | "private";
-  readonly browserUrl: string | null;
-  readonly mendAuthentication: "none";
-}
-
-export interface ServiceViewDto {
-  readonly service: StableServiceDto;
-  readonly attempts: ReadonlyArray<SessionProcessDto>;
-  readonly currentForward: ServiceForwardDto | null;
-  readonly previousForward: ServiceForwardDto | null;
-  readonly latestObservation: ServiceObservationDto | null;
-  readonly workspaceExpiresAt: string | null;
-  readonly workspaceTtlRenewedAt: string | null;
-  readonly workspaceTtlRenewalFailedAt: string | null;
-  readonly workspaceTtlRenewalError: string | null;
-  readonly endpoints: ReadonlyArray<ServiceEndpointDto>;
-  readonly previousEndpoints: ReadonlyArray<ServiceEndpointDto>;
-}
-
-export const listServices = (all = false) =>
-  request<ReadonlyArray<ServiceViewDto>>(`/api/services${all ? "?all=1" : ""}`);
-
-export const runServiceRecipe = (sessionId: string, name: string) =>
-  post<ServiceViewDto>(`/api/sessions/${sessionId}/services/recipe`, { name });
-
-export const runService = (
-  sessionId: string,
-  input: {
-    argv: ReadonlyArray<string>;
-    port: number;
-    name: string | null;
-    protocol?: "tcp" | "udp";
-    browserScheme?: "http" | "https" | null;
-  },
-) => post<ServiceViewDto>(`/api/sessions/${sessionId}/services/run`, input);
-
-export const addService = (
-  sessionId: string,
-  input: {
-    port: number;
-    name: string | null;
-    protocol?: "tcp" | "udp";
-    browserScheme?: "http" | "https" | null;
-  },
-) => post<ServiceViewDto>(`/api/sessions/${sessionId}/services`, input);
-
-export const restartService = (id: string) =>
-  post<ServiceViewDto>(`/api/services/${id}/restart`, {});
-
-export const stopService = (id: string) => post<ServiceViewDto>(`/api/services/${id}/stop`, {});
-
 const preferredEndpoint = (view: ServiceViewDto): ServiceEndpointDto | null =>
   view.endpoints.find((endpoint) => endpoint.scope === "private") ?? view.endpoints[0] ?? null;
 
@@ -1234,91 +454,6 @@ export const serviceUrl = (view: ServiceViewDto) =>
 
 /** What a client would connect to, exactly as the server bound it. */
 export const serviceEndpoint = (view: ServiceViewDto) => preferredEndpoint(view)?.authority ?? null;
-
-export const changeComments = (id: string) =>
-  request<ReadonlyArray<ReviewCommentDto>>(`/api/changes/${id}/comments`);
-
-export interface SliceCommentTargetDto {
-  readonly oldPath: string | null;
-  readonly newPath: string | null;
-  readonly side: "old" | "new" | null;
-  readonly startLine: number | null;
-  readonly endLine: number | null;
-  readonly hunkContextHash: string | null;
-}
-
-export const postSliceReviewComment = (
-  changeId: string,
-  sliceId: string,
-  target: SliceCommentTargetDto,
-  body: string,
-) =>
-  post<ReviewCommentDto>(`/api/changes/${changeId}/reviews/${sliceId}/comments`, {
-    target,
-    body,
-  });
-
-export interface FollowUpDto {
-  readonly id: string;
-  readonly sessionId: string;
-  readonly changeId: string;
-  readonly reviewSliceId: string | null;
-  readonly checkpointAId: string | null;
-  readonly checkpointBId: string | null;
-  readonly diffDigest: string | null;
-  readonly commentIds: ReadonlyArray<string>;
-  readonly idempotencyKey: string | null;
-  readonly instruction: string;
-  readonly status: "pending" | "delivering" | "delivered" | "delivery_failed" | "superseded";
-  readonly deliveryProcessId: string | null;
-  readonly deliverySealantRunId: string | null;
-  readonly deliveryError: string | null;
-  readonly deliveryStartedAt: string | null;
-  readonly createdAt: string;
-  readonly deliveredAt: string | null;
-}
-
-export interface DeliverFollowUpInput {
-  readonly reviewSliceId: string;
-  readonly checkpointAId: string;
-  readonly checkpointBId: string;
-  readonly diffDigest: string;
-  readonly commentIds: ReadonlyArray<string>;
-  readonly instruction: string;
-  readonly idempotencyKey: string;
-}
-
-export const pendingFollowUp = (sessionId: string) =>
-  request<FollowUpDto | null>(`/api/sessions/${sessionId}/follow-up`);
-
-/** Persist, launch, correlate, and finalize one Review bundle. Same key = same run. */
-export const deliverFollowUp = (sessionId: string, input: DeliverFollowUpInput) =>
-  post<FollowUpDto>(`/api/sessions/${sessionId}/follow-up/deliver`, input);
-
-/** A reviewer's disposition on an existing comment (draft is machine-only). */
-export const setCommentState = (
-  changeId: string,
-  commentId: string,
-  state: "open" | "addressed" | "dismissed",
-) => post<ReviewCommentDto>(`/api/changes/${changeId}/comments/${commentId}/state`, { state });
-
-/** One conversation event of the canonical session record. */
-export interface TranscriptEventDto {
-  readonly kind: string;
-  readonly text: string | null;
-  readonly name: string | null;
-  readonly command: string | null;
-  readonly output: string | null;
-}
-
-export interface SessionTranscriptDto {
-  readonly sourceHarness: string;
-  readonly events: ReadonlyArray<TranscriptEventDto>;
-}
-
-/** The durable record, conversation-shaped — survives reloads, unlike SSE lines. */
-export const sessionTranscript = (id: string) =>
-  request<SessionTranscriptDto>(`/api/sessions/${id}/transcript`);
 
 /**
  * How each harness takes an instruction as its opening prompt — the same
@@ -1332,31 +467,3 @@ export const continueArgv = (harness: string, instruction: string): ReadonlyArra
       : harness === "opencode"
         ? ["opencode", "run", instruction]
         : null;
-
-/**
- * Paired devices. A device holds a bearer token of its own, minted when it
- * claims a pairing code; revoking the device is what ends its access.
- */
-export interface DeviceDto {
-  readonly id: string;
-  readonly name: string;
-  readonly platform: string;
-  readonly createdAt: string;
-  readonly lastUsedAt: string | null;
-}
-
-/** A minted code and the base URLs this machine answers on, tailnet first. */
-export interface PairingDto {
-  readonly code: string;
-  readonly expiresAt: string;
-  readonly urls: ReadonlyArray<string>;
-}
-
-export const listDevices = () => request<ReadonlyArray<DeviceDto>>("/api/me/devices");
-
-/** Mints a code the claiming device trades for a token. Single use, 10 minutes. */
-export const createPairing = () =>
-  request<PairingDto>("/api/me/devices/pairings", { method: "POST" });
-
-export const revokeDevice = (id: string) =>
-  del<DeviceDto>(`/api/me/devices/${encodeURIComponent(id)}`);
