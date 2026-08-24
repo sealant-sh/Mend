@@ -1,15 +1,39 @@
 {{- if .Values.networkPolicies.enabled }}
-# Mend Pods: ingress from the same namespace (UI/API through whatever the operator exposes) and,
-# for the session channel port, from Sealant workspace Pods only. Egress: DNS, Postgres, the
-# Sealant API, and the internet (git remotes, inference).
+# Web tier: client networks reach 3105; egress to DNS and the API tier only would be ideal,
+# but SSR also fetches nothing external today — keep egress open for parity with the API tier.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ .Release.Name }}-mend
+  name: {{ .Release.Name }}-web
   labels: {{ include "mend.labels" . | nindent 4 }}
 spec:
   podSelector:
-    matchLabels: { app.kubernetes.io/name: mend, app.kubernetes.io/instance: {{ .Release.Name }} }
+    matchLabels: {{ include "mend.component" (dict "root" . "name" "web") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ .Release.Namespace }} } }
+    {{- with .Values.networkPolicies.clientCidrs }}
+    - from:
+        {{- range . }}
+        - ipBlock: { cidr: {{ . }} }
+        {{- end }}
+      ports: [{ protocol: TCP, port: 3105 }]
+    {{- end }}
+  egress:
+    - {}
+---
+# API tier: the web tier reaches 3101; Sealant workspace Pods reach the session channel; client
+# networks may also reach 3101 directly (CLI pointed at the API instead of the web proxy).
+# Egress: DNS, Postgres, the Sealant API, and the internet (git remotes, inference).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-api
+  labels: {{ include "mend.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{ include "mend.component" (dict "root" . "name" "api") | nindent 6 }}
   policyTypes: [Ingress, Egress]
   ingress:
     - from:
@@ -23,7 +47,7 @@ spec:
         {{- range . }}
         - ipBlock: { cidr: {{ . }} }
         {{- end }}
-      ports: [{ protocol: TCP, port: 3105 }]
+      ports: [{ protocol: TCP, port: 3101 }]
     {{- end }}
     {{- if and .Values.serviceHost.expose.enabled .Values.networkPolicies.clientCidrs }}
     - from:
@@ -35,4 +59,20 @@ spec:
     {{- end }}
   egress:
     - {}
+---
+# Postgres accepts only the API tier.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-postgres
+  labels: {{ include "mend.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{ include "mend.component" (dict "root" . "name" "postgres") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {{ include "mend.component" (dict "root" . "name" "api") | nindent 12 }}
+      ports: [{ protocol: TCP, port: 5432 }]
 {{- end }}

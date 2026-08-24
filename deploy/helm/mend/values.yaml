@@ -31,14 +31,18 @@ sealant:
   # The Sealant API inside the cluster (the sealant chart's API Service).
   baseUrl: http://sealant-api.sealant.svc:4000
 
-# ONE Mend process (MEND_MODE=all): the API handlers construct the session engine, so the web
-# and worker tiers cannot be split until the engine is extracted behind a service boundary
-# (docs/KUBERNETES.md). Keep replicaCount at 1 — in-memory supervision, no leases.
-app:
+# The API tier (apps/api): contract + auth + data planes + session engine + workers in one
+# process (MEND_MODE=all). The engine holds live in-memory state, so keep replicaCount at 1
+# until it grows leases/leader election (docs/KUBERNETES.md).
+api:
   replicaCount: 1
   resources: { requests: { cpu: 500m, memory: 1Gi }, limits: { cpu: "4", memory: 4Gi } }
 
+# The web tier (apps/web): the TanStack app + a transparent /api proxy to the API tier.
+# Stateless — scale it freely.
 web:
+  replicaCount: 1
+  resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { cpu: "1", memory: 1Gi } }
   service:
     type: ClusterIP
     annotations: {}

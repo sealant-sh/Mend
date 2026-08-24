@@ -59,6 +59,7 @@ being reframed into the session and review workbench; the retired product docume
 
 - `apps/docs` — the documentation site (Astro Starlight)
 - `apps/marketing` — the public site (TanStack Start on Cloudflare Workers)
+- `apps/api` — the Mend API server (contract, auth, session engine, workers)
 - `apps/web` — the product app: Now · projects · sessions · review
 - `packages/ui` — the Evidence Review design tokens, vendored from the platform
 - `tooling/typescript` — shared tsconfig bases

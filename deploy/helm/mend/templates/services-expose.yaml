@@ -15,7 +15,7 @@ metadata:
   {{- end }}
 spec:
   type: {{ .Values.serviceHost.expose.service.type }}
-  selector: {{ include "mend.component" (dict "root" . "name" "app") | nindent 4 }}
+  selector: {{ include "mend.component" (dict "root" . "name" "api") | nindent 4 }}
   ports:
     {{- range untilStep (int .Values.serviceHost.portMin) (int (add .Values.serviceHost.portMax 1)) 1 }}
     - { name: svc-{{ . }}, port: {{ . }}, targetPort: {{ . }} }

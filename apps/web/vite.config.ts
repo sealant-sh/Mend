@@ -4,8 +4,9 @@ import viteReact from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 import tsconfigPaths from "vite-tsconfig-paths";
 
-// Dev runs two processes: this vite server for the app, and the Effect server
-// (src/entry/main.ts) for API + auth on 3105. The proxy keeps them one origin.
+// Dev runs two processes: this vite server for the app, and the Mend API
+// server (apps/api) on 3101. The proxy keeps them one origin — the same
+// shape production has, where the web server proxies /api to the API.
 
 // Vite refuses Host headers it doesn't recognise (DNS-rebinding guard). Bare
 // IPs pass on their own, so reaching dev by LAN or tailnet address needs
@@ -20,12 +21,12 @@ const config = defineConfig({
     // The workbench is steered from any device on the operator's network
     // (ARCHITECTURE.md §9), so dev binds every interface, not just loopback.
     host: true,
-    port: 3101,
+    port: 3105,
     ...(allowedHosts && allowedHosts.length > 0 ? { allowedHosts } : {}),
     proxy: {
       // ws: the terminal rides a WebSocket (/api/tty); the shorthand form
       // proxies only HTTP and leaves the upgrade hanging forever in dev.
-      "/api": { target: "http://localhost:3105", ws: true },
+      "/api": { target: "http://localhost:3101", ws: true },
     },
   },
   plugins: [

@@ -181,6 +181,52 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/debug@4.1.13)(@types/node@24.13.2)(jiti@2.7.0)(jsdom@28.1.0(@noble/hashes@2.2.0))(lightningcss@1.33.0)(terser@5.49.0)(tsx@4.23.12)(yaml@2.9.0)
 
+  apps/api:
+    dependencies:
+      '@effect/platform-node':
+        specifier: 'catalog:'
+        version: 4.0.0-beta.98(effect@4.0.0-beta.93)(ioredis@5.11.1)
+      '@mend/api':
+        specifier: workspace:*
+        version: link:../../packages/api
+      '@mend/auth':
+        specifier: workspace:*
+        version: link:../../packages/auth
+      '@mend/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@mend/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
+      '@mend/inference':
+        specifier: workspace:*
+        version: link:../../packages/inference
+      '@mend/jobs':
+        specifier: workspace:*
+        version: link:../../packages/jobs
+      '@mend/sealant':
+        specifier: workspace:*
+        version: link:../../packages/sealant
+      '@mend/sessions':
+        specifier: workspace:*
+        version: link:../../packages/sessions
+      '@mend/store':
+        specifier: workspace:*
+        version: link:../../packages/store
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.0-beta.93
+    devDependencies:
+      '@mend/typescript':
+        specifier: workspace:*
+        version: link:../../tooling/typescript
+      tsx:
+        specifier: 'catalog:'
+        version: 4.23.12
+      vitest:
+        specifier: 'catalog:'
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@24.13.2)(jiti@2.7.0)(jsdom@28.1.0(@noble/hashes@2.2.0))(lightningcss@1.33.0)(terser@5.49.0)(tsx@4.23.12)(yaml@2.9.0)
+
   apps/cli:
     dependencies:
       '@opentui/core':
@@ -569,9 +615,6 @@ importers:
       '@dnd-kit/utilities':
         specifier: 'catalog:'
         version: 3.2.2(react@19.2.3)
-      '@effect/platform-node':
-        specifier: 'catalog:'
-        version: 4.0.0-beta.98(effect@4.0.0-beta.93)(ioredis@5.11.1)
       '@fontsource/inter':
         specifier: 'catalog:'
         version: 5.2.8
@@ -584,30 +627,9 @@ importers:
       '@mend/api':
         specifier: workspace:*
         version: link:../../packages/api
-      '@mend/auth':
-        specifier: workspace:*
-        version: link:../../packages/auth
-      '@mend/db':
-        specifier: workspace:*
-        version: link:../../packages/db
       '@mend/domain':
         specifier: workspace:*
         version: link:../../packages/domain
-      '@mend/inference':
-        specifier: workspace:*
-        version: link:../../packages/inference
-      '@mend/jobs':
-        specifier: workspace:*
-        version: link:../../packages/jobs
-      '@mend/sealant':
-        specifier: workspace:*
-        version: link:../../packages/sealant
-      '@mend/sessions':
-        specifier: workspace:*
-        version: link:../../packages/sessions
-      '@mend/store':
-        specifier: workspace:*
-        version: link:../../packages/store
       '@mend/ui':
         specifier: workspace:*
         version: link:../../packages/ui
