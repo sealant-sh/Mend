@@ -1,0 +1,29 @@
+{
+  "name": "@mend/docs",
+  "private": true,
+  "description": "Documentation for the Mend agent workbench",
+  "type": "module",
+  "scripts": {
+    "build": "astro build",
+    "dev": "astro dev --port 3103",
+    "lint": "oxlint src scripts astro.config.mjs --no-error-on-unmatched-pattern",
+    "preview": "astro preview --port 3103",
+    "test": "pnpm run build && node scripts/assert-rendered-docs.mjs",
+    "typecheck": "astro check"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.41.7",
+    "@fontsource/inter": "catalog:",
+    "@fontsource/jetbrains-mono": "catalog:",
+    "@fontsource/space-grotesk": "catalog:",
+    "@mermaid-js/layout-elk": "^0.2.3",
+    "astro": "^7.2.4",
+    "astro-mermaid": "^2.1.0",
+    "mermaid": "^11.17.0",
+    "sharp": "^0.35.3"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.10",
+    "typescript": "catalog:"
+  }
+}

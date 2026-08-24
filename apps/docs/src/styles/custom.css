@@ -1,0 +1,71 @@
+@import "@fontsource/space-grotesk/500.css";
+@import "@fontsource/space-grotesk/600.css";
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+
+:root {
+  --sl-font: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --sl-font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --sl-color-accent-low: #182958;
+  --sl-color-accent: #5781ea;
+  --sl-color-accent-high: #dce5ff;
+  --sl-color-white: #faf9f7;
+  --sl-color-gray-1: #eceae4;
+  --sl-color-gray-2: #cbc8c1;
+  --sl-color-gray-3: #9a9aa2;
+  --sl-color-gray-4: #6e6e76;
+  --sl-color-gray-5: #3b3b40;
+  --sl-color-gray-6: #242426;
+  --sl-color-black: #1b1b1d;
+}
+
+:root[data-theme="light"] {
+  --sl-color-accent-low: #eef2ff;
+  --sl-color-accent: #2052cc;
+  --sl-color-accent-high: #173b91;
+  --sl-color-white: #1b1b1d;
+  --sl-color-gray-1: #3b3b40;
+  --sl-color-gray-2: #56565d;
+  --sl-color-gray-3: #6e6e76;
+  --sl-color-gray-4: #9a9aa2;
+  --sl-color-gray-5: #cbc8c1;
+  --sl-color-gray-6: #e4e1db;
+  --sl-color-gray-7: #f1eee8;
+  --sl-color-black: #faf9f7;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  background: var(--sl-color-black);
+}
+
+header.header,
+.sidebar-pane,
+.right-sidebar-panel {
+  background: var(--sl-color-black);
+}
+
+main {
+  background: var(--sl-color-black);
+}
+
+h1,
+h2,
+h3,
+.hero .tagline {
+  font-family: "Space Grotesk", "Inter", ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: -0.02em;
+}
+
+.sl-markdown-content code:not(:where(.not-content *)) {
+  border-radius: 0.4rem;
+}
+
+.site-title {
+  font-family: "Space Grotesk", "Inter", ui-sans-serif, system-ui, sans-serif;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}

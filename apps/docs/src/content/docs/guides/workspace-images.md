@@ -1,0 +1,104 @@
+---
+title: Workspace images
+description: Choose a managed OS family or a custom OCI base for Mend session workspaces.
+sidebar:
+  order: 3
+---
+
+Every session runs inside a Sealant workspace built from an image definition. Mend has an
+instance-wide default under **Settings** and an optional override under each project's **Setup**
+page.
+
+A session records the image definition it launched with. Changing the setting affects later
+workspace launches, not a workspace that is already running.
+
+## Managed OS families
+
+Managed images support four OS families:
+
+- Arch Linux;
+- Ubuntu;
+- Fedora;
+- Nix.
+
+For a managed family, choose:
+
+- the OS family;
+- a login shell: `bash`, `zsh`, or `fish`;
+- portable package names;
+- whether the workspace receives a Docker service.
+
+The default is Arch Linux with `bash`, Docker enabled, and these packages:
+
+```text
+pnpm
+python
+uv
+mise
+github-cli
+lazygit
+bat
+curl
+jq
+ripgrep
+fd
+fzf
+```
+
+Mend sends portable package names to the platform resolver. Save is refused when a package cannot be
+resolved or is unsupported for the selected family. Fix or remove rejected entries before launching
+sessions with that definition.
+
+## Custom base images
+
+Custom mode has three image inputs:
+
+1. **Base image reference** such as `node:22-bookworm` or a private registry reference available to
+   the platform.
+2. **Extra packages**, one per line, passed to the package manager for that base.
+3. **Setup commands**, one per line, run in the workspace before the harness starts.
+
+The Docker service remains a separate switch.
+
+Custom mode does not expose the managed login-shell selector. It guarantees only the shell supplied
+by the base. Mend also does not apply user dotfiles to custom images. Put required shell setup in
+the image or its setup commands.
+
+## Docker inside a workspace
+
+The Docker switch supplies a disposable rootless daemon for that workspace. Mend does not mount the
+host Docker socket. Compose files can run inside the workspace against that daemon.
+
+The image definition is not a Compose editor. It describes one workspace container plus optional
+platform services.
+
+## Instance default and project override
+
+The instance default applies when a project has no image override. A project override remains fixed
+until you edit it or choose **Use default**.
+
+```mermaid
+flowchart TD
+  default[Settings default]
+  override{Project override?}
+  project[Project image]
+  resolved[Resolved image for next workspace]
+
+  default --> override
+  override -->|no| resolved
+  project -->|yes| override
+  override -->|yes| resolved
+```
+
+Changing the default affects every inheriting project. Mend uses the resolved definition as part of
+the hot-workspace fingerprint, so incompatible ready workspaces are replaced.
+
+## Private images
+
+A custom base may require registry access. The platform must be able to resolve and pull the image
+before a workspace can start. Do not place registry credentials in setup commands, project
+configuration, or the image reference.
+
+The public docs do not yet define a supported registry-credential setup path. Treat a private-image
+failure as a platform configuration issue and verify it outside Mend before depending on it for
+sessions.

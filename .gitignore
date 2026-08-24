@@ -17,5 +17,6 @@ npm-debug.log*
 
 .wrangler/
 .tanstack/
+**/.astro/
 **/routeTree.gen.ts
 **/worker-configuration.d.ts

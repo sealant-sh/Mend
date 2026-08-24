@@ -8,7 +8,7 @@ project context, agent sessions, and code changes with their review.
 
 You keep the agent you already trust. Mend wraps it:
 
-```
+```text
 mend codex → recorded session in a store worktree → local review with provenance → follow-up → commit or PR
 ```
 
@@ -57,6 +57,7 @@ being reframed into the session and review workbench; the retired product docume
 
 ## Monorepo
 
+- `apps/docs` — the documentation site (Astro Starlight)
 - `apps/marketing` — the public site (TanStack Start on Cloudflare Workers)
 - `apps/web` — the product app: Now · projects · sessions · review
 - `packages/ui` — the Evidence Review design tokens, vendored from the platform
@@ -64,8 +65,9 @@ being reframed into the session and review workbench; the retired product docume
 
 ```sh
 pnpm install
-pnpm dev        # all apps (turbo)
-pnpm typecheck  # tsgo, never tsc
+pnpm dev                         # product web app
+pnpm --filter @mend/docs dev     # documentation site on port 3103
+pnpm typecheck                   # tsgo, never tsc
 pnpm lint
 pnpm format:fix
 ```
