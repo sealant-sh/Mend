@@ -36,6 +36,8 @@ spec:
       labels: {{ include "mend.component" (dict "root" . "name" "api") | nindent 8 }}
     spec:
       automountServiceAccountToken: false
+      # Docker-link-style env injection (MEND_API_PORT=tcp://...) collides with real config.
+      enableServiceLinks: false
       imagePullSecrets: {{ toYaml .Values.image.pullSecrets | nindent 8 }}
       securityContext:
         runAsNonRoot: true
@@ -47,6 +49,7 @@ spec:
         - name: mend
           image: {{ include "mend.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [node, apps/api/src/main.ts]
           ports:
             - { containerPort: 3101, name: http }
             - { containerPort: {{ .Values.sessionChannel.port }}, name: session }

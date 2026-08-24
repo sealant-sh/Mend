@@ -73,6 +73,6 @@ spec:
   ingress:
     - from:
         - podSelector:
-            matchLabels: {{ include "mend.component" (dict "root" . "name" "api") | nindent 12 }}
+            matchLabels: {{ include "mend.component" (dict "root" . "name" "api") | nindent 14 }}
       ports: [{ protocol: TCP, port: 5432 }]
 {{- end }}

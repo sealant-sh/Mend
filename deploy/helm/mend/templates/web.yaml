@@ -27,6 +27,7 @@ spec:
       labels: {{ include "mend.component" (dict "root" . "name" "web") | nindent 8 }}
     spec:
       automountServiceAccountToken: false
+      enableServiceLinks: false
       imagePullSecrets: {{ toYaml .Values.image.pullSecrets | nindent 8 }}
       securityContext:
         runAsNonRoot: true

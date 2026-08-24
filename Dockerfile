@@ -43,7 +43,7 @@ FROM base AS runtime
 # workspace git transport; slim images carry neither.
 RUN apt-get update && apt-get install -y --no-install-recommends git openssh-client ca-certificates \
   && rm -rf /var/lib/apt/lists/*
-ENV NODE_ENV=production MEND_MODE=all PORT=3105 MEND_API_PORT=3101
+ENV NODE_ENV=production MEND_MODE=all PORT=3105 MEND_API_SERVER_PORT=3101
 COPY --from=prod-deps /app/node_modules node_modules
 COPY --from=prod-deps /app/packages packages
 COPY --from=prod-deps /app/apps apps

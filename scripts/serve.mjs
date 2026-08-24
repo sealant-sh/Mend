@@ -12,7 +12,7 @@ const node = process.execPath;
 const flags = ["--experimental-strip-types"];
 
 const webPort = process.env.PORT ?? "3105";
-const apiPort = process.env.MEND_API_PORT ?? "3101";
+const apiPort = process.env.MEND_API_SERVER_PORT ?? "3101";
 
 const children = [
   spawn(node, [...flags, path.join(repoRoot, "apps/api/src/main.ts")], {
