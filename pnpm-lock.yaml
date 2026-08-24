@@ -624,9 +624,6 @@ importers:
       '@fontsource/space-grotesk':
         specifier: 'catalog:'
         version: 5.2.10
-      '@mend/api':
-        specifier: workspace:*
-        version: link:../../packages/api
       '@mend/domain':
         specifier: workspace:*
         version: link:../../packages/domain
