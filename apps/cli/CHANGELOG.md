@@ -1,5 +1,14 @@
 # @sealant/mend
 
+## 0.7.1
+
+### Patch Changes
+
+- 0759bbf: Platform SDK 0.23.0: session attach, SSE output streams, and workspace port forwards now
+  carry the owner assertion alongside a service key (Kubernetes deployments authenticate this way —
+  attach and Service tunnels were rejected without it), and `workspaces.create` no longer pins the
+  runtime family to Docker, so the deployment's default runtime decides.
+
 ## 0.7.0
 
 ### Minor Changes
