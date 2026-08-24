@@ -12,8 +12,11 @@ machine when a client disconnects.
 
 ## Deployment
 
-A Mend installation has one product boundary. Clients connect to Mend. Mend uses the public Sealant
-SDK to create and control workspaces.
+A Mend installation has one product boundary. Clients connect to Mend. Underneath, Mend is built on
+**Sealant**: a separate workspace platform that creates the isolated environments where agents run,
+builds their images, supervises their processes, and records everything that happens in them. Mend
+talks to Sealant only through its public SDK, and every install ships both — you never use Sealant
+directly.
 
 ```mermaid
 flowchart TB

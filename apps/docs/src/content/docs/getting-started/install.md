@@ -20,6 +20,20 @@ Three deployment tiers, simple to complex. Start with the simplest one that fits
 The two single-host tiers share this installer; the VPS page covers only what changes when the
 server is remote. The rest of this page assumes the machine in front of you.
 
+## What the installer runs
+
+Two pieces land on the machine:
+
+- **Mend** — the server you interact with: projects, sessions, review, the web UI on port `3105`.
+- **Sealant** — the workspace platform underneath Mend. Sealant creates the isolated container
+  workspaces where agents actually run, builds their images, supervises their processes, and keeps
+  the durable record of what happened inside. It runs as a set of Docker containers bound to
+  loopback.
+
+You interact with Mend; Mend drives Sealant through its SDK. On the single-host tiers you never
+install, configure, or upgrade Sealant separately — the installer owns both. (Kubernetes is the one
+tier where you install Sealant yourself; its guide walks through that.)
+
 ## Requirements
 
 You need:

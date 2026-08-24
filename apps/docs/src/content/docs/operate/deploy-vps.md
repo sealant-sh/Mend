@@ -7,8 +7,9 @@ sidebar:
 
 A VPS or home server is the middle deployment tier: the same single-host install as
 [your own machine](/getting-started/install/), plus the realities of the server not being the
-machine you sit at. Run the installer on the VPS over SSH; everything on that page applies. This
-page covers what changes when the server is remote.
+machine you sit at. Run the installer on the VPS over SSH; everything on that page applies,
+including Sealant — the workspace platform under Mend — which the installer sets up and manages on
+the VPS for you. This page covers what changes when the server is remote.
 
 ## Reach the server privately
 
