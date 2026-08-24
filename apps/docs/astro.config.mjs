@@ -47,7 +47,10 @@ export default defineConfig({
         },
         {
           label: "Operate",
-          items: [{ label: "Deploy on Kubernetes", slug: "operate/deploy-kubernetes" }],
+          items: [
+            { label: "Deploy on a VPS", slug: "operate/deploy-vps" },
+            { label: "Deploy on Kubernetes", slug: "operate/deploy-kubernetes" },
+          ],
         },
         {
           label: "Concepts",

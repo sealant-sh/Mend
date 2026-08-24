@@ -5,9 +5,20 @@ sidebar:
   order: 2
 ---
 
-The installer sets up Mend and the Sealant control plane on a machine you control. The supported
-shape on a single machine is a Linux host with Docker; the machine may be local or remote. To run on
-a cluster instead, read [Deploy on Kubernetes](/operate/deploy-kubernetes/).
+The installer sets up Mend and the Sealant control plane on a machine you control.
+
+## Choose where Mend runs
+
+Three deployment tiers, simple to complex. Start with the simplest one that fits:
+
+| Tier                                                | Shape                          | Choose it when                                                              |
+| --------------------------------------------------- | ------------------------------ | --------------------------------------------------------------------------- |
+| **Your own machine** (this page)                    | Linux host with Docker, local  | You want the fastest start; server and terminal are the same machine        |
+| [Deploy on a VPS](/operate/deploy-vps/)             | Same install, on a remote host | Sessions should keep running when your laptop sleeps; several devices       |
+| [Deploy on Kubernetes](/operate/deploy-kubernetes/) | Helm charts on a cluster       | You already run a cluster and want cluster storage, policies, and isolation |
+
+The two single-host tiers share this installer; the VPS page covers only what changes when the
+server is remote. The rest of this page assumes the machine in front of you.
 
 ## Requirements
 

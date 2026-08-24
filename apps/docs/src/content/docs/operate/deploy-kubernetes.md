@@ -2,15 +2,15 @@
 title: Deploy on Kubernetes
 description: Run the Mend server and Sealant control plane on a Kubernetes cluster with Helm.
 sidebar:
-  order: 1
+  order: 2
 ---
 
-Kubernetes is the second supported deployment shape beside the
-[single-host Docker install](/getting-started/install/). The product behaves the same; what changes
-is where things run: Mend is a Deployment, session workspaces are Pods that Sealant creates on any
-node, and the central store is a shared volume they all mount. Nothing is cloned into a workspace
-and nothing syncs back — a workspace Pod mounts the session worktree from the same claim Mend
-writes, at the same absolute path.
+Kubernetes is the third deployment tier, after [your own machine](/getting-started/install/) and
+[a VPS](/operate/deploy-vps/). The product behaves the same; what changes is where things run: Mend
+is a Deployment, session workspaces are Pods that Sealant creates on any node, and the central store
+is a shared volume they all mount. Nothing is cloned into a workspace and nothing syncs back — a
+workspace Pod mounts the session worktree from the same claim Mend writes, at the same absolute
+path.
 
 The maintainer record behind this page is
 [`docs/KUBERNETES.md`](https://github.com/sealant-sh/mend/blob/main/docs/KUBERNETES.md); the charts
