@@ -26,7 +26,7 @@ COPY tooling/typescript/package.json tooling/typescript/
 COPY packages/ui/package.json packages/ui/
 COPY packages/domain/package.json packages/domain/
 COPY packages/db/package.json packages/db/
-COPY packages/api/package.json packages/api/
+COPY packages/api-contracts/package.json packages/api-contracts/
 COPY packages/auth/package.json packages/auth/
 COPY packages/jobs/package.json packages/jobs/
 COPY packages/sealant/package.json packages/sealant/
