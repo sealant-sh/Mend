@@ -63,12 +63,35 @@ if (ssr === null) {
 }
 
 /**
+ * pipeline() THROWS synchronously (ERR_STREAM_UNABLE_TO_PIPE, node ≥24) when
+ * either end is already destroyed — which is routine in a proxy: a readiness
+ * probe or impatient client hangs up while the upstream is still answering.
+ * Every relay goes through here so an early hangup tears down the pair
+ * instead of the whole process.
+ */
+const relay = (
+  source: NodeJS.ReadableStream & { destroy?: (error?: Error) => void },
+  destination: NodeJS.WritableStream & { destroy?: (error?: Error) => void },
+): void => {
+  try {
+    pipeline(source, destination, () => {});
+  } catch {
+    source.destroy?.();
+    destination.destroy?.();
+  }
+};
+
+/**
  * Relay a web `Response` onto the node response. `Headers.entries()` folds
  * multiple set-cookie values into one comma-joined string — which breaks
  * cookies, whose values contain commas (Expires) — so set-cookie rides as
  * the array `getSetCookie()` preserves.
  */
 const writeWebResponse = (webResponse: Response, response: http.ServerResponse): void => {
+  if (response.destroyed) {
+    void webResponse.body?.cancel().catch(() => {});
+    return;
+  }
   const headers: http.OutgoingHttpHeaders = {};
   for (const [name, value] of webResponse.headers.entries()) {
     if (name !== "set-cookie") headers[name] = value;
@@ -80,10 +103,9 @@ const writeWebResponse = (webResponse: Response, response: http.ServerResponse):
     response.end();
     return;
   }
-  pipeline(
+  relay(
     Readable.fromWeb(webResponse.body as unknown as import("node:stream/web").ReadableStream),
     response,
-    () => {},
   );
 };
 
@@ -157,18 +179,24 @@ const proxyRequest = (request: http.IncomingMessage, response: http.ServerRespon
       headers: forwardHeaders(request),
     },
     (upstreamResponse) => {
+      // The client can be gone before the API answers (probe hangups are
+      // routine); writing to the dead response would error or throw.
+      if (response.destroyed) {
+        upstreamResponse.destroy();
+        return;
+      }
       const headers = Object.fromEntries(
         Object.entries(upstreamResponse.headers).filter(([name]) => !hopByHop.has(name)),
       );
       response.writeHead(upstreamResponse.statusCode ?? 502, headers);
-      pipeline(upstreamResponse, response, () => {});
+      relay(upstreamResponse, response);
     },
   );
   upstream.on("error", () => {
     if (!response.headersSent) response.writeHead(502, { "content-type": "text/plain" });
     response.end("mend api unreachable");
   });
-  pipeline(request, upstream, () => {});
+  relay(request, upstream);
 };
 
 const server = http.createServer((request, response) => {
@@ -192,7 +220,7 @@ const server = http.createServer((request, response) => {
       const insideClientDir = candidate.startsWith(clientDir + path.sep);
       if (insideClientDir && existsSync(candidate) && statSync(candidate).isFile()) {
         response.writeHead(200, { "content-type": contentTypeFor(candidate) });
-        pipeline(createReadStream(candidate), response, () => {});
+        relay(createReadStream(candidate), response);
         return;
       }
     }
@@ -273,15 +301,15 @@ server.on("upgrade", (request, socket, head) => {
     socket.write(statusLine + rawHeaderBlock(upstreamResponse, { stripHopByHop: false }) + "\r\n");
     if (upstreamHead.length > 0) socket.write(upstreamHead);
     if (head.length > 0) upstreamSocket.write(head);
-    pipeline(socket, upstreamSocket, () => {});
-    pipeline(upstreamSocket, socket, () => {});
+    relay(socket, upstreamSocket);
+    relay(upstreamSocket, socket);
   });
   // The API answered without upgrading (401, 404, ...): relay it as HTTP.
   upstream.on("response", (upstreamResponse) => {
     upstreamAnswered = true;
     const statusLine = `HTTP/1.1 ${upstreamResponse.statusCode ?? 502} ${upstreamResponse.statusMessage ?? ""}\r\n`;
     socket.write(statusLine + rawHeaderBlock(upstreamResponse, { stripHopByHop: true }) + "\r\n");
-    pipeline(upstreamResponse, socket, () => {});
+    relay(upstreamResponse, socket);
   });
   upstream.on("error", () => socket.destroy());
   upstream.end();
