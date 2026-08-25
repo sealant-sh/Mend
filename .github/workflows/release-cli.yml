@@ -73,8 +73,23 @@ jobs:
             echo "No CHANGELOG section found for $VERSION — using a pointer instead." >&2
             echo "See apps/cli/CHANGELOG.md." > release-notes.md
           fi
+          # One version stamps every artifact — list them so the release
+          # object is the complete record of what this tag produced.
+          cat >> release-notes.md <<NOTES
+
+          ---
+
+          **Artifacts of this release**
+          - npm: [\`@sealant/mend@$VERSION\`](https://www.npmjs.com/package/@sealant/mend/v/$VERSION)
+          - \`ghcr.io/sealant-sh/mend-api:$VERSION\` — API tier (contract, engine, workers)
+          - \`ghcr.io/sealant-sh/mend-web:$VERSION\` — web tier (nitro app + /api relay)
+          - \`ghcr.io/sealant-sh/mend:$VERSION\` — combined single-host image (serve.mjs)
+          - Helm chart at \`deploy/helm/mend\` with \`appVersion: $VERSION\`
+          NOTES
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME"             --title "mend CLI ${GITHUB_REF_NAME#cli-v}"             --notes-file release-notes.md             --verify-tag
+          VERSION="${GITHUB_REF_NAME#cli-}"
+          VERSION="${VERSION#v}"
+          gh release create "$GITHUB_REF_NAME"             --title "Mend ${VERSION}"             --notes-file release-notes.md             --verify-tag
