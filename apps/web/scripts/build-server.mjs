@@ -1,6 +1,6 @@
-// Bundle the production web server (proxy + tRPC + SSR host) into one file:
-// the runtime image ships dist/ alone — no source, no node_modules. The SSR
-// bundle (dist/server/server.js) stays a separate artifact loaded at runtime.
+// Bundle the web FRONT (the /api relay + nitro supervisor) into the nitro
+// output directory, so the production image ships `.output/` alone:
+// front.mjs beside server/index.mjs, assets in public/.
 import { build } from "esbuild";
 
 await build({
@@ -9,10 +9,6 @@ await build({
   platform: "node",
   target: "node22",
   format: "esm",
-  outfile: "dist/entry.mjs",
-  // CJS deps in the graph use require() internally; give the ESM bundle one.
-  banner: {
-    js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);',
-  },
+  outfile: ".output/front.mjs",
   logLevel: "warning",
 });

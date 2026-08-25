@@ -1,6 +1,7 @@
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import viteReact from "@vitejs/plugin-react";
+import { nitro } from "nitro/vite";
 import { defineConfig } from "vite";
 import tsconfigPaths from "vite-tsconfig-paths";
 
@@ -17,9 +18,6 @@ const allowedHosts = process.env.MEND_DEV_HOSTS?.split(",")
   .filter((host) => host.length > 0);
 
 const config = defineConfig({
-  // Bundle the SSR output completely (react, router, everything): the
-  // production web image ships dist/ alone — no node_modules at runtime.
-  ssr: { noExternal: true },
   server: {
     // The workbench is steered from any device on the operator's network
     // (ARCHITECTURE.md §9), so dev binds every interface, not just loopback.
@@ -30,15 +28,17 @@ const config = defineConfig({
       // ws: the terminal rides a WebSocket (/api/tty); the shorthand form
       // proxies only HTTP and leaves the upgrade hanging forever in dev.
       "/api": { target: "http://localhost:3101", ws: true },
-      // The tRPC surface lives on the web SERVER (it forwards to the API);
-      // dev runs that server on 3104 beside vite.
-      "/trpc": { target: "http://localhost:3104" },
+      // /trpc needs no proxy: it is a Start SERVER route, served by vite dev
+      // itself (and by nitro in production).
     },
   },
   plugins: [
     tsconfigPaths({ projects: ["./tsconfig.json"] }),
     tailwindcss(),
     tanstackStart(),
+    // The official deployment layer: `vite build` emits a self-contained node
+    // server at .output/server/index.mjs (+ static assets in .output/public).
+    nitro(),
     viteReact(),
   ],
 });

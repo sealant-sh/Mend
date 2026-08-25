@@ -52,7 +52,7 @@ COPY packages packages
 COPY apps/web/src apps/web/src
 COPY apps/api/src apps/api/src
 COPY scripts/serve.mjs scripts/serve.mjs
-COPY --from=build /app/apps/web/dist apps/web/dist
+COPY --from=build /app/apps/web/.output apps/web/.output
 EXPOSE 3105 3101
 HEALTHCHECK --interval=15s --timeout=3s --start-period=20s \
   CMD node -e "fetch('http://localhost:'+(process.env.PORT??3105)+'/api/health').then((r)=>process.exit(r.ok?0:1),()=>process.exit(1))"

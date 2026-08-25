@@ -53,11 +53,7 @@ const children = [
     stdio: "inherit",
     cwd: repoRoot,
   }),
-  // The web server carries /trpc in dev (vite proxies to it); the UI itself stays on vite.
-  spawn("pnpm", ["exec", "tsx", "watch", "src/entry/main.ts"], {
-    stdio: "inherit",
-    env: { ...process.env, PORT: "3104", MEND_API_URL: "http://localhost:3101" },
-  }),
+  // /trpc is a Start server route — vite dev serves it; no third process.
 ];
 
 const stop = (code) => {

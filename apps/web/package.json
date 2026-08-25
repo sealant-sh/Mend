@@ -42,6 +42,7 @@
     "effect": "catalog:",
     "ghostty-web": "catalog:",
     "lucide-react": "catalog:",
+    "nitro": "^3.0.260610-beta",
     "qrcode": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",

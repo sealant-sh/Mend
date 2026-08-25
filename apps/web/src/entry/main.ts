@@ -1,68 +1,56 @@
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
-import { pipeline, Readable } from "node:stream";
-import { fileURLToPath, pathToFileURL } from "node:url";
-
-import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
-
-import { appRouter } from "../server/routers/index.ts";
+import { pipeline } from "node:stream";
+import { fileURLToPath } from "node:url";
 
 /**
- * The web server (ARCHITECTURE.md §2): the TanStack Start app plus a
- * transparent proxy for everything under `/api` to the Mend API server
- * (`apps/api`, MEND_API_URL). This process is deliberately stateless — no
- * database, no engine, no sessions — so it can be replicated freely; every
- * stateful concern lives behind the proxy. Browsers keep one origin: pages
- * and `/api/*` come from the same port, exactly as when one process served
- * both.
+ * The web tier's FRONT (ARCHITECTURE.md §2): one public port that owns the
+ * single concern nitro cannot — relaying `/api` verbatim to the Mend API
+ * server, including WebSocket upgrades (/api/tty, the service tunnel, the
+ * keys bridge) and unbuffered SSE. Everything else — pages, assets, and the
+ * /trpc server route — is the TanStack Start app, served by nitro's own
+ * node server (.output/server/index.mjs), which this process supervises as
+ * a child unless MEND_APP_URL points at one already running.
  *
- * The proxy is hand-rolled on `node:http` because it must carry three
- * shapes faithfully and dependency-free: plain requests, server-sent event
- * streams (no buffering), and WebSocket upgrades (`/api/tty`, the service
- * tunnel, the keys bridge) — the `upgrade` event with both sockets piped
- * raw.
+ * Stateless by design: no database, no engine, no sessions — replicate
+ * freely; every stateful concern lives behind the /api proxy.
  */
 
-// This file runs from two places: as source (src/entry/main.ts, dist two
-// levels up) and as the production bundle (dist/entry.mjs, dist right here).
-const here = path.dirname(fileURLToPath(import.meta.url));
-const distDir = existsSync(path.join(here, "client")) ? here : path.resolve(here, "../../dist");
 const port = Number(process.env["PORT"] ?? "3105");
 const apiUrl = new URL(process.env["MEND_API_URL"] ?? "http://localhost:3101");
 
-const contentTypeFor = (file: string): string => {
-  const types: Record<string, string> = {
-    ".html": "text/html; charset=utf-8",
-    ".js": "text/javascript",
-    ".mjs": "text/javascript",
-    ".css": "text/css",
-    ".json": "application/json",
-    ".svg": "image/svg+xml",
-    ".png": "image/png",
-    ".ico": "image/x-icon",
-    ".woff2": "font/woff2",
-    ".woff": "font/woff",
-    ".ttf": "font/ttf",
-    ".map": "application/json",
-    ".txt": "text/plain",
-    ".webmanifest": "application/manifest+json",
-  };
-  return types[path.extname(file)] ?? "application/octet-stream";
-};
+// ─── The app server: nitro output, supervised unless external ───────────────
+const here = path.dirname(fileURLToPath(import.meta.url));
+// Bundled (.output/front.mjs → sibling server/) or source (src/entry → ../../.output).
+const nitroEntry = [
+  path.join(here, "server/index.mjs"),
+  path.resolve(here, "../../.output/server/index.mjs"),
+].find(existsSync);
 
-// ─── The built app: static assets + SSR ─────────────────────────────────────
-const clientDir = path.join(distDir, "client");
-const ssrEntry = path.join(distDir, "server/server.js");
-const ssr: { readonly fetch: (request: Request) => Promise<Response> } | null = existsSync(ssrEntry)
-  ? (
-      (await import(pathToFileURL(ssrEntry).href)) as {
-        readonly default: { readonly fetch: (request: Request) => Promise<Response> };
-      }
-    ).default
-  : null;
-if (ssr === null) {
-  console.warn("[web] no built app found (dist/server/server.js) — proxying /api only");
+const externalApp = process.env["MEND_APP_URL"];
+const appUrl = new URL(externalApp ?? "http://127.0.0.1:3210");
+if (externalApp === undefined) {
+  if (nitroEntry === undefined) {
+    console.error("[web] no app build found (.output/server/index.mjs) and no MEND_APP_URL");
+    process.exit(1);
+  }
+  const child = spawn(process.execPath, [nitroEntry], {
+    stdio: "inherit",
+    env: {
+      ...process.env,
+      PORT: appUrl.port,
+      HOST: "127.0.0.1",
+      NITRO_PORT: appUrl.port,
+      NITRO_HOST: "127.0.0.1",
+    },
+  });
+  // The pair lives and dies together; the supervisor (systemd, k8s) restarts us.
+  child.on("exit", (code) => process.exit(code ?? 1));
+  for (const signal of ["SIGTERM", "SIGINT"] as const) {
+    process.once(signal, () => child.kill("SIGTERM"));
+  }
 }
 
 /**
@@ -82,66 +70,6 @@ const relay = (
     source.destroy?.();
     destination.destroy?.();
   }
-};
-
-/**
- * Relay a web `Response` onto the node response. `Headers.entries()` folds
- * multiple set-cookie values into one comma-joined string — which breaks
- * cookies, whose values contain commas (Expires) — so set-cookie rides as
- * the array `getSetCookie()` preserves.
- */
-const writeWebResponse = (webResponse: Response, response: http.ServerResponse): void => {
-  if (response.destroyed) {
-    void webResponse.body?.cancel().catch(() => {});
-    return;
-  }
-  const headers: http.OutgoingHttpHeaders = {};
-  for (const [name, value] of webResponse.headers.entries()) {
-    if (name !== "set-cookie") headers[name] = value;
-  }
-  const cookies = webResponse.headers.getSetCookie();
-  if (cookies.length > 0) headers["set-cookie"] = cookies;
-  response.writeHead(webResponse.status, headers);
-  if (webResponse.body === null) {
-    response.end();
-    return;
-  }
-  relay(
-    Readable.fromWeb(webResponse.body as unknown as import("node:stream/web").ReadableStream),
-    response,
-  );
-};
-
-// ─── tRPC: the UI's typed surface; procedures forward to the API ────────────
-const handleTrpc = async (
-  request: http.IncomingMessage,
-  response: http.ServerResponse,
-): Promise<void> => {
-  const headers = new Headers();
-  for (const [name, value] of Object.entries(request.headers)) {
-    if (typeof value === "string") headers.set(name, value);
-    else if (Array.isArray(value)) for (const item of value) headers.append(name, item);
-  }
-  const hasBody = request.method !== "GET" && request.method !== "HEAD";
-  // A browser that gave up (tab closed, navigation) should cancel the API
-  // work instead of leaving it running to completion.
-  const abort = new AbortController();
-  response.on("close", () => {
-    if (!response.writableEnded) abort.abort();
-  });
-  const webRequest = new Request(new URL(request.url ?? "/", "http://mend.local"), {
-    method: request.method,
-    headers,
-    signal: abort.signal,
-    ...(hasBody ? { body: Readable.toWeb(request) as unknown as BodyInit, duplex: "half" } : {}),
-  } as RequestInit);
-  const webResponse = await fetchRequestHandler({
-    endpoint: "/trpc",
-    req: webRequest,
-    router: appRouter,
-    createContext: () => ({ headers, apiUrl: apiUrl.origin }),
-  });
-  writeWebResponse(webResponse, response);
 };
 
 const hopByHop = new Set([
@@ -166,7 +94,7 @@ const forwardHeaders = (request: http.IncomingMessage): http.OutgoingHttpHeaders
   const priorFor = request.headers["x-forwarded-for"];
   return {
     ...request.headers,
-    // The API sees the proxy's hostname otherwise; keep the client's.
+    // The upstream sees the proxy's hostname otherwise; keep the client's.
     "x-forwarded-host": request.headers.host ?? "",
     "x-forwarded-proto": typeof proto === "string" && proto !== "" ? proto : "http",
     "x-forwarded-for": [
@@ -178,19 +106,23 @@ const forwardHeaders = (request: http.IncomingMessage): http.OutgoingHttpHeaders
   };
 };
 
-/** Forward one request to the API verbatim; stream both directions, never buffer. */
-const proxyRequest = (request: http.IncomingMessage, response: http.ServerResponse): void => {
+/** Forward one request verbatim; stream both directions, never buffer. */
+const proxyRequest = (
+  target: URL,
+  request: http.IncomingMessage,
+  response: http.ServerResponse,
+): void => {
   const upstream = http.request(
     {
-      host: apiUrl.hostname,
-      port: apiUrl.port,
+      host: target.hostname,
+      port: target.port,
       method: request.method,
       path: request.url,
       headers: forwardHeaders(request),
     },
     (upstreamResponse) => {
-      // The client can be gone before the API answers (probe hangups are
-      // routine); writing to the dead response would error or throw.
+      // The client can be gone before the upstream answers (probe hangups
+      // are routine); writing to the dead response would error or throw.
       if (response.destroyed) {
         upstreamResponse.destroy();
         return;
@@ -204,72 +136,20 @@ const proxyRequest = (request: http.IncomingMessage, response: http.ServerRespon
   );
   upstream.on("error", () => {
     if (!response.headersSent) response.writeHead(502, { "content-type": "text/plain" });
-    response.end("mend api unreachable");
+    response.end("upstream unreachable");
   });
   relay(request, upstream);
 };
 
-const server = http.createServer((request, response) => {
-  const url = request.url ?? "/";
-  if (url === "/api" || url.startsWith("/api/")) {
-    proxyRequest(request, response);
-    return;
-  }
-  if (url === "/trpc" || url.startsWith("/trpc/")) {
-    handleTrpc(request, response).catch(() => {
-      if (!response.headersSent) response.writeHead(500);
-      response.end();
-    });
-    return;
-  }
+const isApiPath = (url: string): boolean => url === "/api" || url.startsWith("/api/");
 
-  void (async () => {
-    if (request.method === "GET" || request.method === "HEAD") {
-      const pathname = new URL(url, "http://mend.local").pathname;
-      const candidate = path.join(clientDir, pathname);
-      const insideClientDir = candidate.startsWith(clientDir + path.sep);
-      if (insideClientDir && existsSync(candidate) && statSync(candidate).isFile()) {
-        response.writeHead(200, { "content-type": contentTypeFor(candidate) });
-        relay(createReadStream(candidate), response);
-        return;
-      }
-    }
-    if (ssr === null) {
-      response.writeHead(503, { "content-type": "text/plain" });
-      response.end("web app not built");
-      return;
-    }
-    const headers = new Headers();
-    for (const [name, value] of Object.entries(request.headers)) {
-      if (typeof value === "string") headers.set(name, value);
-      else if (Array.isArray(value)) for (const item of value) headers.append(name, item);
-    }
-    const hasBody = request.method !== "GET" && request.method !== "HEAD";
-    const webRequest = new Request(new URL(url, `http://${request.headers.host ?? "mend.local"}`), {
-      method: request.method,
-      headers,
-      // Node's web-stream types and the DOM lib's are structurally identical twins
-      // that TypeScript keeps distinct; the casts bridge them and nothing else.
-      ...(hasBody ? { body: Readable.toWeb(request) as unknown as BodyInit, duplex: "half" } : {}),
-    } as RequestInit);
-    const webResponse = await ssr.fetch(webRequest);
-    writeWebResponse(webResponse, response);
-  })().catch(() => {
-    if (!response.headersSent) response.writeHead(500);
-    response.end();
-  });
+const server = http.createServer((request, response) => {
+  proxyRequest(isApiPath(request.url ?? "/") ? apiUrl : appUrl, request, response);
 });
 
 // ─── WebSocket upgrades: pipe both sockets raw, verbatim ────────────────────
 
-/**
- * Rebuild the upstream's header block from rawHeaders — repeats (set-cookie)
- * survive. The 101 path relays verbatim (Connection/Upgrade are the point and
- * there is no body); the plain-response path must DROP hop-by-hop headers:
- * node already de-chunked the body, so relaying `transfer-encoding: chunked`
- * over decoded bytes is broken framing — `connection: close` + EOF delimits
- * the body instead.
- */
+/** Rebuild the upstream's header block from rawHeaders — repeats (set-cookie) survive. */
 const rawHeaderBlock = (
   upstreamResponse: http.IncomingMessage,
   options: { readonly stripHopByHop: boolean },
@@ -286,7 +166,7 @@ const rawHeaderBlock = (
 
 server.on("upgrade", (request, socket, head) => {
   const url = request.url ?? "/";
-  if (!(url === "/api" || url.startsWith("/api/"))) {
+  if (!isApiPath(url)) {
     socket.destroy();
     return;
   }
@@ -315,6 +195,8 @@ server.on("upgrade", (request, socket, head) => {
     relay(upstreamSocket, socket);
   });
   // The API answered without upgrading (401, 404, ...): relay it as HTTP.
+  // Hop-by-hop headers are stripped — node already de-chunked the body, so
+  // `connection: close` + EOF delimits it instead of stale framing headers.
   upstream.on("response", (upstreamResponse) => {
     upstreamAnswered = true;
     const statusLine = `HTTP/1.1 ${upstreamResponse.statusCode ?? 502} ${upstreamResponse.statusMessage ?? ""}\r\n`;
@@ -326,7 +208,9 @@ server.on("upgrade", (request, socket, head) => {
 });
 
 server.listen(port, () => {
-  console.log(`[web] listening on :${port} · proxying /api to ${apiUrl.origin}`);
+  console.log(
+    `[web] listening on :${port} · /api → ${apiUrl.origin} · app → ${appUrl.origin}${externalApp === undefined ? " (supervised nitro)" : ""}`,
+  );
 });
 
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
