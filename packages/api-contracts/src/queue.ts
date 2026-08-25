@@ -1,10 +1,37 @@
-import { NewIssue, QueueMove } from "@mend/db";
-import { Brief, BriefComment, BriefVersion, Change, Issue, IssueId, RunId } from "@mend/domain";
+import {
+  Brief,
+  BriefComment,
+  BriefVersion,
+  Change,
+  Issue,
+  IssueId,
+  IssueSource,
+  RunId,
+} from "@mend/domain";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 
 import { IssueDetail, NotFound, RunDetail, RunSourceView, TracePage } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
+
+/** Manual entry is just another intake; tracker layers arrive with M5. */
+export class NewIssue extends Schema.Class<NewIssue>("NewIssue")({
+  source: IssueSource,
+  externalRef: Schema.NullOr(Schema.String),
+  repository: Schema.String,
+  title: Schema.String,
+  body: Schema.String,
+}) {}
+
+/**
+ * The moves a person can make on the board — Gate 1 and its undo. Everything
+ * else (mending, review, merged) is the product's to set, never the drag's.
+ */
+export class QueueMove extends Schema.Class<QueueMove>("QueueMove")({
+  stage: Schema.Literals(["triage", "queued"]),
+  /** Target index within queued, 0 = top. Appends when null. */
+  position: Schema.NullOr(Schema.Int),
+}) {}
 
 export const issuesGroup = HttpApiGroup.make("issues")
   .add(HttpApiEndpoint.get("list", "/issues", { success: Schema.Array(Issue) }))

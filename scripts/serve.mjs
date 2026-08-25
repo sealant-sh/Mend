@@ -17,7 +17,9 @@ const apiPort = process.env.MEND_API_SERVER_PORT ?? "3101";
 const children = [
   spawn(node, [...flags, path.join(repoRoot, "apps/api/src/main.ts")], {
     stdio: "inherit",
-    env: { ...process.env, PORT: apiPort },
+    // MEND_WEB_PORT tells the API's auth server which port browsers actually
+    // arrive on, so LAN/tailnet origins on the web tier are trusted.
+    env: { ...process.env, PORT: apiPort, MEND_WEB_PORT: webPort },
   }),
   spawn(node, [...flags, path.join(repoRoot, "apps/web/src/entry/main.ts")], {
     stdio: "inherit",

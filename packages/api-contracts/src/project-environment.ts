@@ -188,7 +188,7 @@ export const projectRecipesGroup = HttpApiGroup.make("projectRecipes")
       params: { id: ProjectId },
       payload: AddProjectServiceRecipe,
       success: ServiceRecipe,
-      error: Schema.Union([NotFound, StoreFailure]),
+      error: [NotFound, StoreFailure],
     }),
   )
   .add(

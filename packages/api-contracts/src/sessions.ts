@@ -85,7 +85,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: ProjectId },
       payload: NewWorkbenchSession,
       success: Session,
-      error: Schema.Union([NotFound, StoreFailure]),
+      error: [NotFound, StoreFailure],
     }),
   )
   .add(
@@ -156,7 +156,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     HttpApiEndpoint.post("openShell", "/sessions/:id/shell", {
       params: { id: SessionId },
       success: SessionProcess,
-      error: Schema.Union([NotFound, SessionNotLive, StoreFailure]),
+      error: [NotFound, SessionNotLive, StoreFailure],
     }),
   )
   .add(
@@ -220,7 +220,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     HttpApiEndpoint.get("listRecipes", "/sessions/:id/recipes", {
       params: { id: SessionId },
       success: Schema.Array(ServiceRecipe),
-      error: Schema.Union([NotFound, StoreFailure]),
+      error: [NotFound, StoreFailure],
     }),
   )
   .add(
@@ -265,7 +265,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     HttpApiEndpoint.delete("remove", "/sessions/:id", {
       params: { id: SessionId },
       success: RemovalReport,
-      error: Schema.Union([NotFound, SessionActive, StoreFailure]),
+      error: [NotFound, SessionActive, StoreFailure],
     }),
   )
   .add(
@@ -288,7 +288,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       payload: CheckpointRequest,
       success: Checkpoint,
-      error: Schema.Union([NotFound, StoreFailure]),
+      error: [NotFound, StoreFailure],
     }),
   )
   .add(
@@ -299,7 +299,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       payload: LaunchRequest,
       success: Session,
-      error: Schema.Union([NotFound, StoreFailure]),
+      error: [NotFound, StoreFailure],
     }),
   )
   .add(
@@ -317,7 +317,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       payload: ResumeRequest,
       success: Session,
-      error: Schema.Union([NotFound, StoreFailure]),
+      error: [NotFound, StoreFailure],
     }),
   )
   .add(

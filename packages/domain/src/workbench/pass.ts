@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import { ChangeId } from "../ids.ts";
+import { Timestamp } from "../timestamp.ts";
 
 /** Which machine pass over a change: tour composition, the record-grounded read, the suggestion pass. */
 export const PassKind = Schema.Literals(["tour", "read", "suggest"]);
@@ -24,6 +25,6 @@ export class ChangePass extends Schema.Class<ChangePass>("ChangePass")({
   status: PassStatus,
   detail: Schema.NullOr(Schema.String),
   findings: Schema.NullOr(Schema.Int),
-  startedAt: Schema.Date,
-  finishedAt: Schema.NullOr(Schema.Date),
+  startedAt: Timestamp,
+  finishedAt: Schema.NullOr(Timestamp),
 }) {}

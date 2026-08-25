@@ -1,4 +1,5 @@
 import { ChangeId, MendSettings, DotfilesRepository, WorkspaceImage } from "@mend/domain";
+import { Timestamp } from "@mend/domain";
 import {
   AutomationChoice,
   GitAuthMode,
@@ -149,7 +150,7 @@ export class DotfilesSnapshotView extends Schema.Class<DotfilesSnapshotView>(
 )({
   sha: Schema.String,
   source: Schema.String,
-  committedAt: Schema.Date,
+  committedAt: Timestamp,
   files: Schema.Array(DotfilesSnapshotFileView),
 }) {}
 
@@ -204,7 +205,7 @@ export class GitKeyView extends Schema.Class<GitKeyView>("GitKeyView")({
 export class GitBridgeStatusView extends Schema.Class<GitBridgeStatusView>("GitBridgeStatusView")({
   connected: Schema.Boolean,
   clientName: Schema.NullOr(Schema.String),
-  since: Schema.NullOr(Schema.Date),
+  since: Schema.NullOr(Timestamp),
 }) {}
 
 export const HostToolSuggestionView = Schema.Struct({

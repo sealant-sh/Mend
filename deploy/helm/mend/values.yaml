@@ -37,6 +37,10 @@ sealant:
 api:
   replicaCount: 1
   resources: { requests: { cpu: 500m, memory: 1Gi }, limits: { cpu: "4", memory: 4Gi } }
+  # Source addresses the API treats as proxy hops when reading x-forwarded-for
+  # (device pairing's rate limiter). Set to the pod CIDR the web tier lives in;
+  # 10.244.0.0/16 is the flannel default. Empty list = trust loopback only.
+  trustedProxyCidrs: ["10.244.0.0/16"]
 
 # The web tier (apps/web): the TanStack app + a transparent /api proxy to the API tier.
 # Stateless — scale it freely.

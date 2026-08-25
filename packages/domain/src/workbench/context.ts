@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import { ContextSnapshotId } from "../ids.ts";
+import { Timestamp } from "../timestamp.ts";
 
 /** One explicit source of information supplied to a session (plan §5.3). */
 export const ContextItemKind = Schema.Literals(["file", "document", "note", "url", "handoff"]);
@@ -24,5 +25,5 @@ export class ContextSnapshot extends Schema.Class<ContextSnapshot>("ContextSnaps
   /** The pack this was snapshotted from, if any ("workspace-reaper @3"). */
   packName: Schema.NullOr(Schema.String),
   items: Schema.Array(ContextItem),
-  createdAt: Schema.Date,
+  createdAt: Timestamp,
 }) {}

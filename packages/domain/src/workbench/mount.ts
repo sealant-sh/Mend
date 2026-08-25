@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import { ProjectId, ProjectMountId } from "../ids.ts";
+import { Timestamp } from "../timestamp.ts";
 
 /**
  * A host folder this project's sessions can see (plan §17, decided
@@ -19,8 +20,8 @@ export class ProjectMount extends Schema.Class<ProjectMount>("ProjectMount")({
   /** Absolute host path of the folder, exactly as the user declared it. */
   hostPath: Schema.String,
   readOnly: Schema.Boolean,
-  createdAt: Schema.Date,
-  updatedAt: Schema.Date,
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
 }) {}
 
 /**

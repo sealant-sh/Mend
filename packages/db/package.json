@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@effect/sql-pg": "catalog:",
+    "@mend/api-contracts": "workspace:*",
     "@mend/domain": "workspace:*",
     "@mend/sealant": "workspace:*",
     "drizzle-orm": "catalog:",

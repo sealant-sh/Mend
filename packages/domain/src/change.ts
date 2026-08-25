@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import { ChangeId, IssueId, Sha } from "./ids.ts";
+import { Timestamp } from "./timestamp.ts";
 
 /** A stale brief never silently presents itself as current. */
 export const Freshness = Schema.Literals(["current", "stale"]);
@@ -22,6 +23,6 @@ export class Change extends Schema.Class<Change>("Change")({
   freshness: Freshness,
   /** Where base moved to while the brief sat in review — set only when stale. */
   movedBaseSha: Schema.NullOr(Sha),
-  createdAt: Schema.Date,
-  updatedAt: Schema.Date,
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
 }) {}

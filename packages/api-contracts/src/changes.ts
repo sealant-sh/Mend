@@ -49,14 +49,14 @@ export const sessionChangesGroup = HttpApiGroup.make("sessionChanges")
     HttpApiEndpoint.get("diff", "/changes/:id/diff", {
       params: { id: ChangeId },
       success: ChangeDiff,
-      error: Schema.Union([NotFound, StoreFailure]),
+      error: [NotFound, StoreFailure],
     }),
   )
   .add(
     HttpApiEndpoint.get("stats", "/changes/:id/stats", {
       params: { id: ChangeId },
       success: ChangeStats,
-      error: Schema.Union([NotFound, StoreFailure]),
+      error: [NotFound, StoreFailure],
     }),
   )
   .add(

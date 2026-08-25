@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import { ChangeId, CheckpointId, ReviewSliceId } from "../ids.ts";
+import { Timestamp } from "../timestamp.ts";
 
 /** SHA-256 of the exact unified patch bytes returned for a Review slice. */
 export const DiffDigest = Schema.String.pipe(
@@ -19,5 +20,5 @@ export class ReviewSlice extends Schema.Class<ReviewSlice>("ReviewSlice")({
   checkpointAId: CheckpointId,
   checkpointBId: CheckpointId,
   diffDigest: DiffDigest,
-  createdAt: Schema.Date,
+  createdAt: Timestamp,
 }) {}

@@ -117,29 +117,84 @@ export const makeClaimLimiter = (max = 10, windowMs = 60_000): ClaimLimiter => {
 
 const claimLimiter = makeClaimLimiter();
 
+const bareAddress = (address: string): string =>
+  address.startsWith("::ffff:") ? address.slice("::ffff:".length) : address;
+
 const isLoopbackAddress = (address: string): boolean => {
-  const bare = address.startsWith("::ffff:") ? address.slice("::ffff:".length) : address;
+  const bare = bareAddress(address);
   return bare === "::1" || bare.startsWith("127.");
 };
 
+const ipv4ToInt = (ip: string): number | null => {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return null;
+  let n = 0;
+  for (const part of parts) {
+    const value = Number(part);
+    if (!Number.isInteger(value) || value < 0 || value > 255 || part !== String(value)) return null;
+    n = n * 256 + value;
+  }
+  return n;
+};
+
+/** IPv4 CIDR membership; a spec without a prefix is an exact address match. */
+export const inCidr = (address: string, cidr: string): boolean => {
+  const [base, bitsRaw] = cidr.split("/");
+  const addr = ipv4ToInt(bareAddress(address));
+  const net = ipv4ToInt(bareAddress(base ?? ""));
+  if (addr === null || net === null) return bareAddress(address) === bareAddress(cidr);
+  const bits = bitsRaw === undefined ? 32 : Number(bitsRaw);
+  if (!Number.isInteger(bits) || bits < 0 || bits > 32) return false;
+  const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
+  return (addr & mask) >>> 0 === (net & mask) >>> 0;
+};
+
 /**
- * What a failed claim is counted against. Behind a proxy — `tailscale serve`, caddy, nginx — every
- * claim arrives from loopback, which would put every phone in the house on one budget and let one
- * bogus sender lock pairing for all of them. When the socket is loopback and a forwarding header is
- * present, the first entry of that header is the honest key; a direct socket is trusted over any
- * header, which a client can write for itself.
+ * What a failed claim is counted against. Every trusted hop — the web tier,
+ * `tailscale serve`, caddy, nginx — APPENDS the address it saw to
+ * x-forwarded-for, so the honest client is the rightmost entry that is not
+ * itself a trusted hop; anything left of it is client-writable and is never
+ * believed. A socket that is not a trusted hop is the client, headers ignored.
+ * Loopback is always a trusted hop; other proxy sources (the web tier's pod
+ * network on Kubernetes) are declared via MEND_TRUSTED_PROXIES CIDRs.
  */
 export const claimAddress = (
   remoteAddress: string | undefined,
   forwardedFor: string | undefined,
+  trustedProxies: ReadonlyArray<string> = [],
 ): string => {
   const address = remoteAddress ?? "unknown";
-  if (remoteAddress !== undefined && !isLoopbackAddress(remoteAddress)) return address;
-  const client = forwardedFor?.split(",")[0]?.trim();
-  return client === undefined || client === "" ? address : client;
+  const isTrustedHop = (addr: string): boolean =>
+    isLoopbackAddress(addr) || trustedProxies.some((cidr) => inCidr(addr, cidr));
+  if (remoteAddress === undefined || !isTrustedHop(remoteAddress)) return address;
+  const entries = (forwardedFor ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "");
+  for (let k = entries.length - 1; k >= 0; k -= 1) {
+    const entry = entries[k];
+    if (entry !== undefined && !isTrustedHop(entry)) return entry;
+  }
+  return address;
 };
 
-const serverPort = Config.int("PORT").pipe(Config.orElse(() => Config.succeed(3105)));
+/**
+ * The port CLIENTS arrive on — the web tier's, never this process's own PORT
+ * (3101, cluster-internal): pairing URLs and QR codes point phones at what
+ * they can actually reach. serve.mjs and the helm chart set it; the auth
+ * server trusts origins on the same variable.
+ */
+const publicPort = Config.int("MEND_WEB_PORT").pipe(Config.orElse(() => Config.succeed(3105)));
+
+const trustedProxyCidrs = Config.string("MEND_TRUSTED_PROXIES").pipe(
+  Config.orElse(() => Config.succeed("")),
+  Config.map((raw) =>
+    raw
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry !== ""),
+  ),
+);
 
 const toDeviceView = (device: PairedDevice): DeviceView =>
   new DeviceView({
@@ -174,7 +229,7 @@ const devicePairingGroups = Effect.gen(function* () {
       .handle("createPairing", () =>
         Effect.gen(function* () {
           const caller = yield* CurrentUser;
-          const port = yield* serverPort.pipe(Effect.orDie);
+          const port = yield* publicPort.pipe(Effect.orDie);
           const pairing = yield* devices.createPairing({
             userId: caller.user.id,
             code: generatePairingCode(),
@@ -209,10 +264,12 @@ const devicePairingGroups = Effect.gen(function* () {
     handlers.handle("claim", ({ payload }) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
-        const port = yield* serverPort.pipe(Effect.orDie);
+        const port = yield* publicPort.pipe(Effect.orDie);
+        const trusted = yield* trustedProxyCidrs.pipe(Effect.orDie);
         const address = claimAddress(
           Option.getOrUndefined(request.remoteAddress),
           request.headers["x-forwarded-for"],
+          trusted,
         );
 
         const retryAfterSeconds = claimLimiter.retryAfter(address, Date.now());

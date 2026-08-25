@@ -10,6 +10,7 @@ import {
 import { Schema } from "effect";
 
 import { ProjectEnvironmentVariableId, ProjectId } from "../ids.ts";
+import { Timestamp } from "../timestamp.ts";
 
 /**
  * A project-owned, explicitly NON-SECRET environment name/value pair (plan:
@@ -27,8 +28,8 @@ export class ProjectEnvironmentVariable extends Schema.Class<ProjectEnvironmentV
   value: Schema.String,
   /** Integer row revision; stale-write checks compare against it, timestamps are display-only. */
   revision: Schema.Int,
-  createdAt: Schema.Date,
-  updatedAt: Schema.Date,
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
 }) {}
 
 /**

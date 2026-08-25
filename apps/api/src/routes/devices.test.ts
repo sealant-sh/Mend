@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEVICE_TOKEN_PREFIX,
   claimAddress,
+  inCidr,
   PAIRING_ALPHABET,
   PAIRING_CODE_LENGTH,
   generatePairingCode,
@@ -100,17 +101,47 @@ describe("who a failed claim is counted against", () => {
     expect(claimAddress("10.0.0.4", "203.0.113.9")).toBe("10.0.0.4");
   });
 
-  it("keys on the forwarded client when a proxy made every claim loopback", () => {
-    expect(claimAddress("127.0.0.1", "203.0.113.9, 10.0.0.1")).toBe("203.0.113.9");
+  it("keys on the RIGHTMOST untrusted forwarded entry when the socket is a trusted hop", () => {
+    // Trusted hops append what they saw; anything left of the last untrusted
+    // entry is client-writable and never believed. Here 10.0.0.1 is what the
+    // loopback proxy actually observed — the leading entry is the client's own
+    // (spoofable) claim.
+    expect(claimAddress("127.0.0.1", "203.0.113.9, 10.0.0.1")).toBe("10.0.0.1");
     expect(claimAddress("::1", " 203.0.113.9 ")).toBe("203.0.113.9");
     expect(claimAddress("::ffff:127.0.0.1", "203.0.113.9")).toBe("203.0.113.9");
+  });
+
+  it("walks past declared trusted-proxy hops to the real client", () => {
+    // Kubernetes: the API's peer is the web pod; the web tier appended the
+    // phone's address. The pod CIDR is declared via MEND_TRUSTED_PROXIES.
+    expect(claimAddress("10.244.1.7", "192.168.1.20", ["10.244.0.0/16"])).toBe("192.168.1.20");
+    // Two trusted hops (LB pod then web pod): skip both appended entries.
+    expect(claimAddress("10.244.1.7", "192.168.1.20, 10.244.2.9", ["10.244.0.0/16"])).toBe(
+      "192.168.1.20",
+    );
+    // A peer outside the trusted set is the client, headers ignored.
+    expect(claimAddress("10.9.9.9", "203.0.113.9", ["10.244.0.0/16"])).toBe("10.9.9.9");
   });
 
   it("falls back to the address when there is nothing better", () => {
     expect(claimAddress("127.0.0.1", undefined)).toBe("127.0.0.1");
     expect(claimAddress("127.0.0.1", "  ")).toBe("127.0.0.1");
     expect(claimAddress(undefined, undefined)).toBe("unknown");
-    expect(claimAddress(undefined, "203.0.113.9")).toBe("203.0.113.9");
+    // No socket address means no trusted hop: the header alone is never believed.
+    expect(claimAddress(undefined, "203.0.113.9")).toBe("unknown");
+    // Every forwarded entry trusted (proxy talking to itself): key on the socket.
+    expect(claimAddress("127.0.0.1", "127.0.0.1")).toBe("127.0.0.1");
+  });
+});
+
+describe("inCidr", () => {
+  it("matches IPv4 prefixes and exact addresses, including v4-mapped v6", () => {
+    expect(inCidr("10.244.3.4", "10.244.0.0/16")).toBe(true);
+    expect(inCidr("10.245.0.1", "10.244.0.0/16")).toBe(false);
+    expect(inCidr("::ffff:10.244.3.4", "10.244.0.0/16")).toBe(true);
+    expect(inCidr("10.0.0.5", "10.0.0.5")).toBe(true);
+    expect(inCidr("fd7a::1", "fd7a::1")).toBe(true);
+    expect(inCidr("10.0.0.5", "10.0.0.0/99")).toBe(false);
   });
 });
 

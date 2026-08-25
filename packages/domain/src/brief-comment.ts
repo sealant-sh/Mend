@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import { BriefCommentId, BriefId, RunId } from "./ids.ts";
+import { Timestamp } from "./timestamp.ts";
 
 export const CommentAuthorKind = Schema.Literals(["reviewer", "mend"]);
 export type CommentAuthorKind = typeof CommentAuthorKind.Type;
@@ -34,5 +35,5 @@ export class BriefComment extends Schema.Class<BriefComment>("BriefComment")({
   body: Schema.String,
   routedAction: Schema.NullOr(RoutedAction),
   routedRunId: Schema.NullOr(RunId),
-  createdAt: Schema.Date,
+  createdAt: Timestamp,
 }) {}

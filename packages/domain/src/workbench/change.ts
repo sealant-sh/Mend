@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import { ChangeId, ProjectId, SessionId, Sha } from "../ids.ts";
+import { Timestamp } from "../timestamp.ts";
 
 /**
  * The reviewable object (plan §5.6): the session worktree against its base.
@@ -20,6 +21,6 @@ export class Change extends Schema.Class<Change>("WorkbenchChange")({
   baseSha: Sha,
   /** Last observed worktree head; refreshed opportunistically, never authoritative. */
   headSha: Schema.NullOr(Sha),
-  createdAt: Schema.Date,
-  updatedAt: Schema.Date,
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
 }) {}

@@ -7,6 +7,7 @@ import {
   SessionId,
   SessionProcessId,
 } from "../ids.ts";
+import { Timestamp } from "../timestamp.ts";
 
 /**
  * What kind of work a workspace process is doing. A session is the worktree
@@ -102,7 +103,7 @@ export class SessionProcess extends Schema.Class<SessionProcess>("SessionProcess
   protocol: Schema.Literals(["tcp", "udp"]),
   /** Services: the host port Mend binds on its private interfaces. */
   hostPort: Schema.NullOr(Schema.Int),
-  createdAt: Schema.Date,
-  exitedAt: Schema.NullOr(Schema.Date),
-  updatedAt: Schema.Date,
+  createdAt: Timestamp,
+  exitedAt: Schema.NullOr(Timestamp),
+  updatedAt: Timestamp,
 }) {}

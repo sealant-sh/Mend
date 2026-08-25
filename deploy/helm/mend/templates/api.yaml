@@ -57,6 +57,16 @@ spec:
             {{- include "mend.commonEnv" . | nindent 12 }}
             - { name: MEND_MODE, value: all }
             - { name: PORT, value: "3101" }
+            # Browsers reach Mend through the web tier: its port must be a
+            # trusted auth origin alongside the API's own.
+            - { name: MEND_WEB_PORT, value: "3105" }
+            {{- if .Values.api.trustedProxyCidrs }}
+            # The web tier proxies every client request, so the pairing rate
+            # limiter reads the client from x-forwarded-for — but only when the
+            # peer is a declared proxy hop. The NetworkPolicy already limits
+            # who can reach this port; these CIDRs name that same set.
+            - { name: MEND_TRUSTED_PROXIES, value: {{ join "," .Values.api.trustedProxyCidrs | quote }} }
+            {{- end }}
             # The machine git key (`mend keys init`) must survive Pod replacement: it lives on
             # the store claim, mounted at its own path so it never sits inside the store tree.
             - { name: MEND_KEYS_ROOT, value: /var/lib/mend/keys }

@@ -2,6 +2,7 @@ import { Schema } from "effect";
 
 import { EvidencePointer } from "./evidence.ts";
 import { ChangeId, IssueId, RunId, SealantRunId, SealantWorkspaceId } from "./ids.ts";
+import { SequenceNumber, Timestamp } from "./timestamp.ts";
 
 /** Initial run · follow-up runs · re-verification runs. Runs are many. */
 export const RunKind = Schema.Literals(["initial", "follow-up", "verification"]);
@@ -45,9 +46,9 @@ export class Run extends Schema.Class<Run>("Run")({
   /** Present only on failed runs whose recording was summed (PRODUCT.md §6). */
   failureBrief: Schema.NullOr(FailureBrief),
   /** Last record sequence the supervisor persisted — crash-resume re-attaches from here. */
-  lastSeenSequence: Schema.BigInt,
-  startedAt: Schema.NullOr(Schema.Date),
-  settledAt: Schema.NullOr(Schema.Date),
-  createdAt: Schema.Date,
-  updatedAt: Schema.Date,
+  lastSeenSequence: SequenceNumber,
+  startedAt: Schema.NullOr(Timestamp),
+  settledAt: Schema.NullOr(Timestamp),
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
 }) {}

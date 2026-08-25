@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import { SealantRunId, SealantWorkspaceId, SessionId } from "../ids.ts";
+import { SequenceNumber, Timestamp } from "../timestamp.ts";
 import { SessionStatus } from "./session.ts";
 
 /**
@@ -21,7 +22,7 @@ export class SessionRun extends Schema.Class<SessionRun>("SessionRun")({
   status: SessionStatus,
   summary: Schema.NullOr(Schema.String),
   /** Crash-resume cursor for this Sealant run alone. */
-  lastSeenSequence: Schema.BigInt,
+  lastSeenSequence: SequenceNumber,
   /**
    * SAFE launch manifest of the project environment this run's workspace was created with:
    * aggregate revision plus name-sorted variable NAMES — never values, never hashes. Lives here,
@@ -34,8 +35,8 @@ export class SessionRun extends Schema.Class<SessionRun>("SessionRun")({
   /** Same manifest for the project's Secrets set — names only, by construction. */
   secretRevision: Schema.NullOr(Schema.Int),
   secretNames: Schema.NullOr(Schema.Array(Schema.String)),
-  startedAt: Schema.Date,
-  settledAt: Schema.NullOr(Schema.Date),
-  createdAt: Schema.Date,
-  updatedAt: Schema.Date,
+  startedAt: Timestamp,
+  settledAt: Schema.NullOr(Timestamp),
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
 }) {}

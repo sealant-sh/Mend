@@ -51,7 +51,7 @@ export const projectsGroup = HttpApiGroup.make("projects")
     HttpApiEndpoint.delete("remove", "/projects/:id", {
       params: { id: ProjectId },
       success: RemovalReport,
-      error: Schema.Union([NotFound, StoreFailure]),
+      error: [NotFound, StoreFailure],
     }),
   )
   .add(
@@ -69,7 +69,7 @@ export const projectsGroup = HttpApiGroup.make("projects")
       params: { id: ProjectId },
       payload: ProjectGitAuthRequest,
       success: Project,
-      error: Schema.Union([NotFound, StoreFailure]),
+      error: [NotFound, StoreFailure],
     }),
   )
   .add(
@@ -77,7 +77,7 @@ export const projectsGroup = HttpApiGroup.make("projects")
       params: { id: ProjectId },
       payload: ProjectWorkspaceImageRequest,
       success: ProjectWorkspaceImageSaveResult,
-      error: Schema.Union([NotFound, SettingsFailure]),
+      error: [NotFound, SettingsFailure],
     }),
   )
   .add(
@@ -174,7 +174,7 @@ export const referencesGroup = HttpApiGroup.make("references")
     HttpApiEndpoint.post("refresh", "/references/:id/refresh", {
       params: { id: ReferenceId },
       success: Reference,
-      error: Schema.Union([NotFound, StoreFailure]),
+      error: [NotFound, StoreFailure],
     }),
   )
   .add(
@@ -220,7 +220,7 @@ export const projectMountsGroup = HttpApiGroup.make("projectMounts")
       params: { id: ProjectId },
       payload: AddProjectMount,
       success: ProjectMount,
-      error: Schema.Union([NotFound, StoreFailure]),
+      error: [NotFound, StoreFailure],
     }),
   )
   .add(

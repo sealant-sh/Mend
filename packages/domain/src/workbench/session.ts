@@ -9,6 +9,7 @@ import {
   Sha,
 } from "../ids.ts";
 import { WorkspaceImage } from "../settings.ts";
+import { SequenceNumber, Timestamp } from "../timestamp.ts";
 import { SessionExtraMount } from "./mount.ts";
 import { SessionReferenceMount } from "./reference.ts";
 
@@ -77,11 +78,11 @@ export class Session extends Schema.Class<Session>("Session")({
   /** Latest platform interactive PTY session id — the live reattach handle. */
   sealantSessionId: Schema.NullOr(Schema.String),
   /** Platform-returned expiry for the current workspace after the last successful TTL renewal. */
-  workspaceExpiresAt: Schema.NullOr(Schema.Date),
+  workspaceExpiresAt: Schema.NullOr(Timestamp),
   /** When Mend last successfully renewed the current workspace. */
-  workspaceTtlRenewedAt: Schema.NullOr(Schema.Date),
+  workspaceTtlRenewedAt: Schema.NullOr(Timestamp),
   /** When the latest renewal attempt failed; null after the next success. */
-  workspaceTtlRenewalFailedAt: Schema.NullOr(Schema.Date),
+  workspaceTtlRenewalFailedAt: Schema.NullOr(Timestamp),
   /** Latest renewal failure for the current workspace; null after the next success. */
   workspaceTtlRenewalError: Schema.NullOr(Schema.String),
   /** The image this session actually launched with; null before launch (or pre-column rows). */
@@ -94,11 +95,11 @@ export class Session extends Schema.Class<Session>("Session")({
   /** What the harness reported at settle, when anything. */
   summary: Schema.NullOr(Schema.String),
   /** Latest run's progress mirror for list surfaces; supervision reads the per-run cursor. */
-  lastSeenSequence: Schema.BigInt,
+  lastSeenSequence: SequenceNumber,
   /** False for migrated sessions whose previously overwritten run ids cannot be recovered. */
   recordHistoryComplete: Schema.Boolean,
-  startedAt: Schema.NullOr(Schema.Date),
-  settledAt: Schema.NullOr(Schema.Date),
-  createdAt: Schema.Date,
-  updatedAt: Schema.Date,
+  startedAt: Schema.NullOr(Timestamp),
+  settledAt: Schema.NullOr(Timestamp),
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
 }) {}

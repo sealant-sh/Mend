@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import { ChangeId, SessionId } from "../ids.ts";
+import { Timestamp } from "../timestamp.ts";
 import { RecordLink } from "./review-comment.ts";
 
 /**
@@ -43,5 +44,5 @@ export class ChangeTour extends Schema.Class<ChangeTour>("ChangeTour")({
   approach: Schema.NullOr(Schema.String),
   stops: Schema.Array(TourStop),
   diffDigest: Schema.String,
-  createdAt: Schema.Date,
+  createdAt: Timestamp,
 }) {}

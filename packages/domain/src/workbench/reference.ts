@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import { ReferenceId, Sha } from "../ids.ts";
+import { Timestamp } from "../timestamp.ts";
 
 /**
  * An upstream repository cloned into the store as read-only source material —
@@ -21,9 +22,9 @@ export class Reference extends Schema.Class<Reference>("Reference")({
   pinnedRef: Schema.NullOr(Schema.String),
   /** HEAD of the clone as last observed — what sessions launched now would see. */
   headSha: Schema.NullOr(Sha),
-  refreshedAt: Schema.NullOr(Schema.Date),
-  createdAt: Schema.Date,
-  updatedAt: Schema.Date,
+  refreshedAt: Schema.NullOr(Timestamp),
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
 }) {}
 
 /**

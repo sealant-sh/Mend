@@ -13,6 +13,7 @@
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@mend/api-contracts": "workspace:*",
     "@mend/domain": "workspace:*",
     "@sealant/sdk": "catalog:",
     "effect": "catalog:"

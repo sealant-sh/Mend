@@ -1,7 +1,8 @@
 import { PgClient } from "@effect/sql-pg";
-import { Issue, IssueId, IssueSource, type IssueStage, type RunId } from "@mend/domain";
+import { NewIssue, QueueMove } from "@mend/api-contracts";
+import { Issue, IssueId, type IssueStage, type RunId } from "@mend/domain";
 import { and, asc, count, desc, eq, ne } from "drizzle-orm";
-import { Effect, Layer, Option, Schema } from "effect";
+import { Effect, Layer, Option } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -9,24 +10,8 @@ import { IssueNotFoundError } from "../errors.ts";
 import { notifyEvent } from "../events.ts";
 import { issues } from "../schema/workbench.ts";
 
-/** Manual entry is just another intake; tracker layers arrive with M5. */
-export class NewIssue extends Schema.Class<NewIssue>("NewIssue")({
-  source: IssueSource,
-  externalRef: Schema.NullOr(Schema.String),
-  repository: Schema.String,
-  title: Schema.String,
-  body: Schema.String,
-}) {}
-
-/**
- * The moves a person can make on the board — Gate 1 and its undo. Everything
- * else (mending, review, merged) is the product's to set, never the drag's.
- */
-export class QueueMove extends Schema.Class<QueueMove>("QueueMove")({
-  stage: Schema.Literals(["triage", "queued"]),
-  /** Target index within queued, 0 = top. Appends when null. */
-  position: Schema.NullOr(Schema.Int),
-}) {}
+// Intake shapes are contract data now; re-exported so repo callers keep working.
+export { NewIssue, QueueMove };
 
 export class IssuesRepo extends Context.Service<
   IssuesRepo,

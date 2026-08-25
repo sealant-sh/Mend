@@ -1,8 +1,29 @@
-import { SealantConnection } from "@mend/sealant";
+import { Timestamp } from "@mend/domain";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 
 import { AuthMiddleware, HealthStatus } from "./common.ts";
+
+/**
+ * What the settings page shows: what was observed when Mend last talked to the
+ * control plane — never a judgment about it.
+ */
+export const SealantConnectionStatus = Schema.Literals([
+  "connected",
+  "unauthorized",
+  /** The control plane responded, but not with the SDK surface Mend speaks. */
+  "mismatched",
+  "unreachable",
+]);
+export type SealantConnectionStatus = typeof SealantConnectionStatus.Type;
+
+export class SealantConnection extends Schema.Class<SealantConnection>("SealantConnection")({
+  status: SealantConnectionStatus,
+  baseUrl: Schema.String,
+  /** The observed failure, verbatim, when not connected. */
+  detail: Schema.NullOr(Schema.String),
+  checkedAt: Timestamp,
+}) {}
 
 export const healthGroup = HttpApiGroup.make("health").add(
   HttpApiEndpoint.get("status", "/health", { success: HealthStatus }),

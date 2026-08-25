@@ -1,4 +1,3 @@
-import type { AuthSession } from "@mend/auth";
 import { SealantRunId, SessionProcessId } from "@mend/domain";
 import { Schema } from "effect";
 import * as Context from "effect/Context";
@@ -17,8 +16,23 @@ export class Unauthorized extends Schema.TaggedErrorClass<Unauthorized>()(
   { httpApiStatus: 401 },
 ) {}
 
+/**
+ * The signed-in identity as endpoints see it. The shape @mend/auth's session
+ * resolves to — declared here (not imported) so the contract package carries
+ * no auth implementation; the server's auth layer satisfies it structurally.
+ */
+export interface AuthenticatedUser {
+  readonly id: string;
+  readonly email: string;
+  readonly name: string;
+}
+export interface AuthenticatedSession {
+  readonly user: AuthenticatedUser;
+  readonly expiresAt: Date;
+}
+
 /** Who is signed in, provided to protected endpoints by the auth middleware. */
-export class CurrentUser extends Context.Service<CurrentUser, AuthSession>()(
+export class CurrentUser extends Context.Service<CurrentUser, AuthenticatedSession>()(
   "@mend/api/CurrentUser",
 ) {}
 

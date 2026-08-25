@@ -1,4 +1,4 @@
-import type { DotfilesRepositoryRequest } from "@mend/api-contracts";
+import type { DotfilesRepositoryRequest, LaunchRequest } from "@mend/api-contracts";
 import type { WorkspaceImage } from "@mend/domain";
 import type { inferRouterOutputs } from "@trpc/server";
 
@@ -93,8 +93,16 @@ export type TourStopDto = ChangeTourDto["stops"][number];
 export type ChangePassDto = Outputs["changes"]["passes"][number];
 export type FollowUpDto = NonNullable<Outputs["sessions"]["pendingFollowUp"]>;
 
-export type SettingsDto = Omit<Outputs["settings"]["get"], "workspaceImage"> & {
+export type SettingsDto = Omit<
+  Outputs["settings"]["get"],
+  "workspaceImage" | "autoTour" | "autoSuggest" | "autoName"
+> & {
   readonly workspaceImage: WorkspaceImageDto;
+  // The decoding defaults make these optional on the Encoded side, but the
+  // API always writes them when encoding — required is the true wire shape.
+  readonly autoTour: boolean;
+  readonly autoSuggest: boolean;
+  readonly autoName: boolean;
 };
 export type WorkspaceEnvironmentSaveResultDto = Omit<
   Outputs["settings"]["saveWorkspaceEnvironment"],
@@ -292,13 +300,7 @@ export const launchSession = (id: string, argv: ReadonlyArray<string>) =>
   orLogin(trpc.sessions.launch.mutate({ id, body: { argv } }));
 
 /** A composed start — the server turns this into the harness's own argv. */
-export interface LaunchStartDto {
-  readonly prompt?: string;
-  readonly model?: string;
-  readonly effort?: string;
-  readonly permissionMode?: string;
-  readonly speed?: string;
-}
+export type LaunchStartDto = Omit<typeof LaunchRequest.Encoded, "mode" | "argv">;
 export const launchSessionStart = (id: string, start: LaunchStartDto) =>
   orLogin(trpc.sessions.launch.mutate({ id, body: { ...start } }));
 export const stopSession = (id: string) => orLogin(trpc.sessions.stop.mutate({ id }));

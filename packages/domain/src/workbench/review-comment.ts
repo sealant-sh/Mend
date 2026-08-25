@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import { ChangeId, CheckpointId, ReviewCommentId, ReviewSliceId, SessionId } from "../ids.ts";
+import { Timestamp } from "../timestamp.ts";
 import { DiffDigest } from "./review-slice.ts";
 
 /** Who wrote it: the human reviewer, or Mend ("Mend reads the change", §7.3). */
@@ -94,6 +95,6 @@ export class ReviewComment extends Schema.Class<ReviewComment>("ReviewComment")(
   evidence: Schema.Array(RecordLink),
   /** The session a bundled follow-up was sent to, once sent. */
   sentToSessionId: Schema.NullOr(SessionId),
-  createdAt: Schema.Date,
-  updatedAt: Schema.Date,
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
 }) {}

@@ -12,10 +12,7 @@
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@mend/auth": "workspace:*",
-    "@mend/db": "workspace:*",
     "@mend/domain": "workspace:*",
-    "@mend/sealant": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {

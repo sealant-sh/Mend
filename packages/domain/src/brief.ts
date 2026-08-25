@@ -4,6 +4,7 @@ import { Freshness } from "./change.ts";
 import { EvidencePointer } from "./evidence.ts";
 import { BriefId, ChangeId, Sha } from "./ids.ts";
 import { Disposition } from "./review-question.ts";
+import { Timestamp } from "./timestamp.ts";
 
 /** Header facts: repo · PR ref · issue ref · checks · head sha · freshness. */
 export class BriefHeader extends Schema.Class<BriefHeader>("BriefHeader")({
@@ -83,8 +84,8 @@ export class Brief extends Schema.Class<Brief>("Brief")({
   changeId: ChangeId,
   currentVersion: Schema.Int,
   document: BriefDocument,
-  createdAt: Schema.Date,
-  updatedAt: Schema.Date,
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
 }) {}
 
 /** Prior versions stay in history. */
@@ -92,5 +93,5 @@ export class BriefVersion extends Schema.Class<BriefVersion>("BriefVersion")({
   briefId: BriefId,
   version: Schema.Int,
   document: BriefDocument,
-  createdAt: Schema.Date,
+  createdAt: Timestamp,
 }) {}

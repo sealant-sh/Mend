@@ -4,6 +4,10 @@ import * as path from "node:path";
 import { pipeline, Readable } from "node:stream";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
+
+import { appRouter } from "../server/router.ts";
+
 /**
  * The web server (ARCHITECTURE.md §2): the TanStack Start app plus a
  * transparent proxy for everything under `/api` to the Mend API server
@@ -58,13 +62,36 @@ if (ssr === null) {
   console.warn("[web] no built app found (dist/server/server.js) — proxying /api only");
 }
 
+/**
+ * Relay a web `Response` onto the node response. `Headers.entries()` folds
+ * multiple set-cookie values into one comma-joined string — which breaks
+ * cookies, whose values contain commas (Expires) — so set-cookie rides as
+ * the array `getSetCookie()` preserves.
+ */
+const writeWebResponse = (webResponse: Response, response: http.ServerResponse): void => {
+  const headers: http.OutgoingHttpHeaders = {};
+  for (const [name, value] of webResponse.headers.entries()) {
+    if (name !== "set-cookie") headers[name] = value;
+  }
+  const cookies = webResponse.headers.getSetCookie();
+  if (cookies.length > 0) headers["set-cookie"] = cookies;
+  response.writeHead(webResponse.status, headers);
+  if (webResponse.body === null) {
+    response.end();
+    return;
+  }
+  pipeline(
+    Readable.fromWeb(webResponse.body as unknown as import("node:stream/web").ReadableStream),
+    response,
+    () => {},
+  );
+};
+
 // ─── tRPC: the UI's typed surface; procedures forward to the API ────────────
 const handleTrpc = async (
   request: http.IncomingMessage,
   response: http.ServerResponse,
 ): Promise<void> => {
-  const { fetchRequestHandler } = await import("@trpc/server/adapters/fetch");
-  const { appRouter } = await import("../server/router.ts");
   const headers = new Headers();
   for (const [name, value] of Object.entries(request.headers)) {
     if (typeof value === "string") headers.set(name, value);
@@ -82,16 +109,7 @@ const handleTrpc = async (
     router: appRouter,
     createContext: () => ({ headers, apiUrl: apiUrl.origin }),
   });
-  response.writeHead(webResponse.status, Object.fromEntries(webResponse.headers.entries()));
-  if (webResponse.body === null) {
-    response.end();
-    return;
-  }
-  pipeline(
-    Readable.fromWeb(webResponse.body as unknown as import("node:stream/web").ReadableStream),
-    response,
-    () => {},
-  );
+  writeWebResponse(webResponse, response);
 };
 
 const hopByHop = new Set([
@@ -105,6 +123,29 @@ const hopByHop = new Set([
   "upgrade",
 ]);
 
+/**
+ * Standard forwarded headers for both proxy paths. proto passes through an
+ * upstream TLS terminator's value; the client address is APPENDED to
+ * x-forwarded-for (never trusted verbatim) so the API can take the last,
+ * proxy-written entry.
+ */
+const forwardHeaders = (request: http.IncomingMessage): http.OutgoingHttpHeaders => {
+  const proto = request.headers["x-forwarded-proto"];
+  const priorFor = request.headers["x-forwarded-for"];
+  return {
+    ...request.headers,
+    // The API sees the proxy's hostname otherwise; keep the client's.
+    "x-forwarded-host": request.headers.host ?? "",
+    "x-forwarded-proto": typeof proto === "string" && proto !== "" ? proto : "http",
+    "x-forwarded-for": [
+      Array.isArray(priorFor) ? priorFor.join(", ") : priorFor,
+      request.socket.remoteAddress,
+    ]
+      .filter(Boolean)
+      .join(", "),
+  };
+};
+
 /** Forward one request to the API verbatim; stream both directions, never buffer. */
 const proxyRequest = (request: http.IncomingMessage, response: http.ServerResponse): void => {
   const upstream = http.request(
@@ -113,12 +154,7 @@ const proxyRequest = (request: http.IncomingMessage, response: http.ServerRespon
       port: apiUrl.port,
       method: request.method,
       path: request.url,
-      headers: {
-        ...request.headers,
-        // The API sees the proxy's hostname otherwise; keep the client's.
-        "x-forwarded-host": request.headers.host ?? "",
-        "x-forwarded-proto": "http",
-      },
+      headers: forwardHeaders(request),
     },
     (upstreamResponse) => {
       const headers = Object.fromEntries(
@@ -142,7 +178,10 @@ const server = http.createServer((request, response) => {
     return;
   }
   if (url === "/trpc" || url.startsWith("/trpc/")) {
-    void handleTrpc(request, response);
+    handleTrpc(request, response).catch(() => {
+      if (!response.headersSent) response.writeHead(500);
+      response.end();
+    });
     return;
   }
 
@@ -176,16 +215,7 @@ const server = http.createServer((request, response) => {
       ...(hasBody ? { body: Readable.toWeb(request) as unknown as BodyInit, duplex: "half" } : {}),
     } as RequestInit);
     const webResponse = await ssr.fetch(webRequest);
-    response.writeHead(webResponse.status, Object.fromEntries(webResponse.headers.entries()));
-    if (webResponse.body === null) {
-      response.end();
-      return;
-    }
-    pipeline(
-      Readable.fromWeb(webResponse.body as unknown as import("node:stream/web").ReadableStream),
-      response,
-      () => {},
-    );
+    writeWebResponse(webResponse, response);
   })().catch(() => {
     if (!response.headersSent) response.writeHead(500);
     response.end();
@@ -193,6 +223,29 @@ const server = http.createServer((request, response) => {
 });
 
 // ─── WebSocket upgrades: pipe both sockets raw, verbatim ────────────────────
+
+/**
+ * Rebuild the upstream's header block from rawHeaders — repeats (set-cookie)
+ * survive. The 101 path relays verbatim (Connection/Upgrade are the point and
+ * there is no body); the plain-response path must DROP hop-by-hop headers:
+ * node already de-chunked the body, so relaying `transfer-encoding: chunked`
+ * over decoded bytes is broken framing — `connection: close` + EOF delimits
+ * the body instead.
+ */
+const rawHeaderBlock = (
+  upstreamResponse: http.IncomingMessage,
+  options: { readonly stripHopByHop: boolean },
+): string => {
+  let lines = "";
+  for (let k = 0; k + 1 < upstreamResponse.rawHeaders.length; k += 2) {
+    const name = upstreamResponse.rawHeaders[k] ?? "";
+    if (options.stripHopByHop && hopByHop.has(name.toLowerCase())) continue;
+    lines += `${name}: ${upstreamResponse.rawHeaders[k + 1]}\r\n`;
+  }
+  if (options.stripHopByHop) lines += "connection: close\r\n";
+  return lines;
+};
+
 server.on("upgrade", (request, socket, head) => {
   const url = request.url ?? "/";
   if (!(url === "/api" || url.startsWith("/api/"))) {
@@ -204,14 +257,20 @@ server.on("upgrade", (request, socket, head) => {
     port: apiUrl.port,
     method: request.method,
     path: url,
-    headers: request.headers,
+    headers: forwardHeaders(request),
+  });
+  // Node hands the detached socket to this listener with NO error handling of
+  // its own: a client reset before the API answers would otherwise be an
+  // uncaught 'error' and take down the whole web tier.
+  let upstreamAnswered = false;
+  socket.on("error", () => upstream.destroy());
+  socket.on("close", () => {
+    if (!upstreamAnswered) upstream.destroy();
   });
   upstream.on("upgrade", (upstreamResponse, upstreamSocket, upstreamHead) => {
+    upstreamAnswered = true;
     const statusLine = `HTTP/1.1 ${upstreamResponse.statusCode ?? 101} ${upstreamResponse.statusMessage ?? "Switching Protocols"}\r\n`;
-    const headerLines = Object.entries(upstreamResponse.headers)
-      .map(([name, value]) => `${name}: ${Array.isArray(value) ? value.join(", ") : value}\r\n`)
-      .join("");
-    socket.write(statusLine + headerLines + "\r\n");
+    socket.write(statusLine + rawHeaderBlock(upstreamResponse, { stripHopByHop: false }) + "\r\n");
     if (upstreamHead.length > 0) socket.write(upstreamHead);
     if (head.length > 0) upstreamSocket.write(head);
     pipeline(socket, upstreamSocket, () => {});
@@ -219,15 +278,13 @@ server.on("upgrade", (request, socket, head) => {
   });
   // The API answered without upgrading (401, 404, ...): relay it as HTTP.
   upstream.on("response", (upstreamResponse) => {
+    upstreamAnswered = true;
     const statusLine = `HTTP/1.1 ${upstreamResponse.statusCode ?? 502} ${upstreamResponse.statusMessage ?? ""}\r\n`;
-    const headerLines = Object.entries(upstreamResponse.headers)
-      .map(([name, value]) => `${name}: ${Array.isArray(value) ? value.join(", ") : value}\r\n`)
-      .join("");
-    socket.write(statusLine + headerLines + "\r\n");
+    socket.write(statusLine + rawHeaderBlock(upstreamResponse, { stripHopByHop: true }) + "\r\n");
     pipeline(upstreamResponse, socket, () => {});
   });
   upstream.on("error", () => socket.destroy());
-  upstream.end(head.length > 0 ? undefined : undefined);
+  upstream.end();
 });
 
 server.listen(port, () => {

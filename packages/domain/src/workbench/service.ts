@@ -8,6 +8,7 @@ import {
   SessionId,
   SessionProcessId,
 } from "../ids.ts";
+import { Timestamp } from "../timestamp.ts";
 import { SessionProcess } from "./session-process.ts";
 
 /** How a stable Service declaration entered one session. */
@@ -48,8 +49,8 @@ export class Service extends Schema.Class<Service>("Service")({
   attemptHistoryComplete: Schema.Boolean,
   forwardHistoryComplete: Schema.Boolean,
   observationHistoryComplete: Schema.Boolean,
-  createdAt: Schema.Date,
-  updatedAt: Schema.Date,
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
 }) {}
 
 export const ServiceForwardState = Schema.Literals(["binding", "bound", "closed", "failed"]);
@@ -67,10 +68,10 @@ export class ServiceForward extends Schema.Class<ServiceForward>("ServiceForward
   state: ServiceForwardState,
   error: Schema.NullOr(Schema.String),
   supersedesForwardId: Schema.NullOr(ServiceForwardId),
-  createdAt: Schema.Date,
-  boundAt: Schema.NullOr(Schema.Date),
-  closedAt: Schema.NullOr(Schema.Date),
-  updatedAt: Schema.Date,
+  createdAt: Timestamp,
+  boundAt: Schema.NullOr(Timestamp),
+  closedAt: Schema.NullOr(Timestamp),
+  updatedAt: Timestamp,
 }) {}
 
 export const ServiceTargetState = Schema.Literals(["reachable", "unreachable"]);
@@ -92,8 +93,8 @@ export class ServiceObservation extends Schema.Class<ServiceObservation>("Servic
   state: ServiceTargetState,
   source: ServiceObservationSource,
   error: Schema.NullOr(Schema.String),
-  firstObservedAt: Schema.Date,
-  lastObservedAt: Schema.Date,
+  firstObservedAt: Timestamp,
+  lastObservedAt: Timestamp,
 }) {}
 
 export const ServiceEndpointScope = Schema.Literals(["loopback", "private"]);
@@ -117,9 +118,9 @@ export class ServiceView extends Schema.Class<ServiceView>("ServiceView")({
   currentForward: Schema.NullOr(ServiceForward),
   previousForward: Schema.NullOr(ServiceForward),
   latestObservation: Schema.NullOr(ServiceObservation),
-  workspaceExpiresAt: Schema.NullOr(Schema.Date),
-  workspaceTtlRenewedAt: Schema.NullOr(Schema.Date),
-  workspaceTtlRenewalFailedAt: Schema.NullOr(Schema.Date),
+  workspaceExpiresAt: Schema.NullOr(Timestamp),
+  workspaceTtlRenewedAt: Schema.NullOr(Timestamp),
+  workspaceTtlRenewalFailedAt: Schema.NullOr(Timestamp),
   workspaceTtlRenewalError: Schema.NullOr(Schema.String),
   endpoints: Schema.Array(ServiceEndpoint),
   previousEndpoints: Schema.Array(ServiceEndpoint),

@@ -2,6 +2,7 @@ import { Schema } from "effect";
 
 import { ProjectId, Sha } from "../ids.ts";
 import { WorkspaceImage } from "../settings.ts";
+import { Timestamp } from "../timestamp.ts";
 
 /**
  * A project's stance on one review-automation switch: follow the Settings
@@ -69,6 +70,6 @@ export class Project extends Schema.Class<Project>("Project")({
    * effectively instant. Explicit resource intent: N ready containers per project.
    */
   hotSessions: Schema.Number,
-  createdAt: Schema.Date,
-  updatedAt: Schema.Date,
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
 }) {}

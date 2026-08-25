@@ -1,4 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
+import { Timestamp } from "@mend/domain";
 import { and, desc, eq, gt, isNull, lt } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -18,14 +19,14 @@ export class PairedDevice extends Schema.Class<PairedDevice>("PairedDevice")({
   id: Schema.String,
   name: Schema.String,
   platform: Schema.String,
-  createdAt: Schema.Date,
-  lastUsedAt: Schema.NullOr(Schema.Date),
+  createdAt: Timestamp,
+  lastUsedAt: Schema.NullOr(Timestamp),
 }) {}
 
 /** A pairing code as minted: the code and the moment it stops being claimable. */
 export class PairingCode extends Schema.Class<PairingCode>("PairingCode")({
   code: Schema.String,
-  expiresAt: Schema.Date,
+  expiresAt: Timestamp,
 }) {}
 
 /** The account a device is paired to — better-auth's `user` row, read as plain SQL. */
