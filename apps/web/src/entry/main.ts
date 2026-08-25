@@ -24,7 +24,10 @@ import { appRouter } from "../server/routers/index.ts";
  * raw.
  */
 
-const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+// This file runs from two places: as source (src/entry/main.ts, dist two
+// levels up) and as the production bundle (dist/entry.mjs, dist right here).
+const here = path.dirname(fileURLToPath(import.meta.url));
+const distDir = existsSync(path.join(here, "client")) ? here : path.resolve(here, "../../dist");
 const port = Number(process.env["PORT"] ?? "3105");
 const apiUrl = new URL(process.env["MEND_API_URL"] ?? "http://localhost:3101");
 
@@ -49,8 +52,8 @@ const contentTypeFor = (file: string): string => {
 };
 
 // ─── The built app: static assets + SSR ─────────────────────────────────────
-const clientDir = path.join(appDir, "dist/client");
-const ssrEntry = path.join(appDir, "dist/server/server.js");
+const clientDir = path.join(distDir, "client");
+const ssrEntry = path.join(distDir, "server/server.js");
 const ssr: { readonly fetch: (request: Request) => Promise<Response> } | null = existsSync(ssrEntry)
   ? (
       (await import(pathToFileURL(ssrEntry).href)) as {

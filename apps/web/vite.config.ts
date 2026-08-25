@@ -17,6 +17,9 @@ const allowedHosts = process.env.MEND_DEV_HOSTS?.split(",")
   .filter((host) => host.length > 0);
 
 const config = defineConfig({
+  // Bundle the SSR output completely (react, router, everything): the
+  // production web image ships dist/ alone — no node_modules at runtime.
+  ssr: { noExternal: true },
   server: {
     // The workbench is steered from any device on the operator's network
     // (ARCHITECTURE.md §9), so dev binds every interface, not just loopback.

@@ -105,6 +105,9 @@ catalogs:
     electron-vite:
       specifier: ^5.0.0
       version: 5.0.0
+    esbuild:
+      specifier: ^0.28.1
+      version: 0.28.1
     framer-motion:
       specifier: ^12.23.24
       version: 12.42.2
@@ -736,6 +739,9 @@ importers:
       '@vitejs/plugin-react':
         specifier: 'catalog:'
         version: 5.2.0(vite@7.3.6(@types/node@22.20.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.0)(tsx@4.23.12)(yaml@2.9.0))
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.28.1
       jsdom:
         specifier: 'catalog:'
         version: 28.1.0(@noble/hashes@2.2.0)
