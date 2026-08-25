@@ -49,7 +49,12 @@ spec:
         - name: mend
           image: {{ include "mend.tierImage" (dict "root" . "tier" "api") }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: [node, apps/api/src/main.ts]
+          # No command by default: each per-tier image's CMD is correct for
+          # itself. Set api.command when running a different image (e.g. the
+          # combined `mend` image, whose CMD starts BOTH processes).
+          {{- with .Values.api.command }}
+          command: {{ toJson . }}
+          {{- end }}
           ports:
             - { containerPort: 3101, name: http }
             - { containerPort: {{ .Values.sessionChannel.port }}, name: session }

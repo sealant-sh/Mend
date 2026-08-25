@@ -38,7 +38,12 @@ spec:
         - name: web
           image: {{ include "mend.tierImage" (dict "root" . "tier" "web") }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: [node, apps/web/src/entry/main.ts]
+          # No command by default: each per-tier image's CMD is correct for
+          # itself. Set web.command when running a different image (e.g. the
+          # combined `mend` image, whose CMD starts BOTH processes).
+          {{- with .Values.web.command }}
+          command: {{ toJson . }}
+          {{- end }}
           ports:
             - { containerPort: 3105, name: http }
           env:
