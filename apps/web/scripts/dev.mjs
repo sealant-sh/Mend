@@ -44,12 +44,20 @@ if (databaseUrl.includes("localhost:5434")) {
   }
 }
 
-// --strictPort: a taken 3101 means another dev loop is already running —
+// --strictPort: a taken 3105 means another dev loop is already running —
 // fail loudly (taking the server down with us) instead of hopping ports
-// while the Effect server crash-waits on 3105 behind it.
+// while the API server crash-waits on 3101 behind it.
 const children = [
   spawn("pnpm", ["exec", "vite", "dev", "--strictPort"], { stdio: "inherit" }),
-  spawn("pnpm", ["exec", "tsx", "watch", "src/entry/main.ts"], { stdio: "inherit" }),
+  spawn("pnpm", ["--filter", "@mend/api-server", "exec", "tsx", "watch", "src/main.ts"], {
+    stdio: "inherit",
+    cwd: repoRoot,
+  }),
+  // The web server carries /trpc in dev (vite proxies to it); the UI itself stays on vite.
+  spawn("pnpm", ["exec", "tsx", "watch", "src/entry/main.ts"], {
+    stdio: "inherit",
+    env: { ...process.env, PORT: "3104", MEND_API_URL: "http://localhost:3101" },
+  }),
 ];
 
 const stop = (code) => {

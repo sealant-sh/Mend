@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import { IssueId, RunId } from "./ids.ts";
+import { Timestamp } from "./timestamp.ts";
 
 /** The queue stages. Gate 1 is the human drag from triage into queued. */
 export const IssueStage = Schema.Literals(["triage", "queued", "mending", "review", "merged"]);
@@ -24,6 +25,6 @@ export class Issue extends Schema.Class<Issue>("Issue")({
   position: Schema.NullOr(Schema.Int),
   /** A failed run returns the card to triage carrying the failure. */
   lastFailureRunId: Schema.NullOr(RunId),
-  createdAt: Schema.Date,
-  updatedAt: Schema.Date,
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
 }) {}

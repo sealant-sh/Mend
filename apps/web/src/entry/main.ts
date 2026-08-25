@@ -1,550 +1,334 @@
-import { existsSync, statSync } from "node:fs";
-import { createServer } from "node:http";
+import { createReadStream, existsSync, statSync } from "node:fs";
+import * as http from "node:http";
 import * as path from "node:path";
+import { pipeline, Readable } from "node:stream";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { NodeHttpServer, NodeRuntime } from "@effect/platform-node";
-import {
-  EventsRoutes,
-  GhLive,
-  HostEnvironmentLive,
-  KeysBridgeRoutes,
-  MendApiLive,
-  ServiceTunnelRoutes,
-  TtyRoutes,
-} from "@mend/api";
-import { Auth } from "@mend/auth";
-import {
-  AgentConversationRepoLive,
-  BriefCommentsRepoLive,
-  BriefsRepoLive,
-  ChangePassesRepo,
-  ChangePassesRepoLive,
-  ProjectsRepo,
-  SessionsRepo,
-  SessionChangesRepo,
-  SealantIdentityStoreLive,
-  SettingsRepo,
-  ChangesRepoLive,
-  ChangeToursRepoLive,
-  CheckpointsRepoLive,
-  FollowUpsRepoLive,
-  HotWorkspacesRepoLive,
-  InferenceCallsRepoLive,
-  IssuesRepoLive,
-  MendDBLive,
-  MigratorLive,
-  PgLive,
-  ProjectEnvironmentRepoLive,
-  ProjectMountsRepoLive,
-  ProjectSecretsRepoLive,
-  ProjectServiceRecipesRepoLive,
-  ProjectsRepoLive,
-  PushDevicesRepoLive,
-  ReferencesRepoLive,
-  ReviewCommentsRepoLive,
-  ReviewSlicesRepoLive,
-  RunsRepoLive,
-  ServiceForwardsRepoLive,
-  ServiceObservationsRepoLive,
-  ServicesRepoLive,
-  SessionChangesRepoLive,
-  SessionGitOpsRepoLive,
-  SessionProcessesRepoLive,
-  SessionRunsRepoLive,
-  SessionChannelTokensRepoLive,
-  SessionsRepoLive,
-  SettingsRepoLive,
-  UserDotfilesRepoLive,
-} from "@mend/db";
-import type { ChangeId, SessionId } from "@mend/domain";
-import { resolveAutomation } from "@mend/domain/workbench";
-import {
-  BriefCompiler,
-  ChangeReader,
-  ChangeSuggester,
-  ChangeSuggesterLive,
-  ComposeTourJob,
-  type InferenceError,
-  CommentRouter,
-  CompileBriefJob,
-  FailureSummarizer,
-  liveToolsLayer,
-  NameSessionJob,
-  ReadChangeJob,
-  RouteCommentJob,
-  sealantProviderLayer,
-  SessionNamer,
-  SessionNamerLive,
-  SuggestChangeJob,
-  SummarizeFailureJob,
-  TourComposer,
-} from "@mend/inference";
-import {
-  Dispatcher,
-  JobRunner,
-  ReviewPrepLive,
-  runStarterLayer,
-  SessionNotifierLive,
-  startRunToolLayer,
-} from "@mend/jobs";
-import { asSealantUser, SealantLiveFromEnv } from "@mend/sealant";
-import {
-  FollowUpDeliveryLive,
-  FollowUpLauncherLive,
-  ProtocolHostLive,
-  ServiceHostLive,
-  SessionEngine,
-  SessionEngineLive as SessionEngineBaseLive,
-  SessionChannelNetworkHostLive,
-  SessionChannelRegistryLive,
-  SessionSocketHostLive,
-} from "@mend/sessions";
-import {
-  type AgentBridge,
-  AgentBridgeLive,
-  type DotfilesStore,
-  DotfilesStoreLive,
-  type MendKeys,
-  MendKeysConfigLive,
-  MendKeysLive,
-  type SecretCipher,
-  SecretCipherLive,
-  Store,
-  StoreConfig,
-  DeploymentConfigLive,
-} from "@mend/store";
-import { Config, Effect, Layer, Option, Schema } from "effect";
-import {
-  HttpMiddleware,
-  HttpRouter,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
+
+import { appRouter } from "../server/routers/index.ts";
 
 /**
- * The composition boundary (ARCHITECTURE.md §2): every service is wired here
- * and nowhere else. One process runs the web app, the API, and the workers;
- * MEND_MODE (`all` default · `web` · `worker`) splits it later without a
- * redesign.
+ * The web server (ARCHITECTURE.md §2): the TanStack Start app plus a
+ * transparent proxy for everything under `/api` to the Mend API server
+ * (`apps/api`, MEND_API_URL). This process is deliberately stateless — no
+ * database, no engine, no sessions — so it can be replicated freely; every
+ * stateful concern lives behind the proxy. Browsers keep one origin: pages
+ * and `/api/*` come from the same port, exactly as when one process served
+ * both.
+ *
+ * The proxy is hand-rolled on `node:http` because it must carry three
+ * shapes faithfully and dependency-free: plain requests, server-sent event
+ * streams (no buffering), and WebSocket upgrades (`/api/tty`, the service
+ * tunnel, the keys bridge) — the `upgrade` event with both sockets piped
+ * raw.
  */
 
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const port = Number(process.env["PORT"] ?? "3105");
+const apiUrl = new URL(process.env["MEND_API_URL"] ?? "http://localhost:3101");
 
-// ─── Data: Postgres, migrated before anything reads it ─────────────────────
-const DrizzleRepositoriesLive = Layer.mergeAll(
-  AgentConversationRepoLive,
-  UserDotfilesRepoLive,
-  HotWorkspacesRepoLive,
-  SessionGitOpsRepoLive,
-  SessionProcessesRepoLive,
-  ServicesRepoLive,
-  ServiceForwardsRepoLive,
-  ServiceObservationsRepoLive,
-  SessionRunsRepoLive,
-  CheckpointsRepoLive,
-  ProjectsRepoLive,
-  ProjectEnvironmentRepoLive,
-  ProjectMountsRepoLive,
-  ProjectSecretsRepoLive,
-  ProjectServiceRecipesRepoLive,
-  SettingsRepoLive,
-  InferenceCallsRepoLive,
-  FollowUpsRepoLive,
-  ReviewCommentsRepoLive,
-  ReviewSlicesRepoLive,
-  SessionChangesRepoLive,
-  PushDevicesRepoLive,
-  ChangeToursRepoLive,
-  ChangePassesRepoLive,
-  ReferencesRepoLive,
-  IssuesRepoLive,
-  ChangesRepoLive,
-  RunsRepoLive,
-  BriefsRepoLive,
-  BriefCommentsRepoLive,
-  SessionsRepoLive,
-  SessionChannelTokensRepoLive,
-).pipe(Layer.provideMerge(MendDBLive));
+const contentTypeFor = (file: string): string => {
+  const types: Record<string, string> = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript",
+    ".mjs": "text/javascript",
+    ".css": "text/css",
+    ".json": "application/json",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+    ".woff2": "font/woff2",
+    ".woff": "font/woff",
+    ".ttf": "font/ttf",
+    ".map": "application/json",
+    ".txt": "text/plain",
+    ".webmanifest": "application/manifest+json",
+  };
+  return types[path.extname(file)] ?? "application/octet-stream";
+};
 
-const DatabaseLive = DrizzleRepositoriesLive.pipe(
-  Layer.provideMerge(MigratorLive.pipe(Layer.provideMerge(PgLive))),
-);
-
-// ─── The central store (host-side git) + the session engine over it ────────
-// One instance each: the API handlers and the worker share them (memoized —
-// same layer reference, provided once at MainLive).
-const StoreLive = Store.layer.pipe(Layer.provide(StoreConfig.layer));
-// The per-user dotfiles store shares the same root (bare git repos under _dotfiles/).
-const DotfilesStoreLayer: Layer.Layer<DotfilesStore> = DotfilesStoreLive.pipe(
-  Layer.provide(StoreConfig.layer),
-);
-const KeysLive: Layer.Layer<MendKeys> = MendKeysLive.pipe(Layer.provide(MendKeysConfigLive));
-// Project secrets are sealed at rest with a key beside the deploy key (secrets.key, 0600).
-const SecretCipherLayer: Layer.Layer<SecretCipher> = SecretCipherLive.pipe(
-  Layer.provide(MendKeysConfigLive),
-);
-// One bridge instance: the WS route attaches signers, the API and engine ask it.
-const BridgeLive: Layer.Layer<AgentBridge> = AgentBridgeLive.pipe(
-  Layer.provide(MendKeysConfigLive),
-);
-const ServiceHostLayer = ServiceHostLive;
-const ProtocolHostLayer = ProtocolHostLive;
-// The session channel (docs/KUBERNETES.md): one registry shared by the per-session socket host
-// and the optional network listener; the deployment mode decides whether sockets are created.
-const SessionChannelRegistryLayer = SessionChannelRegistryLive;
-const SessionSocketHostLayer = SessionSocketHostLive.pipe(
-  Layer.provide(StoreConfig.layer),
-  Layer.provide(DeploymentConfigLive),
-  Layer.provide(SessionChannelRegistryLayer),
-);
-const SessionChannelNetworkLayer = SessionChannelNetworkHostLive.pipe(
-  Layer.provide(DeploymentConfigLive),
-  Layer.provide(SessionChannelRegistryLayer),
-);
-const SessionEngineLayer = SessionEngineBaseLive.pipe(
-  Layer.provide(ProtocolHostLayer),
-  Layer.provide(ServiceHostLayer),
-  Layer.provide(SessionSocketHostLayer),
-  Layer.provide(DotfilesStoreLayer),
-  Layer.provide(DeploymentConfigLive),
-);
-const FollowUpLauncherLayer = FollowUpLauncherLive.pipe(Layer.provide(SessionEngineLayer));
-const FollowUpDeliveryLayer = FollowUpDeliveryLive.pipe(Layer.provide(FollowUpLauncherLayer));
-
-// ─── better-auth mounted under /api/auth ────────────────────────────────────
-const AuthRoutes = HttpRouter.use((router) =>
-  Effect.gen(function* () {
-    const auth = yield* Auth;
-    yield* router.add("*", "/api/auth/*", (request) =>
-      Effect.gen(function* () {
-        const webRequest = yield* HttpServerRequest.toWeb(request).pipe(Effect.orDie);
-        const response = yield* auth.handler(webRequest);
-        return HttpServerResponse.fromWeb(response);
-      }),
-    );
-  }),
-);
-
-// ─── The built web app: static assets + SSR (absent in dev — vite serves it) ─
-const WebAppRoutes = HttpRouter.use((router) =>
-  Effect.gen(function* () {
-    const clientDir = path.join(appDir, "dist/client");
-    const ssrEntry = path.join(appDir, "dist/server/server.js");
-    if (!existsSync(ssrEntry)) {
-      yield* Effect.logInfo("no built web app found — serving API only (dev mode)");
-      return;
-    }
-    const ssr: { readonly fetch: (request: Request) => Promise<Response> } = yield* Effect.promise(
-      async () => {
-        const mod: {
-          readonly default: { readonly fetch: (request: Request) => Promise<Response> };
-        } = await import(pathToFileURL(ssrEntry).href);
-        return mod.default;
-      },
-    );
-
-    yield* router.add("*", "/*", (request) =>
-      Effect.gen(function* () {
-        if (request.method === "GET" || request.method === "HEAD") {
-          const pathname = new URL(request.url, "http://mend.local").pathname;
-          const candidate = path.join(clientDir, pathname);
-          const insideClientDir = candidate.startsWith(clientDir + path.sep);
-          if (insideClientDir && existsSync(candidate) && statSync(candidate).isFile()) {
-            return yield* HttpServerResponse.file(candidate).pipe(Effect.orDie);
-          }
-        }
-        const webRequest = yield* HttpServerRequest.toWeb(request).pipe(Effect.orDie);
-        const response = yield* Effect.promise(() => ssr.fetch(webRequest));
-        return HttpServerResponse.fromWeb(response);
-      }),
-    );
-  }),
-);
-
-// ─── HTTP: the API contract + auth + web app on one port ───────────────────
-const ServerLive = Layer.unwrap(
-  Effect.gen(function* () {
-    const port = yield* Config.int("PORT").pipe(Config.orElse(() => Config.succeed(3105)));
-    // Self-host posture: the instance lives behind the operator's perimeter,
-    // and clients are many-origin by design (phone app, Expo web dev, LAN).
-    return HttpRouter.serve(
-      Layer.mergeAll(
-        MendApiLive,
-        AuthRoutes,
-        EventsRoutes,
-        TtyRoutes,
-        ServiceTunnelRoutes,
-        KeysBridgeRoutes,
-        WebAppRoutes,
-      ),
-      { middleware: HttpMiddleware.cors({ allowedOrigins: () => true, credentials: true }) },
-    ).pipe(Layer.provide(NodeHttpServer.layer(createServer, { port })));
-  }),
-);
-
-// ─── Worker: the dispatcher loop and the side-effect jobs it feeds ──────────
-const decodeCompileBriefJob = Schema.decodeUnknownEffect(CompileBriefJob);
-const decodeSummarizeFailureJob = Schema.decodeUnknownEffect(SummarizeFailureJob);
-const decodeRouteCommentJob = Schema.decodeUnknownEffect(RouteCommentJob);
-const decodeReadChangeJob = Schema.decodeUnknownEffect(ReadChangeJob);
-const decodeComposeTourJob = Schema.decodeUnknownEffect(ComposeTourJob);
-const decodeSuggestChangeJob = Schema.decodeUnknownEffect(SuggestChangeJob);
-const decodeNameSessionJob = Schema.decodeUnknownEffect(NameSessionJob);
-
-/** Harnesses whose native transcript the engine can parse for the first prompt. */
-const NAMEABLE_HARNESSES = new Set(["claude", "codex"]);
-
-/** The inference job workers: a failed handler dies into the engine's retry. */
-const InferenceWorkersLive = Layer.effectDiscard(
-  Effect.gen(function* () {
-    const jobs = yield* JobRunner;
-    const compiler = yield* BriefCompiler;
-    const summarizer = yield* FailureSummarizer;
-    const router = yield* CommentRouter;
-    const reader = yield* ChangeReader;
-    const tourComposer = yield* TourComposer;
-    const suggester = yield* ChangeSuggester;
-    const passes = yield* ChangePassesRepo;
-    const sessionChanges = yield* SessionChangesRepo;
-    const sessionsForJobs = yield* SessionsRepo;
-    // Inference runs on the SESSION OWNER's connected subscription (plan §9.3, docs/SEALANT-
-    // IDENTITY.md): a pass over someone's change is paid for by their account, never the
-    // operator's.
-    const asSessionOwner =
-      (sessionId: SessionId) =>
-      <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
-        sessionsForJobs.byId(sessionId).pipe(
-          Effect.option,
-          Effect.flatMap((session) =>
-            self.pipe(asSealantUser(Option.isSome(session) ? session.value.ownerUserId : null)),
-          ),
-        );
-    const asChangeOwner =
-      (changeId: ChangeId) =>
-      <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
-        sessionChanges.byId(changeId).pipe(
-          Effect.option,
-          Effect.flatMap((change) =>
-            Option.isSome(change) ? asSessionOwner(change.value.sessionId)(self) : self,
-          ),
-        );
-    // Every change pass records its outcome — running, completed with a
-    // count, or failed with the error's own words — so the review page can
-    // state what ran instead of leaving "drafted nothing" and "never ran"
-    // looking identical. Failures still propagate into pg-boss retry.
-    const recorded = (
-      kind: "tour" | "read" | "suggest",
-      changeId: ChangeId,
-      pass: Effect.Effect<number | void, InferenceError>,
-    ) =>
-      passes.begin(changeId, kind).pipe(
-        Effect.andThen(pass),
-        Effect.tap((findings) =>
-          passes.complete(changeId, kind, typeof findings === "number" ? findings : null),
-        ),
-        Effect.tapError((error) => passes.fail(changeId, kind, error.message)),
-      );
-    yield* jobs.work("read-change", (payload) =>
-      decodeReadChangeJob(payload).pipe(
-        Effect.flatMap((job) =>
-          asChangeOwner(job.changeId)(recorded("read", job.changeId, reader.read(job))),
-        ),
-        Effect.orDie,
-      ),
-    );
-    yield* jobs.work("compose-tour", (payload) =>
-      decodeComposeTourJob(payload).pipe(
-        Effect.flatMap((job) =>
-          asChangeOwner(job.changeId)(recorded("tour", job.changeId, tourComposer.compose(job))),
-        ),
-        Effect.orDie,
-      ),
-    );
-    yield* jobs.work("suggest-change", (payload) =>
-      decodeSuggestChangeJob(payload).pipe(
-        Effect.flatMap((job) =>
-          asChangeOwner(job.changeId)(recorded("suggest", job.changeId, suggester.suggest(job))),
-        ),
-        Effect.orDie,
-      ),
-    );
-    yield* jobs.work("brief", (payload) =>
-      decodeCompileBriefJob(payload).pipe(
-        Effect.flatMap((job) => compiler.compile(job)),
-        Effect.orDie,
-      ),
-    );
-    yield* jobs.work("failure-brief", (payload) =>
-      decodeSummarizeFailureJob(payload).pipe(
-        Effect.flatMap((job) => summarizer.summarize(job)),
-        Effect.orDie,
-      ),
-    );
-    yield* jobs.work("route-comment", (payload) =>
-      decodeRouteCommentJob(payload).pipe(
-        Effect.flatMap((job) => router.route(job)),
-        Effect.orDie,
-      ),
-    );
-    // Session auto-naming, two payload shapes: launch-time (no prompt — poll
-    // the harness's native transcript, retried with backoff until the first
-    // prompt exists) and send-time (prompt inline from a Mend-owned composer —
-    // name immediately, any harness). Every no-name outcome besides "no
-    // prompt yet" is a quiet success — a renamed or deleted session, a
-    // switched-off cascade, an unparseable harness on the transcript path.
-    const namer = yield* SessionNamer;
-    const sessions = yield* SessionsRepo;
-    const projects = yield* ProjectsRepo;
-    const settingsRepo = yield* SettingsRepo;
-    const engine = yield* SessionEngine;
-    const firstPromptFromTranscript = Effect.fn("firstPromptFromTranscript")(function* (
-      job: NameSessionJob,
-    ) {
-      const transcript = yield* engine
-        .transcript(job.sessionId)
-        .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-      const events = transcript?.events ?? [];
-      const firstUserAt = events.findIndex((event) => event.kind === "user");
-      const firstUser = firstUserAt === -1 ? undefined : events[firstUserAt];
-      if (firstUser === undefined || firstUser.kind !== "user") {
-        // Retryable by design: the user has not typed the first prompt yet.
-        return yield* Effect.die(new Error("no first prompt in the transcript yet — retrying"));
+// ─── The built app: static assets + SSR ─────────────────────────────────────
+const clientDir = path.join(appDir, "dist/client");
+const ssrEntry = path.join(appDir, "dist/server/server.js");
+const ssr: { readonly fetch: (request: Request) => Promise<Response> } | null = existsSync(ssrEntry)
+  ? (
+      (await import(pathToFileURL(ssrEntry).href)) as {
+        readonly default: { readonly fetch: (request: Request) => Promise<Response> };
       }
-      const reply = events
-        .slice(firstUserAt + 1)
-        .find((event): event is typeof event & { kind: "assistant" } => event.kind === "assistant");
-      return {
-        firstUserTurn: firstUser.text,
-        ...(reply === undefined ? {} : { assistantReply: reply.text }),
-      };
-    });
-    const nameSession = Effect.fn("nameSession")(function* (job: NameSessionJob) {
-      const session = yield* sessions
-        .byId(job.sessionId)
-        .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-      if (session === null || session.label !== null) return;
-      const inlinePrompt = job.firstUserTurn?.trim();
-      const hasInlinePrompt = inlinePrompt !== undefined && inlinePrompt.length > 0;
-      // The harness gate guards only transcript parsing — an inline prompt
-      // names any harness, opencode and shell included.
-      if (!hasInlinePrompt && !NAMEABLE_HARNESSES.has(session.harness)) return;
-      const project = yield* projects
-        .byId(session.projectId)
-        .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
-      if (project === null) return;
-      const settings = yield* settingsRepo.get();
-      if (!resolveAutomation(project.autoName, settings.autoName)) return;
-
-      const turns = hasInlinePrompt
-        ? { firstUserTurn: inlinePrompt }
-        : yield* firstPromptFromTranscript(job);
-
-      const label = yield* namer.name({
-        harness: session.harness,
-        projectName: project.name,
-        ...turns,
-      });
-      const wrote = yield* sessions.setLabelIfUnset(job.sessionId, label);
-      yield* Effect.annotateLogs(Effect.logInfo("session named"), {
-        sessionId: job.sessionId,
-        label,
-        wrote,
-      });
-    });
-    yield* jobs.work("name-session", (payload) =>
-      decodeNameSessionJob(payload).pipe(
-        Effect.flatMap((job) => asSessionOwner(job.sessionId)(nameSession(job))),
-        Effect.orDie,
-      ),
-    );
-  }),
-);
-
-const WorkerLive = Layer.mergeAll(
-  Layer.effectDiscard(
-    Effect.gen(function* () {
-      const dispatcher = yield* Dispatcher;
-      yield* Effect.forkScoped(dispatcher.run());
-    }),
-  ),
-  InferenceWorkersLive,
-  // Constructing the engine resumes supervision of unsettled sessions.
-  SessionEngineLayer,
-  // Pushes to registered phones when a session settles or waits on the user.
-  SessionNotifierLive,
-  // Queues tour + suggestion passes at settle, per the automation cascade.
-  ReviewPrepLive,
-).pipe(
-  Layer.provide(Dispatcher.layer),
-  Layer.provide(BriefCompiler.layer),
-  Layer.provide(FailureSummarizer.layer),
-  Layer.provide(CommentRouter.layer),
-  Layer.provide(ChangeReader.layer),
-  Layer.provide(TourComposer.layer),
-  Layer.provide(ChangeSuggesterLive),
-  Layer.provide(SessionNamerLive),
-  Layer.provide(liveToolsLayer),
-  // start_run: the one tool that reaches the run machinery.
-  Layer.provide(startRunToolLayer),
-  // Inference runs on the user's Sealant-connected subscriptions — Mend ships no model keys.
-  Layer.provide(sealantProviderLayer),
-  Layer.provide(runStarterLayer),
-);
-
-const MainLive = Layer.unwrap(
-  Effect.gen(function* () {
-    const mode = yield* Config.schema(Schema.Literals(["all", "web", "worker"]), "MEND_MODE").pipe(
-      Config.orElse(() => Config.succeed("all" as const)),
-    );
-    yield* Effect.logInfo("mend starting").pipe(Effect.annotateLogs({ mode }));
-    const parts =
-      mode === "web"
-        ? ServerLive
-        : mode === "worker"
-          ? WorkerLive
-          : Layer.merge(ServerLive, WorkerLive);
-    // The network session channel is a sibling service: it serves workspaces, nothing depends
-    // on it, so it must be launched explicitly rather than provided.
-    return Layer.merge(parts, SessionChannelNetworkLayer).pipe(
-      // Shared by the API (enqueue on comment) and the workers (one instance).
-      Layer.provide(JobRunner.pgBossLayer),
-      // Follow-up delivery owns persistence → process acceptance → correlation.
-      Layer.provide(FollowUpDeliveryLayer),
-      // The session engine and store serve both the API handlers and the worker.
-      Layer.provide(SessionEngineLayer),
-      Layer.provide(StoreLive),
-      Layer.provide(StoreConfig.layer),
-      Layer.provide(DeploymentConfigLive),
-      // The per-user dotfiles store — the dotfiles API group reads/writes it directly.
-      Layer.provide(DotfilesStoreLayer),
-      // The machine's Mend git key (docs/GIT-ACCESS.md — the mend-key auth mode).
-      Layer.provide(KeysLive),
-      Layer.provide(SecretCipherLayer),
-      // The ssh-agent bridge (decision 2) — signer presence + bridged git ops.
-      Layer.provide(BridgeLive),
-      // The host's GitHub CLI, behind the api's Gh service (adoption discovery).
-      Layer.provide(GhLive),
-      Layer.provide(HostEnvironmentLive),
-      Layer.provide(Auth.layer),
-      // One Sealant client per user, provisioned on first use (docs/SEALANT-IDENTITY.md).
-      Layer.provide(SealantLiveFromEnv.pipe(Layer.provide(SealantIdentityStoreLive))),
-      Layer.provide(DatabaseLive),
-    );
-  }),
-);
-
-// Graceful shutdown gets a deadline. runMain interrupts the main fiber on
-// SIGTERM/SIGINT and unwinds finalizers — but an uninterruptible pending
-// platform promise inside a watch fiber can wedge that unwind forever
-// (docs/BUGS.md), leaving a half-dead server: HTTP gone, Service ports and
-// session sockets still held, the watch runner waiting on a child that will
-// never exit. The timer is unref'd: a clean unwind exits on its own first;
-// the deadline only fires for a wedge, and the OS reclaims every fd.
-for (const signal of ["SIGTERM", "SIGINT"] as const) {
-  process.once(signal, () => {
-    setTimeout(() => process.exit(0), 5000).unref();
-  });
+    ).default
+  : null;
+if (ssr === null) {
+  console.warn("[web] no built app found (dist/server/server.js) — proxying /api only");
 }
 
-NodeRuntime.runMain(Layer.launch(MainLive));
+/**
+ * pipeline() THROWS synchronously (ERR_STREAM_UNABLE_TO_PIPE, node ≥24) when
+ * either end is already destroyed — which is routine in a proxy: a readiness
+ * probe or impatient client hangs up while the upstream is still answering.
+ * Every relay goes through here so an early hangup tears down the pair
+ * instead of the whole process.
+ */
+const relay = (
+  source: NodeJS.ReadableStream & { destroy?: (error?: Error) => void },
+  destination: NodeJS.WritableStream & { destroy?: (error?: Error) => void },
+): void => {
+  try {
+    pipeline(source, destination, () => {});
+  } catch {
+    source.destroy?.();
+    destination.destroy?.();
+  }
+};
+
+/**
+ * Relay a web `Response` onto the node response. `Headers.entries()` folds
+ * multiple set-cookie values into one comma-joined string — which breaks
+ * cookies, whose values contain commas (Expires) — so set-cookie rides as
+ * the array `getSetCookie()` preserves.
+ */
+const writeWebResponse = (webResponse: Response, response: http.ServerResponse): void => {
+  if (response.destroyed) {
+    void webResponse.body?.cancel().catch(() => {});
+    return;
+  }
+  const headers: http.OutgoingHttpHeaders = {};
+  for (const [name, value] of webResponse.headers.entries()) {
+    if (name !== "set-cookie") headers[name] = value;
+  }
+  const cookies = webResponse.headers.getSetCookie();
+  if (cookies.length > 0) headers["set-cookie"] = cookies;
+  response.writeHead(webResponse.status, headers);
+  if (webResponse.body === null) {
+    response.end();
+    return;
+  }
+  relay(
+    Readable.fromWeb(webResponse.body as unknown as import("node:stream/web").ReadableStream),
+    response,
+  );
+};
+
+// ─── tRPC: the UI's typed surface; procedures forward to the API ────────────
+const handleTrpc = async (
+  request: http.IncomingMessage,
+  response: http.ServerResponse,
+): Promise<void> => {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(request.headers)) {
+    if (typeof value === "string") headers.set(name, value);
+    else if (Array.isArray(value)) for (const item of value) headers.append(name, item);
+  }
+  const hasBody = request.method !== "GET" && request.method !== "HEAD";
+  // A browser that gave up (tab closed, navigation) should cancel the API
+  // work instead of leaving it running to completion.
+  const abort = new AbortController();
+  response.on("close", () => {
+    if (!response.writableEnded) abort.abort();
+  });
+  const webRequest = new Request(new URL(request.url ?? "/", "http://mend.local"), {
+    method: request.method,
+    headers,
+    signal: abort.signal,
+    ...(hasBody ? { body: Readable.toWeb(request) as unknown as BodyInit, duplex: "half" } : {}),
+  } as RequestInit);
+  const webResponse = await fetchRequestHandler({
+    endpoint: "/trpc",
+    req: webRequest,
+    router: appRouter,
+    createContext: () => ({ headers, apiUrl: apiUrl.origin }),
+  });
+  writeWebResponse(webResponse, response);
+};
+
+const hopByHop = new Set([
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+]);
+
+/**
+ * Standard forwarded headers for both proxy paths. proto passes through an
+ * upstream TLS terminator's value; the client address is APPENDED to
+ * x-forwarded-for (never trusted verbatim) so the API can take the last,
+ * proxy-written entry.
+ */
+const forwardHeaders = (request: http.IncomingMessage): http.OutgoingHttpHeaders => {
+  const proto = request.headers["x-forwarded-proto"];
+  const priorFor = request.headers["x-forwarded-for"];
+  return {
+    ...request.headers,
+    // The API sees the proxy's hostname otherwise; keep the client's.
+    "x-forwarded-host": request.headers.host ?? "",
+    "x-forwarded-proto": typeof proto === "string" && proto !== "" ? proto : "http",
+    "x-forwarded-for": [
+      Array.isArray(priorFor) ? priorFor.join(", ") : priorFor,
+      request.socket.remoteAddress,
+    ]
+      .filter(Boolean)
+      .join(", "),
+  };
+};
+
+/** Forward one request to the API verbatim; stream both directions, never buffer. */
+const proxyRequest = (request: http.IncomingMessage, response: http.ServerResponse): void => {
+  const upstream = http.request(
+    {
+      host: apiUrl.hostname,
+      port: apiUrl.port,
+      method: request.method,
+      path: request.url,
+      headers: forwardHeaders(request),
+    },
+    (upstreamResponse) => {
+      // The client can be gone before the API answers (probe hangups are
+      // routine); writing to the dead response would error or throw.
+      if (response.destroyed) {
+        upstreamResponse.destroy();
+        return;
+      }
+      const headers = Object.fromEntries(
+        Object.entries(upstreamResponse.headers).filter(([name]) => !hopByHop.has(name)),
+      );
+      response.writeHead(upstreamResponse.statusCode ?? 502, headers);
+      relay(upstreamResponse, response);
+    },
+  );
+  upstream.on("error", () => {
+    if (!response.headersSent) response.writeHead(502, { "content-type": "text/plain" });
+    response.end("mend api unreachable");
+  });
+  relay(request, upstream);
+};
+
+const server = http.createServer((request, response) => {
+  const url = request.url ?? "/";
+  if (url === "/api" || url.startsWith("/api/")) {
+    proxyRequest(request, response);
+    return;
+  }
+  if (url === "/trpc" || url.startsWith("/trpc/")) {
+    handleTrpc(request, response).catch(() => {
+      if (!response.headersSent) response.writeHead(500);
+      response.end();
+    });
+    return;
+  }
+
+  void (async () => {
+    if (request.method === "GET" || request.method === "HEAD") {
+      const pathname = new URL(url, "http://mend.local").pathname;
+      const candidate = path.join(clientDir, pathname);
+      const insideClientDir = candidate.startsWith(clientDir + path.sep);
+      if (insideClientDir && existsSync(candidate) && statSync(candidate).isFile()) {
+        response.writeHead(200, { "content-type": contentTypeFor(candidate) });
+        relay(createReadStream(candidate), response);
+        return;
+      }
+    }
+    if (ssr === null) {
+      response.writeHead(503, { "content-type": "text/plain" });
+      response.end("web app not built");
+      return;
+    }
+    const headers = new Headers();
+    for (const [name, value] of Object.entries(request.headers)) {
+      if (typeof value === "string") headers.set(name, value);
+      else if (Array.isArray(value)) for (const item of value) headers.append(name, item);
+    }
+    const hasBody = request.method !== "GET" && request.method !== "HEAD";
+    const webRequest = new Request(new URL(url, `http://${request.headers.host ?? "mend.local"}`), {
+      method: request.method,
+      headers,
+      // Node's web-stream types and the DOM lib's are structurally identical twins
+      // that TypeScript keeps distinct; the casts bridge them and nothing else.
+      ...(hasBody ? { body: Readable.toWeb(request) as unknown as BodyInit, duplex: "half" } : {}),
+    } as RequestInit);
+    const webResponse = await ssr.fetch(webRequest);
+    writeWebResponse(webResponse, response);
+  })().catch(() => {
+    if (!response.headersSent) response.writeHead(500);
+    response.end();
+  });
+});
+
+// ─── WebSocket upgrades: pipe both sockets raw, verbatim ────────────────────
+
+/**
+ * Rebuild the upstream's header block from rawHeaders — repeats (set-cookie)
+ * survive. The 101 path relays verbatim (Connection/Upgrade are the point and
+ * there is no body); the plain-response path must DROP hop-by-hop headers:
+ * node already de-chunked the body, so relaying `transfer-encoding: chunked`
+ * over decoded bytes is broken framing — `connection: close` + EOF delimits
+ * the body instead.
+ */
+const rawHeaderBlock = (
+  upstreamResponse: http.IncomingMessage,
+  options: { readonly stripHopByHop: boolean },
+): string => {
+  let lines = "";
+  for (let k = 0; k + 1 < upstreamResponse.rawHeaders.length; k += 2) {
+    const name = upstreamResponse.rawHeaders[k] ?? "";
+    if (options.stripHopByHop && hopByHop.has(name.toLowerCase())) continue;
+    lines += `${name}: ${upstreamResponse.rawHeaders[k + 1]}\r\n`;
+  }
+  if (options.stripHopByHop) lines += "connection: close\r\n";
+  return lines;
+};
+
+server.on("upgrade", (request, socket, head) => {
+  const url = request.url ?? "/";
+  if (!(url === "/api" || url.startsWith("/api/"))) {
+    socket.destroy();
+    return;
+  }
+  const upstream = http.request({
+    host: apiUrl.hostname,
+    port: apiUrl.port,
+    method: request.method,
+    path: url,
+    headers: forwardHeaders(request),
+  });
+  // Node hands the detached socket to this listener with NO error handling of
+  // its own: a client reset before the API answers would otherwise be an
+  // uncaught 'error' and take down the whole web tier.
+  let upstreamAnswered = false;
+  socket.on("error", () => upstream.destroy());
+  socket.on("close", () => {
+    if (!upstreamAnswered) upstream.destroy();
+  });
+  upstream.on("upgrade", (upstreamResponse, upstreamSocket, upstreamHead) => {
+    upstreamAnswered = true;
+    const statusLine = `HTTP/1.1 ${upstreamResponse.statusCode ?? 101} ${upstreamResponse.statusMessage ?? "Switching Protocols"}\r\n`;
+    socket.write(statusLine + rawHeaderBlock(upstreamResponse, { stripHopByHop: false }) + "\r\n");
+    if (upstreamHead.length > 0) socket.write(upstreamHead);
+    if (head.length > 0) upstreamSocket.write(head);
+    relay(socket, upstreamSocket);
+    relay(upstreamSocket, socket);
+  });
+  // The API answered without upgrading (401, 404, ...): relay it as HTTP.
+  upstream.on("response", (upstreamResponse) => {
+    upstreamAnswered = true;
+    const statusLine = `HTTP/1.1 ${upstreamResponse.statusCode ?? 502} ${upstreamResponse.statusMessage ?? ""}\r\n`;
+    socket.write(statusLine + rawHeaderBlock(upstreamResponse, { stripHopByHop: true }) + "\r\n");
+    relay(upstreamResponse, socket);
+  });
+  upstream.on("error", () => socket.destroy());
+  upstream.end();
+});
+
+server.listen(port, () => {
+  console.log(`[web] listening on :${port} · proxying /api to ${apiUrl.origin}`);
+});
+
+for (const signal of ["SIGTERM", "SIGINT"] as const) {
+  process.once(signal, () => {
+    server.close();
+    setTimeout(() => process.exit(0), 3000).unref();
+  });
+}

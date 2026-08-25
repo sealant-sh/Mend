@@ -10,6 +10,7 @@ import {
   SessionId,
   SessionProcessId,
 } from "../ids.ts";
+import { Timestamp } from "../timestamp.ts";
 import { DiffDigest } from "./review-slice.ts";
 
 /**
@@ -55,7 +56,7 @@ export class FollowUp extends Schema.Class<FollowUp>("FollowUp")({
   deliveryProcessId: Schema.NullOr(SessionProcessId),
   deliverySealantRunId: Schema.NullOr(SealantRunId),
   deliveryError: Schema.NullOr(Schema.String),
-  deliveryStartedAt: Schema.NullOr(Schema.Date),
-  createdAt: Schema.Date,
-  deliveredAt: Schema.NullOr(Schema.Date),
+  deliveryStartedAt: Schema.NullOr(Timestamp),
+  createdAt: Timestamp,
+  deliveredAt: Schema.NullOr(Timestamp),
 }) {}

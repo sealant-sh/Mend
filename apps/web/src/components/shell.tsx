@@ -3,7 +3,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 
 import { authClient } from "#/lib/auth-client";
-import { activeSessionsQuery, machineQuery, projectsQuery } from "#/lib/queries";
+import { useTRPC } from "#/lib/trpc";
 import { LIVE_STATES } from "#/lib/workbench-menus";
 
 /**
@@ -101,8 +101,9 @@ function NavItem({ to, children }: { readonly to: string; readonly children: Rea
  * URL's) takes the same cobalt wash as the active nav item.
  */
 function ProjectsBlock({ currentId }: { readonly currentId: string | undefined }) {
-  const projects = useQuery(projectsQuery).data ?? [];
-  const active = useQuery(activeSessionsQuery).data ?? [];
+  const trpc = useTRPC();
+  const projects = useQuery(trpc.projects.list.queryOptions()).data ?? [];
+  const active = useQuery(trpc.sessions.listActive.queryOptions()).data ?? [];
   if (projects.length === 0) return null;
   const liveProjects = new Set(
     active.filter((session) => LIVE_STATES.has(session.status)).map((session) => session.projectId),
@@ -145,7 +146,10 @@ function ProjectsBlock({ currentId }: { readonly currentId: string | undefined }
 
 /** hostname · platform, and whether a tailnet address is bound (plan §7.5). */
 function MachineBlock() {
-  const machine = useQuery(machineQuery).data;
+  const trpc = useTRPC();
+  const machine = useQuery(
+    trpc.platform.machine.queryOptions(undefined, { staleTime: 30_000, refetchInterval: 30_000 }),
+  ).data;
   if (machine === undefined) return null;
   const reachable = machine.tailnet.status === "reachable";
   return (

@@ -19,13 +19,16 @@ export interface AuthSession {
   readonly expiresAt: Date;
 }
 
-/** Vite serves the web app here in development; the Effect server proxies to it. */
-const DEV_PORT = 3101;
+/**
+ * Where browsers arrive in development: vite serves the web app on 3105 and
+ * proxies /trpc to the dev web server on 3104 (apps/web/scripts/dev.mjs).
+ */
+const DEV_WEB_PORTS = [3105, 3104];
 
 /**
  * Every non-internal IPv4 bound to this machine — the same observation
- * packages/api/src/machine.ts makes for the pairing endpoint, repeated here
- * because @mend/api depends on this package and cannot be imported back.
+ * apps/api/src/routes/machine.ts makes for the pairing endpoint, repeated here
+ * because the API server depends on this package and cannot be imported back.
  */
 const localAddresses = (
   interfaces: ReturnType<typeof networkInterfaces> = networkInterfaces(),
@@ -41,17 +44,20 @@ const localAddresses = (
 
 /**
  * Which origins better-auth will accept a session from. APP_URL is
- * authoritative; localhost covers both local entry points; and every address
+ * authoritative; localhost covers every local entry point; and every address
  * this machine actually answers on is added, because a phone on the tailnet or
- * the LAN reaches the web app by IP and would otherwise be refused. The set is
- * read once at startup — a machine that changes address needs a restart.
+ * the LAN reaches the web app by IP and would otherwise be refused. Browsers
+ * arrive on the web tier's port (`webPort`), not this API process's own
+ * (`serverPort`), so both are enumerated alongside the dev entry points. The
+ * set is read once at startup — a machine that changes address needs a restart.
  */
 export const trustedOrigins = (
   baseUrl: string,
   serverPort: number,
+  webPort: number,
   interfaces: ReturnType<typeof networkInterfaces> = networkInterfaces(),
 ): Array<string> => {
-  const ports = [...new Set([serverPort, DEV_PORT])];
+  const ports = [...new Set([serverPort, webPort, ...DEV_WEB_PORTS])];
   const origins = [baseUrl, ...ports.map((port) => `http://localhost:${port}`)];
   for (const address of localAddresses(interfaces)) {
     for (const port of ports) origins.push(`http://${address}:${port}`);
@@ -85,7 +91,13 @@ export class Auth extends Context.Service<
       const baseUrl = yield* Config.string("APP_URL").pipe(
         Config.orElse(() => Config.succeed("http://localhost:3101")),
       );
-      const serverPort = yield* Config.int("PORT").pipe(Config.orElse(() => Config.succeed(3105)));
+      // The API process's own port (apps/api defaults to 3101) and the web
+      // tier's port browsers actually arrive on (scripts/serve.mjs and the
+      // helm chart set MEND_WEB_PORT on the API process; 3105 everywhere).
+      const serverPort = yield* Config.int("PORT").pipe(Config.orElse(() => Config.succeed(3101)));
+      const webPort = yield* Config.int("MEND_WEB_PORT").pipe(
+        Config.orElse(() => Config.succeed(3105)),
+      );
 
       const pool = yield* Effect.acquireRelease(
         Effect.sync(() => new Pool({ connectionString: Redacted.value(databaseUrl) })),
@@ -101,7 +113,7 @@ export class Auth extends Context.Service<
         basePath: "/api/auth",
         emailAndPassword: { enabled: true },
         plugins: [bearer()],
-        trustedOrigins: trustedOrigins(baseUrl, serverPort),
+        trustedOrigins: trustedOrigins(baseUrl, serverPort, webPort),
       });
 
       const handler = Effect.fn("Auth.handler")((request: Request) =>

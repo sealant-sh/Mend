@@ -1,5 +1,10 @@
 import { useContextMenu } from "@mend/ui/context-menu";
-import { useQuery, useSuspenseQueries, useSuspenseQuery } from "@tanstack/react-query";
+import {
+  useQuery,
+  useQueryClient,
+  useSuspenseQueries,
+  useSuspenseQuery,
+} from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useState } from "react";
 
@@ -14,16 +19,18 @@ import {
   type SessionDto,
   type WorkbenchEventDto,
 } from "#/lib/api";
-import { changeStatsQuery, projectDetailQuery, projectsQuery, queryClient } from "#/lib/queries";
+import { useTRPC } from "#/lib/trpc";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 import { LIVE_STATES, projectMenu, sessionMenu } from "#/lib/workbench-menus";
 
 export const Route = createFileRoute("/")({
   ssr: false,
-  loader: async () => {
-    const projects = await queryClient.ensureQueryData(projectsQuery);
+  loader: async ({ context: { queryClient, trpc } }) => {
+    const projects = await queryClient.ensureQueryData(trpc.projects.list.queryOptions());
     await Promise.all(
-      projects.map((project) => queryClient.ensureQueryData(projectDetailQuery(project.id))),
+      projects.map((project) =>
+        queryClient.ensureQueryData(trpc.projects.detail.queryOptions({ id: project.id })),
+      ),
     );
   },
   component: HomePage,
@@ -44,9 +51,12 @@ interface SessionEntry {
  * — the DB-cheap annotations; diff stats load lazily per visible change.
  */
 function HomePage() {
-  const projects = useSuspenseQuery(projectsQuery).data;
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const launchContext = { queryClient, trpc };
+  const projects = useSuspenseQuery(trpc.projects.list.queryOptions()).data;
   const details = useSuspenseQueries({
-    queries: projects.map((project) => projectDetailQuery(project.id)),
+    queries: projects.map((project) => trpc.projects.detail.queryOptions({ id: project.id })),
   });
   const [progress, setProgress] = useState<Readonly<Record<string, string>>>({});
   const navigate = useNavigate();
@@ -95,7 +105,7 @@ function HomePage() {
     void resumeSession(session.id, null)
       .catch(() => undefined)
       .finally(() => {
-        void queryClient.invalidateQueries({ queryKey: ["session", session.id] });
+        void queryClient.invalidateQueries(trpc.sessions.pathFilter());
         setBusy(null);
       });
     void navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } });
@@ -150,7 +160,10 @@ function HomePage() {
                 entry={entry}
                 progressLine={progress[entry.session.id]}
                 onContextMenu={(event) =>
-                  openMenu(event, sessionMenu(entry.session, entry.annotation, navigate))
+                  openMenu(
+                    event,
+                    sessionMenu(entry.session, entry.annotation, navigate, launchContext),
+                  )
                 }
               />
             ))}
@@ -165,7 +178,10 @@ function HomePage() {
                 entry={entry}
                 progressLine={undefined}
                 onContextMenu={(event) =>
-                  openMenu(event, sessionMenu(entry.session, entry.annotation, navigate))
+                  openMenu(
+                    event,
+                    sessionMenu(entry.session, entry.annotation, navigate, launchContext),
+                  )
                 }
               />
             ))}
@@ -181,7 +197,7 @@ function HomePage() {
                 project={project}
                 changeId={annotation?.changeId ?? ""}
                 onContextMenu={(event) =>
-                  openMenu(event, sessionMenu(session, annotation, navigate))
+                  openMenu(event, sessionMenu(session, annotation, navigate, launchContext))
                 }
               />
             ))}
@@ -218,7 +234,10 @@ function HomePage() {
                     entry={entry}
                     progressLine={progress[entry.session.id]}
                     onContextMenu={(event) =>
-                      openMenu(event, sessionMenu(entry.session, entry.annotation, navigate))
+                      openMenu(
+                        event,
+                        sessionMenu(entry.session, entry.annotation, navigate, launchContext),
+                      )
                     }
                   />
                 </div>
@@ -251,7 +270,9 @@ function HomePage() {
                 return (
                   <div
                     key={project.id}
-                    onContextMenu={(event) => openMenu(event, projectMenu(project, navigate))}
+                    onContextMenu={(event) =>
+                      openMenu(event, projectMenu(project, navigate, launchContext))
+                    }
                     className="rounded-2xl bg-card shadow-sm"
                   >
                     <div className="flex flex-wrap items-center justify-between gap-3 border-b border-rule-faint px-5 py-3.5">
@@ -282,7 +303,10 @@ function HomePage() {
                           <div
                             key={session.id}
                             onContextMenu={(event) =>
-                              openMenu(event, sessionMenu(session, annotation, navigate))
+                              openMenu(
+                                event,
+                                sessionMenu(session, annotation, navigate, launchContext),
+                              )
                             }
                             className={`flex items-center justify-between gap-3 px-5 py-3 ${sessionIndex === 0 ? "" : "border-t border-rule-faint"}`}
                           >
@@ -381,7 +405,8 @@ function AnnotationSuffix({
 
 /** Lazy diff stats for one change — one cached git spawn per visible row. */
 function ChangeStatsChip({ changeId }: { readonly changeId: string }) {
-  const stats = useQuery(changeStatsQuery(changeId));
+  const trpc = useTRPC();
+  const stats = useQuery(trpc.changes.stats.queryOptions({ id: changeId }, { staleTime: 60_000 }));
   if (stats.data === undefined) return null;
   if (stats.data.files === 0) {
     return <span className="text-faint"> · no file changes</span>;

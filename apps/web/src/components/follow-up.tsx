@@ -1,4 +1,4 @@
-import { useSuspenseQuery } from "@tanstack/react-query";
+import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
 import {
@@ -7,7 +7,7 @@ import {
   type DeliverFollowUpInput,
   type FollowUpDto,
 } from "#/lib/api";
-import { queryClient, sessionDetailQuery } from "#/lib/queries";
+import { useTRPC } from "#/lib/trpc";
 
 const retryInput = (followUp: FollowUpDto): DeliverFollowUpInput | null =>
   followUp.reviewSliceId === null ||
@@ -34,7 +34,11 @@ export function FollowUpBanner({
   readonly sessionId: string;
   readonly followUp: FollowUpDto | null;
 }) {
-  const { session, currentAgent } = useSuspenseQuery(sessionDetailQuery(sessionId)).data;
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const { session, currentAgent } = useSuspenseQuery(
+    trpc.sessions.detail.queryOptions({ id: sessionId }),
+  ).data;
   const [delivering, setDelivering] = useState(false);
   const [error, setError] = useState<string | null>(null);
   if (followUp === null) return null;
@@ -52,8 +56,8 @@ export function FollowUpBanner({
         setError(cause instanceof Error ? cause.message : String(cause));
       })
       .finally(() => {
-        void queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
-        void queryClient.invalidateQueries({ queryKey: ["change", followUp.changeId] });
+        void queryClient.invalidateQueries(trpc.sessions.pathFilter());
+        void queryClient.invalidateQueries(trpc.changes.pathFilter());
         setDelivering(false);
       });
   };

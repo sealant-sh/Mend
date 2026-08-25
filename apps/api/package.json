@@ -1,0 +1,32 @@
+{
+  "name": "@mend/api-server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "lint": "oxlint .",
+    "start": "node --experimental-strip-types src/main.ts",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsgo -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@effect/platform-node": "catalog:",
+    "@effect/sql-pg": "catalog:",
+    "@mend/api-contracts": "workspace:*",
+    "@mend/auth": "workspace:*",
+    "@mend/db": "workspace:*",
+    "@mend/domain": "workspace:*",
+    "@mend/inference": "workspace:*",
+    "@mend/jobs": "workspace:*",
+    "@mend/sealant": "workspace:*",
+    "@mend/sessions": "workspace:*",
+    "@mend/store": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@mend/typescript": "workspace:*",
+    "tsx": "catalog:",
+    "vitest": "catalog:"
+  }
+}

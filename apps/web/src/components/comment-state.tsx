@@ -1,8 +1,9 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import type { ReviewCommentDto } from "#/lib/api";
 import { setCommentState } from "#/lib/api";
-import { queryClient } from "#/lib/queries";
+import { useTRPC } from "#/lib/trpc";
 
 /**
  * The reviewer's disposition on a comment: open comments can be marked
@@ -11,6 +12,8 @@ import { queryClient } from "#/lib/queries";
  * like any reviewer comment) or dismissed. State words, not verdicts.
  */
 export function CommentStateActions({ comment }: { readonly comment: ReviewCommentDto }) {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
   const [pending, setPending] = useState<string | null>(null);
   // A comment sent to the session settles through the follow-up loop.
   if (comment.sentToSessionId !== null) return null;
@@ -18,7 +21,7 @@ export function CommentStateActions({ comment }: { readonly comment: ReviewComme
   const act = (state: "open" | "addressed" | "dismissed") => {
     setPending(state);
     void setCommentState(comment.changeId, comment.id, state)
-      .then(() => queryClient.invalidateQueries({ queryKey: ["change", comment.changeId] }))
+      .then(() => queryClient.invalidateQueries(trpc.changes.pathFilter()))
       .finally(() => setPending(null));
   };
   const actions =

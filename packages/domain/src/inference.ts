@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import { InferenceCallId } from "./ids.ts";
+import { Timestamp } from "./timestamp.ts";
 
 /**
  * Interface-side inference deliberately has no product noun — Mend uses
@@ -52,5 +53,5 @@ export class InferenceCall extends Schema.Class<InferenceCall>("InferenceCall")(
   tool: Schema.NullOr(InferenceToolName),
   input: Schema.Unknown,
   output: Schema.Unknown,
-  occurredAt: Schema.Date,
+  occurredAt: Timestamp,
 }) {}

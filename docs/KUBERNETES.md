@@ -70,10 +70,13 @@ Sealant's worker must map the same path: `SEALANT_K8S_VOLUME_MAPPINGS` includes
 
 ## Replicas and recovery — stated plainly
 
-- Run **one** Mend worker replica. The session engine holds in-memory supervision (listeners, pumps,
-  the session-channel registry). Active-active workers need session ownership/leases that do not
-  exist yet; the chart pins `worker.replicaCount: 1`. The web/API tier can scale once the engine is
-  split out — not claimed today.
+- Run **one** API replica (`api.replicaCount: 1`). The session engine holds in-memory supervision
+  (listeners, pumps, the session-channel registry). Active-active APIs need session ownership/leases
+  that do not exist yet.
+- The **web tier scales freely** (`web.replicaCount`): it is a stateless TanStack server plus a
+  transparent `/api` proxy — no database, no store, no engine. Held connections (terminal
+  WebSockets, SSE) pin to whichever web replica accepted them, which is fine: every replica proxies
+  to the same API.
 - A workspace Pod that is deleted and recreated on another node mounts the same worktree and
   continues from the durable state: the worktree files, checkpoint refs and harvested harness state.
   **The process that was in RAM at the moment the node died is gone.** Pod recovery is "resume from
@@ -97,11 +100,15 @@ helm install mend deploy/helm/mend -n mend \
 helm install mend deploy/helm/mend -n mend --set store.existingClaim=mend-store
 ```
 
-The chart renders: the web/API Deployment (`MEND_MODE=web`), **one** worker Deployment
-(`MEND_MODE=worker`, `Recreate`) that owns the session engine and listens on the internal
-`<release>-session` Service for the session channel, Postgres (or `DATABASE_URL` from the secret), a
-NetworkPolicy admitting the session port only from Sealant workspace Pods, and a PodDisruptionBudget
-for the web tier. No Ingress; port-forward or bring your own.
+The chart renders two tiers. The **API Deployment** (`apps/api`, `MEND_MODE=all`, `Recreate`, **one
+replica**) is the real Mend server: the typed contract, auth, the WebSocket data planes, the session
+engine, and the workers; it mounts the store claim and the machine git key, and listens on
+`<release>-api:3101` plus the internal `<release>-session` Service for the workspace session
+channel. The **web Deployment** (`apps/web`, stateless, `web.replicaCount` free) serves the TanStack
+app and transparently proxies `/api/*` — HTTP, SSE, and WebSocket upgrades — to the API tier, so
+clients keep one origin on 3105. Plus Postgres (or `DATABASE_URL` from the secret), NetworkPolicies
+per tier (clients→web:3105, workspaces→session port, Postgres←API only), and a PodDisruptionBudget
+for the API tier. No Ingress; port-forward or bring your own.
 
 Pair it with the Sealant chart by mapping the same claim:
 `workspaces.volumeMappings[0]={logicalRoot: /var/lib/mend/store, claimName: <the claim>}` and the
@@ -173,6 +180,6 @@ exists (0039+).
 | `GET /api/health` shows `sessionChannel.mode: unix-socket` on Kubernetes                 | The endpoint env is missing on that Pod (the web tier reports `unix-socket` by design — only the worker listens).                                              |
 | `mend service list` in a workspace prints `no session channel in this workspace`         | The workspace was launched without `MEND_SESSION_ENDPOINT`/`MEND_SESSION_ID`/`MEND_SESSION_TOKEN` — the worker that provisioned it had no endpoint configured. |
 | `the session token was not accepted`                                                     | The token was revoked (workspace stopped/replaced) or the session row was re-provisioned; relaunch the session.                                                |
-| `this session is not live on this Mend instance`                                         | The worker restarted and has not re-registered the session yet (boot sweep), or a second worker replica is running — keep `worker.replicaCount: 1`.            |
+| `this session is not live on this Mend instance`                                         | The API tier restarted and has not re-registered the session yet (boot sweep), or a second API replica is running — keep `api.replicaCount: 1`.                |
 | Launch fails in Sealant with `mount source … is not under any configured logical root`   | The Sealant worker's `SEALANT_K8S_VOLUME_MAPPINGS` must include `MEND_STORE_ROOT`.                                                                             |
 | Git in the workspace says `fatal: not a git repository`                                  | The common dir was not mounted path-identically; confirm the Sealant SDK version discovers `gitdir:` and the claim is mapped at the same absolute path.        |

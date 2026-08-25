@@ -2,7 +2,8 @@ Mend {{ include "mend.tag" . }} in {{ .Release.Namespace }}.
 
 Store claim:       {{ include "mend.storeClaim" . }} mounted at {{ .Values.store.mountPath }} (MEND_STORE_ROOT)
 Session channel:   {{ include "mend.sessionEndpointUrl" . }} (workspaces only, per-session tokens)
-App replicas:      {{ .Values.app.replicaCount }} (keep 1 — see docs/KUBERNETES.md)
+API replicas:      {{ .Values.api.replicaCount }} (keep 1 — see docs/KUBERNETES.md)
+Web replicas:      {{ .Values.web.replicaCount }} (stateless — scale freely)
 
 Nothing is exposed publicly. Port-forward the web tier:
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ .Release.Name }}-web 3105:3105

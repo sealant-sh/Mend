@@ -1,25 +1,28 @@
 import { useContextMenu } from "@mend/ui/context-menu";
-import { useSuspenseQuery } from "@tanstack/react-query";
+import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { GitKeyCard } from "#/components/git-key-card";
 import { AppShell } from "#/components/shell";
 import { adoptProject, initGitKey, type GitAuthModeDto, type GitKeyDto } from "#/lib/api";
-import { projectsQuery, queryClient } from "#/lib/queries";
+import { useTRPC } from "#/lib/trpc";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 import { projectMenu } from "#/lib/workbench-menus";
 
 export const Route = createFileRoute("/projects/")({
   ssr: false,
-  loader: async () => {
-    await queryClient.ensureQueryData(projectsQuery);
+  loader: async ({ context }) => {
+    await context.queryClient.ensureQueryData(context.trpc.projects.list.queryOptions());
   },
   component: ProjectsPage,
 });
 
 function ProjectsPage() {
-  const projects = useSuspenseQuery(projectsQuery).data;
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const launchContext = { queryClient, trpc };
+  const projects = useSuspenseQuery(trpc.projects.list.queryOptions()).data;
   const navigate = useNavigate();
   const { openMenu, menuElement } = useContextMenu();
   useWorkbenchEvents();
@@ -49,7 +52,9 @@ function ProjectsPage() {
                 key={project.id}
                 to="/projects/$projectId"
                 params={{ projectId: project.id }}
-                onContextMenu={(event) => openMenu(event, projectMenu(project, navigate))}
+                onContextMenu={(event) =>
+                  openMenu(event, projectMenu(project, navigate, launchContext))
+                }
                 className="rounded-2xl bg-card p-5 no-underline shadow-sm transition-shadow hover:shadow-md"
               >
                 <div className="flex items-center justify-between gap-4">
@@ -70,6 +75,8 @@ function ProjectsPage() {
 }
 
 function AdoptForm() {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [source, setSource] = useState("");
   const [auth, setAuth] = useState<GitAuthModeDto>("ambient");
@@ -83,7 +90,7 @@ function AdoptForm() {
     setError(null);
     try {
       await adoptProject(name === "" ? inferName(source) : name, source, auth);
-      await queryClient.invalidateQueries({ queryKey: ["projects"] });
+      await queryClient.invalidateQueries(trpc.projects.pathFilter());
       setName("");
       setSource("");
     } catch (adoptError) {

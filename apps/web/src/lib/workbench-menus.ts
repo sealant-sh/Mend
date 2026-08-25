@@ -11,8 +11,12 @@ import {
   type SessionAnnotationDto,
   type SessionDto,
 } from "#/lib/api";
-import { queryClient } from "#/lib/queries";
-import { HARNESSES, startComposedSession, type Harness } from "#/lib/session-launch";
+import {
+  HARNESSES,
+  startComposedSession,
+  type Harness,
+  type LaunchContext,
+} from "#/lib/session-launch";
 
 /** Session states with a live process behind them. */
 export const LIVE_STATES: ReadonlySet<string> = new Set(["starting", "running", "waiting", "idle"]);
@@ -20,8 +24,12 @@ export const LIVE_STATES: ReadonlySet<string> = new Set(["starting", "running", 
 type Navigate = UseNavigateResult<string>;
 
 /** Quick-start a bare session — the composer's path with no prompt or knobs. */
-export const startSession = (navigate: Navigate, projectId: string, harness: Harness) =>
-  startComposedSession(navigate, projectId, { harness, prompt: "" });
+export const startSession = (
+  navigate: Navigate,
+  context: LaunchContext,
+  projectId: string,
+  harness: Harness,
+) => startComposedSession(navigate, context, projectId, { harness, prompt: "" });
 
 /** Clipboard write with a fallback for non-secure origins (LAN over http). */
 export const copyText = (text: string) => {
@@ -44,7 +52,12 @@ const fallbackCopy = (text: string) => {
 };
 
 /** The right-click menu for a project row/card in a list. */
-export const projectMenu = (project: ProjectDto, navigate: Navigate): ContextMenuSpec => {
+export const projectMenu = (
+  project: ProjectDto,
+  navigate: Navigate,
+  context: LaunchContext,
+): ContextMenuSpec => {
+  const { queryClient, trpc } = context;
   const entries: ContextMenuEntry[] = [
     {
       label: "Open project",
@@ -55,7 +68,7 @@ export const projectMenu = (project: ProjectDto, navigate: Navigate): ContextMen
     ...HARNESSES.map(
       (harness): ContextMenuEntry => ({
         label: `Start ${harness} session`,
-        onSelect: () => void startSession(navigate, project.id, harness),
+        onSelect: () => void startSession(navigate, context, project.id, harness),
       }),
     ),
     "separator",
@@ -77,9 +90,9 @@ export const projectMenu = (project: ProjectDto, navigate: Navigate): ContextMen
       // The list refetches before the detail cache is dropped, so the
       // removed project's detail query unmounts instead of refetching a 404.
       void removeProject(project.id)
-        .then(() => queryClient.invalidateQueries({ queryKey: ["projects"] }))
+        .then(() => queryClient.invalidateQueries(trpc.projects.list.queryFilter()))
         .then(() => {
-          queryClient.removeQueries({ queryKey: ["project", project.id] });
+          queryClient.removeQueries(trpc.projects.detail.queryFilter({ id: project.id }));
           return null;
         });
     },
@@ -92,7 +105,14 @@ export const sessionMenu = (
   session: SessionDto,
   annotation: SessionAnnotationDto | undefined,
   navigate: Navigate,
+  context: LaunchContext,
 ): ContextMenuSpec => {
+  const { queryClient, trpc } = context;
+  const invalidateSession = () =>
+    Promise.all([
+      queryClient.invalidateQueries(trpc.sessions.pathFilter()),
+      queryClient.invalidateQueries(trpc.projects.pathFilter()),
+    ]);
   const live = LIVE_STATES.has(session.status);
   const entries: ContextMenuEntry[] = [
     {
@@ -114,14 +134,14 @@ export const sessionMenu = (
       {
         label: "Mark checkpoint",
         onSelect: () =>
-          void checkpointSession(session.id, "user-mark").then(() => invalidateSession(session)),
+          void checkpointSession(session.id, "user-mark").then(() => invalidateSession()),
       },
       {
         label: "Stop session",
         onSelect: () =>
           void stopSession(session.id)
             .catch(() => undefined)
-            .finally(() => invalidateSession(session)),
+            .finally(() => invalidateSession()),
       },
     );
   } else {
@@ -131,7 +151,7 @@ export const sessionMenu = (
       onSelect: () => {
         void resumeSession(session.id, null)
           .catch(() => undefined)
-          .finally(() => invalidateSession(session));
+          .finally(() => invalidateSession());
         void navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } });
       },
     });
@@ -148,8 +168,8 @@ export const sessionMenu = (
       danger: true,
       onSelect: () => {
         void removeSession(session.id).then(() => {
-          queryClient.removeQueries({ queryKey: ["session", session.id] });
-          return queryClient.invalidateQueries({ queryKey: ["project", session.projectId] });
+          queryClient.removeQueries(trpc.sessions.detail.queryFilter({ id: session.id }));
+          return queryClient.invalidateQueries(trpc.projects.pathFilter());
         });
       },
     });
@@ -159,9 +179,3 @@ export const sessionMenu = (
     entries,
   };
 };
-
-const invalidateSession = (session: SessionDto) =>
-  Promise.all([
-    queryClient.invalidateQueries({ queryKey: ["session", session.id] }),
-    queryClient.invalidateQueries({ queryKey: ["project", session.projectId] }),
-  ]);

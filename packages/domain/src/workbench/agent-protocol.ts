@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import { AgentItemId, AgentRequestId, AgentTurnId, SessionId, SessionProcessId } from "../ids.ts";
+import { Timestamp } from "../timestamp.ts";
 
 /** How Mend launches and records a coding-agent process. */
 export const AgentLaunchMode = Schema.Literals(["pty", "protocol"]);
@@ -41,9 +42,9 @@ export class AgentTurn extends Schema.Class<AgentTurn>("AgentTurn")({
   providerTurnId: Schema.NullOr(Schema.String),
   error: Schema.NullOr(Schema.String),
   usage: Schema.NullOr(AgentTurnUsage),
-  createdAt: Schema.Date,
-  startedAt: Schema.NullOr(Schema.Date),
-  endedAt: Schema.NullOr(Schema.Date),
+  createdAt: Timestamp,
+  startedAt: Schema.NullOr(Timestamp),
+  endedAt: Schema.NullOr(Timestamp),
 }) {}
 
 /** Statuses that still occupy, or will occupy, a protocol agent. */
@@ -89,8 +90,8 @@ export class AgentItem extends Schema.Class<AgentItem>("AgentItem")({
   title: Schema.NullOr(Schema.String),
   text: Schema.NullOr(Schema.String),
   data: Schema.NullOr(Schema.Unknown),
-  createdAt: Schema.Date,
-  updatedAt: Schema.Date,
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
 }) {}
 
 /** What a protocol agent is asking a person to decide or answer. */
@@ -152,8 +153,8 @@ export class AgentRequest extends Schema.Class<AgentRequest>("AgentRequest")({
   /** Mend user id that answered the request. */
   decidedBy: Schema.NullOr(Schema.String),
   answers: Schema.NullOr(AgentInputAnswers),
-  createdAt: Schema.Date,
-  decidedAt: Schema.NullOr(Schema.Date),
+  createdAt: Timestamp,
+  decidedAt: Schema.NullOr(Timestamp),
 }) {}
 
 /** Adapter-side item state before the engine stamps Mend ids and sequence. */

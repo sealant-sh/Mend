@@ -1,3 +1,4 @@
+import { ProjectEnvironmentVariableId, ProjectId } from "@mend/domain";
 import { describe, expect, it } from "vitest";
 
 import type { ProjectEnvironmentVariableView } from "./project-environment";
@@ -10,13 +11,13 @@ import {
 } from "./project-environment-form";
 
 const variable: ProjectEnvironmentVariableView = {
-  id: "var-1",
-  projectId: "proj-1",
+  id: ProjectEnvironmentVariableId.make("var-1"),
+  projectId: ProjectId.make("proj-1"),
   name: "APP_MODE",
   value: "review",
   revision: 3,
-  createdAt: "2026-08-17T00:00:00Z",
-  updatedAt: "2026-08-17T00:00:00Z",
+  createdAt: new Date("2026-08-17T00:00:00Z"),
+  updatedAt: new Date("2026-08-17T00:00:00Z"),
 };
 
 const reduce = (

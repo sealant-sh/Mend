@@ -8,8 +8,8 @@ import type { PairingDto } from "#/lib/api";
  * code and the URL sit beside the QR because a camera is a convenience, not a
  * requirement.
  *
- * The calls themselves live in #/lib/api, and the device list in #/lib/queries
- * — settings and the first-run checklist read the same cache.
+ * The calls themselves live in #/lib/api, and the device list is the
+ * devices.list query — settings and the first-run checklist read the same cache.
  */
 
 /** What the QR encodes. The phone opens it; nothing else reads it. */

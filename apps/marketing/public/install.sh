@@ -455,7 +455,7 @@ case ":$PATH:" in
 esac
 
 # --- Mend service ------------------------------------------------------------------------------------
-ENTRY="$MEND_SRC/apps/web/src/entry/main.ts"
+ENTRY="$MEND_SRC/scripts/serve.mjs"
 case "$OS" in
 linux)
   unit_path="$CONFIG_HOME/systemd/user/mend.service"

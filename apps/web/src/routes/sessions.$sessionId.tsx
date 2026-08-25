@@ -1,4 +1,4 @@
-import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
@@ -17,19 +17,16 @@ import {
   stopSession,
   type TranscriptEventDto,
 } from "#/lib/api";
-import {
-  pendingFollowUpQuery,
-  queryClient,
-  sessionDetailQuery,
-  sessionTranscriptQuery,
-} from "#/lib/queries";
 import { useResolvedDark } from "#/lib/theme";
+import { useTRPC } from "#/lib/trpc";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 
 export const Route = createFileRoute("/sessions/$sessionId")({
   ssr: false,
-  loader: async ({ params }) => {
-    await queryClient.ensureQueryData(sessionDetailQuery(params.sessionId));
+  loader: async ({ context, params }) => {
+    await context.queryClient.ensureQueryData(
+      context.trpc.sessions.detail.queryOptions({ id: params.sessionId }),
+    );
   },
   component: SessionPage,
 });
@@ -73,7 +70,8 @@ function TranscriptEvent({ event }: { readonly event: TranscriptEventDto }) {
 
 /** The durable record, conversation-shaped — what the ephemeral SSE lines could never replay. */
 function TranscriptPane({ sessionId }: { readonly sessionId: string }) {
-  const transcript = useQuery(sessionTranscriptQuery(sessionId));
+  const trpc = useTRPC();
+  const transcript = useQuery(trpc.sessions.transcript.queryOptions({ id: sessionId }));
   if (transcript.isLoading) {
     return <p className="p-4 font-mono text-xs text-faint">reading the record…</p>;
   }
@@ -98,14 +96,18 @@ function TranscriptPane({ sessionId }: { readonly sessionId: string }) {
 
 function SessionPage() {
   const { sessionId } = Route.useParams();
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
   const { session, checkpoints, change, currentAgent } = useSuspenseQuery(
-    sessionDetailQuery(sessionId),
+    trpc.sessions.detail.queryOptions({ id: sessionId }),
   ).data;
   // The agent's liveness, not the session fold: a shell holding the workspace keeps the session
   // `idle`, but the terminal, stop, and resume controls are about the AGENT.
   const agentLive = agentIsLive(session, currentAgent);
   const agentPty = currentAgent?.sealantSessionId ?? session.sealantSessionId;
-  const followUp = useSuspenseQuery(pendingFollowUpQuery(sessionId)).data;
+  const followUp = useSuspenseQuery(
+    trpc.sessions.pendingFollowUp.queryOptions({ id: sessionId }),
+  ).data;
   const [pending, setPending] = useState<"stop" | "checkpoint" | "resume" | null>(null);
   const [labelDraft, setLabelDraft] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<"idle" | "armed" | "working">("idle");
@@ -119,7 +121,7 @@ function SessionPage() {
     setLabelDraft(null);
     if (next === (session.label ?? "")) return;
     void setSessionLabel(sessionId, next === "" ? null : next).then(() =>
-      queryClient.invalidateQueries({ queryKey: ["session", sessionId] }),
+      queryClient.invalidateQueries(trpc.sessions.pathFilter()),
     );
   };
 
@@ -144,7 +146,7 @@ function SessionPage() {
     const action =
       kind === "stop" ? stopSession(sessionId) : checkpointSession(sessionId, "user-mark");
     void action
-      .then(() => queryClient.invalidateQueries({ queryKey: ["session", sessionId] }))
+      .then(() => queryClient.invalidateQueries(trpc.sessions.pathFilter()))
       .finally(() => setPending(null));
   };
 
@@ -264,7 +266,7 @@ function SessionPage() {
                     void resumeSession(sessionId, harness === session.harness ? null : harness)
                       .catch(() => undefined)
                       .finally(() => {
-                        void queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
+                        void queryClient.invalidateQueries(trpc.sessions.pathFilter());
                         setPending(null);
                       });
                   }}

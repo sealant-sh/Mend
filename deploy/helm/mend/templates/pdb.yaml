@@ -6,4 +6,4 @@ metadata:
 spec:
   maxUnavailable: 1
   selector:
-    matchLabels: {{ include "mend.component" (dict "root" . "name" "app") | nindent 6 }}
+    matchLabels: {{ include "mend.component" (dict "root" . "name" "api") | nindent 6 }}

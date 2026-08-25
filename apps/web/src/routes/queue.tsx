@@ -9,25 +9,27 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
+import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { AppShell } from "#/components/shell";
 import { StatusDot } from "#/components/status";
 import {
   createIssue,
-  listIssues,
   moveIssue,
   type IssueDto,
   type IssueStage,
   type MendEventDto,
 } from "#/lib/api";
+import { useTRPC } from "#/lib/trpc";
 
 export const Route = createFileRoute("/queue")({
   // Session lives in a cookie; the loader runs in the browser and the API
   // redirects to /login via 401. No SSR for authed surfaces in M1.
   ssr: false,
-  loader: () => listIssues(),
+  loader: ({ context }) =>
+    context.queryClient.ensureQueryData(context.trpc.queue.listIssues.queryOptions()),
   component: QueuePage,
 });
 
@@ -44,8 +46,9 @@ const STAGES: ReadonlyArray<{
 ];
 
 function QueuePage() {
-  const issues = Route.useLoaderData();
-  const router = useRouter();
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const issues = useSuspenseQuery(trpc.queue.listIssues.queryOptions()).data;
   const [progress, setProgress] = useState<Record<string, string>>({});
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
@@ -58,10 +61,10 @@ function QueuePage() {
         setProgress((current) => ({ ...current, [event.issueId]: event.line }));
         return;
       }
-      void router.invalidate();
+      void queryClient.invalidateQueries(trpc.queue.pathFilter());
     });
     return () => source.close();
-  }, [router]);
+  }, [queryClient, trpc]);
 
   const queued = issues
     .filter((issue) => issue.stage === "queued")
@@ -81,7 +84,7 @@ function QueuePage() {
         if (target === -1) return;
         await moveIssue(issueId, "queued", target);
       }
-      await router.invalidate();
+      await queryClient.invalidateQueries(trpc.queue.pathFilter());
     };
     void apply();
   };
@@ -135,7 +138,8 @@ function QueuePage() {
 }
 
 function NewIssueForm() {
-  const router = useRouter();
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [repository, setRepository] = useState("");
@@ -162,7 +166,7 @@ function NewIssueForm() {
     setTitle("");
     setRepository("");
     setBody("");
-    await router.invalidate();
+    await queryClient.invalidateQueries(trpc.queue.pathFilter());
   };
 
   return (

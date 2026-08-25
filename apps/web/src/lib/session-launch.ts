@@ -1,8 +1,9 @@
 import type { EffortLevel, PermissionMode, SpeedMode } from "@mend/domain/workbench";
+import type { QueryClient } from "@tanstack/react-query";
 import type { UseNavigateResult } from "@tanstack/react-router";
 
 import { createSession, launchSessionStart } from "#/lib/api";
-import { queryClient } from "#/lib/queries";
+import type { TrpcProxy } from "#/lib/trpc";
 
 /** Harnesses the web can start; opencode stays CLI-only until it is exercised end to end. */
 export const HARNESSES = ["claude", "codex", "shell"] as const;
@@ -23,6 +24,12 @@ export interface LaunchSpec {
   readonly base?: string | null;
 }
 
+/** What launching needs from the calling component — hooks own both instances now. */
+export interface LaunchContext {
+  readonly queryClient: QueryClient;
+  readonly trpc: TrpcProxy;
+}
+
 /**
  * Fire a composed session: create the row, kick the supervised launch with
  * the structured start (the server assembles harness argv and seeds
@@ -32,7 +39,12 @@ export interface LaunchSpec {
  * server-side, so the page shows it. A create failure rejects here — the
  * composer keeps the prompt and shows it.
  */
-export const startComposedSession = (navigate: Navigate, projectId: string, spec: LaunchSpec) =>
+export const startComposedSession = (
+  navigate: Navigate,
+  { queryClient, trpc }: LaunchContext,
+  projectId: string,
+  spec: LaunchSpec,
+) =>
   createSession(projectId, spec.harness, spec.base ?? null).then((session) => {
     const prompt = spec.prompt.trim();
     void launchSessionStart(session.id, {
@@ -44,7 +56,7 @@ export const startComposedSession = (navigate: Navigate, projectId: string, spec
     })
       .catch(() => undefined)
       .finally(() => {
-        void queryClient.invalidateQueries({ queryKey: ["session", session.id] });
+        void queryClient.invalidateQueries(trpc.sessions.pathFilter());
       });
     return navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } });
   });

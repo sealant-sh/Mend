@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import { CheckpointId, SealantRunId, SessionId, Sha } from "../ids.ts";
+import { SequenceNumber, Timestamp } from "../timestamp.ts";
 
 /** What caused a checkpoint to be taken (plan §5.6 "Checkpoints and slices"). */
 export const CheckpointTrigger = Schema.Literals([
@@ -27,7 +28,7 @@ export class Checkpoint extends Schema.Class<Checkpoint>("Checkpoint")({
   /** Null only before the session's first platform run, or on honest legacy gaps. */
   sealantRunId: Schema.NullOr(SealantRunId),
   /** Record sequence the supervisor had seen when the snapshot was taken. */
-  seq: Schema.BigInt,
+  seq: SequenceNumber,
   trigger: CheckpointTrigger,
-  createdAt: Schema.Date,
+  createdAt: Timestamp,
 }) {}

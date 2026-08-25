@@ -2,6 +2,7 @@ import { findWorkspaceSecretEnvReservedRule } from "@sealant/api-contracts/works
 import { Schema } from "effect";
 
 import { ProjectId, ProjectSecretId } from "../ids.ts";
+import { Timestamp } from "../timestamp.ts";
 import {
   PROJECT_ENV_MAX_NAME_LENGTH,
   PROJECT_ENV_NAME_PATTERN,
@@ -24,8 +25,8 @@ export class ProjectSecret extends Schema.Class<ProjectSecret>("ProjectSecret")(
   name: Schema.String,
   /** Integer row revision; stale-write checks compare against it. The value never appears. */
   revision: Schema.Int,
-  createdAt: Schema.Date,
-  updatedAt: Schema.Date,
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
 }) {}
 
 /** The project's secrets as the API shows them: names + revisions only, never values. */

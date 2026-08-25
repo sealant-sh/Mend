@@ -3,7 +3,7 @@ import { Link } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 
 import { StatusDot } from "#/components/status";
-import { devicesQuery, sealantIdentityQuery } from "#/lib/queries";
+import { useTRPC } from "#/lib/trpc";
 
 /**
  * The empty machine, as a checklist rather than a wizard: five steps, each
@@ -54,8 +54,10 @@ function Step({
 }
 
 export function FirstRun() {
-  const accounts = useQuery(sealantIdentityQuery).data?.accounts ?? [];
-  const devices = useQuery(devicesQuery).data ?? [];
+  const trpc = useTRPC();
+  const accounts = useQuery(trpc.platform.sealantIdentity.queryOptions()).data?.accounts ?? [];
+  const devices =
+    useQuery(trpc.devices.list.queryOptions(undefined, { staleTime: 30_000 })).data ?? [];
   const connected = accounts.filter(({ status }) => status === "active");
 
   return (
@@ -165,7 +167,9 @@ export function FirstRun() {
  * is still unpaired until it is, and this is where you would notice.
  */
 export function PairHint() {
-  const devices = useQuery(devicesQuery).data ?? [];
+  const trpc = useTRPC();
+  const devices =
+    useQuery(trpc.devices.list.queryOptions(undefined, { staleTime: 30_000 })).data ?? [];
   if (devices.length > 0) return null;
   return (
     <a

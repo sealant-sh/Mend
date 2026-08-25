@@ -1,0 +1,22 @@
+{
+  "name": "@mend/api-contracts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "lint": "oxlint .",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsgo -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@mend/domain": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@mend/typescript": "workspace:*",
+    "vitest": "catalog:"
+  }
+}

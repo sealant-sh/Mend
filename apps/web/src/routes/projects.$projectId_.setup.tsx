@@ -1,4 +1,5 @@
-import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
+import { ProjectEnvironmentVariableId } from "@mend/domain";
+import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useReducer, useRef, useState } from "react";
 
@@ -48,17 +49,7 @@ import {
   issuesFor,
   projectEnvironmentFormReducer,
 } from "#/lib/project-environment-form";
-import {
-  projectDetailQuery,
-  projectEnvironmentQuery,
-  projectMountsQuery,
-  projectRecipesQuery,
-  projectReferencesQuery,
-  projectSecretsQuery,
-  queryClient,
-  referencesQuery,
-  settingsQuery,
-} from "#/lib/queries";
+import { useTRPC } from "#/lib/trpc";
 import { copyText } from "#/lib/workbench-menus";
 import {
   OS_LABELS,
@@ -74,16 +65,20 @@ import {
  */
 export const Route = createFileRoute("/projects/$projectId_/setup")({
   ssr: false,
-  loader: async ({ params }) => {
+  loader: async ({ context: { queryClient, trpc }, params }) => {
     await Promise.all([
-      queryClient.ensureQueryData(projectDetailQuery(params.projectId)),
-      queryClient.ensureQueryData(projectEnvironmentQuery(params.projectId)),
-      queryClient.ensureQueryData(projectSecretsQuery(params.projectId)),
-      queryClient.ensureQueryData(settingsQuery),
-      queryClient.ensureQueryData(referencesQuery),
-      queryClient.ensureQueryData(projectReferencesQuery(params.projectId)),
-      queryClient.ensureQueryData(projectMountsQuery(params.projectId)),
-      queryClient.ensureQueryData(projectRecipesQuery(params.projectId)),
+      queryClient.ensureQueryData(trpc.projects.detail.queryOptions({ id: params.projectId })),
+      queryClient.ensureQueryData(
+        trpc.environment.environment.queryOptions({ projectId: params.projectId }),
+      ),
+      queryClient.ensureQueryData(
+        trpc.environment.secrets.queryOptions({ projectId: params.projectId }),
+      ),
+      queryClient.ensureQueryData(trpc.settings.get.queryOptions()),
+      queryClient.ensureQueryData(trpc.git.references.queryOptions()),
+      queryClient.ensureQueryData(trpc.projects.references.queryOptions({ id: params.projectId })),
+      queryClient.ensureQueryData(trpc.projects.mounts.queryOptions({ id: params.projectId })),
+      queryClient.ensureQueryData(trpc.projects.recipes.queryOptions({ id: params.projectId })),
     ]);
   },
   component: ProjectSetupPage,
@@ -91,7 +86,8 @@ export const Route = createFileRoute("/projects/$projectId_/setup")({
 
 function ProjectSetupPage() {
   const { projectId } = Route.useParams();
-  const { project } = useSuspenseQuery(projectDetailQuery(projectId)).data;
+  const trpc = useTRPC();
+  const { project } = useSuspenseQuery(trpc.projects.detail.queryOptions({ id: projectId })).data;
 
   return (
     <AppShell projectId={projectId}>
@@ -156,7 +152,9 @@ const WORKSPACE_OS_CHOICES = ["arch", "fedora", "ubuntu", "nix"] as const;
  * record the image they actually launched with.
  */
 function WorkspaceImagePanel({ project }: { readonly project: ProjectDto }) {
-  const settings = useQuery(settingsQuery);
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const settings = useQuery(trpc.settings.get.queryOptions());
   const inherited = settings.data?.workspaceImage ?? null;
   const effective = project.workspaceImage ?? inherited;
   const [draft, setDraft] = useState<{
@@ -210,7 +208,7 @@ function WorkspaceImagePanel({ project }: { readonly project: ProjectDto }) {
           return;
         }
         setDraft(null);
-        return queryClient.invalidateQueries({ queryKey: ["project", project.id] });
+        return queryClient.invalidateQueries(trpc.projects.pathFilter());
       })
       .catch((cause: unknown) =>
         setError(cause instanceof Error ? cause.message : "Could not save the workspace image."),
@@ -417,11 +415,15 @@ const inputClass =
  * refused with the same wording the server uses.
  */
 function ConfigurationPanel({ projectId }: { readonly projectId: string }) {
-  const environment = useSuspenseQuery(projectEnvironmentQuery(projectId)).data;
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const environment = useSuspenseQuery(
+    trpc.environment.environment.queryOptions({ projectId }),
+  ).data;
   const [form, dispatch] = useReducer(projectEnvironmentFormReducer, initialProjectEnvironmentForm);
 
   const refresh = () =>
-    queryClient.invalidateQueries({ queryKey: ["project", projectId, "environment"] });
+    queryClient.invalidateQueries(trpc.environment.environment.queryFilter({ projectId }));
 
   const settle = async (
     write: Promise<ProjectEnvironmentWriteResult>,
@@ -434,12 +436,12 @@ function ConfigurationPanel({ projectId }: { readonly projectId: string }) {
         await refresh();
         return;
       }
+      // The write outcome is a closed union: rejected or stale. Transport
+      // failures throw and land in the catch below as save-failed.
       if (outcome.kind === "rejected") {
         dispatch({ type: "save-rejected", issues: outcome.issues });
-      } else if (outcome.kind === "stale") {
-        dispatch({ type: "save-conflicted" });
       } else {
-        dispatch({ type: "save-failed", message: `The save failed (${outcome.status}).` });
+        dispatch({ type: "save-conflicted" });
       }
     } catch (cause) {
       dispatch({
@@ -782,11 +784,13 @@ function VariableRow({
  * masked in captured output.
  */
 function SecretsPanel({ projectId }: { readonly projectId: string }) {
-  const snapshot = useSuspenseQuery(projectSecretsQuery(projectId)).data;
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const snapshot = useSuspenseQuery(trpc.environment.secrets.queryOptions({ projectId })).data;
   const [form, dispatch] = useReducer(projectEnvironmentFormReducer, initialProjectEnvironmentForm);
 
   const refresh = () =>
-    queryClient.invalidateQueries({ queryKey: ["project", projectId, "secrets"] });
+    queryClient.invalidateQueries(trpc.environment.secrets.queryFilter({ projectId }));
 
   const settle = async (
     write: Promise<ProjectSecretWriteResult>,
@@ -799,12 +803,12 @@ function SecretsPanel({ projectId }: { readonly projectId: string }) {
         await refresh();
         return;
       }
+      // The write outcome is a closed union: rejected or stale. Transport
+      // failures throw and land in the catch below as save-failed.
       if (outcome.kind === "rejected") {
         dispatch({ type: "save-rejected", issues: outcome.issues });
-      } else if (outcome.kind === "stale") {
-        dispatch({ type: "save-conflicted" });
       } else {
-        dispatch({ type: "save-failed", message: `The save failed (${outcome.status}).` });
+        dispatch({ type: "save-conflicted" });
       }
     } catch (cause) {
       dispatch({
@@ -900,8 +904,10 @@ function SecretsPanel({ projectId }: { readonly projectId: string }) {
                     dispatch({
                       type: "edit-opened",
                       // The reducer pre-fills `value` from the row; a secret row has none to give.
+                      // The shared form stores a variable-shaped row, so the secret id rides in
+                      // the variable-id slot (re-branded) and flows back to updateProjectSecret.
                       variable: {
-                        id: secret.id,
+                        id: ProjectEnvironmentVariableId.make(secret.id),
                         projectId: secret.projectId,
                         name: secret.name,
                         value: "",
@@ -1143,6 +1149,8 @@ const rowInputClass =
  * replaced; the report renders under the composer and both panels refresh.
  */
 function VariablesComposer({ projectId }: { readonly projectId: string }) {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
   const [state, dispatch] = useReducer(composerReducer, initialComposer);
   const [phase, setPhase] = useState<"idle" | "saving">("idle");
   const [report, setReport] = useState<EnvironmentLoadReportView | null>(null);
@@ -1191,10 +1199,7 @@ function VariablesComposer({ projectId }: { readonly projectId: string }) {
           type: "rows-cleared",
           ids: rows.filter((row) => loadedNames.has(row.key)).map((row) => row.id),
         });
-        await Promise.all([
-          queryClient.invalidateQueries({ queryKey: ["project", projectId, "environment"] }),
-          queryClient.invalidateQueries({ queryKey: ["project", projectId, "secrets"] }),
-        ]);
+        await queryClient.invalidateQueries(trpc.environment.pathFilter());
         return undefined;
       })
       .catch((cause: unknown) =>

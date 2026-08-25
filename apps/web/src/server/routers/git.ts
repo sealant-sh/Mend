@@ -1,0 +1,27 @@
+import { AddReference } from "@mend/api-contracts";
+import { ReferenceId } from "@mend/domain";
+import { Schema } from "effect";
+
+import { run } from "../api/index.ts";
+import { input, procedure, router } from "./trpc.ts";
+
+/** References (global) · git keys · bridge. */
+export const gitRouter = router({
+  references: procedure.query(({ ctx }) => run(ctx, (api) => api.references.list())),
+  addReference: procedure
+    .input(input(AddReference))
+    .mutation(({ ctx, input: payload }) => run(ctx, (api) => api.references.add({ payload }))),
+  removeReference: procedure
+    .input(input(Schema.Struct({ id: ReferenceId })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => api.references.remove({ params: { id: i.id } })),
+    ),
+  refreshReference: procedure
+    .input(input(Schema.Struct({ id: ReferenceId })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => api.references.refresh({ params: { id: i.id } })),
+    ),
+  key: procedure.query(({ ctx }) => run(ctx, (api) => api.gitKeys.show())),
+  initKey: procedure.mutation(({ ctx }) => run(ctx, (api) => api.gitKeys.init())),
+  bridgeStatus: procedure.query(({ ctx }) => run(ctx, (api) => api.gitKeys.bridgeStatus())),
+});

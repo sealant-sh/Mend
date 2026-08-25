@@ -1,15 +1,19 @@
+import {
+  BriefDocument,
+  DotfilesRepository,
+  EvidencePointer,
+  FailureBrief,
+  MendSettings,
+  WorkspaceImage,
+} from "@mend/domain";
 import type {
   AgentItemId,
   AgentRequestId,
   AgentTurnId,
   BriefCommentId,
-  BriefDocument,
-  EvidencePointer,
-  FailureBrief,
   FollowUpId,
   InferenceCallId,
   IssueId,
-  MendSettings,
   ReviewQuestionId,
   ReviewCommentId,
   ReviewSliceId,
@@ -43,9 +47,14 @@ import type {
   SessionId,
   SessionProcessId,
   Sha,
-  DotfilesRepository,
-  WorkspaceImage,
 } from "@mend/domain";
+import {
+  HotWorkspaceEnvironment,
+  RecordLink,
+  ReviewCommentAnchor,
+  SessionDotfiles,
+  TourStop,
+} from "@mend/domain/workbench";
 import type {
   AgentApprovalDecision,
   AgentInputAnswers,
@@ -65,14 +74,10 @@ import type {
   CommentAuthor,
   CommentKind,
   CommentState,
-  HotWorkspaceEnvironment,
   HotWorkspaceStatus,
   PassKind,
   PassStatus,
-  RecordLink,
-  ReviewCommentAnchor,
   DiffDigest,
-  TourStop,
   SessionExtraMount,
   ServiceBrowserScheme,
   ServiceDeclarationSource,
@@ -82,7 +87,6 @@ import type {
   ServiceTransport,
   SessionProcessKind,
   SessionProcessStatus,
-  SessionDotfiles,
   SessionReferenceMount,
   SessionStatus,
 } from "@mend/domain/workbench";
@@ -100,6 +104,16 @@ import {
   unique,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import type { Schema } from "effect";
+
+/**
+ * Tie a jsonb column's TS shape to the schema that decodes it at the seam:
+ * retyping the schema retypes the column in the same keystroke, so the
+ * assertion can never go stale the way a hand-written `$type<...>` does.
+ */
+const jsonbOf = <S extends Schema.Top>(_schema: S) => jsonb().$type<S["Encoded"]>();
+const jsonbArrayOf = <S extends Schema.Top>(_schema: S) =>
+  jsonb().$type<ReadonlyArray<S["Encoded"]>>();
 
 /** Runtime schema for Mend-owned product state; the existing migrations remain authoritative. */
 /** Keep TypeScript properties idiomatic while matching Mend's existing snake_case schema. */
@@ -163,7 +177,7 @@ export const runs = pgTable(
     settledAt: timestamp({ mode: "date", withTimezone: true }),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
-    failureBrief: jsonb().$type<typeof FailureBrief.Encoded>(),
+    failureBrief: jsonbOf(FailureBrief),
   },
   (table) => [index("runs_issue_idx").on(table.issueId)],
 );
@@ -176,7 +190,7 @@ export const briefs = pgTable("briefs", {
     .unique()
     .references(() => changes.id, { onDelete: "cascade" }),
   currentVersion: integer().notNull().default(1),
-  document: jsonb().$type<typeof BriefDocument.Encoded>().notNull(),
+  document: jsonbOf(BriefDocument).notNull(),
   createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
@@ -189,7 +203,7 @@ export const briefVersions = pgTable(
       .notNull()
       .references(() => briefs.id, { onDelete: "cascade" }),
     version: integer().notNull(),
-    document: jsonb().$type<typeof BriefDocument.Encoded>().notNull(),
+    document: jsonbOf(BriefDocument).notNull(),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [primaryKey({ columns: [table.briefId, table.version] })],
@@ -206,8 +220,7 @@ export const reviewQuestions = pgTable(
     index: integer().notNull(),
     question: text().notNull(),
     disposition: text().$type<Disposition>().notNull(),
-    evidence: jsonb()
-      .$type<ReadonlyArray<typeof EvidencePointer.Encoded>>()
+    evidence: jsonbArrayOf(EvidencePointer)
       .notNull()
       .default(sql`'[]'::jsonb`),
   },
@@ -245,7 +258,7 @@ export const projects = pgTable("projects", {
   autoName: text().$type<AutomationChoice>().notNull().default("inherit"),
   gitAuthMode: text().$type<GitAuthMode>().notNull().default("ambient"),
   // NULL inherits the global settings.workspaceImage default.
-  workspaceImage: jsonb().$type<typeof WorkspaceImage.Encoded>(),
+  workspaceImage: jsonbOf(WorkspaceImage),
   // Whether sessions here receive the launching user's dotfiles.
   applyDotfiles: boolean().notNull().default(true),
   // Aggregate revision of the project's environment variables; bumped by every mutation under the
@@ -281,9 +294,9 @@ export const hotWorkspaces = pgTable(
     branch: text().notNull(),
     baseSha: text().$type<Sha>().notNull(),
     sealantWorkspaceId: text().$type<SealantWorkspaceId>(),
-    workspaceImage: jsonb().$type<typeof WorkspaceImage.Encoded>(),
-    dotfiles: jsonb().$type<typeof SessionDotfiles.Encoded>(),
-    environment: jsonb().$type<typeof HotWorkspaceEnvironment.Encoded>(),
+    workspaceImage: jsonbOf(WorkspaceImage),
+    dotfiles: jsonbOf(SessionDotfiles),
+    environment: jsonbOf(HotWorkspaceEnvironment),
     referenceMounts: jsonb()
       .$type<ReadonlyArray<SessionReferenceMount>>()
       .notNull()
@@ -311,7 +324,7 @@ export const userSealantIdentities = pgTable("user_sealant_identities", {
 
 export const userDotfiles = pgTable("user_dotfiles", {
   userId: text().primaryKey(),
-  repository: jsonb().$type<typeof DotfilesRepository.Encoded>(),
+  repository: jsonbOf(DotfilesRepository),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -413,7 +426,7 @@ export const projectReferences = pgTable(
 
 export const settings = pgTable("settings", {
   key: text().primaryKey(),
-  value: jsonb().$type<typeof MendSettings.Encoded>().notNull(),
+  value: jsonbOf(MendSettings).notNull(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -527,10 +540,10 @@ export const agentSessions = pgTable(
     workspaceTtlRenewalError: text(),
     // The image this session actually launched with — stamped at launch, never rewritten by a
     // later project-setting change. NULL for sessions from before the column (or not launched).
-    workspaceImage: jsonb().$type<typeof WorkspaceImage.Encoded>(),
+    workspaceImage: jsonbOf(WorkspaceImage),
     // The dotfiles this session actually launched with — stamped at launch, same contract as
     // workspaceImage above.
-    dotfiles: jsonb().$type<typeof SessionDotfiles.Encoded>(),
+    dotfiles: jsonbOf(SessionDotfiles),
     // Who provisioned the session — whose dotfiles apply. NULL for pre-column rows.
     ownerUserId: text(),
     status: text().$type<SessionStatus>().notNull().default("starting"),
@@ -964,13 +977,12 @@ export const reviewComments = pgTable(
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     endLine: integer(),
-    evidence: jsonb()
-      .$type<ReadonlyArray<typeof RecordLink.Encoded>>()
+    evidence: jsonbArrayOf(RecordLink)
       .notNull()
       .default(sql`'[]'::jsonb`),
     kind: text().$type<CommentKind>().notNull().default("note"),
     suggestion: text(),
-    anchor: jsonb().$type<typeof ReviewCommentAnchor.Encoded>(),
+    anchor: jsonbOf(ReviewCommentAnchor),
   },
   (table) => [index("review_comments_change_idx").on(table.changeId, table.createdAt)],
 );
@@ -988,7 +1000,7 @@ export const changeTours = pgTable("change_tours", {
     .references(() => agentSessions.id, { onDelete: "cascade" }),
   summary: text().notNull(),
   approach: text(),
-  stops: jsonb().$type<ReadonlyArray<typeof TourStop.Encoded>>().notNull(),
+  stops: jsonbArrayOf(TourStop).notNull(),
   diffDigest: text().notNull(),
   createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });

@@ -2,6 +2,7 @@ import { Schema } from "effect";
 
 import { ProjectId, SealantWorkspaceId, SessionId, Sha } from "../ids.ts";
 import { WorkspaceImage } from "../settings.ts";
+import { Timestamp } from "../timestamp.ts";
 import { SessionExtraMount } from "./mount.ts";
 import { SessionReferenceMount } from "./reference.ts";
 import { SessionDotfiles } from "./session.ts";
@@ -65,6 +66,6 @@ export class HotWorkspace extends Schema.Class<HotWorkspace>("HotWorkspace")({
   referenceMounts: Schema.Array(SessionReferenceMount),
   /** Project folders mounted beside the worktree at prewarm. */
   extraMounts: Schema.Array(SessionExtraMount),
-  createdAt: Schema.Date,
-  updatedAt: Schema.Date,
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
 }) {}

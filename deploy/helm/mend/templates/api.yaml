@@ -1,0 +1,111 @@
+# The Mend API server (apps/api): the typed contract, auth, the WebSocket data planes, the
+# session engine, and the workers — MEND_MODE=all in ONE replica (Recreate). The engine holds
+# live in-memory state (process supervision, service listeners, leases), so this tier stays a
+# singleton until it grows leases/leader election; the stateless web tier scales separately.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-api
+  labels: {{ include "mend.labels" . | nindent 4 }}
+spec:
+  selector: {{ include "mend.component" (dict "root" . "name" "api") | nindent 4 }}
+  ports: [{ name: http, port: 3101, targetPort: http }]
+---
+# The workspace session channel rides the API pod (the engine mints and checks its tokens).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-session
+  labels: {{ include "mend.labels" . | nindent 4 }}
+spec:
+  selector: {{ include "mend.component" (dict "root" . "name" "api") | nindent 4 }}
+  ports: [{ name: session, port: {{ .Values.sessionChannel.port }}, targetPort: session }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-api
+  labels: {{ include "mend.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.api.replicaCount }}
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: {{ include "mend.component" (dict "root" . "name" "api") | nindent 6 }}
+  template:
+    metadata:
+      labels: {{ include "mend.component" (dict "root" . "name" "api") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      # Docker-link-style env injection (MEND_API_PORT=tcp://...) collides with real config.
+      enableServiceLinks: false
+      imagePullSecrets: {{ toYaml .Values.image.pullSecrets | nindent 8 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: mend
+          image: {{ include "mend.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [node, apps/api/src/main.ts]
+          ports:
+            - { containerPort: 3101, name: http }
+            - { containerPort: {{ .Values.sessionChannel.port }}, name: session }
+          env:
+            {{- include "mend.commonEnv" . | nindent 12 }}
+            - { name: MEND_MODE, value: all }
+            - { name: PORT, value: "3101" }
+            # Browsers reach Mend through the web tier: its port must be a
+            # trusted auth origin alongside the API's own.
+            - { name: MEND_WEB_PORT, value: "3105" }
+            {{- if .Values.api.trustedProxyCidrs }}
+            # The web tier proxies every client request, so the pairing rate
+            # limiter reads the client from x-forwarded-for — but only when the
+            # peer is a declared proxy hop. The NetworkPolicy already limits
+            # who can reach this port; these CIDRs name that same set.
+            - { name: MEND_TRUSTED_PROXIES, value: {{ join "," .Values.api.trustedProxyCidrs | quote }} }
+            {{- end }}
+            # The machine git key (`mend keys init`) must survive Pod replacement: it lives on
+            # the store claim, mounted at its own path so it never sits inside the store tree.
+            - { name: MEND_KEYS_ROOT, value: /var/lib/mend/keys }
+            {{- if .Values.serviceHost.bindAddresses }}
+            {{- if has "podIP" .Values.serviceHost.bindAddresses }}
+            # The bind policy refuses wildcards and requires assigned addresses; the Pod's own
+            # IP is the assigned private interface, resolved at start via the downward API.
+            - name: MEND_POD_IP
+              valueFrom: { fieldRef: { fieldPath: status.podIP } }
+            {{- end }}
+            - name: MEND_SERVICE_HOSTS
+              value: {{ join "," (compact (list (include "mend.serviceBindList" .))) | quote }}
+            {{- end }}
+            - { name: MEND_SERVICE_PORT_MIN, value: {{ .Values.serviceHost.portMin | quote }} }
+            - { name: MEND_SERVICE_PORT_MAX, value: {{ .Values.serviceHost.portMax | quote }} }
+            - { name: MEND_SESSION_ENDPOINT_LISTEN, value: "0.0.0.0:{{ .Values.sessionChannel.port }}" }
+            - { name: MEND_SESSION_ENDPOINT_URL, value: {{ include "mend.sessionEndpointUrl" . | quote }} }
+            {{- if .Values.sessionChannel.tls.enabled }}
+            - { name: MEND_SESSION_ENDPOINT_TLS_CERT, value: /etc/mend/session-tls/tls.crt }
+            - { name: MEND_SESSION_ENDPOINT_TLS_KEY, value: /etc/mend/session-tls/tls.key }
+            {{- end }}
+          volumeMounts:
+            - { name: store, mountPath: {{ .Values.store.mountPath }} }
+            - { name: store, mountPath: /var/lib/mend/keys, subPath: .mend-keys }
+            {{- if .Values.sessionChannel.tls.enabled }}
+            - { name: session-tls, mountPath: /etc/mend/session-tls, readOnly: true }
+            {{- end }}
+          readinessProbe:
+            httpGet: { path: /api/health, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /api/health, port: http }
+            periodSeconds: 30
+          resources: {{ toYaml .Values.api.resources | nindent 12 }}
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+      volumes:
+        - name: store
+          persistentVolumeClaim: { claimName: {{ include "mend.storeClaim" . }} }
+        {{- if .Values.sessionChannel.tls.enabled }}
+        - name: session-tls
+          secret: { secretName: {{ required "sessionChannel.tls.secretName" .Values.sessionChannel.tls.secretName }} }
+        {{- end }}

@@ -1,16 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 
-import {
-  projectDetailQuery,
-  projectEnvironmentQuery,
-  projectHotSessionsQuery,
-  projectMountsQuery,
-  projectRecipesQuery,
-  projectReferencesQuery,
-  projectSecretsQuery,
-  settingsQuery,
-} from "#/lib/queries";
+import { useTRPC } from "#/lib/trpc";
 import { OS_LABELS } from "#/lib/workspace-environment";
 
 /**
@@ -21,14 +12,17 @@ import { OS_LABELS } from "#/lib/workspace-environment";
  * glance and the index never disagree.
  */
 export function useSetupFactValues(projectId: string) {
-  const detail = useQuery(projectDetailQuery(projectId)).data;
-  const settings = useQuery(settingsQuery).data;
-  const environment = useQuery(projectEnvironmentQuery(projectId)).data;
-  const secrets = useQuery(projectSecretsQuery(projectId)).data;
-  const references = useQuery(projectReferencesQuery(projectId)).data;
-  const mounts = useQuery(projectMountsQuery(projectId)).data;
-  const recipes = useQuery(projectRecipesQuery(projectId)).data;
-  const hotSessions = useQuery(projectHotSessionsQuery(projectId)).data;
+  const trpc = useTRPC();
+  const detail = useQuery(trpc.projects.detail.queryOptions({ id: projectId })).data;
+  const settings = useQuery(trpc.settings.get.queryOptions()).data;
+  const environment = useQuery(trpc.environment.environment.queryOptions({ projectId })).data;
+  const secrets = useQuery(trpc.environment.secrets.queryOptions({ projectId })).data;
+  const references = useQuery(trpc.projects.references.queryOptions({ id: projectId })).data;
+  const mounts = useQuery(trpc.projects.mounts.queryOptions({ id: projectId })).data;
+  const recipes = useQuery(trpc.projects.recipes.queryOptions({ id: projectId })).data;
+  const hotSessions = useQuery(
+    trpc.projects.hotSessionsStatus.queryOptions({ id: projectId }, { refetchInterval: 5_000 }),
+  ).data;
   if (detail === undefined) return null;
   const { project } = detail;
 

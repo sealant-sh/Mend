@@ -14,8 +14,10 @@ const iface = (address: string, internal = false) => [
 ];
 
 describe("trustedOrigins", () => {
-  it("trusts every address this machine answers on, on both ports", () => {
-    const origins = trustedOrigins("http://localhost:3105", 3105, {
+  it("trusts every address this machine answers on, on the web and API ports", () => {
+    // Production single-host: the API process runs with PORT=3101 while
+    // browsers arrive through the web tier on 3105 (scripts/serve.mjs).
+    const origins = trustedOrigins("http://localhost:3105", 3101, 3105, {
       lo: iface("127.0.0.1", true),
       tailscale0: iface("100.126.133.49"),
       wlan0: iface("192.168.1.245"),
@@ -26,8 +28,17 @@ describe("trustedOrigins", () => {
     expect(origins).toContain("http://192.168.1.245:3101");
   });
 
+  it("trusts a phone arriving on the web tier when the API's own port differs", () => {
+    // The regression the split introduced: PORT=3101 on the API process must
+    // not collapse the trusted set to the API port alone.
+    const origins = trustedOrigins("http://localhost:3105", 3101, 3105, {
+      wlan0: iface("192.168.1.245"),
+    });
+    expect(origins).toContain("http://192.168.1.245:3105");
+  });
+
   it("keeps APP_URL and localhost, and skips internal interfaces", () => {
-    const origins = trustedOrigins("https://mend.example.com", 3105, {
+    const origins = trustedOrigins("https://mend.example.com", 3101, 3105, {
       lo: iface("127.0.0.1", true),
     });
     expect(origins).toContain("https://mend.example.com");
@@ -36,10 +47,22 @@ describe("trustedOrigins", () => {
     expect(origins.some((origin) => origin.includes("127.0.0.1"))).toBe(false);
   });
 
-  it("carries a non-default PORT and repeats nothing", () => {
-    const origins = trustedOrigins("http://localhost:8080", 8080, { wlan0: iface("10.0.0.4") });
+  it("covers the dev entry points: vite on 3105 and the dev web server on 3104", () => {
+    // Dev runs the API without PORT (3101 default) — vite and the dev web
+    // server are where browsers actually land.
+    const origins = trustedOrigins("http://localhost:3105", 3101, 3105, {
+      wlan0: iface("192.168.1.245"),
+    });
+    expect(origins).toContain("http://localhost:3104");
+    expect(origins).toContain("http://192.168.1.245:3104");
+  });
+
+  it("carries non-default ports and repeats nothing", () => {
+    const origins = trustedOrigins("http://localhost:8080", 8080, 9090, {
+      wlan0: iface("10.0.0.4"),
+    });
     expect(origins).toContain("http://10.0.0.4:8080");
-    expect(origins).toContain("http://10.0.0.4:3101");
+    expect(origins).toContain("http://10.0.0.4:9090");
     expect(new Set(origins).size).toBe(origins.length);
   });
 });

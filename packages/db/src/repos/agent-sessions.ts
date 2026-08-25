@@ -135,6 +135,17 @@ const toSession = (row: typeof agentSessions.$inferSelect): Session =>
     dotfiles: row.dotfiles === null ? null : decodeSessionDotfiles(row.dotfiles),
   });
 
+// Compile-time seam tripwire: the `...row` spread above silently ignores any
+// column the Session schema doesn't know, so a column added to (or renamed in)
+// agent_sessions MUST land in @mend/domain's Session in the same change — and
+// vice versa. This fails to compile the moment either side drifts.
+type SessionRow = typeof agentSessions.$inferSelect;
+type ExactKeys<A, B> = [Exclude<keyof A, keyof B> | Exclude<keyof B, keyof A>] extends [never]
+  ? true
+  : never;
+const sessionSeamIntact: ExactKeys<SessionRow, Session> = true;
+void sessionSeamIntact;
+
 export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClient.PgClient> =
   Layer.effect(
     SessionsRepo,

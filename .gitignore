@@ -20,3 +20,4 @@ npm-debug.log*
 **/.astro/
 **/routeTree.gen.ts
 **/worker-configuration.d.ts
+core.*

@@ -1,4 +1,5 @@
-import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
+import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
 import { BriefView } from "#/components/brief";
@@ -7,35 +8,58 @@ import { ReviewConversation } from "#/components/review-conversation";
 import { AppShell } from "#/components/shell";
 import { RunStatusDot } from "#/components/status";
 import {
-  briefByIssue,
-  briefVersions,
-  issueDetail,
-  listBriefComments,
   type BriefDetailDto,
   type BriefVersionDto,
   type MendEventDto,
   type RunDto,
 } from "#/lib/api";
+import { useTRPC } from "#/lib/trpc";
 
 export const Route = createFileRoute("/issues/$issueId")({
   ssr: false,
-  loader: async ({ params }) => {
+  loader: async ({ context: { queryClient, trpc }, params }) => {
     const [detail, brief] = await Promise.all([
-      issueDetail(params.issueId),
-      briefByIssue(params.issueId),
+      queryClient.ensureQueryData(trpc.queue.issueDetail.queryOptions({ id: params.issueId })),
+      queryClient.ensureQueryData(
+        trpc.queue.briefByIssue.queryOptions({ issueId: params.issueId }),
+      ),
     ]);
     const [comments, versions] =
       brief === null
         ? [[], []]
-        : await Promise.all([listBriefComments(params.issueId), briefVersions(params.issueId)]);
+        : await Promise.all([
+            queryClient.ensureQueryData(
+              trpc.queue.listBriefComments.queryOptions({ issueId: params.issueId }),
+            ),
+            queryClient.ensureQueryData(
+              trpc.queue.briefVersions.queryOptions({ issueId: params.issueId }),
+            ),
+          ]);
     return { ...detail, brief, comments, versions };
   },
   component: IssuePage,
 });
 
 function IssuePage() {
-  const { issue, runs, brief, comments, versions } = Route.useLoaderData();
-  const router = useRouter();
+  const { issueId } = Route.useParams();
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  // The loader pre-warmed these; reading through live observers means an
+  // invalidation refreshes the page — loader data alone would stay frozen
+  // (ensureQueryData serves the cache even after it goes stale).
+  const { data: detail } = useSuspenseQuery(trpc.queue.issueDetail.queryOptions({ id: issueId }));
+  const { data: brief } = useSuspenseQuery(trpc.queue.briefByIssue.queryOptions({ issueId }));
+  const { issue, runs } = detail;
+  const commentsQuery = useQuery({
+    ...trpc.queue.listBriefComments.queryOptions({ issueId }),
+    enabled: brief !== null,
+  });
+  const versionsQuery = useQuery({
+    ...trpc.queue.briefVersions.queryOptions({ issueId }),
+    enabled: brief !== null,
+  });
+  const comments = commentsQuery.data ?? [];
+  const versions = versionsQuery.data ?? [];
 
   // A live subscription has a real lifecycle — refresh when this issue's runs
   // settle or its brief recompiles.
@@ -45,10 +69,10 @@ function IssuePage() {
       const event: MendEventDto = JSON.parse(message.data);
       if (event.type === "run-progress") return;
       if (event.issueId !== issue.id) return;
-      void router.invalidate();
+      void queryClient.invalidateQueries(trpc.queue.pathFilter());
     });
     return () => source.close();
-  }, [router, issue.id]);
+  }, [queryClient, trpc, issue.id]);
 
   // The failure the card carried back to triage, when its recording was summed.
   const failureRun = runs.find((run) => run.id === issue.lastFailureRunId);

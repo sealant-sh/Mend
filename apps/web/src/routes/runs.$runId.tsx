@@ -1,17 +1,19 @@
+import { useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { AppShell } from "#/components/shell";
 import { RunStatusDot } from "#/components/status";
-import { runDetail, runSources, runTrace, type RunSourceDto, type TraceEntryDto } from "#/lib/api";
+import { type RunSourceDto, type TraceEntryDto } from "#/lib/api";
+import { orLogin, trpcClient, useTRPC } from "#/lib/trpc";
 
 export const Route = createFileRoute("/runs/$runId")({
   ssr: false,
-  loader: async ({ params }) => {
+  loader: async ({ context: { queryClient, trpc }, params }) => {
     const [detail, trace, sources] = await Promise.all([
-      runDetail(params.runId),
-      runTrace(params.runId),
-      runSources(params.runId),
+      queryClient.ensureQueryData(trpc.queue.runDetail.queryOptions({ id: params.runId })),
+      queryClient.ensureQueryData(trpc.queue.runTrace.queryOptions({ id: params.runId })),
+      queryClient.ensureQueryData(trpc.queue.runSources.queryOptions({ id: params.runId })),
     ]);
     return { ...detail, trace, sources };
   },
@@ -19,7 +21,14 @@ export const Route = createFileRoute("/runs/$runId")({
 });
 
 function RunPage() {
-  const { run, commands, transcript, loss, recordError, trace, sources } = Route.useLoaderData();
+  const { runId } = Route.useParams();
+  const trpc = useTRPC();
+  // Loader pre-warms; live observers keep a revisit from serving a
+  // gcTime-old trace with nothing to refresh it.
+  const { data: detail } = useSuspenseQuery(trpc.queue.runDetail.queryOptions({ id: runId }));
+  const { data: trace } = useSuspenseQuery(trpc.queue.runTrace.queryOptions({ id: runId }));
+  const { data: sources } = useSuspenseQuery(trpc.queue.runSources.queryOptions({ id: runId }));
+  const { run, commands, transcript, loss, recordError } = detail;
 
   return (
     <AppShell>
@@ -174,7 +183,7 @@ function FullTrace({
     if (nextFrom === null || loading) return;
     setLoading(true);
     try {
-      const page = await runTrace(runId, nextFrom);
+      const page = await orLogin(trpcClient.queue.runTrace.query({ id: runId, from: nextFrom }));
       setEntries((current) => [...current, ...page.entries]);
       setNextFrom(page.nextFrom);
     } finally {

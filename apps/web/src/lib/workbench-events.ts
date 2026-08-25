@@ -1,18 +1,22 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 
 import type { WorkbenchEventDto } from "#/lib/api";
-import { queryClient } from "#/lib/queries";
+import { useTRPC } from "#/lib/trpc";
 
 /**
  * One SSE subscription per mounted page: workbench events invalidate exactly
- * the queries they point at (plan §9.4 — payloads are pointers, clients
- * re-read through the API). `session-progress` is deliberately NOT an
- * invalidation — it fires per record entry; pages that render live lines
- * take it through `onEvent` and keep component state.
+ * the query families they point at (plan §9.4 — payloads are pointers,
+ * clients re-read through the API), using the tRPC proxy's typed filters so
+ * keys can never drift from the router. `session-progress` is deliberately
+ * NOT an invalidation — it fires per record entry; pages that render live
+ * lines take it through `onEvent` and keep component state.
  */
 const LADDER_MS = [3_000, 4_000, 8_000, 16_000] as const;
 
 export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void) => {
+  const queryClient = useQueryClient();
+  const trpc = useTRPC();
   useEffect(() => {
     let source: EventSource | null = null;
     let timer: number | null = null;
@@ -29,43 +33,34 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
       }
       switch (event.type) {
         case "project":
-          void queryClient.invalidateQueries({ queryKey: ["projects"] });
+          void queryClient.invalidateQueries(trpc.projects.pathFilter());
           if (event.projectId !== undefined) {
-            void queryClient.invalidateQueries({ queryKey: ["project", event.projectId] });
+            void queryClient.invalidateQueries(trpc.environment.pathFilter());
           }
           break;
         case "session":
-          void queryClient.invalidateQueries({ queryKey: ["sessions"] });
-          if (event.sessionId !== undefined) {
-            void queryClient.invalidateQueries({ queryKey: ["session", event.sessionId] });
-          }
+          void queryClient.invalidateQueries(trpc.sessions.pathFilter());
           if (event.projectId !== undefined) {
-            void queryClient.invalidateQueries({ queryKey: ["project", event.projectId] });
+            void queryClient.invalidateQueries(trpc.projects.pathFilter());
           }
           break;
         case "agent-conversation":
-          if (event.sessionId !== undefined) {
-            void queryClient.invalidateQueries({ queryKey: ["session", event.sessionId] });
-            void queryClient.invalidateQueries({
-              queryKey: ["session", event.sessionId, "conversation"],
-            });
-          }
+          // The old entity-prefix key refreshed EVERY session-scoped query
+          // (detail, transcript, pending follow-up, processes) — a follow-up
+          // banner staling on another device taught us not to enumerate.
+          void queryClient.invalidateQueries(trpc.sessions.pathFilter());
           break;
         case "session-process":
           if (event.sessionId !== undefined) {
-            void queryClient.invalidateQueries({
-              queryKey: ["session", event.sessionId, "services"],
-            });
-            void queryClient.invalidateQueries({
-              queryKey: ["session", event.sessionId, "processes"],
-            });
+            void queryClient.invalidateQueries(
+              trpc.sessions.processes.queryFilter({ id: event.sessionId }),
+            );
+            void queryClient.invalidateQueries(trpc.services.list.pathFilter());
           }
           break;
         case "session-change":
         case "review-comment":
-          if (event.changeId !== undefined) {
-            void queryClient.invalidateQueries({ queryKey: ["change", event.changeId] });
-          }
+          void queryClient.invalidateQueries(trpc.changes.pathFilter());
           break;
         default:
           break;
@@ -87,12 +82,8 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
         if (openedOnce) {
           // SSE carries pointers, not replay. A reconnect may have missed process/forward/
           // observation events, so refresh every mounted session's Service facts once.
-          void queryClient.invalidateQueries({
-            predicate: (query) => {
-              const [scope, , kind] = query.queryKey;
-              return scope === "session" && (kind === "services" || kind === "processes");
-            },
-          });
+          void queryClient.invalidateQueries(trpc.sessions.processes.pathFilter());
+          void queryClient.invalidateQueries(trpc.services.list.pathFilter());
         }
         openedOnce = true;
       });
@@ -124,5 +115,5 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
       if (timer !== null) window.clearTimeout(timer);
       source?.close();
     };
-  }, [onEvent]);
+  }, [onEvent, queryClient, trpc]);
 };

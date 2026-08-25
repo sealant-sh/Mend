@@ -5,6 +5,7 @@ import {
   type EffortLevel,
   type PermissionMode,
 } from "@mend/domain/workbench";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Check, ChevronDown } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
@@ -19,6 +20,7 @@ import {
   useComposerPrefs,
 } from "#/lib/composer-prefs";
 import { HARNESSES, startComposedSession, type Harness } from "#/lib/session-launch";
+import { useTRPC } from "#/lib/trpc";
 
 /**
  * The start-a-session composer: the prompt is the session's first message
@@ -48,6 +50,8 @@ export function SessionComposer({
   readonly fixedProjectId?: string;
 }) {
   const navigate = useNavigate();
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
   const prefs = useComposerPrefs();
   const [pickedProjectId, setPickedProjectId] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
@@ -87,7 +91,7 @@ export function SessionComposer({
     setBusy(true);
     setError(null);
     setComposerProject(projectId);
-    void startComposedSession(navigate, projectId, {
+    void startComposedSession(navigate, { queryClient, trpc }, projectId, {
       harness,
       prompt: body,
       ...(harnessPrefs.model !== null ? { model: harnessPrefs.model } : {}),

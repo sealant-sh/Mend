@@ -1,4 +1,5 @@
-# The UI/API Service (the app Deployment lives in worker.yaml; one process serves both ports).
+# The web server (apps/web): the TanStack app plus a transparent /api proxy to the API tier.
+# Deliberately stateless — no store, no database, no engine — so replicaCount is free.
 apiVersion: v1
 kind: Service
 metadata:
@@ -9,5 +10,46 @@ metadata:
   {{- end }}
 spec:
   type: {{ .Values.web.service.type }}
-  selector: {{ include "mend.component" (dict "root" . "name" "app") | nindent 4 }}
+  selector: {{ include "mend.component" (dict "root" . "name" "web") | nindent 4 }}
   ports: [{ name: http, port: 3105, targetPort: http }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-web
+  labels: {{ include "mend.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.web.replicaCount }}
+  selector:
+    matchLabels: {{ include "mend.component" (dict "root" . "name" "web") | nindent 6 }}
+  template:
+    metadata:
+      labels: {{ include "mend.component" (dict "root" . "name" "web") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      imagePullSecrets: {{ toYaml .Values.image.pullSecrets | nindent 8 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: web
+          image: {{ include "mend.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [node, apps/web/src/entry/main.ts]
+          ports:
+            - { containerPort: 3105, name: http }
+          env:
+            - { name: PORT, value: "3105" }
+            - { name: MEND_API_URL, value: "http://{{ .Release.Name }}-api.{{ .Release.Namespace }}.svc:3101" }
+          # /api/health rides the proxy: web readiness honestly includes "the API is reachable".
+          readinessProbe:
+            httpGet: { path: /api/health, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 30
+          resources: {{ toYaml .Values.web.resources | nindent 12 }}
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
