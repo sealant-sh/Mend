@@ -1316,6 +1316,24 @@ understand the work.
 
 ### Decided
 
+- **2026-08-25 — Cluster environment sources: bindings, not values.** On Kubernetes deployments a
+  project can declare environment by binding Secrets/ConfigMaps in the workspaces namespace, plus an
+  optional workspace ServiceAccount. Named **Cluster bindings** — `reference` already names
+  dependency sources (§17 2026-08-01). The platform worker resolves bindings at workspace creation;
+  no value ever transits Mend (values do transit the worker and a short-lived per-run platform
+  Secret — stated, not hidden). Bindable objects are a platform-enforced opt-in by label;
+  platform-managed objects are always refused; within one install, all project-settings principals
+  are mutually trusted with the namespace's opted-in objects (hard isolation = one install per trust
+  domain). Provider integration belongs to the operator's sync layer (ESO, Vault CSI) — Mend ships
+  no provider SDKs and manages no IAM. Binding a ServiceAccount hands the session agent that role
+  for the session and its use is invisible to the redactor — a stated trust grant, allowlisted
+  platform-side, with `automountServiceAccountToken` staying false. The operator binds the set
+  through project settings; the agent has no surface to widen it; each launch stamps the exact set
+  on its `SessionRun`. On the local Docker runner the platform refuses at create time with a typed
+  error; Mend fails closed naming the bindings, and Configuration/Secrets remain the single-host
+  path. Needs one generic platform capability (`envFrom` + ServiceAccount at `workspaces.create`,
+  recorded in PLATFORM-FEEDBACK.md). Detailed design: `.plans/cluster-env-sources.md`.
+
 - **2026-08-21: protocol process restart policy v1.** Protocol adapters own pending provider calls
   in memory. On Mend boot, live `agent-protocol` rows are ended instead of reconstructing adapter
   state from the Sealant journal. An explicit resume starts a fresh pipe process and uses the

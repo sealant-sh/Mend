@@ -643,3 +643,42 @@ and source trail (M2) build on the typed kinds.
   (`SealantNotImplementedError`).
 - **Suggested:** none — already planned; noting that Mend wants it by its GitHub milestone so
   long-running self-hosted instances don't accumulate workspaces.
+
+- **2026-08-25 · SDK 0.23.0 · Kubernetes env references and workspace ServiceAccount at create.**
+  Needed: Mend projects on cluster deployments declare environment by binding Kubernetes
+  Secrets/ConfigMaps in the workspaces namespace (operator's sync layer owns the values; Mend must
+  never hold them), and optionally name the ServiceAccount the workspace pod runs under
+  (IRSA/Workload Identity). Today: `CreateOptions.env`/`secretEnv` are literal
+  `Record<string,string>` end to end; nothing reference-shaped is expressible; `serviceAccountName`
+  is fixed per install (`SEALANT_K8S_WORKSPACE_SERVICE_ACCOUNT`) with `automountServiceAccountToken`
+  hardwired false; the k8s adapter's `secretKeyRef` use is internal-only. Suggested surface: one
+  ordered list `CreateOptions.envFrom?: readonly { kind: "secret" | "configmap"; name: string }[]`
+  (last-wins across kinds, so cross-kind collisions have an expressible winner and non-k8s runtimes
+  reject one field) plus `kubernetes?: { serviceAccountName?: string }`, riding the existing opaque
+  `spec` (extend `workspaceSpecRuntimeSchema`; no wire-contract change). Required semantics: **(1)
+  Bindability is platform-enforced** — only objects labeled `sealant.sh/workspace-env: "true"`
+  resolve; objects labeled `app.kubernetes.io/managed-by=sealant` or matching platform resource-name
+  patterns (the per-workspace `-env`/`-launch`/`-tls` Secrets hold credentials and live in this
+  namespace) are refused unconditionally, in the worker, with a readable failure naming the object —
+  not delegated to optional admission policy. **(2) Worker-side resolution for both kinds** —
+  literal `envFrom` is unacceptable even for ConfigMaps: sealantd's boot scrub silently drops
+  secret-marker key names from container-env passthrough (`is_secret_key`), and kubelet re-resolves
+  `envFrom` on container restart, breaking launch-snapshot semantics. ConfigMap keys join the plain
+  env entries placed before caller env (explicit wins under the adapter's last-wins ordering);
+  Secret keys ride the existing `SEALANT_SECRET_ENV_FILE` channel (preserves secret-marker names,
+  seeds the redactor). **(3) Ordering is an explicit semantic** — bound-Secret keys merge as a
+  distinguished lowest-precedence layer below caller `env`/`secretEnv`, and platform-owned / channel
+  names win on collision regardless of the bound object's contents (channel entries applied last or
+  bound keys dropped); do not rely on k8s `env`-beats-`envFrom`, which governs no lane in this
+  design. **(4) Custody + bounds stated** — the worker (which already holds `secrets: get,list`
+  namespace-wide) copies bound Secret values into the per-run launch Secret in etcd, deleted at
+  teardown; document that copy and the ~1MiB etcd bound; worker RBAC gains `configmaps: get` (helm
+  change). **(5) ServiceAccounts** — honored only against an install allowlist (e.g.
+  `SEALANT_K8S_ALLOWED_WORKSPACE_SERVICE_ACCOUNTS`), failing readable otherwise;
+  `automountServiceAccountToken` stays false unconditionally (IRSA/WI inject their own token paths;
+  the kube API token would be a separate opt-in). **(6) Create-time rejection** — non-k8s runtime +
+  any new field → synchronous typed error at `POST /v1/workspaces`, stable code
+  `runtime-env-references-unsupported` (no workspace, no build job; adapter guard as belt); the
+  typed code doubles as the consumer's capability probe. **(7) Restart semantics documented** —
+  container crash-restarts keep the launch snapshot; restart-from-blueprint re-resolves bindings
+  (contrast with `secretEnv`, which restarts run without).
