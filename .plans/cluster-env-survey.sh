@@ -97,6 +97,15 @@ for ns in ${NAMESPACES[@]+"${NAMESPACES[@]}"}; do
   probe get secrets -n "$ns" -o custom-columns='NAME:.metadata.name,TYPE:.type'
   probe get configmaps -n "$ns" -o custom-columns='NAME:.metadata.name'
   probe get sa -n "$ns" -o custom-columns='NAME:.metadata.name'
+
+  echo; echo "═══ 8b. Namespace '$ns' backend plumbing — what dev actually connects to ═══"
+  # The Services here are what a dev laptop reaches via port-forward, and what
+  # an in-cluster workspace would reach by DNS (<svc>.<ns>.svc) — IF policies admit it.
+  probe get svc -n "$ns" -o custom-columns='NAME:.metadata.name,TYPE:.spec.type,PORTS:.spec.ports[*].port'
+  probe get ingress -n "$ns" -o custom-columns='NAME:.metadata.name,HOSTS:.spec.rules[*].host'
+  # Ingress rules of this namespace's policies: a default-deny or from-selector
+  # here means cross-namespace traffic from a workspace pod needs an explicit allow.
+  probe get netpol -n "$ns" -o custom-columns='NAME:.metadata.name,POD-SELECTOR:.spec.podSelector.matchLabels,POLICY-TYPES:.spec.policyTypes[*]'
 done
 
 echo; echo "═══ 9. Local dev loop (this laptop, current directory) ═══"
@@ -104,6 +113,20 @@ command -v tilt >/dev/null && echo "   tilt: $(tilt version 2>/dev/null | head -
 command -v skaffold >/dev/null && echo "   skaffold: present" || echo "   skaffold: not installed"
 for f in Tiltfile skaffold.yaml docker-compose.yml compose.yaml; do
   [ -e "$f" ] && echo "   found: $f"
+done
+# What the dev loop actually wires up: forwards, deployed resources, env pulls.
+# Local file reads only — this is the "how does vite reach the backend" answer.
+if [ -e Tiltfile ]; then
+  echo "   Tiltfile plumbing lines (port_forward / k8s_resource / helm / secrets):"
+  grep -nE 'port_forward|k8s_resource|k8s_yaml|helm\(|kustomize|local\(|secret' Tiltfile 2>/dev/null | head -25 | sed 's/^/     /'
+fi
+if [ -e docker-compose.yml ] || [ -e compose.yaml ]; then
+  echo "   compose services + ports:"
+  grep -nE '^[a-zA-Z].*:|ports:|- "?[0-9]+:[0-9]+' docker-compose.yml compose.yaml 2>/dev/null | head -20 | sed 's/^/     /'
+fi
+# Where does the frontend think the backend is? (env files: NAMES of vars only)
+for envf in .env .env.local .env.development; do
+  [ -e "$envf" ] && echo "   $envf variable NAMES (values withheld): $(cut -d= -f1 "$envf" | grep -v '^#' | grep -v '^$' | tr '\n' ' ')"
 done
 
 echo
