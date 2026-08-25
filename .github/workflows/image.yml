@@ -1,10 +1,14 @@
 name: Image
 
-# Images are RELEASES: a cli-v* tag (cut by the changesets flow) publishes `mend` (combined,
-# scripts/serve.mjs — the single-host/VPS shape), `mend-api` and `mend-web` to GHCR with the
-# semver tag + `latest`. No per-merge builds — every image corresponds to a released version,
-# and the chart's appVersion (synced by scripts/sync-chart-version.mjs in the version PR) is
-# the matching default tag. workflow_dispatch stays for ad-hoc rebuilds.
+# Images are RELEASES: a v* (or legacy cli-v*) tag publishes `mend` (combined,
+# scripts/serve.mjs — the single-host/VPS shape), `mend-api` and `mend-web` to
+# GHCR with the semver tag + `latest`. Every image is multi-arch
+# (amd64 + arm64), and each architecture builds on its NATIVE runner — the
+# arm64 half of the API build spent 40+ minutes under QEMU emulating a
+# production install of the full dependency tree; on a real arm64 runner it
+# takes minutes. The per-arch jobs push by digest; a merge job stitches the
+# manifest list per image. workflow_dispatch rebuilds ad hoc (tagging by
+# branch, or by the `version` input).
 
 on:
   push:
@@ -21,27 +25,60 @@ permissions:
   packages: write
 
 jobs:
-  image:
-    runs-on: ubuntu-latest
+  build:
     if: github.repository == 'sealant-sh/mend'
     strategy:
       matrix:
-        include:
-          - name: mend
-            dockerfile: Dockerfile
-            platforms: linux/amd64,linux/arm64
-          # amd64-only: the arm64 half runs under QEMU and spends 40+ minutes
-          # emulating a production install of the API's full dependency tree,
-          # and no current consumer runs the API on arm64. Flip when one does.
-          - name: mend-api
-            dockerfile: apps/api/Dockerfile
-            platforms: linux/amd64
-          - name: mend-web
-            dockerfile: apps/web/Dockerfile
-            platforms: linux/amd64,linux/arm64
+        image:
+          - { name: mend, dockerfile: Dockerfile }
+          - { name: mend-api, dockerfile: apps/api/Dockerfile }
+          - { name: mend-web, dockerfile: apps/web/Dockerfile }
+        platform:
+          - { arch: amd64, runner: ubuntu-latest }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.platform.runner }}
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.image.dockerfile }}
+          platforms: linux/${{ matrix.platform.arch }}
+          # Push by digest only; the merge job owns the human-readable tags.
+          outputs:
+            type=image,name=ghcr.io/${{ github.repository_owner }}/${{ matrix.image.name
+            }},push-by-digest=true,name-canonical=true,push=true
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.image.name }}--${{ matrix.platform.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    runs-on: ubuntu-latest
+    needs: build
+    strategy:
+      matrix:
+        name: [mend, mend-api, mend-web]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-${{ matrix.name }}--*
+          merge-multiple: true
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -58,11 +95,13 @@ jobs:
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
             type=raw,value=${{ inputs.version }},enable=${{ inputs.version != '' && github.event_name == 'workflow_dispatch' }}
             type=ref,event=branch,enable=${{ inputs.version == '' && github.event_name == 'workflow_dispatch' }}
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          platforms: ${{ matrix.platforms }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+      - name: Create the multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf 'ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}@sha256:%s ' *)
+      - name: Inspect
+        run:
+          docker buildx imagetools inspect ghcr.io/${{ github.repository_owner }}/${{ matrix.name
+          }}:${{ steps.meta.outputs.version }}
