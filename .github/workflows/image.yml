@@ -1,13 +1,13 @@
 name: Image
 
-# Build and publish the Mend images to GHCR on pushes to main (tag `main`) and on cli-v* tags
-# (semver tags): `mend` (combined, scripts/serve.mjs — the single-host/VPS shape), `mend-api`
-# (apps/api/Dockerfile, filtered prod workspace) and `mend-web` (apps/web/Dockerfile, dist-only).
-# The Helm chart in deploy/helm/mend defaults to the per-tier images.
+# Images are RELEASES: a cli-v* tag (cut by the changesets flow) publishes `mend` (combined,
+# scripts/serve.mjs — the single-host/VPS shape), `mend-api` and `mend-web` to GHCR with the
+# semver tag + `latest`. No per-merge builds — every image corresponds to a released version,
+# and the chart's appVersion (synced by scripts/sync-chart-version.mjs in the version PR) is
+# the matching default tag. workflow_dispatch stays for ad-hoc rebuilds.
 
 on:
   push:
-    branches: [main]
     tags: ["cli-v*.*.*"]
   workflow_dispatch:
 
@@ -42,9 +42,9 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}
           tags: |
-            type=ref,event=branch
             type=match,pattern=cli-v(.*),group=1
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/cli-v') }}
+            type=ref,event=branch,enable=${{ github.event_name == 'workflow_dispatch' }}
       - uses: docker/build-push-action@v6
         with:
           context: .
