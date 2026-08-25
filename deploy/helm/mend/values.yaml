@@ -36,10 +36,12 @@ sealant:
 # until it grows leases/leader election (docs/KUBERNETES.md).
 api:
   # The slim per-tier image (apps/api/Dockerfile). Unset repository/tag fall
-  # back to the shared `image` block — a combined image works for both tiers.
+  # back to the shared `image` block. When substituting the combined image,
+  # set the tier's entrypoint too: command: [node, apps/api/src/main.ts]
   image:
     repository: ghcr.io/sealant-sh/mend-api
     tag: ""
+  command: []
   replicaCount: 1
   resources: { requests: { cpu: 500m, memory: 1Gi }, limits: { cpu: "4", memory: 4Gi } }
   # Source addresses the API treats as proxy hops when reading x-forwarded-for
@@ -50,10 +52,12 @@ api:
 # The web tier (apps/web): the TanStack app + a transparent /api proxy to the API tier.
 # Stateless — scale it freely.
 web:
-  # The slim per-tier image (apps/web/Dockerfile): dist-only, no node_modules.
+  # The slim per-tier image (apps/web/Dockerfile): .output only, no source.
+  # Combined-image substitution needs: command: [node, apps/web/src/entry/main.ts]
   image:
     repository: ghcr.io/sealant-sh/mend-web
     tag: ""
+  command: []
   replicaCount: 1
   resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { cpu: "1", memory: 1Gi } }
   service:
