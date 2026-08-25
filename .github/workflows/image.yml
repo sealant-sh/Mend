@@ -10,6 +10,11 @@ on:
   push:
     tags: ["v*.*.*", "cli-v*.*.*"]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Tag images as this version (e.g. 0.8.0) instead of the branch name"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -24,10 +29,16 @@ jobs:
         include:
           - name: mend
             dockerfile: Dockerfile
+            platforms: linux/amd64,linux/arm64
+          # amd64-only: the arm64 half runs under QEMU and spends 40+ minutes
+          # emulating a production install of the API's full dependency tree,
+          # and no current consumer runs the API on arm64. Flip when one does.
           - name: mend-api
             dockerfile: apps/api/Dockerfile
+            platforms: linux/amd64
           - name: mend-web
             dockerfile: apps/web/Dockerfile
+            platforms: linux/amd64,linux/arm64
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
@@ -45,12 +56,13 @@ jobs:
             type=match,pattern=^cli-v(.*)$,group=1
             type=match,pattern=^v(.*)$,group=1
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
-            type=ref,event=branch,enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=${{ inputs.version }},enable=${{ inputs.version != '' && github.event_name == 'workflow_dispatch' }}
+            type=ref,event=branch,enable=${{ inputs.version == '' && github.event_name == 'workflow_dispatch' }}
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platforms }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
