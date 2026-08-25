@@ -21,3 +21,4 @@ npm-debug.log*
 **/routeTree.gen.ts
 **/worker-configuration.d.ts
 core.*
+.output

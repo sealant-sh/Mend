@@ -35,6 +35,11 @@ sealant:
 # process (MEND_MODE=all). The engine holds live in-memory state, so keep replicaCount at 1
 # until it grows leases/leader election (docs/KUBERNETES.md).
 api:
+  # The slim per-tier image (apps/api/Dockerfile). Unset repository/tag fall
+  # back to the shared `image` block — a combined image works for both tiers.
+  image:
+    repository: ghcr.io/sealant-sh/mend-api
+    tag: ""
   replicaCount: 1
   resources: { requests: { cpu: 500m, memory: 1Gi }, limits: { cpu: "4", memory: 4Gi } }
   # Source addresses the API treats as proxy hops when reading x-forwarded-for
@@ -45,6 +50,10 @@ api:
 # The web tier (apps/web): the TanStack app + a transparent /api proxy to the API tier.
 # Stateless — scale it freely.
 web:
+  # The slim per-tier image (apps/web/Dockerfile): dist-only, no node_modules.
+  image:
+    repository: ghcr.io/sealant-sh/mend-web
+    tag: ""
   replicaCount: 1
   resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { cpu: "1", memory: 1Gi } }
   service:

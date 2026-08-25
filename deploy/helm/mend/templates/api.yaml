@@ -47,7 +47,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: mend
-          image: {{ include "mend.image" . }}
+          image: {{ include "mend.tierImage" (dict "root" . "tier" "api") }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: [node, apps/api/src/main.ts]
           ports:

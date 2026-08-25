@@ -1,5 +1,12 @@
 {{- define "mend.tag" -}}{{ .Values.image.tag | default .Chart.AppVersion }}{{- end -}}
 {{- define "mend.image" -}}{{ .Values.image.repository }}:{{ include "mend.tag" . }}{{- end -}}
+{{- /* Per-tier image: api/web default to their slim images, fall back to the shared image block. */ -}}
+{{- define "mend.tierImage" -}}
+{{- $tier := index .root.Values .tier -}}
+{{- $repo := default .root.Values.image.repository (dig "image" "repository" "" $tier) -}}
+{{- $tag := default (include "mend.tag" .root) (dig "image" "tag" "" $tier) -}}
+{{ $repo }}:{{ $tag }}
+{{- end -}}
 {{- define "mend.labels" -}}
 app.kubernetes.io/name: mend
 app.kubernetes.io/instance: {{ .Release.Name }}

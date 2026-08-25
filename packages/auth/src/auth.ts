@@ -20,10 +20,10 @@ export interface AuthSession {
 }
 
 /**
- * Where browsers arrive in development: vite serves the web app on 3105 and
- * proxies /trpc to the dev web server on 3104 (apps/web/scripts/dev.mjs).
+ * Where browsers arrive in development: vite serves the web app on 3105
+ * (/trpc included — it is a Start server route, no separate dev process).
  */
-const DEV_WEB_PORTS = [3105, 3104];
+const DEV_WEB_PORTS = [3105];
 
 /**
  * Every non-internal IPv4 bound to this machine — the same observation

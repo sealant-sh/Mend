@@ -36,7 +36,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: web
-          image: {{ include "mend.image" . }}
+          image: {{ include "mend.tierImage" (dict "root" . "tier" "web") }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: [node, apps/web/src/entry/main.ts]
           ports:

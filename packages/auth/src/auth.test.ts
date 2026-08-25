@@ -47,14 +47,14 @@ describe("trustedOrigins", () => {
     expect(origins.some((origin) => origin.includes("127.0.0.1"))).toBe(false);
   });
 
-  it("covers the dev entry points: vite on 3105 and the dev web server on 3104", () => {
-    // Dev runs the API without PORT (3101 default) — vite and the dev web
-    // server are where browsers actually land.
+  it("covers the dev entry point: vite on 3105", () => {
+    // Dev runs the API without PORT (3101 default) — vite (which also serves
+    // /trpc as a Start server route) is where browsers actually land.
     const origins = trustedOrigins("http://localhost:3105", 3101, 3105, {
       wlan0: iface("192.168.1.245"),
     });
-    expect(origins).toContain("http://localhost:3104");
-    expect(origins).toContain("http://192.168.1.245:3104");
+    expect(origins).toContain("http://localhost:3105");
+    expect(origins).toContain("http://192.168.1.245:3105");
   });
 
   it("carries non-default ports and repeats nothing", () => {
