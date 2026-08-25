@@ -1,10 +1,11 @@
+import { useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { AppShell } from "#/components/shell";
 import { RunStatusDot } from "#/components/status";
 import { type RunSourceDto, type TraceEntryDto } from "#/lib/api";
-import { orLogin, trpcClient } from "#/lib/trpc";
+import { orLogin, trpcClient, useTRPC } from "#/lib/trpc";
 
 export const Route = createFileRoute("/runs/$runId")({
   ssr: false,
@@ -20,7 +21,14 @@ export const Route = createFileRoute("/runs/$runId")({
 });
 
 function RunPage() {
-  const { run, commands, transcript, loss, recordError, trace, sources } = Route.useLoaderData();
+  const { runId } = Route.useParams();
+  const trpc = useTRPC();
+  // Loader pre-warms; live observers keep a revisit from serving a
+  // gcTime-old trace with nothing to refresh it.
+  const { data: detail } = useSuspenseQuery(trpc.queue.runDetail.queryOptions({ id: runId }));
+  const { data: trace } = useSuspenseQuery(trpc.queue.runTrace.queryOptions({ id: runId }));
+  const { data: sources } = useSuspenseQuery(trpc.queue.runSources.queryOptions({ id: runId }));
+  const { run, commands, transcript, loss, recordError } = detail;
 
   return (
     <AppShell>

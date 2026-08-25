@@ -120,9 +120,16 @@ const handleTrpc = async (
     else if (Array.isArray(value)) for (const item of value) headers.append(name, item);
   }
   const hasBody = request.method !== "GET" && request.method !== "HEAD";
+  // A browser that gave up (tab closed, navigation) should cancel the API
+  // work instead of leaving it running to completion.
+  const abort = new AbortController();
+  response.on("close", () => {
+    if (!response.writableEnded) abort.abort();
+  });
   const webRequest = new Request(new URL(request.url ?? "/", "http://mend.local"), {
     method: request.method,
     headers,
+    signal: abort.signal,
     ...(hasBody ? { body: Readable.toWeb(request) as unknown as BodyInit, duplex: "half" } : {}),
   } as RequestInit);
   const webResponse = await fetchRequestHandler({

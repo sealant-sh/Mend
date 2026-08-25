@@ -45,14 +45,10 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
           }
           break;
         case "agent-conversation":
-          if (event.sessionId !== undefined) {
-            void queryClient.invalidateQueries(
-              trpc.sessions.detail.queryFilter({ id: event.sessionId }),
-            );
-            void queryClient.invalidateQueries(
-              trpc.sessions.transcript.queryFilter({ id: event.sessionId }),
-            );
-          }
+          // The old entity-prefix key refreshed EVERY session-scoped query
+          // (detail, transcript, pending follow-up, processes) — a follow-up
+          // banner staling on another device taught us not to enumerate.
+          void queryClient.invalidateQueries(trpc.sessions.pathFilter());
           break;
         case "session-process":
           if (event.sessionId !== undefined) {

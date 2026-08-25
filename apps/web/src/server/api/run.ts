@@ -34,6 +34,21 @@ export const apiClientFor = (
   });
 
 /**
+ * One derived client per REQUEST, not per procedure: HttpApiClient.make walks
+ * the whole contract eagerly (~4ms), and httpBatchLink puts many procedures
+ * in one request. createContext makes one ctx object per request, so its
+ * identity is the cache key; construction is pure wiring, so runSync is safe.
+ */
+const clients = new WeakMap<TrpcContext, MendApiClient>();
+const clientOf = (ctx: TrpcContext): MendApiClient => {
+  const cached = clients.get(ctx);
+  if (cached !== undefined) return cached;
+  const client = runtime.runSync(apiClientFor(ctx));
+  clients.set(ctx, client);
+  return client;
+};
+
+/**
  * Run one procedure body against the derived client. Failures the body did
  * not handle itself (outcome unions catch their own tags) become TRPCErrors
  * with the status the contract declares for them.
@@ -42,7 +57,7 @@ export const run = async <A, E>(
   ctx: TrpcContext,
   use: (api: MendApiClient) => Effect.Effect<A, E>,
 ): Promise<A> => {
-  const exit = await runtime.runPromiseExit(Effect.flatMap(apiClientFor(ctx), use));
+  const exit = await runtime.runPromiseExit(use(clientOf(ctx)));
   if (Exit.isSuccess(exit)) {
     // The client decodes into Schema.Class INSTANCES; superjson only walks
     // plain data, so Dates/bigints inside instances would dodge the
