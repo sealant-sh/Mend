@@ -118,7 +118,8 @@ Read [Configure session environments](/guides/project-environment/) for the full
 curl -fsSL https://mend.sealant.dev/install.sh | sh
 ```
 
-The installer sets up Mend and the Sealant control plane on your machine. Read
+The installer sets up Mend and Sealant — the workspace platform underneath Mend that runs and
+records the isolated environments where agents execute — on your machine. Read
 [Install Mend](/getting-started/install/) for prerequisites and the current network boundary.
 
 ### Connect an agent account
