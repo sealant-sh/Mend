@@ -1,5 +1,5 @@
 import { dotfilesRepositoriesEqual } from "@mend/domain";
-import { useSuspenseQuery } from "@tanstack/react-query";
+import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { useReducer, useState } from "react";
 
@@ -23,8 +23,6 @@ import {
   putSettings,
   revokeDevice,
   saveWorkspaceEnvironment,
-  scanHostEnvironment,
-  sealantConnection,
   type DotfilesDto,
   type DotfilesRepositoryDto,
   type HostEnvironmentSuggestionsDto,
@@ -34,14 +32,8 @@ import {
   type SealantConnectionDto,
   type SettingsDto,
 } from "#/lib/api";
-import {
-  devicesQuery,
-  dotfilesQuery,
-  queryClient,
-  sealantIdentityQuery,
-  settingsQuery,
-} from "#/lib/queries";
 import { setThemePreference, useThemePreference, type ThemePreference } from "#/lib/theme";
+import { orLogin, trpcClient, useTRPC } from "#/lib/trpc";
 import {
   createWorkspaceEnvironmentForm,
   OS_LABELS,
@@ -54,14 +46,16 @@ import {
 
 export const Route = createFileRoute("/settings")({
   ssr: false,
-  loader: async () => {
+  loader: async ({ context: { queryClient, trpc } }) => {
     await Promise.all([
-      queryClient.ensureQueryData(settingsQuery),
-      queryClient.ensureQueryData(dotfilesQuery),
-      queryClient.ensureQueryData(sealantIdentityQuery),
-      queryClient.ensureQueryData(devicesQuery),
+      queryClient.ensureQueryData(trpc.settings.get.queryOptions()),
+      queryClient.ensureQueryData(trpc.settings.dotfiles.queryOptions()),
+      queryClient.ensureQueryData(trpc.platform.sealantIdentity.queryOptions()),
+      queryClient.ensureQueryData(trpc.devices.list.queryOptions(undefined, { staleTime: 30_000 })),
     ]);
-    return sealantConnection();
+    // Checked live on every load — "Check again" invalidates the router, so
+    // this read stays imperative instead of cached.
+    return orLogin(trpcClient.platform.sealantConnection.query());
   },
   component: SettingsPage,
 });
@@ -104,7 +98,9 @@ const OS_OPTIONS: ReadonlyArray<{
 ];
 
 function WorkspaceEnvironmentPanel() {
-  const settings = useSuspenseQuery(settingsQuery).data;
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const settings = useSuspenseQuery(trpc.settings.get.queryOptions()).data;
   const [form, dispatch] = useReducer(
     workspaceEnvironmentFormReducer,
     settings.workspaceImage,
@@ -133,7 +129,7 @@ function WorkspaceEnvironmentPanel() {
       }
       const saved = result.settings.workspaceImage;
       dispatch({ type: "save-succeeded", workspaceImage: saved, resolutions: result.resolutions });
-      queryClient.setQueryData<SettingsDto>(settingsQuery.queryKey, (current) =>
+      queryClient.setQueryData(trpc.settings.get.queryOptions().queryKey, (current) =>
         current === undefined ? result.settings : { ...current, workspaceImage: saved },
       );
     } catch (cause) {
@@ -388,7 +384,7 @@ function WorkspaceEnvironmentPanel() {
             onClick={() => {
               setScanning(true);
               setScanError(null);
-              void scanHostEnvironment()
+              void orLogin(trpcClient.settings.environmentSuggestions.query())
                 .then(setSuggestions)
                 .catch((cause: unknown) =>
                   setScanError(
@@ -495,8 +491,8 @@ const formatBytes = (bytes: number): string =>
 
 const shortSha = (sha: string) => sha.slice(0, 7);
 
-const syncedAgo = (iso: string): string => {
-  const ms = Date.now() - new Date(iso).getTime();
+const syncedAgo = (at: Date): string => {
+  const ms = Date.now() - at.getTime();
   const minutes = Math.floor(ms / 60_000);
   if (minutes < 1) return "just now";
   if (minutes < 60) return `${minutes}m ago`;
@@ -513,7 +509,9 @@ interface StagedDotfile {
 }
 
 function DotfilesPanel() {
-  const dotfiles = useSuspenseQuery(dotfilesQuery).data;
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const dotfiles = useSuspenseQuery(trpc.settings.dotfiles.queryOptions()).data;
   const savedRepo = dotfiles.repository;
   const [repoUrl, setRepoUrl] = useState(savedRepo?.url ?? "");
   const [repoRef, setRepoRef] = useState(savedRepo?.ref ?? "");
@@ -537,7 +535,7 @@ function DotfilesPanel() {
   const repoDirty = !dotfilesRepositoriesEqual(savedRepo, repoDraft);
 
   const applyResult = (next: DotfilesDto, which: "repo" | "snapshot") => {
-    queryClient.setQueryData<DotfilesDto>(dotfilesQuery.queryKey, next);
+    queryClient.setQueryData(trpc.settings.dotfiles.queryOptions().queryKey, next);
     setRepoUrl(next.repository?.url ?? "");
     setRepoRef(next.repository?.ref ?? "");
     setRepoSubdir(next.repository?.subdirectory ?? "");
@@ -867,7 +865,9 @@ const AUTOMATION_ROWS: ReadonlyArray<{
  * these unless it overrides them on its own page (inherit · on · off).
  */
 function ReviewAutomationPanel() {
-  const settings = useSuspenseQuery(settingsQuery).data;
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const settings = useSuspenseQuery(trpc.settings.get.queryOptions()).data;
   const [pending, setPending] = useState<"autoTour" | "autoSuggest" | "autoName" | null>(null);
 
   const toggle = (key: "autoTour" | "autoSuggest" | "autoName", value: boolean) => {
@@ -875,7 +875,7 @@ function ReviewAutomationPanel() {
     setPending(key);
     const next: SettingsDto = { ...settings, [key]: value };
     void putSettings(next)
-      .then(() => queryClient.invalidateQueries({ queryKey: ["settings"] }))
+      .then(() => queryClient.invalidateQueries(trpc.settings.pathFilter()))
       .finally(() => setPending(null));
   };
 
@@ -1022,16 +1022,16 @@ const accountHint = (account: ConnectedAccountDto): string => {
  * person connects their own subscription; the credential goes to the platform
  * under their Sealant user and is never shown again.
  */
-const refreshIdentity = () => queryClient.invalidateQueries({ queryKey: ["sealant-identity"] });
-
 function ConnectedAccountsPanel() {
-  const identity = useSuspenseQuery(sealantIdentityQuery).data;
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const identity = useSuspenseQuery(trpc.platform.sealantIdentity.queryOptions()).data;
   const [editing, setEditing] = useState<ConnectedAccountProviderDto | null>(null);
   const [secret, setSecret] = useState("");
   const [pending, setPending] = useState<ConnectedAccountProviderDto | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = refreshIdentity;
+  const refresh = () => queryClient.invalidateQueries(trpc.platform.sealantIdentity.queryFilter());
   const submit = (provider: ConnectedAccountProviderDto) => {
     const value = secret.trim();
     if (value === "") return;
@@ -1177,8 +1177,6 @@ function ConnectedAccountsPanel() {
   );
 }
 
-const refreshDevices = () => queryClient.invalidateQueries({ queryKey: ["devices"] });
-
 /** Mint a code and draw its QR for the first candidate URL — one await chain, no effects. */
 const mintPairing = async (): Promise<{ pairing: PairingDto; svg: string }> => {
   const pairing = await createPairing();
@@ -1192,7 +1190,12 @@ const mintPairing = async (): Promise<{ pairing: PairingDto; svg: string }> => {
  * this machine shows for ten minutes; revoking a device ends that token.
  */
 function DevicesPanel() {
-  const devices = useSuspenseQuery(devicesQuery).data;
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const devices = useSuspenseQuery(
+    trpc.devices.list.queryOptions(undefined, { staleTime: 30_000 }),
+  ).data;
+  const refreshDevices = () => queryClient.invalidateQueries(trpc.devices.list.queryFilter());
   const [minted, setMinted] = useState<{ pairing: PairingDto; svg: string } | null>(null);
   const [pending, setPending] = useState(false);
   const [confirming, setConfirming] = useState<string | null>(null);

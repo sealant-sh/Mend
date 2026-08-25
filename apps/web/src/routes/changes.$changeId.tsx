@@ -1,4 +1,4 @@
-import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
+import { queryOptions, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
@@ -10,6 +10,7 @@ import { AppShell } from "#/components/shell";
 import {
   composeTour,
   deliverFollowUp,
+  openReview,
   postSliceReviewComment,
   readChange,
   suggestChange,
@@ -19,17 +20,20 @@ import {
   type ReviewDiffDto,
   type SessionChangeDto,
 } from "#/lib/api";
-import {
-  changeCommentsQuery,
-  changePassesQuery,
-  openReviewQuery,
-  reviewDiffQuery,
-  changeTourQuery,
-  pendingFollowUpQuery,
-  queryClient,
-  sessionDetailQuery,
-} from "#/lib/queries";
+import { useTRPC } from "#/lib/trpc";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
+
+/**
+ * Opening a review is an idempotent MUTATION used as a query: the loader runs
+ * it once per per-tab idempotency key and pins the result (staleTime ∞), so
+ * a revisit reuses the same slice instead of opening a new one.
+ */
+const openReviewQuery = (id: string, idempotencyKey: string) =>
+  queryOptions({
+    queryKey: ["change", id, "review-open", idempotencyKey],
+    queryFn: () => openReview(id, idempotencyKey),
+    staleTime: Number.POSITIVE_INFINITY,
+  });
 
 const reviewOpenKey = (changeId: string): string => {
   const storageKey = `mend.review.${changeId}.open-key`;
@@ -42,16 +46,18 @@ const reviewOpenKey = (changeId: string): string => {
 
 export const Route = createFileRoute("/changes/$changeId")({
   ssr: false,
-  loader: async ({ params }) => {
+  loader: async ({ context: { queryClient, trpc }, params }) => {
     const key = reviewOpenKey(params.changeId);
     const opened = await queryClient.ensureQueryData(openReviewQuery(params.changeId, key));
     await Promise.all([
-      queryClient.ensureQueryData(reviewDiffQuery(params.changeId, opened.slice.id)),
-      queryClient.ensureQueryData(changeCommentsQuery(params.changeId)),
+      queryClient.ensureQueryData(
+        trpc.changes.reviewDiff.queryOptions({ id: params.changeId, sliceId: opened.slice.id }),
+      ),
+      queryClient.ensureQueryData(trpc.changes.comments.queryOptions({ id: params.changeId })),
       // The tour is composed at settle (automation cascade) — load it with
       // the page so the description heads the review instead of arriving late.
-      queryClient.ensureQueryData(changeTourQuery(params.changeId)),
-      queryClient.ensureQueryData(changePassesQuery(params.changeId)),
+      queryClient.ensureQueryData(trpc.changes.tour.queryOptions({ id: params.changeId })),
+      queryClient.ensureQueryData(trpc.changes.passes.queryOptions({ id: params.changeId })),
     ]);
     return { sliceId: opened.slice.id };
   },
@@ -68,25 +74,30 @@ export const Route = createFileRoute("/changes/$changeId")({
 function ChangePage() {
   const { changeId } = Route.useParams();
   const { sliceId } = Route.useLoaderData();
-  const review = useSuspenseQuery(reviewDiffQuery(changeId, sliceId)).data;
+  const trpc = useTRPC();
+  const review = useSuspenseQuery(
+    trpc.changes.reviewDiff.queryOptions({ id: changeId, sliceId }),
+  ).data;
   const { change, patch: diff } = review;
   const files = review.files.map((file) => ({
     path: file.newPath ?? file.oldPath ?? "unknown path",
     additions: file.additions,
     deletions: file.deletions,
   }));
-  const comments = useSuspenseQuery(changeCommentsQuery(changeId)).data;
-  const followUp = useSuspenseQuery(pendingFollowUpQuery(change.sessionId)).data;
-  const sessionDetail = useQuery(sessionDetailQuery(change.sessionId)).data;
+  const comments = useSuspenseQuery(trpc.changes.comments.queryOptions({ id: changeId })).data;
+  const followUp = useSuspenseQuery(
+    trpc.sessions.pendingFollowUp.queryOptions({ id: change.sessionId }),
+  ).data;
+  const sessionDetail = useQuery(trpc.sessions.detail.queryOptions({ id: change.sessionId })).data;
   const [sendOpen, setSendOpen] = useState(false);
   const [focusFile, setFocusFile] = useState<{
     readonly path: string;
     readonly nonce: number;
   } | null>(null);
   // The composed tour: null while walking is closed, 0..n-1 = the active stop.
-  const tour = useQuery(changeTourQuery(changeId)).data ?? null;
+  const tour = useQuery(trpc.changes.tour.queryOptions({ id: changeId })).data ?? null;
   // What ran over this change — SSE keeps these fresh as passes progress.
-  const passes = useQuery(changePassesQuery(changeId)).data ?? [];
+  const passes = useQuery(trpc.changes.passes.queryOptions({ id: changeId })).data ?? [];
   const passOf = (kind: ChangePassDto["kind"]) => passes.find((pass) => pass.kind === kind) ?? null;
   const [tourIndex, setTourIndex] = useState<number | null>(null);
   const [composing, setComposing] = useState(false);
@@ -622,6 +633,8 @@ function ChangeComments({
   readonly sliceId: string;
   readonly comments: ReadonlyArray<ReviewCommentDto>;
 }) {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
   const [body, setBody] = useState("");
   const [pending, setPending] = useState(false);
   const changeLevel = comments.filter((comment) => comment.file === null);
@@ -644,7 +657,7 @@ function ChangeComments({
     )
       .then(() => {
         setBody("");
-        return queryClient.invalidateQueries({ queryKey: ["change", changeId] });
+        return queryClient.invalidateQueries(trpc.changes.pathFilter());
       })
       .finally(() => setPending(false));
   };
@@ -734,6 +747,8 @@ function SendReviewDialog({
   readonly comments: ReadonlyArray<ReviewCommentDto>;
   readonly onClose: () => void;
 }) {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
   const [selected, setSelected] = useState<ReadonlySet<string>>(
     () => new Set(comments.map((comment) => comment.id)),
   );
@@ -784,8 +799,8 @@ function SendReviewDialog({
       .then((followUp) => {
         setResult(followUp.status === "superseded" ? "delivery_failed" : followUp.status);
         return Promise.all([
-          queryClient.invalidateQueries({ queryKey: ["change", change.id] }),
-          queryClient.invalidateQueries({ queryKey: ["session", change.sessionId] }),
+          queryClient.invalidateQueries(trpc.changes.pathFilter()),
+          queryClient.invalidateQueries(trpc.sessions.pathFilter()),
         ]);
       })
       .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))

@@ -30,10 +30,12 @@
     "@tailwindcss/vite": "catalog:",
     "@tanstack/react-query": "catalog:",
     "@tanstack/react-router": "catalog:",
+    "@tanstack/react-router-ssr-query": "catalog:",
     "@tanstack/react-start": "catalog:",
     "@tanstack/router-plugin": "catalog:",
     "@trpc/client": "catalog:",
     "@trpc/server": "catalog:",
+    "@trpc/tanstack-react-query": "catalog:",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "better-auth": "catalog:",
@@ -43,6 +45,7 @@
     "qrcode": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
+    "superjson": "catalog:",
     "tailwindcss": "catalog:"
   },
   "devDependencies": {

@@ -1,16 +1,15 @@
 import type { inferRouterOutputs } from "@trpc/server";
 
-import type { AppRouter } from "../server/router.ts";
-import { orLogin, trpc } from "./trpc.ts";
+import type { AppRouter } from "../server/routers/index.ts";
+import { orLogin, trpcClient } from "./trpc.ts";
 
 /**
- * Browser facade for the project-environment group. The shapes come from the
- * wire contract via the tRPC router, which decodes every response against
- * @mend/api-contracts server-side (`.plans/project-environment-variables.md`:
- * values are user configuration that round-trips into workspaces, so drift
- * must fail loudly at the boundary). 422/409 arrive as structured OUTCOMES —
- * the discriminated unions below — because the UI keeps drafts on a stale
- * write and shows per-field issues on a rejection.
+ * Imperative writes + view types for the project-environment group. The
+ * shapes are the contract's Type side; 422/409 arrive as structured OUTCOMES
+ * — the discriminated unions the router builds from the contract's own typed
+ * failures — because the UI keeps drafts on a stale write and shows
+ * per-field issues on a rejection. Reads (environment/secrets snapshots) go
+ * through the tRPC options proxy like every other query.
  */
 
 type Outputs = inferRouterOutputs<AppRouter>;
@@ -38,34 +37,36 @@ export type ProjectSecretMutationView = Extract<SecretWriteOutcome, { ok: true }
 
 export type EnvironmentLoadReportView = Outputs["environment"]["load"];
 
-export const fetchProjectEnvironment = (projectId: string) =>
-  orLogin(trpc.environment.environment.query({ projectId }));
-
 export const createProjectEnvironmentVariable = (
   projectId: string,
   input: { readonly name: string; readonly value: string },
-) => orLogin(trpc.environment.createVariable.mutate({ projectId, ...input }));
+) => orLogin(trpcClient.environment.createVariable.mutate({ projectId, request: input }));
 
 /** Value edit and rename are the same atomic call on the same stable ID. */
 export const updateProjectEnvironmentVariable = (
   projectId: string,
   variableId: string,
   input: { readonly name: string; readonly value: string; readonly expectedRevision: number },
-) => orLogin(trpc.environment.updateVariable.mutate({ projectId, variableId, ...input }));
+) =>
+  orLogin(trpcClient.environment.updateVariable.mutate({ projectId, variableId, request: input }));
 
 export const removeProjectEnvironmentVariable = (
   projectId: string,
   variableId: string,
   expectedRevision: number,
-) => orLogin(trpc.environment.removeVariable.mutate({ projectId, variableId, expectedRevision }));
-
-export const fetchProjectSecrets = (projectId: string) =>
-  orLogin(trpc.environment.secrets.query({ projectId }));
+) =>
+  orLogin(
+    trpcClient.environment.removeVariable.mutate({
+      projectId,
+      variableId,
+      request: { expectedRevision },
+    }),
+  );
 
 export const createProjectSecret = (
   projectId: string,
   input: { readonly name: string; readonly value: string },
-) => orLogin(trpc.environment.createSecret.mutate({ projectId, ...input }));
+) => orLogin(trpcClient.environment.createSecret.mutate({ projectId, request: input }));
 
 /** `value: null` keeps the stored value (pure rename); a string replaces it. */
 export const updateProjectSecret = (
@@ -76,13 +77,20 @@ export const updateProjectSecret = (
     readonly value: string | null;
     readonly expectedRevision: number;
   },
-) => orLogin(trpc.environment.updateSecret.mutate({ projectId, secretId, ...input }));
+) => orLogin(trpcClient.environment.updateSecret.mutate({ projectId, secretId, request: input }));
 
 export const removeProjectSecret = (
   projectId: string,
   secretId: string,
   expectedRevision: number,
-) => orLogin(trpc.environment.removeSecret.mutate({ projectId, secretId, expectedRevision }));
+) =>
+  orLogin(
+    trpcClient.environment.removeSecret.mutate({
+      projectId,
+      secretId,
+      request: { expectedRevision },
+    }),
+  );
 
 /**
  * Post raw dotenv text; the server parses, routes each name (Configuration or Secrets), upserts,
@@ -95,4 +103,4 @@ export const loadProjectEnvironment = (
     readonly allSecret: boolean;
     readonly secretNames: ReadonlyArray<string>;
   },
-) => orLogin(trpc.environment.load.mutate({ projectId, ...input }));
+) => orLogin(trpcClient.environment.load.mutate({ projectId, request: input }));

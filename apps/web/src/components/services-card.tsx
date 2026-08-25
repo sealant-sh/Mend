@@ -3,7 +3,7 @@ import { Checkbox } from "@mend/ui/components/ui/checkbox";
 import { Input } from "@mend/ui/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@mend/ui/components/ui/native-select";
 import { cn } from "@mend/ui/lib/utils";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { StatusDot } from "#/components/status";
@@ -35,7 +35,7 @@ import {
   type ServiceViewDto,
   type SessionProcessDto,
 } from "#/lib/api";
-import { queryClient, sessionRecipesQuery, sessionServicesQuery } from "#/lib/queries";
+import { useTRPC } from "#/lib/trpc";
 
 /**
  * The session's Services (docs/SESSION-SERVICES.md §presentation): what runs
@@ -65,6 +65,10 @@ const serviceIsLive = (view: ServiceViewDto): boolean => {
     view.currentForward?.state === "bound"
   );
 };
+
+/** Machine-fact timestamp: superjson carries real Dates; render them tersely. */
+const observedAt = (value: string | Date | null): string =>
+  value === null ? "unknown" : value instanceof Date ? value.toLocaleString() : value;
 
 const serviceStatus = (view: ServiceViewDto): string =>
   currentObservation(view)?.state ??
@@ -223,8 +227,15 @@ export function ServicesCard({
   readonly sessionId: string;
   readonly sessionLive: boolean;
 }) {
-  const serviceViews = useQuery(sessionServicesQuery(sessionId));
-  const recipes = useQuery(sessionRecipesQuery(sessionId));
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const serviceViews = useQuery(
+    trpc.services.list.queryOptions(
+      { all: true },
+      { select: (views) => views.filter((view) => view.service.sessionId === sessionId) },
+    ),
+  );
+  const recipes = useQuery(trpc.sessions.recipes.queryOptions({ id: sessionId }));
   const [pending, setPending] = useState<string | null>(null);
 
   const services = serviceViews.data ?? [];
@@ -245,7 +256,10 @@ export function ServicesCard({
   const renewalFailure = services.find((view) => view.workspaceTtlRenewalError !== null) ?? null;
 
   const invalidate = () =>
-    queryClient.invalidateQueries({ queryKey: ["session", sessionId, "services"] });
+    Promise.all([
+      queryClient.invalidateQueries(trpc.sessions.pathFilter()),
+      queryClient.invalidateQueries(trpc.services.list.pathFilter()),
+    ]);
 
   const act = (verb: ServiceVerb, view: ServiceViewDto) => {
     const stable = view.service;
@@ -284,9 +298,9 @@ export function ServicesCard({
           <div className="border-b border-rule-faint bg-warning/10 px-4 py-3 font-mono text-[11px] text-warning">
             <p>Workspace TTL renewal failed · {renewalFailure.workspaceTtlRenewalError}</p>
             <p className="mt-1 text-faint">
-              last renewed {renewalFailure.workspaceTtlRenewedAt ?? "unknown"} · known expiry{" "}
-              {renewalFailure.workspaceExpiresAt ?? "unknown"} · failed{" "}
-              {renewalFailure.workspaceTtlRenewalFailedAt ?? "unknown"}
+              last renewed {observedAt(renewalFailure.workspaceTtlRenewedAt)} · known expiry{" "}
+              {observedAt(renewalFailure.workspaceExpiresAt)} · failed{" "}
+              {observedAt(renewalFailure.workspaceTtlRenewalFailedAt)}
             </p>
           </div>
         )}

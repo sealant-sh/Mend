@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
@@ -7,27 +8,33 @@ import { ReviewConversation } from "#/components/review-conversation";
 import { AppShell } from "#/components/shell";
 import { RunStatusDot } from "#/components/status";
 import {
-  briefByIssue,
-  briefVersions,
-  issueDetail,
-  listBriefComments,
   type BriefDetailDto,
   type BriefVersionDto,
   type MendEventDto,
   type RunDto,
 } from "#/lib/api";
+import { useTRPC } from "#/lib/trpc";
 
 export const Route = createFileRoute("/issues/$issueId")({
   ssr: false,
-  loader: async ({ params }) => {
+  loader: async ({ context: { queryClient, trpc }, params }) => {
     const [detail, brief] = await Promise.all([
-      issueDetail(params.issueId),
-      briefByIssue(params.issueId),
+      queryClient.ensureQueryData(trpc.queue.issueDetail.queryOptions({ id: params.issueId })),
+      queryClient.ensureQueryData(
+        trpc.queue.briefByIssue.queryOptions({ issueId: params.issueId }),
+      ),
     ]);
     const [comments, versions] =
       brief === null
         ? [[], []]
-        : await Promise.all([listBriefComments(params.issueId), briefVersions(params.issueId)]);
+        : await Promise.all([
+            queryClient.ensureQueryData(
+              trpc.queue.listBriefComments.queryOptions({ issueId: params.issueId }),
+            ),
+            queryClient.ensureQueryData(
+              trpc.queue.briefVersions.queryOptions({ issueId: params.issueId }),
+            ),
+          ]);
     return { ...detail, brief, comments, versions };
   },
   component: IssuePage,
@@ -36,6 +43,8 @@ export const Route = createFileRoute("/issues/$issueId")({
 function IssuePage() {
   const { issue, runs, brief, comments, versions } = Route.useLoaderData();
   const router = useRouter();
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
 
   // A live subscription has a real lifecycle — refresh when this issue's runs
   // settle or its brief recompiles.
@@ -45,10 +54,12 @@ function IssuePage() {
       const event: MendEventDto = JSON.parse(message.data);
       if (event.type === "run-progress") return;
       if (event.issueId !== issue.id) return;
-      void router.invalidate();
+      // The page renders loader data: mark the cache stale, then re-run the
+      // loader so ensureQueryData refetches instead of serving the cache.
+      void queryClient.invalidateQueries(trpc.queue.pathFilter()).then(() => router.invalidate());
     });
     return () => source.close();
-  }, [router, issue.id]);
+  }, [router, queryClient, trpc, issue.id]);
 
   // The failure the card carried back to triage, when its recording was summed.
   const failureRun = runs.find((run) => run.id === issue.lastFailureRunId);

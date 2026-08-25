@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 
-import { appRouter } from "../server/router.ts";
+import { appRouter } from "../server/routers/index.ts";
 
 /**
  * The web server (ARCHITECTURE.md §2): the TanStack Start app plus a

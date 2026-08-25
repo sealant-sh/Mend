@@ -3,15 +3,16 @@ import { useState } from "react";
 
 import { AppShell } from "#/components/shell";
 import { RunStatusDot } from "#/components/status";
-import { runDetail, runSources, runTrace, type RunSourceDto, type TraceEntryDto } from "#/lib/api";
+import { type RunSourceDto, type TraceEntryDto } from "#/lib/api";
+import { orLogin, trpcClient } from "#/lib/trpc";
 
 export const Route = createFileRoute("/runs/$runId")({
   ssr: false,
-  loader: async ({ params }) => {
+  loader: async ({ context: { queryClient, trpc }, params }) => {
     const [detail, trace, sources] = await Promise.all([
-      runDetail(params.runId),
-      runTrace(params.runId),
-      runSources(params.runId),
+      queryClient.ensureQueryData(trpc.queue.runDetail.queryOptions({ id: params.runId })),
+      queryClient.ensureQueryData(trpc.queue.runTrace.queryOptions({ id: params.runId })),
+      queryClient.ensureQueryData(trpc.queue.runSources.queryOptions({ id: params.runId })),
     ]);
     return { ...detail, trace, sources };
   },
@@ -174,7 +175,7 @@ function FullTrace({
     if (nextFrom === null || loading) return;
     setLoading(true);
     try {
-      const page = await runTrace(runId, nextFrom);
+      const page = await orLogin(trpcClient.queue.runTrace.query({ id: runId, from: nextFrom }));
       setEntries((current) => [...current, ...page.entries]);
       setNextFrom(page.nextFrom);
     } finally {

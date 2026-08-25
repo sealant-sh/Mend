@@ -1,22 +1,21 @@
-import { QueryClientProvider } from "@tanstack/react-query";
 import type { ErrorComponentProps } from "@tanstack/react-router";
 import {
   CatchBoundary,
-  createRootRoute,
+  createRootRouteWithContext,
   HeadContent,
   Outlet,
   Scripts,
   useLocation,
 } from "@tanstack/react-router";
 
-import { queryClient } from "#/lib/queries";
+import type { RouterAppContext } from "#/router";
 
 import appCss from "../styles.css?url";
 
 const TITLE = "Mend";
 const DESCRIPTION = "Projects, sessions, and the review — the agent workbench, by Sealant.";
 
-export const Route = createRootRoute({
+export const Route = createRootRouteWithContext<RouterAppContext>()({
   head: () => ({
     meta: [
       { charSet: "utf-8" },
@@ -68,11 +67,9 @@ function RootComponent() {
         <HeadContent />
       </head>
       <body className="min-h-screen bg-background font-sans text-foreground">
-        <QueryClientProvider client={queryClient}>
-          <CatchBoundary getResetKey={() => pathname} errorComponent={RouteError}>
-            <Outlet />
-          </CatchBoundary>
-        </QueryClientProvider>
+        <CatchBoundary getResetKey={() => pathname} errorComponent={RouteError}>
+          <Outlet />
+        </CatchBoundary>
         <Scripts />
       </body>
     </html>

@@ -1,27 +1,23 @@
-import type { DotfilesRepositoryRequest, LaunchRequest } from "@mend/api-contracts";
-import type { WorkspaceImage } from "@mend/domain";
 import type { inferRouterOutputs } from "@trpc/server";
 
-import type { AppRouter } from "../server/router.ts";
-import { orLogin, trpc } from "./trpc.ts";
+import type { AppRouter } from "../server/routers/index.ts";
+import { orLogin, trpcClient } from "./trpc.ts";
 
 /**
- * The UI's data facade. Every type is the wire (Encoded) side of the real
- * contract — @mend/api-contracts and @mend/domain, the same schemas the API
- * encodes with — and every call rides the web tier's tRPC surface, which
- * forwards to the API and validates responses against those schemas. Nothing
- * here is hand-rolled; a wire change shows up as a compile error in this
- * file, not a runtime surprise in a view.
+ * The UI's imperative surface: MUTATIONS (menus, drags, composers — places
+ * that act, not render) plus the shared view types. Reads live in TanStack
+ * Query through the tRPC options proxy (`useTRPC()` in components,
+ * `context.trpc` in loaders) — nothing here duplicates a query.
+ *
+ * Every type is the contract's Type side, verbatim: superjson carries real
+ * Dates, bigint sequence counters and branded ids from the server's derived
+ * client to the browser. A wire change breaks compilation here, not runtime
+ * behavior in a view.
  */
 
-// ─── Wire types: exactly what the tRPC client delivers ──────────────────────
-// inferRouterOutputs applies tRPC's serialization to the router's contract-
-// validated outputs, so these are the true client-side shapes — brands and
-// Dates flattened to the JSON the browser actually holds. The router's
-// procedures decode every response against @mend/api-contracts, so a wire
-// change breaks THERE (loudly), and these types follow automatically.
-
 type Outputs = inferRouterOutputs<AppRouter>;
+
+// ─── View types (the contract's Type side, named for the UI) ────────────────
 
 export type IssueDto = Outputs["queue"]["listIssues"][number];
 export type IssueStage = IssueDto["stage"];
@@ -55,21 +51,11 @@ export type ConnectedAccountDto = SealantIdentityDto["accounts"][number];
 export type ConnectedAccountProviderDto = ConnectedAccountDto["provider"];
 export type MachineDto = Outputs["platform"]["machine"];
 
-/**
- * The image's decoding defaults make `mode`/`shell`/`services` optional on
- * the Encoded side, but the API always writes them when encoding — required
- * is the true wire shape, and the discriminated union needs it to narrow.
- */
-export type WorkspaceImageDto = WorkspaceImage;
-
-export type ProjectDto = Omit<Outputs["projects"]["list"][number], "workspaceImage"> & {
-  readonly workspaceImage: WorkspaceImageDto | null;
-};
+export type ProjectDto = Outputs["projects"]["list"][number];
+export type WorkspaceImageDto = NonNullable<ProjectDto["workspaceImage"]>;
 export type AutomationChoiceDto = ProjectDto["autoTour"];
 export type GitAuthModeDto = ProjectDto["gitAuthMode"];
-export type ProjectDetailDto = Omit<Outputs["projects"]["detail"], "project"> & {
-  readonly project: ProjectDto;
-};
+export type ProjectDetailDto = Outputs["projects"]["detail"];
 export type SessionDto = Outputs["sessions"]["listActive"][number];
 export type SessionStatusDto = SessionDto["status"];
 export type SessionAnnotationDto = ProjectDetailDto["annotations"][number];
@@ -78,10 +64,12 @@ export type RemovalReportDto = Outputs["projects"]["remove"];
 export type SessionDetailDto = Outputs["sessions"]["detail"];
 export type CheckpointDto = SessionDetailDto["checkpoints"][number];
 export type SessionChangeDto = NonNullable<SessionDetailDto["change"]>;
+export type FollowUpDto = NonNullable<Outputs["sessions"]["pendingFollowUp"]>;
+
 export type ChangeDiffDto = Outputs["changes"]["diff"];
 export type ChangedFileDto = ChangeDiffDto["files"][number];
-export type OpenReviewDto = Outputs["changes"]["openReview"];
-export type ReviewSliceDto = OpenReviewDto["slice"];
+export type OpenReviewResultDto = Outputs["changes"]["openReview"];
+export type ReviewSliceDto = OpenReviewResultDto["slice"];
 export type ReviewDiffDto = Outputs["changes"]["reviewDiff"];
 export type ReviewDiffFileDto = ReviewDiffDto["files"][number];
 export type ReviewDiffHunkDto = ReviewDiffFileDto["hunks"][number];
@@ -91,30 +79,14 @@ export type RecordLinkDto = ReviewCommentDto["evidence"][number];
 export type ChangeTourDto = NonNullable<Outputs["changes"]["tour"]>;
 export type TourStopDto = ChangeTourDto["stops"][number];
 export type ChangePassDto = Outputs["changes"]["passes"][number];
-export type FollowUpDto = NonNullable<Outputs["sessions"]["pendingFollowUp"]>;
 
-export type SettingsDto = Omit<
-  Outputs["settings"]["get"],
-  "workspaceImage" | "autoTour" | "autoSuggest" | "autoName"
-> & {
-  readonly workspaceImage: WorkspaceImageDto;
-  // The decoding defaults make these optional on the Encoded side, but the
-  // API always writes them when encoding — required is the true wire shape.
-  readonly autoTour: boolean;
-  readonly autoSuggest: boolean;
-  readonly autoName: boolean;
-};
-export type WorkspaceEnvironmentSaveResultDto = Omit<
-  Outputs["settings"]["saveWorkspaceEnvironment"],
-  "settings"
-> & { readonly settings: SettingsDto };
+export type SettingsDto = Outputs["settings"]["get"];
+export type WorkspaceEnvironmentSaveResultDto = Outputs["settings"]["saveWorkspaceEnvironment"];
 export type WorkspacePackageResolutionDto =
   WorkspaceEnvironmentSaveResultDto["resolutions"][number];
 export type ProjectWorkspaceImageSaveResultDto = Outputs["projects"]["setWorkspaceImage"];
-export type DotfilesDto = Omit<Outputs["settings"]["dotfiles"], "repository"> & {
-  readonly repository: DotfilesRepositoryDto | null;
-};
-export type DotfilesRepositoryDto = NonNullable<DotfilesRepositoryRequest["repository"]>;
+export type DotfilesDto = Outputs["settings"]["dotfiles"];
+export type DotfilesRepositoryDto = NonNullable<DotfilesDto["repository"]>;
 export type DotfilesSnapshotDto = NonNullable<DotfilesDto["snapshot"]>;
 export type ProjectHotSessionsStatusDto = Outputs["projects"]["hotSessionsStatus"];
 export type HostEnvironmentSuggestionsDto = Outputs["settings"]["environmentSuggestions"];
@@ -161,61 +133,39 @@ export interface WorkbenchEventDto {
   readonly line?: string;
 }
 
-// ─── Queue-era surface ──────────────────────────────────────────────────────
+// ─── Queue-era actions ──────────────────────────────────────────────────────
 
-export const listIssues = () => orLogin(trpc.queue.listIssues.query());
-export const issueDetail = (id: string) => orLogin(trpc.queue.issueDetail.query({ id }));
-export const runDetail = (id: string) => orLogin(trpc.queue.runDetail.query({ id }));
-export const runTrace = (id: string, from?: string) =>
-  orLogin(trpc.queue.runTrace.query({ id, ...(from === undefined ? {} : { from }) }));
-export const runSources = (id: string) => orLogin(trpc.queue.runSources.query({ id }));
-export const briefByIssue = (issueId: string) =>
-  orLogin(trpc.queue.briefByIssue.query({ issueId }));
-export const listBriefComments = (issueId: string) =>
-  orLogin(trpc.queue.listBriefComments.query({ issueId }));
 export const postBriefComment = (issueId: string, thread: string, body: string) =>
-  orLogin(trpc.queue.postBriefComment.mutate({ issueId, thread, body }));
-export const briefVersions = (issueId: string) =>
-  orLogin(trpc.queue.briefVersions.query({ issueId }));
+  orLogin(trpcClient.queue.postBriefComment.mutate({ issueId, comment: { thread, body } }));
 export const createIssue = (input: {
   readonly repository: string;
   readonly title: string;
   readonly body: string;
-}) => orLogin(trpc.queue.createIssue.mutate(input));
+}) =>
+  orLogin(trpcClient.queue.createIssue.mutate({ source: "manual", externalRef: null, ...input }));
 export const moveIssue = (id: string, stage: "triage" | "queued", position: number | null) =>
-  orLogin(trpc.queue.moveIssue.mutate({ id, stage, position }));
+  orLogin(trpcClient.queue.moveIssue.mutate({ id, move: { stage, position } }));
 
-// ─── Platform · identity · machine ──────────────────────────────────────────
+// ─── Platform · identity ────────────────────────────────────────────────────
 
-export const sealantConnection = () => orLogin(trpc.platform.sealantConnection.query());
-export const getSealantIdentity = () => orLogin(trpc.platform.sealantIdentity.query());
 export const connectAccount = (input: {
   readonly provider: ConnectedAccountProviderDto;
   readonly secret: string;
-}) => orLogin(trpc.platform.connectAccount.mutate(input));
+}) => orLogin(trpcClient.platform.connectAccount.mutate(input));
 export const disconnectAccount = (id: string) =>
-  orLogin(trpc.platform.disconnectAccount.mutate({ id }));
-export const getMachine = () => orLogin(trpc.platform.machine.query());
+  orLogin(trpcClient.platform.disconnectAccount.mutate({ id }));
 
 // ─── Projects ───────────────────────────────────────────────────────────────
 
-export const listProjects = (): Promise<ReadonlyArray<ProjectDto>> =>
-  orLogin(trpc.projects.list.query()) as Promise<ReadonlyArray<ProjectDto>>;
-export const projectDetail = (id: string): Promise<ProjectDetailDto> =>
-  orLogin(trpc.projects.detail.query({ id })) as Promise<ProjectDetailDto>;
-export const adoptProject = (
-  name: string,
-  source: string,
-  gitAuthMode?: GitAuthModeDto,
-): Promise<ProjectDto> =>
+export const adoptProject = (name: string, source: string, gitAuthMode?: GitAuthModeDto) =>
   orLogin(
-    trpc.projects.adopt.mutate({
+    trpcClient.projects.adopt.mutate({
       name,
       source,
       ...(gitAuthMode === undefined ? {} : { gitAuthMode }),
     }),
-  ) as Promise<ProjectDto>;
-export const removeProject = (id: string) => orLogin(trpc.projects.remove.mutate({ id }));
+  );
+export const removeProject = (id: string) => orLogin(trpcClient.projects.remove.mutate({ id }));
 export const setProjectAutomation = (
   projectId: string,
   choices: {
@@ -223,46 +173,33 @@ export const setProjectAutomation = (
     readonly autoSuggest: AutomationChoiceDto;
     readonly autoName: AutomationChoiceDto;
   },
-): Promise<ProjectDto> =>
-  orLogin(trpc.projects.setAutomation.mutate({ projectId, ...choices })) as Promise<ProjectDto>;
+) => orLogin(trpcClient.projects.setAutomation.mutate({ id: projectId, choices }));
 export const setProjectWorkspaceImage = (
   projectId: string,
   workspaceImage: WorkspaceImageDto | null,
-) => orLogin(trpc.projects.setWorkspaceImage.mutate({ projectId, workspaceImage }));
-export const setProjectApplyDotfiles = (
-  projectId: string,
-  applyDotfiles: boolean,
-): Promise<ProjectDto> =>
+) =>
   orLogin(
-    trpc.projects.setApplyDotfiles.mutate({ projectId, applyDotfiles }),
-  ) as Promise<ProjectDto>;
-export const setProjectGitAuth = (
-  projectId: string,
-  gitAuthMode: GitAuthModeDto,
-): Promise<ProjectDto> =>
-  orLogin(trpc.projects.setGitAuth.mutate({ projectId, gitAuthMode })) as Promise<ProjectDto>;
-export const setProjectHotSessions = (
-  projectId: string,
-  hotSessions: number,
-): Promise<ProjectDto> =>
-  orLogin(trpc.projects.setHotSessions.mutate({ projectId, hotSessions })) as Promise<ProjectDto>;
-export const projectHotSessionsStatus = (projectId: string) =>
-  orLogin(trpc.projects.hotSessionsStatus.query({ projectId }));
-export const projectReferences = (projectId: string) =>
-  orLogin(trpc.projects.references.query({ projectId }));
+    trpcClient.projects.setWorkspaceImage.mutate({ id: projectId, request: { workspaceImage } }),
+  );
+export const setProjectApplyDotfiles = (projectId: string, applyDotfiles: boolean) =>
+  orLogin(
+    trpcClient.projects.setApplyDotfiles.mutate({ id: projectId, request: { applyDotfiles } }),
+  );
+export const setProjectGitAuth = (projectId: string, gitAuthMode: GitAuthModeDto) =>
+  orLogin(trpcClient.projects.setGitAuth.mutate({ id: projectId, request: { gitAuthMode } }));
+export const setProjectHotSessions = (projectId: string, hotSessions: number) =>
+  orLogin(trpcClient.projects.setHotSessions.mutate({ id: projectId, request: { hotSessions } }));
 export const selectProjectReferences = (projectId: string, referenceIds: ReadonlyArray<string>) =>
-  orLogin(trpc.projects.selectReferences.mutate({ projectId, referenceIds }));
-export const projectMounts = (projectId: string) =>
-  orLogin(trpc.projects.mounts.query({ projectId }));
+  orLogin(
+    trpcClient.projects.selectReferences.mutate({ id: projectId, selection: { referenceIds } }),
+  );
 export const addProjectMount = (
   projectId: string,
   input: { readonly name: string; readonly hostPath: string; readonly readOnly: boolean },
-) => orLogin(trpc.projects.addMount.mutate({ projectId, ...input }));
+) => orLogin(trpcClient.projects.addMount.mutate({ id: projectId, mount: input }));
 export const removeProjectMount = async (projectId: string, mountId: string): Promise<void> => {
-  await orLogin(trpc.projects.removeMount.mutate({ projectId, mountId }));
+  await orLogin(trpcClient.projects.removeMount.mutate({ id: projectId, mountId }));
 };
-export const projectRecipes = (projectId: string) =>
-  orLogin(trpc.projects.recipes.query({ projectId }));
 export const addProjectRecipe = (
   projectId: string,
   input: {
@@ -272,50 +209,44 @@ export const addProjectRecipe = (
     readonly protocol: "tcp" | "udp";
     readonly browserScheme: "http" | "https" | null;
   },
-) => orLogin(trpc.projects.addRecipe.mutate({ projectId, ...input }));
+) => orLogin(trpcClient.projects.addRecipe.mutate({ id: projectId, recipe: input }));
 export const removeProjectRecipe = async (projectId: string, name: string): Promise<void> => {
-  await orLogin(trpc.projects.removeRecipe.mutate({ projectId, name }));
+  await orLogin(trpcClient.projects.removeRecipe.mutate({ id: projectId, name }));
 };
 
 // ─── References · git keys ──────────────────────────────────────────────────
 
-export const listReferences = () => orLogin(trpc.git.references.query());
 export const addReference = (name: string, source: string, ref: string | null) =>
-  orLogin(trpc.git.addReference.mutate({ name, source, ref }));
+  orLogin(trpcClient.git.addReference.mutate({ name, source, ref }));
 export const removeReference = async (id: string): Promise<void> => {
-  await orLogin(trpc.git.removeReference.mutate({ id }));
+  await orLogin(trpcClient.git.removeReference.mutate({ id }));
 };
-export const refreshReference = (id: string) => orLogin(trpc.git.refreshReference.mutate({ id }));
-export const gitKey = () => orLogin(trpc.git.key.query());
-export const initGitKey = () => orLogin(trpc.git.initKey.mutate());
-export const gitBridgeStatus = () => orLogin(trpc.git.bridgeStatus.query());
+export const refreshReference = (id: string) =>
+  orLogin(trpcClient.git.refreshReference.mutate({ id }));
+export const initGitKey = () => orLogin(trpcClient.git.initKey.mutate());
 
-// ─── Sessions · processes · services ────────────────────────────────────────
+// ─── Sessions · services ────────────────────────────────────────────────────
 
-export const listActiveSessions = () => orLogin(trpc.sessions.listActive.query());
-export const sessionDetail = (id: string) => orLogin(trpc.sessions.detail.query({ id }));
 export const createSession = (projectId: string, harness: string, base: string | null = null) =>
-  orLogin(trpc.sessions.create.mutate({ projectId, harness, base }));
+  orLogin(
+    trpcClient.sessions.create.mutate({ projectId, session: { harness, label: null, base } }),
+  );
 export const launchSession = (id: string, argv: ReadonlyArray<string>) =>
-  orLogin(trpc.sessions.launch.mutate({ id, body: { argv } }));
+  orLogin(trpcClient.sessions.launch.mutate({ id, request: { argv } }));
 
 /** A composed start — the server turns this into the harness's own argv. */
-export type LaunchStartDto = Omit<typeof LaunchRequest.Encoded, "mode" | "argv">;
+export type LaunchRequestDto = Parameters<typeof trpcClient.sessions.launch.mutate>[0]["request"];
+export type LaunchStartDto = Omit<LaunchRequestDto, "mode" | "argv">;
 export const launchSessionStart = (id: string, start: LaunchStartDto) =>
-  orLogin(trpc.sessions.launch.mutate({ id, body: { ...start } }));
-export const stopSession = (id: string) => orLogin(trpc.sessions.stop.mutate({ id }));
+  orLogin(trpcClient.sessions.launch.mutate({ id, request: { ...start } }));
+export const stopSession = (id: string) => orLogin(trpcClient.sessions.stop.mutate({ id }));
 export const resumeSession = (id: string, harness: string | null) =>
-  orLogin(trpc.sessions.resume.mutate({ id, harness }));
-export const removeSession = (id: string) => orLogin(trpc.sessions.remove.mutate({ id }));
+  orLogin(trpcClient.sessions.resume.mutate({ id, request: { harness } }));
+export const removeSession = (id: string) => orLogin(trpcClient.sessions.remove.mutate({ id }));
 export const setSessionLabel = (id: string, label: string | null) =>
-  orLogin(trpc.sessions.setLabel.mutate({ id, label }));
+  orLogin(trpcClient.sessions.setLabel.mutate({ id, label }));
 export const checkpointSession = (id: string, trigger: "review-open" | "user-mark") =>
-  orLogin(trpc.sessions.checkpoint.mutate({ id, trigger }));
-export const sessionTranscript = (id: string) => orLogin(trpc.sessions.transcript.query({ id }));
-export const listSessionProcesses = (id: string) => orLogin(trpc.sessions.processes.query({ id }));
-export const listSessionRecipes = (id: string) => orLogin(trpc.sessions.recipes.query({ id }));
-export const pendingFollowUp = (sessionId: string) =>
-  orLogin(trpc.sessions.pendingFollowUp.query({ id: sessionId }));
+  orLogin(trpcClient.sessions.checkpoint.mutate({ id, request: { trigger } }));
 
 export interface DeliverFollowUpInput {
   readonly reviewSliceId: string;
@@ -327,10 +258,10 @@ export interface DeliverFollowUpInput {
   readonly idempotencyKey: string;
 }
 export const deliverFollowUp = (sessionId: string, input: DeliverFollowUpInput) =>
-  orLogin(trpc.sessions.deliverFollowUp.mutate({ id: sessionId, request: input }));
+  orLogin(trpcClient.sessions.deliverFollowUp.mutate({ id: sessionId, request: input }));
 
 export const runServiceRecipe = (sessionId: string, name: string) =>
-  orLogin(trpc.sessions.runServiceRecipe.mutate({ sessionId, name }));
+  orLogin(trpcClient.sessions.runServiceRecipe.mutate({ id: sessionId, name }));
 export const runService = (
   sessionId: string,
   input: {
@@ -340,7 +271,7 @@ export const runService = (
     protocol?: "tcp" | "udp";
     browserScheme?: "http" | "https" | null;
   },
-) => orLogin(trpc.sessions.runService.mutate({ sessionId, ...input }));
+) => orLogin(trpcClient.sessions.runService.mutate({ id: sessionId, ...input }));
 export const addService = (
   sessionId: string,
   input: {
@@ -349,20 +280,14 @@ export const addService = (
     protocol?: "tcp" | "udp";
     browserScheme?: "http" | "https" | null;
   },
-) => orLogin(trpc.sessions.addService.mutate({ sessionId, ...input }));
-export const listServices = (all = false) => orLogin(trpc.services.list.query({ all }));
-export const restartService = (id: string) => orLogin(trpc.services.restart.mutate({ id }));
-export const stopService = (id: string) => orLogin(trpc.services.stop.mutate({ id }));
+) => orLogin(trpcClient.sessions.addService.mutate({ id: sessionId, ...input }));
+export const restartService = (id: string) => orLogin(trpcClient.services.restart.mutate({ id }));
+export const stopService = (id: string) => orLogin(trpcClient.services.stop.mutate({ id }));
 
 // ─── Changes · review ───────────────────────────────────────────────────────
 
-export const changeStats = (id: string) => orLogin(trpc.changes.stats.query({ id }));
-export const changeDiff = (id: string) => orLogin(trpc.changes.diff.query({ id }));
 export const openReview = (id: string, idempotencyKey: string) =>
-  orLogin(trpc.changes.openReview.mutate({ id, idempotencyKey }));
-export const reviewDiff = (id: string, sliceId: string) =>
-  orLogin(trpc.changes.reviewDiff.query({ id, sliceId }));
-export const changeComments = (id: string) => orLogin(trpc.changes.comments.query({ id }));
+  orLogin(trpcClient.changes.openReview.mutate({ id, request: { idempotencyKey } }));
 
 export interface SliceCommentTargetDto {
   readonly oldPath: string | null;
@@ -378,53 +303,46 @@ export const postSliceReviewComment = (
   target: SliceCommentTargetDto,
   body: string,
 ) =>
-  orLogin(trpc.changes.postSliceComment.mutate({ changeId, sliceId, target: { ...target }, body }));
+  orLogin(
+    trpcClient.changes.postSliceComment.mutate({
+      id: changeId,
+      sliceId,
+      comment: { target, body },
+    }),
+  );
 export const setCommentState = (
   changeId: string,
   commentId: string,
   state: "open" | "addressed" | "dismissed",
-) => orLogin(trpc.changes.setCommentState.mutate({ changeId, commentId, state }));
-export const changeTour = (changeId: string) => orLogin(trpc.changes.tour.query({ id: changeId }));
-export const changePasses = (changeId: string) =>
-  orLogin(trpc.changes.passes.query({ id: changeId }));
+) =>
+  orLogin(
+    trpcClient.changes.setCommentState.mutate({ id: changeId, commentId, request: { state } }),
+  );
 export const readChange = (changeId: string) =>
-  orLogin(trpc.changes.queueRead.mutate({ id: changeId }));
+  orLogin(trpcClient.changes.queueRead.mutate({ id: changeId }));
 export const composeTour = (changeId: string) =>
-  orLogin(trpc.changes.queueTour.mutate({ id: changeId }));
+  orLogin(trpcClient.changes.queueTour.mutate({ id: changeId }));
 export const suggestChange = (changeId: string) =>
-  orLogin(trpc.changes.queueSuggest.mutate({ id: changeId }));
+  orLogin(trpcClient.changes.queueSuggest.mutate({ id: changeId }));
 
 // ─── Settings · dotfiles · devices ──────────────────────────────────────────
 
-export const getSettings = (): Promise<SettingsDto> =>
-  orLogin(trpc.settings.get.query()) as Promise<SettingsDto>;
 export const putSettings = (settings: SettingsDto) =>
-  orLogin(trpc.settings.put.mutate({ ...settings }));
-export const saveWorkspaceEnvironment = (
-  workspaceImage: WorkspaceImageDto,
-): Promise<WorkspaceEnvironmentSaveResultDto> =>
-  orLogin(
-    trpc.settings.saveWorkspaceEnvironment.mutate(workspaceImage),
-  ) as Promise<WorkspaceEnvironmentSaveResultDto>;
-export const scanHostEnvironment = () => orLogin(trpc.settings.environmentSuggestions.query());
-export const getDotfiles = (): Promise<DotfilesDto> =>
-  orLogin(trpc.settings.dotfiles.query()) as Promise<DotfilesDto>;
-export const putDotfilesRepository = (
-  repository: DotfilesRepositoryDto | null,
-): Promise<DotfilesDto> =>
-  orLogin(trpc.settings.putDotfilesRepository.mutate({ repository })) as Promise<DotfilesDto>;
+  orLogin(trpcClient.settings.put.mutate(settings));
+export const saveWorkspaceEnvironment = (workspaceImage: WorkspaceImageDto) =>
+  orLogin(trpcClient.settings.saveWorkspaceEnvironment.mutate(workspaceImage));
+export const putDotfilesRepository = (repository: DotfilesRepositoryDto | null) =>
+  orLogin(trpcClient.settings.putDotfilesRepository.mutate({ repository }));
 export const postDotfilesSnapshot = (payload: {
   readonly files: ReadonlyArray<{ readonly path: string; readonly contentsBase64: string }>;
   readonly source: string;
   readonly merge: boolean;
-}): Promise<DotfilesDto> =>
-  orLogin(trpc.settings.postDotfilesSnapshot.mutate(payload)) as Promise<DotfilesDto>;
-export const deleteDotfilesSnapshot = (): Promise<DotfilesDto> =>
-  orLogin(trpc.settings.deleteDotfilesSnapshot.mutate()) as Promise<DotfilesDto>;
+}) => orLogin(trpcClient.settings.postDotfilesSnapshot.mutate(payload));
+export const deleteDotfilesSnapshot = () =>
+  orLogin(trpcClient.settings.deleteDotfilesSnapshot.mutate());
 
-export const listDevices = () => orLogin(trpc.devices.list.query());
-export const createPairing = () => orLogin(trpc.devices.createPairing.mutate());
-export const revokeDevice = (id: string) => orLogin(trpc.devices.revoke.mutate({ id }));
+export const createPairing = () => orLogin(trpcClient.devices.createPairing.mutate());
+export const revokeDevice = (id: string) => orLogin(trpcClient.devices.revoke.mutate({ id }));
 
 // ─── Pure helpers (unchanged behavior) ──────────────────────────────────────
 

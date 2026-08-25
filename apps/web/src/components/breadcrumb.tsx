@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 
-import { projectsQuery } from "#/lib/queries";
+import { useTRPC } from "#/lib/trpc";
 
 /**
  * The eyebrow as a way back up: projects / <name> / … / leaf. Same mono
@@ -18,7 +18,8 @@ export function ProjectCrumbs({
   readonly sessionId?: string;
   readonly leaf: string;
 }) {
-  const projects = useQuery(projectsQuery);
+  const trpc = useTRPC();
+  const projects = useQuery(trpc.projects.list.queryOptions());
   const name = (projects.data ?? []).find((project) => project.id === projectId)?.name;
   return (
     <p className="ev-eyebrow">

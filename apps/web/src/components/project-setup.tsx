@@ -1,4 +1,4 @@
-import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
@@ -20,18 +20,9 @@ import {
   type AutomationChoiceDto,
   type GitAuthModeDto,
   type ProjectDto,
+  type ReferenceDto,
 } from "#/lib/api";
-import {
-  gitBridgeQuery,
-  gitKeyQuery,
-  projectHotSessionsQuery,
-  projectMountsQuery,
-  projectRecipesQuery,
-  projectReferencesQuery,
-  queryClient,
-  referencesQuery,
-  settingsQuery,
-} from "#/lib/queries";
+import { useTRPC } from "#/lib/trpc";
 
 /**
  * The project's setup sections — references, mounted folders, services,
@@ -77,10 +68,19 @@ const GIT_AUTH_CHOICES: ReadonlyArray<{
  * readably while nobody is connected.
  */
 export function GitAccessSection({ project }: { readonly project: ProjectDto }) {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const gitKey = useQuery({ ...gitKeyQuery, enabled: project.gitAuthMode === "mend-key" });
-  const bridge = useQuery({ ...gitBridgeQuery, enabled: project.gitAuthMode === "bridge" });
+  const gitKey = useQuery(
+    trpc.git.key.queryOptions(undefined, { enabled: project.gitAuthMode === "mend-key" }),
+  );
+  const bridge = useQuery(
+    trpc.git.bridgeStatus.queryOptions(undefined, {
+      refetchInterval: 5_000,
+      enabled: project.gitAuthMode === "bridge",
+    }),
+  );
 
   const choose = (value: GitAuthModeDto) => {
     if (project.gitAuthMode === value || busy) return;
@@ -88,8 +88,8 @@ export function GitAccessSection({ project }: { readonly project: ProjectDto }) 
     setError(null);
     void setProjectGitAuth(project.id, value)
       .then(() => {
-        void queryClient.invalidateQueries({ queryKey: ["project", project.id] });
-        void queryClient.invalidateQueries({ queryKey: ["git-key"] });
+        void queryClient.invalidateQueries(trpc.projects.pathFilter());
+        void queryClient.invalidateQueries(trpc.git.key.queryFilter());
         return null;
       })
       .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
@@ -166,7 +166,9 @@ export function GitAccessSection({ project }: { readonly project: ProjectDto }) 
  * rejects them there.
  */
 export function DotfilesSection({ project }: { readonly project: ProjectDto }) {
-  const settings = useQuery(settingsQuery);
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const settings = useQuery(trpc.settings.get.queryOptions());
   const customImage = (project.workspaceImage ?? settings.data?.workspaceImage)?.mode === "custom";
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -175,7 +177,7 @@ export function DotfilesSection({ project }: { readonly project: ProjectDto }) {
     setBusy(true);
     setError(null);
     void setProjectApplyDotfiles(project.id, applyDotfiles)
-      .then(() => queryClient.invalidateQueries({ queryKey: ["project", project.id] }))
+      .then(() => queryClient.invalidateQueries(trpc.projects.pathFilter()))
       .catch((cause: unknown) =>
         setError(cause instanceof Error ? cause.message : "Could not save the dotfiles switch."),
       )
@@ -225,7 +227,11 @@ export function DotfilesSection({ project }: { readonly project: ProjectDto }) {
  * mounts, or dotfiles change.
  */
 export function HotSessionsSection({ project }: { readonly project: ProjectDto }) {
-  const status = useQuery(projectHotSessionsQuery(project.id));
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const status = useQuery(
+    trpc.projects.hotSessionsStatus.queryOptions({ id: project.id }, { refetchInterval: 5_000 }),
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -234,12 +240,7 @@ export function HotSessionsSection({ project }: { readonly project: ProjectDto }
     setBusy(true);
     setError(null);
     void setProjectHotSessions(project.id, hotSessions)
-      .then(() =>
-        Promise.all([
-          queryClient.invalidateQueries({ queryKey: ["project", project.id] }),
-          queryClient.invalidateQueries({ queryKey: ["project", project.id, "hot-sessions"] }),
-        ]),
-      )
+      .then(() => queryClient.invalidateQueries(trpc.projects.pathFilter()))
       .catch((cause: unknown) =>
         setError(cause instanceof Error ? cause.message : "Could not save the hot-sessions count."),
       )
@@ -303,6 +304,8 @@ export function HotSessionsSection({ project }: { readonly project: ProjectDto }
 }
 
 export function ReviewAutomationSection({ project }: { readonly project: ProjectDto }) {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
   const [busy, setBusy] = useState<string | null>(null);
 
   const choose = (key: "autoTour" | "autoSuggest" | "autoName", value: AutomationChoiceDto) => {
@@ -313,7 +316,7 @@ export function ReviewAutomationSection({ project }: { readonly project: Project
       autoSuggest: key === "autoSuggest" ? value : project.autoSuggest,
       autoName: key === "autoName" ? value : project.autoName,
     })
-      .then(() => queryClient.invalidateQueries({ queryKey: ["project", project.id] }))
+      .then(() => queryClient.invalidateQueries(trpc.projects.pathFilter()))
       .finally(() => setBusy(null));
   };
 
@@ -355,6 +358,7 @@ export function ReviewAutomationSection({ project }: { readonly project: Project
 
 export function RemoveProjectSection({ projectId }: { readonly projectId: string }) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [removing, setRemoving] = useState<"idle" | "armed" | "working">("idle");
   const [leftoverNote, setLeftoverNote] = useState<string | null>(null);
 
@@ -412,13 +416,14 @@ export function RemoveProjectSection({ projectId }: { readonly projectId: string
  * worktree-versus-base.
  */
 export function MountsSection({ projectId }: { readonly projectId: string }) {
-  const mounts = useSuspenseQuery(projectMountsQuery(projectId)).data;
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const mounts = useSuspenseQuery(trpc.projects.mounts.queryOptions({ id: projectId })).data;
   const [busy, setBusy] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
 
-  const invalidate = () =>
-    queryClient.invalidateQueries({ queryKey: ["project", projectId, "mounts"] });
+  const invalidate = () => queryClient.invalidateQueries(trpc.projects.pathFilter());
 
   const remove = (mountId: string) => {
     setBusy(mountId);
@@ -556,13 +561,14 @@ export function MountsSection({ projectId }: { readonly projectId: string }) {
  * both as one-tap launchers; on a name collision the file wins.
  */
 export function ServicesSection({ projectId }: { readonly projectId: string }) {
-  const recipes = useSuspenseQuery(projectRecipesQuery(projectId)).data;
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const recipes = useSuspenseQuery(trpc.projects.recipes.queryOptions({ id: projectId })).data;
   const [busy, setBusy] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
 
-  const invalidate = () =>
-    queryClient.invalidateQueries({ queryKey: ["project", projectId, "service-recipes"] });
+  const invalidate = () => queryClient.invalidateQueries(trpc.projects.pathFilter());
 
   const remove = (name: string) => {
     setBusy(name);
@@ -733,8 +739,10 @@ export function ServicesSection({ projectId }: { readonly projectId: string }) {
  * mounts they launched with; the session records what it received.
  */
 export function ReferencesSection({ projectId }: { readonly projectId: string }) {
-  const references = useSuspenseQuery(referencesQuery).data;
-  const selected = useSuspenseQuery(projectReferencesQuery(projectId)).data;
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const references = useSuspenseQuery(trpc.git.references.queryOptions()).data;
+  const selected = useSuspenseQuery(trpc.projects.references.queryOptions({ id: projectId })).data;
   const selectedIds = new Set(selected.map((reference) => reference.id));
   const [busy, setBusy] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
@@ -742,11 +750,11 @@ export function ReferencesSection({ projectId }: { readonly projectId: string })
 
   const invalidate = () =>
     Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["references"] }),
-      queryClient.invalidateQueries({ queryKey: ["project", projectId, "references"] }),
+      queryClient.invalidateQueries(trpc.git.references.queryFilter()),
+      queryClient.invalidateQueries(trpc.projects.pathFilter()),
     ]);
 
-  const toggle = (referenceId: string) => {
+  const toggle = (referenceId: ReferenceDto["id"]) => {
     const next = selectedIds.has(referenceId)
       ? [...selectedIds].filter((id) => id !== referenceId)
       : [...selectedIds, referenceId];

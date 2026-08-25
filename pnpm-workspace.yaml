@@ -25,10 +25,13 @@ catalog:
   "@tanstack/devtools-vite": 0.8.0
   "@tanstack/react-query": ^5.101.4
   "@tanstack/react-router": 1.170.16
+  "@tanstack/react-router-ssr-query": ^1.167.1
   "@tanstack/react-start": 1.168.26
   "@tanstack/router-plugin": ^1.132.0
   "@trpc/client": ^11.7.1
+  "@trpc/tanstack-react-query": ^11.18.0
   "@trpc/server": ^11.7.1
+  superjson: ^2.2.6
   "@types/node": ^22.10.2
   "@types/qrcode": ^1.5.5
   "@types/react": ^19.2.0

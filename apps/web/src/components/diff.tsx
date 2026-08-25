@@ -5,11 +5,12 @@ import {
   type SelectedLineRange,
 } from "@pierre/diffs";
 import { FileDiff } from "@pierre/diffs/react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { CommentStateActions, EvidenceLines, SuggestionBlock } from "#/components/comment-state";
 import { postSliceReviewComment, type ReviewCommentDto, type ReviewDiffFileDto } from "#/lib/api";
-import { queryClient } from "#/lib/queries";
+import { useTRPC } from "#/lib/trpc";
 
 /**
  * The workbench diff, rendered by @pierre/diffs (Shiki highlighting, their
@@ -565,6 +566,8 @@ function InlineComposer({
   readonly anchor: CommentAnchor;
   readonly onDone: () => void;
 }) {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
   const [body, setBody] = useState("");
   const [pending, setPending] = useState(false);
 
@@ -584,7 +587,7 @@ function InlineComposer({
       },
       body.trim(),
     )
-      .then(() => queryClient.invalidateQueries({ queryKey: ["change", changeId] }))
+      .then(() => queryClient.invalidateQueries(trpc.changes.pathFilter()))
       .then(onDone)
       .finally(() => setPending(false));
   };

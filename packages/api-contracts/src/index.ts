@@ -11,3 +11,4 @@ export * from "./changes.ts";
 export * from "./github.ts";
 export * from "./devices.ts";
 export * from "./api.ts";
+export * from "./client.ts";

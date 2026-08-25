@@ -1,5 +1,5 @@
 import { useContextMenu } from "@mend/ui/context-menu";
-import { useSuspenseQuery } from "@tanstack/react-query";
+import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
@@ -8,26 +8,19 @@ import { SessionComposer } from "#/components/session-composer";
 import { AppShell } from "#/components/shell";
 import { SessionStatusDot } from "#/components/status";
 import { removeSession } from "#/lib/api";
-import {
-  projectDetailQuery,
-  projectMountsQuery,
-  projectRecipesQuery,
-  projectReferencesQuery,
-  queryClient,
-  referencesQuery,
-} from "#/lib/queries";
+import { useTRPC } from "#/lib/trpc";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 import { LIVE_STATES, sessionMenu, startSession } from "#/lib/workbench-menus";
 
 export const Route = createFileRoute("/projects/$projectId")({
   ssr: false,
-  loader: async ({ params }) => {
+  loader: async ({ context: { queryClient, trpc }, params }) => {
     await Promise.all([
-      queryClient.ensureQueryData(projectDetailQuery(params.projectId)),
-      queryClient.ensureQueryData(referencesQuery),
-      queryClient.ensureQueryData(projectReferencesQuery(params.projectId)),
-      queryClient.ensureQueryData(projectMountsQuery(params.projectId)),
-      queryClient.ensureQueryData(projectRecipesQuery(params.projectId)),
+      queryClient.ensureQueryData(trpc.projects.detail.queryOptions({ id: params.projectId })),
+      queryClient.ensureQueryData(trpc.git.references.queryOptions()),
+      queryClient.ensureQueryData(trpc.projects.references.queryOptions({ id: params.projectId })),
+      queryClient.ensureQueryData(trpc.projects.mounts.queryOptions({ id: params.projectId })),
+      queryClient.ensureQueryData(trpc.projects.recipes.queryOptions({ id: params.projectId })),
     ]);
   },
   component: ProjectPage,
@@ -35,7 +28,12 @@ export const Route = createFileRoute("/projects/$projectId")({
 
 function ProjectPage() {
   const { projectId } = Route.useParams();
-  const { project, sessions, annotations } = useSuspenseQuery(projectDetailQuery(projectId)).data;
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const launchContext = { queryClient, trpc };
+  const { project, sessions, annotations } = useSuspenseQuery(
+    trpc.projects.detail.queryOptions({ id: projectId }),
+  ).data;
   const navigate = useNavigate();
   const [shellStarting, setShellStarting] = useState(false);
   const [clearing, setClearing] = useState<"idle" | "armed" | "working">("idle");
@@ -56,7 +54,8 @@ function ProjectPage() {
     setClearing("working");
     void Promise.allSettled(settled.map((session) => removeSession(session.id))).finally(() => {
       setClearing("idle");
-      void queryClient.invalidateQueries({ queryKey: ["project", projectId] });
+      void queryClient.invalidateQueries(trpc.projects.pathFilter());
+      void queryClient.invalidateQueries(trpc.environment.pathFilter());
     });
   };
 
@@ -80,7 +79,7 @@ function ProjectPage() {
             disabled={shellStarting}
             onClick={() => {
               setShellStarting(true);
-              void startSession(navigate, projectId, "shell").finally(() =>
+              void startSession(navigate, launchContext, projectId, "shell").finally(() =>
                 setShellStarting(false),
               );
             }}
@@ -112,7 +111,7 @@ function ProjectPage() {
                     <div
                       key={session.id}
                       onContextMenu={(event) =>
-                        openMenu(event, sessionMenu(session, annotation, navigate))
+                        openMenu(event, sessionMenu(session, annotation, navigate, launchContext))
                       }
                       className={`flex items-center justify-between gap-4 px-5 py-4 transition-colors hover:bg-secondary ${index === 0 ? "" : "border-t border-rule-faint"}`}
                     >
