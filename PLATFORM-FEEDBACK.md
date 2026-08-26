@@ -7,6 +7,23 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-08-26 · 0.23.0 · Hosted strategies: a non-mount workspace source + capability reporting
+
+- **Needed:** the `cloudflare-hosted` deployment strategy (docs/DEPLOYMENT-STRATEGIES.md) runs
+  workspaces where no host path exists, so Mend cannot launch with
+  `workspaces.create({ source: { kind: "mount", path } })`. It needs (a) a workspace source that
+  hands the platform the authority by reference — a clone URL plus ref with short-lived auth, or a
+  restore-from-checkpoint handle — and (b) visibility into the selected runtime family's
+  capabilities (raw TCP forwards, disk ceiling, DinD) so the UI can degrade honestly instead of
+  discovering gaps at runtime.
+- **Today:** `create` takes `mount` (host path) or `git` sources; Mend's engine uses `mount`
+  exclusively and treats co-location as a launch requirement. The platform's `supports()` refusals
+  surface only as launch-time `unsupported-runtime` errors, not as queryable capabilities.
+- **Suggested:** keep `git` sources first-class for hosted launches with a per-launch token (the
+  existing secret env channel shape), add a checkpoint-restore source kind once the hosted authority
+  design lands, and expose a `capabilities` read alongside workspace creation (per runtime family)
+  mirroring what the runtime adapters' `supports()` already knows.
+
 ## 2026-08-22 · 0.22.0 · Installer: a no-web mode Mend can delegate to
 
 - **Needed:** Mend's one-line installer (`install.sh`) brings up Sealant as its control plane and
