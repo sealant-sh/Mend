@@ -20,6 +20,11 @@ import {
   ProjectHotSessionsStatus,
   ProjectPullRequests,
   ProjectSecretMutationResult,
+  ClusterBindingDuplicate,
+  ClusterBindingMutationResult,
+  ClusterBindingRejected,
+  ClusterServiceAccountResult,
+  ProjectClusterBindingsView,
   ProjectWorkspaceImageSaveResult,
   ProcessLogPage,
   DotfilesSnapshotFileView,
@@ -49,6 +54,7 @@ import {
   CheckpointsRepo,
   FollowUpsRepo,
   HotWorkspacesRepo,
+  ProjectClusterBindingsRepo,
   ProjectEnvironmentRepo,
   ProjectMountsRepo,
   ProjectNotFoundError,
@@ -105,6 +111,7 @@ import {
 } from "@mend/sessions";
 import {
   AgentBridge,
+  DeploymentConfig,
   MendKeys,
   NO_SIGNER_MESSAGE,
   SecretCipher,
@@ -1244,6 +1251,88 @@ export const ProjectSecretsGroupLive = HttpApiBuilder.group(MendApi, "projectSec
         return new ProjectSecretMutationResult({ secret: null, revision: result.revision });
       }),
     ),
+);
+
+/**
+ * Cluster bindings (`.plans/cluster-env-sources.md`): names only, on every install. Mutations are
+ * deliberately install-independent — a project whose data arrives on a non-cluster machine must
+ * be able to REMOVE bindings to become launchable; only the panel's add affordance degrades,
+ * guided by the read's `clusterCapable` hint (`DeploymentConfig.mode`, never enforcement).
+ */
+export const ProjectClusterBindingsGroupLive = HttpApiBuilder.group(
+  MendApi,
+  "projectClusterBindings",
+  (handlers) =>
+    handlers
+      .handle("get", ({ params }) =>
+        Effect.gen(function* () {
+          const bindings = yield* ProjectClusterBindingsRepo;
+          const deployment = yield* DeploymentConfig;
+          const snapshot = yield* bindings
+            .snapshot(params.id)
+            .pipe(Effect.catchTag("ProjectNotFoundError", () => new NotFound({ id: params.id })));
+          return new ProjectClusterBindingsView({
+            revision: snapshot.revision,
+            bindings: snapshot.bindings,
+            serviceAccount: snapshot.serviceAccount,
+            clusterCapable: deployment.mode === "kubernetes",
+          });
+        }),
+      )
+      .handle("add", ({ params, payload }) =>
+        Effect.gen(function* () {
+          const bindings = yield* ProjectClusterBindingsRepo;
+          const result = yield* bindings
+            .add(params.id, { kind: payload.kind, objectName: payload.objectName })
+            .pipe(
+              Effect.catchTags({
+                ProjectNotFoundError: () => new NotFound({ id: params.id }),
+                ClusterBindingInvalidInputError: (error) =>
+                  new ClusterBindingRejected({ message: error.message }),
+                ClusterBindingDuplicateError: (error) =>
+                  new ClusterBindingDuplicate({
+                    kind: error.kind,
+                    objectName: error.objectName,
+                  }),
+              }),
+            );
+          yield* rewarmHotSessions(params.id);
+          return new ClusterBindingMutationResult({
+            binding: result.binding,
+            revision: result.revision,
+          });
+        }),
+      )
+      .handle("remove", ({ params }) =>
+        Effect.gen(function* () {
+          const bindings = yield* ProjectClusterBindingsRepo;
+          const result = yield* bindings.remove(params.id, params.bindingId).pipe(
+            Effect.catchTags({
+              ProjectNotFoundError: () => new NotFound({ id: params.id }),
+              ClusterBindingNotFoundError: () => new NotFound({ id: params.bindingId }),
+            }),
+          );
+          yield* rewarmHotSessions(params.id);
+          return new ClusterBindingMutationResult({ binding: null, revision: result.revision });
+        }),
+      )
+      .handle("setServiceAccount", ({ params, payload }) =>
+        Effect.gen(function* () {
+          const bindings = yield* ProjectClusterBindingsRepo;
+          const result = yield* bindings.setServiceAccount(params.id, payload.serviceAccount).pipe(
+            Effect.catchTags({
+              ProjectNotFoundError: () => new NotFound({ id: params.id }),
+              ClusterBindingInvalidInputError: (error) =>
+                new ClusterBindingRejected({ message: error.message }),
+            }),
+          );
+          yield* rewarmHotSessions(params.id);
+          return new ClusterServiceAccountResult({
+            serviceAccount: result.serviceAccount,
+            revision: result.revision,
+          });
+        }),
+      ),
 );
 
 export const ProjectRecipesGroupLive = HttpApiBuilder.group(MendApi, "projectRecipes", (handlers) =>

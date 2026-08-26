@@ -1,4 +1,8 @@
 import {
+  ClusterBindingDuplicate,
+  ClusterBindingRejected,
+  ClusterBindingRequest,
+  ClusterServiceAccountRequest,
   EnvironmentLoadRequest,
   EnvironmentRejected,
   EnvironmentStaleWrite,
@@ -9,7 +13,12 @@ import {
   ProjectSecretRequest,
   ProjectSecretUpdateRequest,
 } from "@mend/api-contracts";
-import { ProjectId, ProjectEnvironmentVariableId, ProjectSecretId } from "@mend/domain";
+import {
+  ProjectClusterBindingId,
+  ProjectId,
+  ProjectEnvironmentVariableId,
+  ProjectSecretId,
+} from "@mend/domain";
 import { Effect, Schema } from "effect";
 
 import { run } from "../api/index.ts";
@@ -38,6 +47,35 @@ const outcome = <A, E>(effect: Effect.Effect<A, E | EnvironmentRejected | Enviro
           ok: false as const,
           kind: "stale" as const,
           currentRevision: stale.currentRevision,
+        }),
+    ),
+  );
+
+/**
+ * Cluster-binding writes: same outcome discipline — 422 (grammar/limit) and 409 (duplicate) keep
+ * the caller's draft alive as structured outcomes, never thrown transport errors.
+ */
+const bindingOutcome = <A, E>(
+  effect: Effect.Effect<A, E | ClusterBindingRejected | ClusterBindingDuplicate>,
+) =>
+  effect.pipe(
+    Effect.map((result) => ({ ok: true as const, result })),
+    Effect.catchIf(
+      (error): error is ClusterBindingRejected => error instanceof ClusterBindingRejected,
+      (rejected) =>
+        Effect.succeed({
+          ok: false as const,
+          kind: "rejected" as const,
+          message: rejected.message,
+        }),
+    ),
+    Effect.catchIf(
+      (error): error is ClusterBindingDuplicate => error instanceof ClusterBindingDuplicate,
+      (duplicate) =>
+        Effect.succeed({
+          ok: false as const,
+          kind: "duplicate" as const,
+          binding: `${duplicate.kind}/${duplicate.objectName}`,
         }),
     ),
   );
@@ -144,6 +182,41 @@ export const environmentRouter = router({
         outcome(
           api.projectSecrets.remove({
             params: { id: i.projectId, secretId: i.secretId },
+            payload: i.request,
+          }),
+        ),
+      ),
+    ),
+  clusterBindings: procedure
+    .input(byProject)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) => api.projectClusterBindings.get({ params: { id: i.projectId } })),
+    ),
+  addClusterBinding: procedure
+    .input(input(Schema.Struct({ projectId: ProjectId, request: ClusterBindingRequest })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        bindingOutcome(
+          api.projectClusterBindings.add({ params: { id: i.projectId }, payload: i.request }),
+        ),
+      ),
+    ),
+  removeClusterBinding: procedure
+    .input(input(Schema.Struct({ projectId: ProjectId, bindingId: ProjectClusterBindingId })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.projectClusterBindings.remove({
+          params: { id: i.projectId, bindingId: i.bindingId },
+        }),
+      ),
+    ),
+  setClusterServiceAccount: procedure
+    .input(input(Schema.Struct({ projectId: ProjectId, request: ClusterServiceAccountRequest })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        bindingOutcome(
+          api.projectClusterBindings.setServiceAccount({
+            params: { id: i.projectId },
             payload: i.request,
           }),
         ),

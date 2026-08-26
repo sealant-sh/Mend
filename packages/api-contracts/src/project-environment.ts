@@ -1,5 +1,6 @@
 import {
   CheckpointId,
+  ProjectClusterBindingId,
   ProjectEnvironmentVariableId,
   ProjectId,
   ProjectSecretId,
@@ -8,11 +9,13 @@ import {
 } from "@mend/domain";
 import {
   AgentLaunchMode,
+  CLUSTER_BINDING_KINDS,
   EFFORT_LEVELS,
   PERMISSION_MODES,
   SPEED_MODES,
   Checkpoint,
   DiffDigest,
+  ProjectClusterBinding,
   ProjectEnvironmentSnapshot,
   ProjectSecret,
   ProjectSecretsSnapshot,
@@ -155,6 +158,105 @@ export const projectSecretsGroup = HttpApiGroup.make("projectSecrets")
       payload: ProjectSecretRemoveRequest,
       success: ProjectSecretMutationResult,
       error: [NotFound, EnvironmentStaleWrite],
+    }),
+  )
+  .middleware(AuthMiddleware);
+
+/** 422: the object name failed the DNS-1123 grammar, or the binding set is full. */
+export class ClusterBindingRejected extends Schema.TaggedErrorClass<ClusterBindingRejected>()(
+  "ClusterBindingRejected",
+  { message: Schema.String },
+  { httpApiStatus: 422 },
+) {}
+
+/** 409: this (kind, objectName) pair is already bound on the project. */
+export class ClusterBindingDuplicate extends Schema.TaggedErrorClass<ClusterBindingDuplicate>()(
+  "ClusterBindingDuplicate",
+  { kind: Schema.String, objectName: Schema.String },
+  { httpApiStatus: 409 },
+) {}
+
+/**
+ * The cluster-bindings read: aggregate revision, kind/name-ordered bindings, the workspace
+ * service account, and `clusterCapable` — a UI HINT driving the panel's degraded state on
+ * non-cluster installs, never enforcement (the platform's synchronous create-time rejection is
+ * the fail-closed check; a flag can lie in both directions).
+ */
+export class ProjectClusterBindingsView extends Schema.Class<ProjectClusterBindingsView>(
+  "ProjectClusterBindingsView",
+)({
+  revision: Schema.Int,
+  bindings: Schema.Array(ProjectClusterBinding),
+  serviceAccount: Schema.NullOr(Schema.String),
+  clusterCapable: Schema.Boolean,
+}) {}
+
+export class ClusterBindingRequest extends Schema.Class<ClusterBindingRequest>(
+  "ClusterBindingRequest",
+)({
+  kind: Schema.Literals(CLUSTER_BINDING_KINDS),
+  objectName: Schema.String,
+}) {}
+
+/** A binding mutation's result: the touched row (removals carry null) + new aggregate revision. */
+export class ClusterBindingMutationResult extends Schema.Class<ClusterBindingMutationResult>(
+  "ClusterBindingMutationResult",
+)({
+  binding: Schema.NullOr(ProjectClusterBinding),
+  revision: Schema.Int,
+}) {}
+
+/** Set or clear (null) the workspace ServiceAccount trust grant. */
+export class ClusterServiceAccountRequest extends Schema.Class<ClusterServiceAccountRequest>(
+  "ClusterServiceAccountRequest",
+)({
+  serviceAccount: Schema.NullOr(Schema.String),
+}) {}
+
+export class ClusterServiceAccountResult extends Schema.Class<ClusterServiceAccountResult>(
+  "ClusterServiceAccountResult",
+)({
+  serviceAccount: Schema.NullOr(Schema.String),
+  revision: Schema.Int,
+}) {}
+
+/**
+ * Project CLUSTER BINDINGS (`.plans/cluster-env-sources.md`): bindings, not values — each row
+ * names a Kubernetes Secret/ConfigMap the Sealant worker resolves at fresh workspace launches.
+ * Responses carry names and revisions only; there is no value to return, ever. Mutations work on
+ * every install (a non-cluster install must be able to REMOVE inherited bindings to launch);
+ * only the panel's add affordance degrades there, guided by `clusterCapable`.
+ */
+export const projectClusterBindingsGroup = HttpApiGroup.make("projectClusterBindings")
+  .add(
+    HttpApiEndpoint.get("get", "/projects/:id/cluster-bindings", {
+      params: { id: ProjectId },
+      success: ProjectClusterBindingsView,
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("add", "/projects/:id/cluster-bindings", {
+      params: { id: ProjectId },
+      payload: ClusterBindingRequest,
+      success: ClusterBindingMutationResult,
+      // An ARRAY, not Schema.Union: the union collapses per-member httpApiStatus to 500.
+      error: [NotFound, ClusterBindingRejected, ClusterBindingDuplicate],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.delete("remove", "/projects/:id/cluster-bindings/:bindingId", {
+      params: { id: ProjectId, bindingId: ProjectClusterBindingId },
+      success: ClusterBindingMutationResult,
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put("setServiceAccount", "/projects/:id/cluster-bindings/service-account", {
+      params: { id: ProjectId },
+      payload: ClusterServiceAccountRequest,
+      success: ClusterServiceAccountResult,
+      error: [NotFound, ClusterBindingRejected],
     }),
   )
   .middleware(AuthMiddleware);

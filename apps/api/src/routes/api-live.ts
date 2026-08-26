@@ -48,6 +48,7 @@ import { MachineGroupLive } from "./machine.ts";
 import {
   DotfilesGroupLive,
   GitKeysGroupLive,
+  ProjectClusterBindingsGroupLive,
   ProjectEnvironmentGroupLive,
   ProjectMountsGroupLive,
   ProjectSecretsGroupLive,
@@ -479,7 +480,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
   Layer.provide(ProjectsGroupLive),
   Layer.provide(GitKeysGroupLive),
   Layer.provide(ProjectEnvironmentGroupLive),
-  Layer.provide(ProjectSecretsGroupLive),
+  Layer.provide(Layer.mergeAll(ProjectSecretsGroupLive, ProjectClusterBindingsGroupLive)),
   Layer.provide(ProjectMountsGroupLive),
   Layer.provide(ProjectRecipesGroupLive),
   Layer.provide(ReferencesGroupLive),

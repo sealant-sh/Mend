@@ -1173,6 +1173,38 @@ const sessionChannelTokens = Effect.gen(function* () {
     )`;
 });
 
+/**
+ * Cluster bindings (`.plans/cluster-env-sources.md`): name-only references to Kubernetes
+ * Secrets/ConfigMaps resolved by the Sealant worker at launch, the workspace ServiceAccount
+ * trust grant, an aggregate revision on the project, and the name-only launch manifest on
+ * session runs. No value column exists to add — Mend never holds the bound contents.
+ */
+const projectClusterBindingsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE projects ADD COLUMN IF NOT EXISTS cluster_binding_revision integer NOT NULL DEFAULT 0`;
+  yield* sql`
+    ALTER TABLE projects ADD COLUMN IF NOT EXISTS workspace_service_account text`;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS project_cluster_bindings (
+      id text PRIMARY KEY,
+      project_id text NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+      kind text NOT NULL,
+      object_name text NOT NULL,
+      revision integer NOT NULL DEFAULT 1,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT project_cluster_bindings_project_id_kind_object_name_key
+        UNIQUE (project_id, kind, object_name)
+    )`;
+  yield* sql`
+    ALTER TABLE session_runs ADD COLUMN IF NOT EXISTS cluster_binding_revision integer`;
+  yield* sql`
+    ALTER TABLE session_runs ADD COLUMN IF NOT EXISTS cluster_binding_names jsonb`;
+  yield* sql`
+    ALTER TABLE session_runs ADD COLUMN IF NOT EXISTS cluster_service_account text`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -1214,4 +1246,5 @@ export const migrations = {
   "0037_user_sealant_identities": userSealantIdentities,
   "0038_device_pairing": devicePairing,
   "0039_session_channel_tokens": sessionChannelTokens,
+  "0040_project_cluster_bindings": projectClusterBindingsMigration,
 };

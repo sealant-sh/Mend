@@ -5,6 +5,7 @@ import { sessionChangesGroup } from "./changes.ts";
 import { devicesGroup, userDevicesGroup, pairGroup } from "./devices.ts";
 import { githubGroup } from "./github.ts";
 import {
+  projectClusterBindingsGroup,
   projectEnvironmentGroup,
   projectSecretsGroup,
   projectRecipesGroup,
@@ -29,6 +30,7 @@ export const MendApi = HttpApi.make("mend")
   .add(gitKeysGroup)
   .add(projectEnvironmentGroup)
   .add(projectSecretsGroup)
+  .add(projectClusterBindingsGroup)
   .add(projectMountsGroup)
   .add(projectRecipesGroup)
   .add(referencesGroup)
