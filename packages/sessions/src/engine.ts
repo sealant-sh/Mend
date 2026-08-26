@@ -81,7 +81,6 @@ import {
   MendKeys,
   NO_SIGNER_MESSAGE,
   SecretCipher,
-  Store,
   processStatePathOf,
   sessionStatePathOf,
   sshTransportArgs,
@@ -118,6 +117,7 @@ import {
 import { ProtocolHost, type ProtocolHostNotLiveError } from "./protocol-host.ts";
 import { mergeRecipes, readServiceRecipes } from "./recipes.ts";
 import { ServiceBindError, ServiceHost, validateServiceBindAddresses } from "./service-host.ts";
+import { SessionRepository } from "./session-repository.ts";
 import {
   SESSION_SOCKET_MOUNT_PATH,
   SessionSocketHost,
@@ -638,7 +638,7 @@ type SessionEngineRequirements =
   | SecretCipher
   | ProjectServiceRecipesRepo
   | SettingsRepo
-  | Store
+  | SessionRepository
   | SessionGitOpsRepo
   | MendKeys
   | AgentBridge;
@@ -746,7 +746,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const secretCipher = yield* SecretCipher;
       const projectRecipes = yield* ProjectServiceRecipesRepo;
       const settingsRepo = yield* SettingsRepo;
-      const store = yield* Store;
+      const sessionRepo = yield* SessionRepository;
       const gitOps = yield* SessionGitOpsRepo;
       const mendKeys = yield* MendKeys;
       const agentBridge = yield* AgentBridge;
@@ -790,10 +790,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         });
       });
 
-      /** The session's worktree path, derived — never stored twice. */
+      /** The session's worktree MOUNT path — a co-location capability, derived, never stored. */
       const worktreeOf = Effect.fn("SessionEngine.worktreeOf")(function* (session: Session) {
-        const project = yield* projects.byId(session.projectId);
-        return worktreePathOf(project.storePath, session.worktree);
+        const mount = yield* sessionRepo.worktreeMount(session.projectId, session.worktree);
+        if (mount === undefined) {
+          return yield* Effect.die(
+            "This deployment does not co-locate Mend with the session worktree; launching mounted workspaces requires the local or kubernetes strategy.",
+          );
+        }
+        return mount;
       });
 
       const takeCheckpoint = Effect.fn("SessionEngine.takeCheckpoint")(function* (
@@ -801,15 +806,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         trigger: CheckpointTrigger,
         cursor: { readonly sealantRunId: SealantRunId | null; readonly sequence: bigint },
       ) {
-        const worktree = yield* worktreeOf(session);
         const previous = yield* checkpoints.latestForSession(session.id);
         const index = yield* checkpoints.countForSession(session.id);
-        const snapshot = yield* store.checkpoint(
-          worktree,
-          session.id,
+        const snapshot = yield* sessionRepo.checkpoint({
+          projectId: session.projectId,
+          sessionId: session.id,
+          worktreeName: session.worktree,
           index,
-          previous?.sha ?? null,
-        );
+          parent: previous?.sha ?? null,
+        });
         return yield* checkpoints.create({
           sessionId: session.id,
           ref: snapshot.ref,
@@ -1000,7 +1005,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (claimed !== null) return claimed;
         }
         const sessionId = SessionId.make(crypto.randomUUID());
-        const worktree = yield* store.createWorktree(project.storePath, sessionId, input.base);
+        const worktree = yield* sessionRepo.createWorktree(project.id, sessionId, input.base);
         const session = yield* sessions.create({
           id: sessionId,
           projectId: project.id,
@@ -3696,16 +3701,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         name: string,
       ) {
         const session = yield* sessions.byId(sessionId);
-        const project = yield* projects
-          .byId(session.projectId)
-          .pipe(
-            Effect.mapError(
-              () => new ServiceStartError({ message: "The recipe's project no longer exists." }),
-            ),
-          );
-        const fromFile = yield* readServiceRecipes(
-          worktreePathOf(project.storePath, session.worktree),
-        ).pipe(Effect.mapError((error) => new ServiceStartError({ message: error.message })));
+        const worktree = yield* worktreeOf(session).pipe(
+          Effect.mapError(
+            () => new ServiceStartError({ message: "The recipe's project no longer exists." }),
+          ),
+        );
+        const fromFile = yield* readServiceRecipes(worktree).pipe(
+          Effect.mapError((error) => new ServiceStartError({ message: error.message })),
+        );
         const recipes = mergeRecipes(
           fromFile,
           yield* projectRecipes.listForProject(session.projectId),
@@ -3829,10 +3832,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           recipes: () =>
             Effect.gen(function* () {
               const session = yield* sessions.byId(sessionId);
-              const project = yield* projects.byId(session.projectId);
-              const fromFile = yield* readServiceRecipes(
-                worktreePathOf(project.storePath, session.worktree),
-              );
+              const fromFile = yield* readServiceRecipes(yield* worktreeOf(session));
               return mergeRecipes(
                 fromFile,
                 yield* projectRecipes.listForProject(session.projectId),
@@ -4084,12 +4084,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* channelTokens.revoke(entry.id).pipe(Effect.ignore);
         if (options?.keepWorktree !== true) {
           yield* socketHost.stop(entry.id).pipe(Effect.ignore);
-          yield* projects.byId(entry.projectId).pipe(
-            Effect.flatMap((project) =>
-              store.removeWorktreeForce(project.storePath, entry.worktree),
-            ),
-            Effect.ignore,
-          );
+          yield* sessionRepo
+            .removeWorktreeForce(entry.projectId, entry.worktree)
+            .pipe(Effect.ignore);
         }
         yield* hotWorkspaces.remove(entry.id);
       });
@@ -4101,7 +4098,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         fingerprint: string,
       ) {
         const sessionId = SessionId.make(crypto.randomUUID());
-        const worktree = yield* store.createWorktree(project.storePath, sessionId, null);
+        const worktree = yield* sessionRepo.createWorktree(project.id, sessionId, null);
+        const worktreePath = worktreePathOf(project.storePath, worktree.name);
         const entry = yield* hotWorkspaces.create({
           id: sessionId,
           projectId: project.id,
@@ -4116,7 +4114,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const provisioned = yield* provisionWorkspace({
             project,
             sessionId,
-            worktree: worktree.path,
+            worktree: worktreePath,
             socketDir,
             // The unified image carries EVERY baked agent CLI and the shell shape's credential
             // ladder attaches all connected accounts, so one skeleton serves any harness.
@@ -4127,7 +4125,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* appendWorkspaceNote(
             provisioned.workspace,
             project,
-            worktree.path,
+            worktreePath,
             provisioned.referenceMounts,
             provisioned.extraMounts,
           );
@@ -4278,8 +4276,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (entry === null) return null;
         // The replacement warms in the background while this session launches.
         yield* requestHotReconcile(project.id);
-        const freshened = yield* store
-          .resetWorktree(project.storePath, entry.worktree, input.base)
+        const freshened = yield* sessionRepo
+          .resetWorktree(project.id, entry.worktree, input.base)
           .pipe(Effect.tapError(() => drainHotWorkspace(entry)));
         const session = yield* sessions.create({
           id: entry.id,

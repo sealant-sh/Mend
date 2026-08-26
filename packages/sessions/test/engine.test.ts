@@ -79,6 +79,7 @@ import {
   ServiceHost,
   SessionEngine,
   SessionEngineLive,
+  SessionRepositoryLocalLive,
   SessionNotLiveError,
   SessionSocketHost,
 } from "@mend/sessions";
@@ -1209,6 +1210,12 @@ const withEngine = <A, E>(
   options.prepareWorld?.(world);
   const storeLayer = Store.layer.pipe(Layer.provide(StoreConfig.layerFor(path.join(tmp, "store"))));
   const engineLayer = SessionEngineLive.pipe(
+    Layer.provide(
+      SessionRepositoryLocalLive.pipe(
+        Layer.provide(storeLayer),
+        Layer.provide(projectsLayer(world)),
+      ),
+    ),
     Layer.provide(storeLayer),
     Layer.provide(options.sealantLayer ?? sealantDeadLayer),
     Layer.provide(settingsLayer(options.workspaceImage)),
@@ -3038,6 +3045,12 @@ describe("SessionEngine", () => {
       Layer.provide(StoreConfig.layerFor(path.join(tmp, "store"))),
     );
     const engineLayer = SessionEngineLive.pipe(
+      Layer.provide(
+        SessionRepositoryLocalLive.pipe(
+          Layer.provide(storeLayer),
+          Layer.provide(projectsLayer(world)),
+        ),
+      ),
       Layer.provide(storeLayer),
       Layer.provide(sealantDeadLayer),
       Layer.provide(projectsLayer(world)),
