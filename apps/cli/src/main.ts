@@ -1850,6 +1850,15 @@ interface ProjectSecretsDto {
   readonly revision: number;
   readonly secrets: ReadonlyArray<{ readonly name: string; readonly updatedAt: string }>;
 }
+interface ProjectClusterBindingsDto {
+  readonly revision: number;
+  readonly bindings: ReadonlyArray<{
+    readonly kind: "secret" | "configmap";
+    readonly objectName: string;
+  }>;
+  readonly serviceAccount: string | null;
+  readonly clusterCapable: boolean;
+}
 
 const envLoad = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const explicitProject = takeFlagValue(args, "--project");
@@ -1927,26 +1936,52 @@ const envLoad = async (config: CliConfig, args: ReadonlyArray<string>) => {
 
 const envShow = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const project = await findProject(config, takeFlagValue(args, "--project"));
-  const [environment, secrets] = await Promise.all([
+  const [environment, secrets, cluster] = await Promise.all([
     api<ProjectEnvironmentDto>(config, "GET", `/projects/${project.id}/environment`),
     api<ProjectSecretsDto>(config, "GET", `/projects/${project.id}/secrets`),
+    api<ProjectClusterBindingsDto>(config, "GET", `/projects/${project.id}/cluster-bindings`),
   ]);
   say(
-    `${project.name} ${dim(`· configuration r${environment.revision} · secrets r${secrets.revision}`)}`,
+    `${project.name} ${dim(`· configuration r${environment.revision} · secrets r${secrets.revision} · cluster r${cluster.revision}`)}`,
   );
-  if (environment.variables.length === 0 && secrets.secrets.length === 0) {
+  if (
+    environment.variables.length === 0 &&
+    secrets.secrets.length === 0 &&
+    cluster.bindings.length === 0 &&
+    cluster.serviceAccount === null
+  ) {
     say(dim(`  nothing stored — load a file: ${cobalt("mend env load")}`));
     return;
   }
+  const bindingNames = cluster.bindings.map((b) => `${b.kind}/${b.objectName}`);
   const width = Math.max(
+    0,
     ...environment.variables.map((v) => v.name.length),
     ...secrets.secrets.map((s) => s.name.length),
+    ...bindingNames.map((name) => name.length),
   );
   for (const variable of environment.variables) {
     say(`  ${variable.name.padEnd(width)}  configuration ${dim("· plaintext")}`);
   }
   for (const secret of secrets.secrets) {
     say(`  ${secret.name.padEnd(width)}  secret ${dim("· value set, never shown")}`);
+  }
+  for (const name of bindingNames) {
+    say(
+      `  ${name.padEnd(width)}  cluster binding ${dim("· resolved by the platform at launch · contents unknown to Mend")}`,
+    );
+  }
+  if (cluster.serviceAccount !== null) {
+    say(
+      `  ${cluster.serviceAccount.padEnd(width)}  service account ${dim("· workspace pod identity · allowlisted by the operator")}`,
+    );
+  }
+  if (!cluster.clusterCapable && (cluster.bindings.length > 0 || cluster.serviceAccount !== null)) {
+    say(
+      amber(
+        `  ${cluster.bindings.length} cluster binding${cluster.bindings.length === 1 ? "" : "s"}${cluster.serviceAccount === null ? "" : " · service account set"} · local runner — cluster bindings do not resolve here`,
+      ),
+    );
   }
 };
 

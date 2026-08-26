@@ -37,6 +37,12 @@ export type ProjectSecretMutationView = Extract<SecretWriteOutcome, { ok: true }
 
 export type EnvironmentLoadReportView = Outputs["environment"]["load"];
 
+export type ProjectClusterBindingsSnapshotView = Outputs["environment"]["clusterBindings"];
+export type ProjectClusterBindingView = ProjectClusterBindingsSnapshotView["bindings"][number];
+
+type ClusterBindingWriteOutcome = Outputs["environment"]["addClusterBinding"];
+export type ClusterBindingWriteResult = ClusterBindingWriteOutcome;
+
 export const createProjectEnvironmentVariable = (
   projectId: string,
   input: { readonly name: string; readonly value: string },
@@ -89,6 +95,24 @@ export const removeProjectSecret = (
       projectId,
       secretId,
       request: { expectedRevision },
+    }),
+  );
+
+/** Cluster bindings carry NAMES only — nothing in a request or response is ever a value. */
+export const addProjectClusterBinding = (
+  projectId: string,
+  input: { readonly kind: "secret" | "configmap"; readonly objectName: string },
+) => orLogin(trpcClient.environment.addClusterBinding.mutate({ projectId, request: input }));
+
+export const removeProjectClusterBinding = (projectId: string, bindingId: string) =>
+  orLogin(trpcClient.environment.removeClusterBinding.mutate({ projectId, bindingId }));
+
+/** `null` clears the workspace ServiceAccount trust grant. */
+export const setProjectClusterServiceAccount = (projectId: string, serviceAccount: string | null) =>
+  orLogin(
+    trpcClient.environment.setClusterServiceAccount.mutate({
+      projectId,
+      request: { serviceAccount },
     }),
   );
 

@@ -29,13 +29,17 @@ import {
   serializeRows,
 } from "#/lib/env-composer";
 import {
+  addProjectClusterBinding,
   createProjectEnvironmentVariable,
   createProjectSecret,
   loadProjectEnvironment,
+  removeProjectClusterBinding,
   removeProjectEnvironmentVariable,
   removeProjectSecret,
+  setProjectClusterServiceAccount,
   updateProjectEnvironmentVariable,
   updateProjectSecret,
+  type ProjectClusterBindingView,
   type ProjectEnvironmentVariableView,
   type ProjectEnvironmentWriteResult,
   type EnvironmentLoadReportView,
@@ -73,6 +77,9 @@ export const Route = createFileRoute("/projects/$projectId_/setup")({
       ),
       queryClient.ensureQueryData(
         trpc.environment.secrets.queryOptions({ projectId: params.projectId }),
+      ),
+      queryClient.ensureQueryData(
+        trpc.environment.clusterBindings.queryOptions({ projectId: params.projectId }),
       ),
       queryClient.ensureQueryData(trpc.settings.get.queryOptions()),
       queryClient.ensureQueryData(trpc.git.references.queryOptions()),
@@ -122,6 +129,9 @@ function ProjectSetupPage() {
           </div>
           <div id="secrets" className="scroll-mt-6">
             <SecretsPanel projectId={projectId} />
+          </div>
+          <div id="cluster-bindings" className="scroll-mt-6">
+            <ClusterBindingsPanel projectId={projectId} />
           </div>
         </div>
 
@@ -1117,6 +1127,313 @@ function SecretRow({
         >
           Replace
         </button>
+        <button
+          type="button"
+          disabled={disabled || removing === "working"}
+          onClick={remove}
+          className={`font-sans text-xs font-medium transition-colors disabled:opacity-50 ${
+            removing === "armed" ? "text-danger" : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          {removing === "armed"
+            ? "Remove? Running workspaces keep it"
+            : removing === "working"
+              ? "Removing…"
+              : "Remove"}
+        </button>
+      </div>
+    </li>
+  );
+}
+
+// ── Cluster bindings: names of cluster objects, resolved by the platform at launch ──────────────
+
+/**
+ * The M2/M3 release gate (`.plans/cluster-env-sources.md` §Milestones): a panel that accepts
+ * declarations launches must honor is the contract, so the add and set affordances stay disabled
+ * until the launch wiring ships in the same release train. Remove and clear stay enabled — a
+ * project whose bindings arrive on a non-cluster install must never be trapped unlaunchable.
+ */
+const CLUSTER_BINDING_MUTATIONS_ENABLED = false;
+
+/**
+ * Bindings, not values: each row names a Kubernetes Secret or ConfigMap in the platform's
+ * workspaces namespace. The Sealant worker resolves the object at each fresh workspace launch;
+ * Mend never learns the keys or values inside it, and this panel says so instead of pretending
+ * otherwise.
+ */
+function ClusterBindingsPanel({ projectId }: { readonly projectId: string }) {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const snapshot = useSuspenseQuery(
+    trpc.environment.clusterBindings.queryOptions({ projectId }),
+  ).data;
+  const [kind, setKind] = useState<"secret" | "configmap">("secret");
+  const [objectName, setObjectName] = useState("");
+  const [saDraft, setSaDraft] = useState<string | null>(null);
+  const [phase, setPhase] = useState<"idle" | "saving">("idle");
+  const [notice, setNotice] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = () =>
+    queryClient.invalidateQueries(trpc.environment.clusterBindings.queryFilter({ projectId }));
+
+  const addEnabled = CLUSTER_BINDING_MUTATIONS_ENABLED && snapshot.clusterCapable;
+
+  const add = async () => {
+    if (!addEnabled || phase === "saving" || objectName.trim() === "") return;
+    setPhase("saving");
+    setError(null);
+    try {
+      const outcome = await addProjectClusterBinding(projectId, {
+        kind,
+        objectName: objectName.trim(),
+      });
+      if (outcome.ok) {
+        setNotice(`Bound ${kind}/${objectName.trim()}.`);
+        setObjectName("");
+        await refresh();
+      } else {
+        setError(
+          outcome.kind === "duplicate"
+            ? `${outcome.binding} is already bound on this project.`
+            : outcome.message,
+        );
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The save failed.");
+    } finally {
+      setPhase("idle");
+    }
+  };
+
+  const saveServiceAccount = async (next: string | null) => {
+    if (phase === "saving") return;
+    setPhase("saving");
+    setError(null);
+    try {
+      const outcome = await setProjectClusterServiceAccount(projectId, next);
+      if (outcome.ok) {
+        setNotice(
+          next === null ? "Cleared the workspace service account." : `Set service account ${next}.`,
+        );
+        setSaDraft(null);
+        await refresh();
+      } else if (outcome.kind === "rejected") {
+        setError(outcome.message);
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The save failed.");
+    } finally {
+      setPhase("idle");
+    }
+  };
+
+  return (
+    <section className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
+      <div>
+        <h2 className="font-sans text-sm font-semibold">Cluster bindings</h2>
+        <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+          Names of Kubernetes Secrets and ConfigMaps in the platform&apos;s workspaces namespace,
+          resolved by the platform at each fresh workspace launch. Mend stores the names only — the
+          contents are unknown to Mend and never shown here. Only objects the operator labeled for
+          workspace env resolve.
+        </p>
+      </div>
+
+      {snapshot.clusterCapable ? null : (
+        <p className="mt-3 text-xs leading-relaxed text-warning">
+          This install runs workspaces on the local runner. Cluster bindings do not resolve here;
+          declared bindings block launches — remove them to launch here.
+        </p>
+      )}
+      {snapshot.clusterCapable && !CLUSTER_BINDING_MUTATIONS_ENABLED ? (
+        <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+          Declaring bindings arrives with the platform release that resolves them at launch; until
+          then this panel is read-only apart from remove.
+        </p>
+      ) : null}
+
+      <p aria-live="polite" role="status" className="mt-2 text-xs text-success">
+        {notice}
+      </p>
+      {error === null ? null : (
+        <p className="mt-1 text-xs leading-relaxed text-danger" aria-live="polite">
+          {error}
+        </p>
+      )}
+
+      <form
+        className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,140px)_minmax(0,1fr)_auto]"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void add();
+        }}
+      >
+        <div>
+          <label htmlFor="binding-kind" className="font-sans text-xs font-medium text-foreground">
+            Kind
+          </label>
+          <select
+            id="binding-kind"
+            value={kind}
+            disabled={!addEnabled || phase === "saving"}
+            onChange={(event) =>
+              setKind(event.target.value === "configmap" ? "configmap" : "secret")
+            }
+            className={inputClass}
+          >
+            <option value="secret">secret</option>
+            <option value="configmap">configmap</option>
+          </select>
+        </div>
+        <div>
+          <label htmlFor="binding-name" className="font-sans text-xs font-medium text-foreground">
+            Object name
+          </label>
+          <input
+            id="binding-name"
+            type="text"
+            value={objectName}
+            disabled={!addEnabled || phase === "saving"}
+            spellCheck={false}
+            autoComplete="off"
+            placeholder="app-env"
+            onChange={(event) => setObjectName(event.target.value)}
+            className={inputClass}
+          />
+        </div>
+        <div className="flex items-end">
+          <button
+            type="submit"
+            disabled={!addEnabled || phase === "saving" || objectName.trim() === ""}
+            className="rounded-lg border border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash px-2.5 py-1 font-sans text-xs font-medium text-foreground transition-colors disabled:opacity-50"
+          >
+            Bind
+          </button>
+        </div>
+      </form>
+
+      <div className="mt-4 border-t border-[var(--sw-faint-rule)]">
+        {snapshot.bindings.length === 0 ? (
+          <p className="pt-4 text-sm text-muted-foreground">No cluster bindings.</p>
+        ) : (
+          <ul>
+            {snapshot.bindings.map((binding) => (
+              <ClusterBindingRow
+                key={binding.id}
+                projectId={projectId}
+                binding={binding}
+                disabled={phase === "saving"}
+                onRemoved={async () => {
+                  setNotice(`Removed ${binding.kind}/${binding.objectName}.`);
+                  await refresh();
+                }}
+              />
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div className="mt-5 border-t border-[var(--sw-faint-rule)] pt-4">
+        <p className="font-sans text-xs font-semibold text-foreground">Workspace service account</p>
+        <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+          The session agent holds this role&apos;s full permissions for the whole session; bind a
+          least-privilege role intended for untrusted code — the operator binds and allowlists it
+          cluster-side; names outside the allowlist fail the launch.
+        </p>
+        <div className="mt-3 flex items-end gap-2">
+          <div className="min-w-0 grow sm:max-w-[280px]">
+            <input
+              aria-label="Workspace service account"
+              type="text"
+              value={saDraft ?? snapshot.serviceAccount ?? ""}
+              disabled={!CLUSTER_BINDING_MUTATIONS_ENABLED || phase === "saving"}
+              spellCheck={false}
+              autoComplete="off"
+              placeholder="none"
+              onChange={(event) => setSaDraft(event.target.value)}
+              className={inputClass}
+            />
+          </div>
+          <button
+            type="button"
+            disabled={
+              !CLUSTER_BINDING_MUTATIONS_ENABLED ||
+              phase === "saving" ||
+              (saDraft ?? "").trim() === "" ||
+              (saDraft ?? "").trim() === snapshot.serviceAccount
+            }
+            onClick={() => void saveServiceAccount((saDraft ?? "").trim())}
+            className="rounded-lg border border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash px-2.5 py-1 font-sans text-xs font-medium text-foreground transition-colors disabled:opacity-50"
+          >
+            Set
+          </button>
+          {snapshot.serviceAccount === null ? null : (
+            <button
+              type="button"
+              disabled={phase === "saving"}
+              onClick={() => void saveServiceAccount(null)}
+              className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ClusterBindingRow({
+  projectId,
+  binding,
+  disabled,
+  onRemoved,
+}: {
+  readonly projectId: string;
+  readonly binding: ProjectClusterBindingView;
+  readonly disabled: boolean;
+  readonly onRemoved: () => Promise<void>;
+}) {
+  const [removing, setRemoving] = useState<"idle" | "armed" | "working">("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  const remove = () => {
+    if (removing === "idle") {
+      setRemoving("armed");
+      return;
+    }
+    if (removing !== "armed") return;
+    setRemoving("working");
+    setError(null);
+    void removeProjectClusterBinding(projectId, binding.id)
+      .then(async () => {
+        await onRemoved();
+        return undefined;
+      })
+      .catch((cause: unknown) =>
+        setError(cause instanceof Error ? cause.message : "The remove failed."),
+      )
+      .finally(() => setRemoving("idle"));
+  };
+
+  return (
+    <li className="flex items-start justify-between gap-4 border-b border-[var(--sw-faint-rule)] py-3">
+      <div className="min-w-0">
+        <p className="font-mono text-[12.5px] font-medium text-foreground">
+          {binding.kind}/{binding.objectName}
+        </p>
+        <p className="mt-0.5 font-mono text-[12px] text-faint">
+          resolved by the platform at launch · contents unknown to Mend
+        </p>
+        {error === null ? null : (
+          <p className="mt-1 text-xs leading-relaxed text-danger" aria-live="polite">
+            {error}
+          </p>
+        )}
+      </div>
+      <div className="flex shrink-0 items-center gap-2 pt-0.5">
         <button
           type="button"
           disabled={disabled || removing === "working"}
