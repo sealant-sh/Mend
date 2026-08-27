@@ -22,6 +22,14 @@ export interface NewSessionRun {
   readonly environmentVariableNames?: ReadonlyArray<string> | null;
   readonly secretRevision?: number | null;
   readonly secretNames?: ReadonlyArray<string> | null;
+  /**
+   * Cluster-binding manifest: `kind/objectName` strings + the ServiceAccount NAME, never values.
+   * `undefined` admitted explicitly: hot-claim launches spread a stored manifest whose cluster
+   * fields are optional (skeletons warmed before the feature) — undefined lands as NULL.
+   */
+  readonly clusterBindingRevision?: number | null | undefined;
+  readonly clusterBindingNames?: ReadonlyArray<string> | null | undefined;
+  readonly clusterServiceAccount?: string | null | undefined;
 }
 
 export type SessionRunOutcome = "completed" | "failed" | "stopped";

@@ -7,6 +7,7 @@ import {
   AgentRequestNotFoundError,
   CheckpointsRepo,
   HotWorkspacesRepo,
+  ProjectClusterBindingsRepo,
   ProjectEnvironmentRepo,
   ProjectMountsRepo,
   type ProjectNotFoundError,
@@ -633,6 +634,7 @@ type SessionEngineRequirements =
   | CheckpointsRepo
   | ReferencesRepo
   | ProjectMountsRepo
+  | ProjectClusterBindingsRepo
   | ProjectEnvironmentRepo
   | ProjectSecretsRepo
   | SecretCipher
@@ -743,6 +745,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const projectMounts = yield* ProjectMountsRepo;
       const projectEnvironment = yield* ProjectEnvironmentRepo;
       const projectSecrets = yield* ProjectSecretsRepo;
+      const projectClusterBindings = yield* ProjectClusterBindingsRepo;
       const secretCipher = yield* SecretCipher;
       const projectRecipes = yield* ProjectServiceRecipesRepo;
       const settingsRepo = yield* SettingsRepo;
@@ -1903,6 +1906,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.map((pairs) => Object.fromEntries(pairs)),
           report,
         );
+        // Cluster bindings ride the same one-snapshot-per-launch read: names only — the Sealant
+        // worker resolves the bound objects; Mend never sees their contents.
+        const clusterBindings = yield* projectClusterBindings.snapshot(project.id).pipe(
+          Effect.mapError(
+            (error) =>
+              new DotfilesResolveError({
+                message: `project cluster bindings could not be read: ${String(error)}`,
+              }),
+          ),
+          report,
+        );
+        const clusterBindingNames = clusterBindings.bindings.map(
+          (binding) => `${binding.kind}/${binding.objectName}`,
+        );
         const channel = yield* sessionChannelLaunchEnv(sessionId);
         const env = {
           ...Object.fromEntries(
@@ -1916,6 +1933,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           environmentVariableNames: environment.variables.map((variable) => variable.name),
           secretRevision: sealedSecrets.revision,
           secretNames: sealedSecrets.secrets.map((secret) => secret.name),
+          clusterBindingRevision: clusterBindings.revision,
+          clusterBindingNames,
+          clusterServiceAccount: clusterBindings.serviceAccount,
         };
         const createWorkspace = (credentials: WorkspaceCredentialsOptions | undefined) =>
           sealant.createWorkspace({
@@ -1944,6 +1964,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             services: workspaceImage.services,
             ...(Object.keys(env).length === 0 ? {} : { env }),
             ...(Object.keys(secretEnv).length === 0 ? {} : { secretEnv }),
+            // Cluster bindings pass through unconditionally — no Mend-side capability pre-check.
+            // The platform validates at create: a non-Kubernetes runtime refuses synchronously
+            // with `runtime-env-references-unsupported`, mapped to a readable refusal below.
+            ...(clusterBindings.bindings.length === 0
+              ? {}
+              : {
+                  envFrom: clusterBindings.bindings.map((binding) => ({
+                    kind: binding.kind,
+                    name: binding.objectName,
+                  })),
+                }),
+            ...(clusterBindings.serviceAccount === null
+              ? {}
+              : { kubernetes: { serviceAccountName: clusterBindings.serviceAccount } }),
             // Belt for every path that forgets to stop: the platform reaper.
             ttl: "12h",
             // Requires the platform at 0.7.1+ (sealant#114): 0.7.0 dropped every
@@ -1969,6 +2003,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // A missing harness account must not discard a valid GitHub account (and vice versa).
         // Try the complete identity first, then each useful subset before interactive auth.
         const workspace = yield* createWithCredentialFallback(shape.credentialAttempts).pipe(
+          // The platform's typed code IS Mend's capability check (a config flag could lie): a
+          // non-Kubernetes workspace runtime refused the cluster references synchronously — no
+          // workspace exists, no build queued. Restate it naming every binding, observationally.
+          Effect.mapError((error) =>
+            error.code === "runtime-env-references-unsupported"
+              ? new SealantPlatformError({
+                  code: error.code,
+                  status: error.status,
+                  cause: error.cause,
+                  message:
+                    `launch refused · ${clusterBindingNames.join(", ")}` +
+                    (clusterBindings.serviceAccount === null
+                      ? ""
+                      : ` · service account ${clusterBindings.serviceAccount}`) +
+                    " · cluster bindings do not resolve on this deployment's workspace runtime — remove them in project setup to launch here",
+                })
+              : error,
+          ),
           report,
           Effect.onInterrupt(() =>
             input.onFailure("workspace provisioning was interrupted").pipe(Effect.ignore),
@@ -4041,6 +4093,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             : null;
         const environment = yield* projectEnvironment.snapshot(project.id);
         const secrets = yield* projectSecrets.snapshot(project.id);
+        const clusterBindings = yield* projectClusterBindings.snapshot(project.id);
         const selectedReferences = yield* references
           .listForProject(project.id)
           .pipe(Effect.orElseSucceed(() => []));
@@ -4056,6 +4109,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           },
           environmentRevision: environment.revision,
           secretRevision: secrets.revision,
+          clusterBindingRevision: clusterBindings.revision,
           references: selectedReferences.map((r) => ({ name: r.name, path: r.path })),
           mounts: declaredMounts.map((m) => ({
             name: m.name,
@@ -4178,7 +4232,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
         if (inputs === null) return;
         const fingerprint = hotFingerprint(inputs);
-        const target = Math.max(0, project.hotSessions);
+        // Cluster bindings only resolve on a Kubernetes workspace runtime: warming here would
+        // loop on the platform's create-time refusal. Skip with an observed line instead — a
+        // subsequent cold start still refuses readably, naming the bindings.
+        const clusterBindings = yield* projectClusterBindings
+          .snapshot(projectId)
+          .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.die("project row vanished")));
+        const warmSkipped =
+          deployment.mode !== "kubernetes" &&
+          (clusterBindings.bindings.length > 0 || clusterBindings.serviceAccount !== null);
+        if (warmSkipped) {
+          yield* Effect.logInfo(
+            `session engine: warm skipped · ${clusterBindings.bindings.length} cluster binding${clusterBindings.bindings.length === 1 ? "" : "s"}${clusterBindings.serviceAccount === null ? "" : " · service account set"} · local runner`,
+          ).pipe(Effect.annotateLogs({ projectId }));
+        }
+        const target = warmSkipped ? 0 : Math.max(0, project.hotSessions);
         const survivors: Array<HotWorkspace> = [];
         for (const entry of entries) {
           // Claimed entries belong to a launch in flight; the boot sweep reaps abandoned ones.

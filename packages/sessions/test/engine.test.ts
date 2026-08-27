@@ -11,6 +11,7 @@ import {
   ProjectNotFoundError,
   ProjectEnvironmentRepo,
   ProjectMountNotFoundError,
+  ProjectClusterBindingsRepo,
   ProjectMountsRepo,
   ProjectSecretsRepo,
   ProjectServiceRecipesRepo,
@@ -38,6 +39,7 @@ import {
   AgentTurnId,
   ChangeId,
   CheckpointId,
+  ProjectClusterBindingId,
   ProjectEnvironmentVariableId,
   ProjectId,
   SealantRunId,
@@ -59,6 +61,8 @@ import {
   Checkpoint,
   HotWorkspace,
   Project,
+  ProjectClusterBinding,
+  ProjectClusterBindingsSnapshot,
   ProjectEnvironmentSnapshot,
   ProjectEnvironmentVariable,
   ProjectSecretsSnapshot,
@@ -876,6 +880,46 @@ const projectSecretsLayer = (
     remove: () => Effect.die("not in test"),
     upsertByName: () => Effect.die("not in test"),
   });
+/**
+ * Cluster bindings as the engine reads them at launch: names + the service account, never
+ * contents. Same read-closure shape as the env/secret fakes so tests can mutate mid-world.
+ */
+const projectClusterBindingsLayer = (
+  read: () => {
+    readonly revision: number;
+    readonly bindings: ReadonlyArray<{
+      readonly kind: "secret" | "configmap";
+      readonly objectName: string;
+    }>;
+    readonly serviceAccount: string | null;
+  },
+) =>
+  Layer.succeed(ProjectClusterBindingsRepo, {
+    snapshot: (projectId) =>
+      Effect.sync(() => {
+        const current = read();
+        return new ProjectClusterBindingsSnapshot({
+          revision: current.revision,
+          bindings: current.bindings.map(
+            (binding, index) =>
+              new ProjectClusterBinding({
+                id: ProjectClusterBindingId.make(`cb-${index}`),
+                projectId,
+                kind: binding.kind,
+                objectName: binding.objectName,
+                revision: 1,
+                createdAt: now(),
+                updatedAt: now(),
+              }),
+          ),
+          serviceAccount: current.serviceAccount,
+        });
+      }),
+    add: () => Effect.die("not in test"),
+    remove: () => Effect.die("not in test"),
+    setServiceAccount: () => Effect.die("not in test"),
+  });
+const emptyClusterBindings = () => ({ revision: 0, bindings: [], serviceAccount: null });
 const secretCipherStubLayer = Layer.succeed(SecretCipher, {
   encrypt: (plaintext) => Effect.succeed(`sealed:${plaintext}`),
   decrypt: (sealed) => Effect.succeed(sealed.replace(/^sealed:/, "")),
@@ -1091,6 +1135,9 @@ const sessionRunsLayer = (world: World) => {
           environmentVariableNames: input.environmentVariableNames ?? null,
           secretRevision: input.secretRevision ?? null,
           secretNames: input.secretNames ?? null,
+          clusterBindingRevision: input.clusterBindingRevision ?? null,
+          clusterBindingNames: input.clusterBindingNames ?? null,
+          clusterServiceAccount: input.clusterServiceAccount ?? null,
           startedAt: now(),
           settledAt: null,
           createdAt: now(),
@@ -1200,6 +1247,14 @@ const withEngine = <A, E>(
       readonly revision: number;
       readonly secrets: Record<string, string>;
     };
+    readonly clusterBindings?: () => {
+      readonly revision: number;
+      readonly bindings: ReadonlyArray<{
+        readonly kind: "secret" | "configmap";
+        readonly objectName: string;
+      }>;
+      readonly serviceAccount: string | null;
+    };
     /** Seed crash-recovery facts before the SessionEngine layer runs its boot pass. */
     readonly prepareWorld?: (world: World) => void;
   } = {},
@@ -1245,6 +1300,7 @@ const withEngine = <A, E>(
       Layer.mergeAll(
         projectEnvironmentLayer(options.environment ?? emptyEnvironment),
         projectSecretsLayer(options.secrets ?? emptySecrets),
+        projectClusterBindingsLayer(options.clusterBindings ?? emptyClusterBindings),
         secretCipherStubLayer,
         userDotfilesStubLayer,
         dotfilesStoreStubLayer,
@@ -2701,6 +2757,107 @@ describe("SessionEngine", () => {
     );
   });
 
+  it("passes cluster bindings + service account to createWorkspace and stamps NAMES on the run", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            ownerUserId: null,
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+
+          // Bindings ride `envFrom`, the trust grant rides `kubernetes` — exactly once, no
+          // Mend-side capability pre-check (the platform's create-time refusal is the check).
+          expect(created).toHaveLength(1);
+          expect(created[0]?.envFrom).toEqual([
+            { kind: "configmap", name: "app-config" },
+            { kind: "secret", name: "app-env" },
+          ]);
+          expect(created[0]?.kubernetes).toEqual({ serviceAccountName: "mend-agent" });
+          // The run's manifest carries the revision + `kind/objectName` strings + the SA name.
+          const [run] = [...world.sessionRuns.values()];
+          expect(run?.clusterBindingRevision).toBe(5);
+          expect(run?.clusterBindingNames).toEqual(["configmap/app-config", "secret/app-env"]);
+          expect(run?.clusterServiceAccount).toBe("mend-agent");
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        clusterBindings: () => ({
+          revision: 5,
+          bindings: [
+            { kind: "configmap", objectName: "app-config" },
+            { kind: "secret", objectName: "app-env" },
+          ],
+          serviceAccount: "mend-agent",
+        }),
+      },
+    );
+  });
+
+  it("restates the platform's cluster-reference refusal naming every binding", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            ownerUserId: null,
+            base: null,
+          });
+          const failure = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+          expect(failure).toBeInstanceOf(SealantPlatformError);
+          const platformFailure = failure instanceof SealantPlatformError ? failure : null;
+          // The typed code survives the restatement — it IS the SDK capability probe.
+          expect(platformFailure?.code).toBe("runtime-env-references-unsupported");
+          expect(platformFailure?.message).toContain("secret/app-env");
+          expect(platformFailure?.message).toContain("service account mend-agent");
+          expect(platformFailure?.message).toContain("remove them in project setup");
+          // No retry loop: the refusal is synchronous and deterministic.
+          expect(created).toHaveLength(1);
+          const settled = world.sessions.get(session.id);
+          expect(settled?.status).toBe("failed");
+          expect(settled?.summary).toContain("launch refused");
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(
+          created,
+          () => false,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          () =>
+            Effect.fail(
+              new SealantPlatformError({
+                code: "runtime-env-references-unsupported",
+                status: 422,
+                message: "the workspace runtime does not support environment references",
+                cause: null,
+              }),
+            ),
+        ),
+        clusterBindings: () => ({
+          revision: 3,
+          bindings: [{ kind: "secret", objectName: "app-env" }],
+          serviceAccount: "mend-agent",
+        }),
+      },
+    );
+  });
+
   it("omits env/secretEnv from createWorkspace when the project store is empty", async () => {
     const created: CreateOptions[] = [];
     await withEngine(
@@ -2718,12 +2875,17 @@ describe("SessionEngine", () => {
           yield* engine.launch(session.id, ["codex"]);
           expect(created[0]?.env).toBeUndefined();
           expect(created[0]?.secretEnv).toBeUndefined();
+          expect(created[0]?.envFrom).toBeUndefined();
+          expect(created[0]?.kubernetes).toBeUndefined();
           const [run] = [...world.sessionRuns.values()];
           // An empty store is still a REAL manifest (revision 0, no names) — not legacy/unknown.
           expect(run?.environmentRevision).toBe(0);
           expect(run?.environmentVariableNames).toEqual([]);
           expect(run?.secretRevision).toBe(0);
           expect(run?.secretNames).toEqual([]);
+          expect(run?.clusterBindingRevision).toBe(0);
+          expect(run?.clusterBindingNames).toEqual([]);
+          expect(run?.clusterServiceAccount).toBeNull();
         }),
       { sealantLayer: sealantLaunchLayer(created) },
     );
@@ -2805,11 +2967,19 @@ describe("SessionEngine", () => {
           expect(run?.environmentVariableNames).toBeNull();
           expect(run?.secretRevision).toBeNull();
           expect(run?.secretNames).toBeNull();
+          expect(run?.clusterBindingRevision).toBeNull();
+          expect(run?.clusterBindingNames).toBeNull();
+          expect(run?.clusterServiceAccount).toBeNull();
         }),
       // The store is NOT empty here — attach must still not read it.
       {
         environment: () => ({ revision: 9, variables: { SHOULD_NOT_BE_READ: "x" } }),
         secrets: () => ({ revision: 9, secrets: { SHOULD_NOT_BE_READ_EITHER: "y" } }),
+        clusterBindings: () => ({
+          revision: 9,
+          bindings: [{ kind: "secret", objectName: "should-not-be-read" }],
+          serviceAccount: "should-not-be-read",
+        }),
       },
     );
   });
@@ -3069,6 +3239,7 @@ describe("SessionEngine", () => {
         Layer.mergeAll(
           projectEnvironmentLayer(emptyEnvironment),
           projectSecretsLayer(emptySecrets),
+          projectClusterBindingsLayer(emptyClusterBindings),
           secretCipherStubLayer,
           settingsLayer(),
           userDotfilesStubLayer,

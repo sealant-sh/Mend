@@ -1149,14 +1149,6 @@ function SecretRow({
 // ── Cluster bindings: names of cluster objects, resolved by the platform at launch ──────────────
 
 /**
- * The M2/M3 release gate (`.plans/cluster-env-sources.md` §Milestones): a panel that accepts
- * declarations launches must honor is the contract, so the add and set affordances stay disabled
- * until the launch wiring ships in the same release train. Remove and clear stay enabled — a
- * project whose bindings arrive on a non-cluster install must never be trapped unlaunchable.
- */
-const CLUSTER_BINDING_MUTATIONS_ENABLED = false;
-
-/**
  * Bindings, not values: each row names a Kubernetes Secret or ConfigMap in the platform's
  * workspaces namespace. The Sealant worker resolves the object at each fresh workspace launch;
  * Mend never learns the keys or values inside it, and this panel says so instead of pretending
@@ -1178,7 +1170,10 @@ function ClusterBindingsPanel({ projectId }: { readonly projectId: string }) {
   const refresh = () =>
     queryClient.invalidateQueries(trpc.environment.clusterBindings.queryFilter({ projectId }));
 
-  const addEnabled = CLUSTER_BINDING_MUTATIONS_ENABLED && snapshot.clusterCapable;
+  // `clusterCapable` is a hint driving the degraded state only — the platform's create-time
+  // refusal is the enforcement. Remove stays enabled everywhere so a project whose bindings
+  // arrive on a non-cluster install is never trapped unlaunchable.
+  const addEnabled = snapshot.clusterCapable;
 
   const add = async () => {
     if (!addEnabled || phase === "saving" || objectName.trim() === "") return;
@@ -1247,13 +1242,6 @@ function ClusterBindingsPanel({ projectId }: { readonly projectId: string }) {
           declared bindings block launches — remove them to launch here.
         </p>
       )}
-      {snapshot.clusterCapable && !CLUSTER_BINDING_MUTATIONS_ENABLED ? (
-        <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-          Declaring bindings arrives with the platform release that resolves them at launch; until
-          then this panel is read-only apart from remove.
-        </p>
-      ) : null}
-
       <p aria-live="polite" role="status" className="mt-2 text-xs text-success">
         {notice}
       </p>
@@ -1348,7 +1336,7 @@ function ClusterBindingsPanel({ projectId }: { readonly projectId: string }) {
               aria-label="Workspace service account"
               type="text"
               value={saDraft ?? snapshot.serviceAccount ?? ""}
-              disabled={!CLUSTER_BINDING_MUTATIONS_ENABLED || phase === "saving"}
+              disabled={!snapshot.clusterCapable || phase === "saving"}
               spellCheck={false}
               autoComplete="off"
               placeholder="none"
@@ -1359,7 +1347,7 @@ function ClusterBindingsPanel({ projectId }: { readonly projectId: string }) {
           <button
             type="button"
             disabled={
-              !CLUSTER_BINDING_MUTATIONS_ENABLED ||
+              !snapshot.clusterCapable ||
               phase === "saving" ||
               (saDraft ?? "").trim() === "" ||
               (saDraft ?? "").trim() === snapshot.serviceAccount
