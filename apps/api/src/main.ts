@@ -88,6 +88,7 @@ import {
   SessionChannelNetworkHostLive,
   SessionChannelRegistryLive,
   SessionSocketHostLive,
+  SessionRepositoryLocalLive,
 } from "@mend/sessions";
 import {
   type AgentBridge,
@@ -199,7 +200,14 @@ const SessionChannelNetworkLayer = SessionChannelNetworkHostLive.pipe(
   Layer.provide(DeploymentConfigLive),
   Layer.provide(SessionChannelRegistryLayer),
 );
+// The co-located session-workspace authority (identity-keyed port over Store + ProjectsRepo);
+// a hosted deployment strategy swaps this adapter, nothing above it.
+const SessionRepositoryLayer = SessionRepositoryLocalLive.pipe(
+  Layer.provide(StoreLive),
+  Layer.provide(DatabaseLive),
+);
 const SessionEngineLayer = SessionEngineBaseLive.pipe(
+  Layer.provide(SessionRepositoryLayer),
   Layer.provide(ProtocolHostLayer),
   Layer.provide(ServiceHostLayer),
   Layer.provide(SessionSocketHostLayer),

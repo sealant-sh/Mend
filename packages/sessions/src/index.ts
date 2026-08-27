@@ -1,5 +1,6 @@
 export * from "./dotfiles.ts";
 export * from "./engine.ts";
+export * from "./session-repository.ts";
 export * from "./protocol-host.ts";
 export * from "./follow-up-delivery.ts";
 export * from "./git-transport.ts";
