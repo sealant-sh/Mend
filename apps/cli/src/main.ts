@@ -213,7 +213,7 @@ const hintHerdrAttachment = (harness: string): (() => void) => {
 /** The raw server call — THROWS with a human message; the dashboard renders it. */
 const request = async <T>(
   config: CliConfig,
-  method: "GET" | "POST" | "DELETE",
+  method: "GET" | "POST" | "PUT" | "DELETE",
   route: string,
   body?: unknown,
 ): Promise<T> => {
@@ -258,7 +258,7 @@ const request = async <T>(
 /** The same call for one-shot commands: any failure prints and exits. */
 const api = async <T>(
   config: CliConfig,
-  method: "GET" | "POST" | "DELETE",
+  method: "GET" | "POST" | "PUT" | "DELETE",
   route: string,
   body?: unknown,
 ): Promise<T> => {
@@ -272,7 +272,7 @@ const api = async <T>(
 /** The same call bound to one config — the dependency ./pair.ts takes. */
 const boundApi =
   (config: CliConfig): ApiCall =>
-  <T>(method: "GET" | "POST" | "DELETE", route: string, body?: unknown): Promise<T> =>
+  <T>(method: "GET" | "POST" | "PUT" | "DELETE", route: string, body?: unknown): Promise<T> =>
     api<T>(config, method, route, body);
 
 /** A live elapsed-time spinner around a slow await — provisioning is not a hang. */
@@ -1853,6 +1853,7 @@ interface ProjectSecretsDto {
 interface ProjectClusterBindingsDto {
   readonly revision: number;
   readonly bindings: ReadonlyArray<{
+    readonly id: string;
     readonly kind: "secret" | "configmap";
     readonly objectName: string;
   }>;
@@ -1985,16 +1986,97 @@ const envShow = async (config: CliConfig, args: ReadonlyArray<string>) => {
   }
 };
 
+/**
+ * Cluster bindings (`.plans/cluster-env-sources.md`): NAMES of Kubernetes Secrets/ConfigMaps the
+ * platform resolves at launch — Mend never holds the values. Every verb works on every install
+ * (a non-cluster install must be able to remove bindings to launch); only resolution is
+ * Kubernetes-only, and the platform refuses launches there, readably.
+ */
+const envCluster = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const explicitProject = takeFlagValue(args, "--project");
+  const positional = args.filter((arg, i) => !arg.startsWith("--") && args[i - 1] !== "--project");
+  const [verb, ...rest] = positional;
+  const usage =
+    "try: mend env cluster add secret <name> | add configmap <name> | remove <kind>/<name> | sa <name> | sa --clear";
+  const project = await findProject(config, explicitProject);
+  const route = `/projects/${project.id}/cluster-bindings`;
+  const appliesLine = () =>
+    say(
+      dim(
+        "  applies from the next workspace launch; running workspaces keep what they started with",
+      ),
+    );
+
+  if (verb === "add") {
+    const [kind, objectName] = rest;
+    if ((kind !== "secret" && kind !== "configmap") || objectName === undefined) {
+      return fail(`env cluster add takes a kind and an object name — ${usage}`);
+    }
+    const result = await api<{ readonly revision: number }>(config, "POST", route, {
+      kind,
+      objectName,
+    });
+    say(`${green("✓")} bound ${kind}/${objectName} ${dim(`· cluster r${result.revision}`)}`);
+    say(dim("  resolved by the platform at launch · contents unknown to Mend"));
+    return appliesLine();
+  }
+  if (verb === "remove") {
+    const [ref] = rest;
+    const [kind, objectName] = ref?.split("/", 2) ?? [];
+    if ((kind !== "secret" && kind !== "configmap") || objectName === undefined) {
+      return fail(`env cluster remove takes <kind>/<name>, e.g. secret/app-env — ${usage}`);
+    }
+    const snapshot = await api<ProjectClusterBindingsDto>(config, "GET", route);
+    const binding = snapshot.bindings.find((b) => b.kind === kind && b.objectName === objectName);
+    if (binding === undefined) return fail(`${kind}/${objectName} is not bound on ${project.name}`);
+    const result = await api<{ readonly revision: number }>(
+      config,
+      "DELETE",
+      `${route}/${binding.id}`,
+    );
+    say(`${green("✓")} removed ${kind}/${objectName} ${dim(`· cluster r${result.revision}`)}`);
+    return appliesLine();
+  }
+  if (verb === "sa") {
+    const clear = args.includes("--clear");
+    const [name] = rest;
+    if (!clear && name === undefined)
+      return fail(`env cluster sa takes a name or --clear — ${usage}`);
+    const result = await api<{ readonly serviceAccount: string | null; readonly revision: number }>(
+      config,
+      "PUT",
+      `${route}/service-account`,
+      { serviceAccount: clear ? null : name },
+    );
+    say(
+      result.serviceAccount === null
+        ? `${green("✓")} cleared the workspace service account ${dim(`· cluster r${result.revision}`)}`
+        : `${green("✓")} service account ${result.serviceAccount} ${dim(`· cluster r${result.revision}`)}`,
+    );
+    if (result.serviceAccount !== null) {
+      say(
+        amber(
+          "  the session agent holds this role's full permissions for the whole session — bind a least-privilege role intended for untrusted code; names outside the platform allowlist fail the launch",
+        ),
+      );
+    }
+    return appliesLine();
+  }
+  return fail(`unknown env cluster command "${verb ?? ""}" — ${usage}`);
+};
+
 const envCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const [verb, ...rest] = args;
   switch (verb) {
     case "load":
       return envLoad(config, rest);
+    case "cluster":
+      return envCluster(config, rest);
     case "show":
     case undefined:
       return envShow(config, rest);
     default:
-      return fail(`unknown env command "${verb}" — try: mend env load | show`);
+      return fail(`unknown env command "${verb}" — try: mend env load | show | cluster`);
   }
 };
 

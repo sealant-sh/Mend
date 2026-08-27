@@ -12,6 +12,7 @@ const base: HotFingerprintInputs = {
   },
   environmentRevision: 3,
   secretRevision: 1,
+  clusterBindingRevision: 2,
   references: [
     { name: "effect", path: "/store/_references/effect" },
     { name: "drizzle", path: "/store/_references/drizzle" },
@@ -33,6 +34,7 @@ describe("hotFingerprint", () => {
     const variants: ReadonlyArray<HotFingerprintInputs> = [
       { ...base, environmentRevision: base.environmentRevision + 1 },
       { ...base, secretRevision: base.secretRevision + 1 },
+      { ...base, clusterBindingRevision: base.clusterBindingRevision + 1 },
       { ...base, applyDotfiles: false },
       { ...base, dotfiles: { ...base.dotfiles, snapshotSha: "def456" } },
       { ...base, dotfiles: { repository: null, snapshotSha: base.dotfiles.snapshotSha } },

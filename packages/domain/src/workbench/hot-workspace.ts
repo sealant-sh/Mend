@@ -24,6 +24,11 @@ export const HotWorkspaceEnvironment = Schema.Struct({
   environmentVariableNames: Schema.Array(Schema.String),
   secretRevision: Schema.Number,
   secretNames: Schema.Array(Schema.String),
+  // Cluster-binding manifest (cluster-env-sources): `kind/objectName` strings + the workspace
+  // ServiceAccount, names only. Optional so entries provisioned before the feature still decode.
+  clusterBindingRevision: Schema.optional(Schema.Number),
+  clusterBindingNames: Schema.optional(Schema.Array(Schema.String)),
+  clusterServiceAccount: Schema.optional(Schema.NullOr(Schema.String)),
 });
 export type HotWorkspaceEnvironment = typeof HotWorkspaceEnvironment.Type;
 

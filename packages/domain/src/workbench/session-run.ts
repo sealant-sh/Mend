@@ -35,6 +35,14 @@ export class SessionRun extends Schema.Class<SessionRun>("SessionRun")({
   /** Same manifest for the project's Secrets set — names only, by construction. */
   secretRevision: Schema.NullOr(Schema.Int),
   secretNames: Schema.NullOr(Schema.Array(Schema.String)),
+  /**
+   * Same manifest for the project's Cluster bindings (cluster-env-sources): aggregate revision,
+   * `kind/objectName` strings, and the workspace ServiceAccount name — never the bound contents,
+   * which Mend cannot know. All NULL = explicit legacy/unknown, never inferred.
+   */
+  clusterBindingRevision: Schema.NullOr(Schema.Int),
+  clusterBindingNames: Schema.NullOr(Schema.Array(Schema.String)),
+  clusterServiceAccount: Schema.NullOr(Schema.String),
   startedAt: Timestamp,
   settledAt: Schema.NullOr(Timestamp),
   createdAt: Timestamp,

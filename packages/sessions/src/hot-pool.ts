@@ -21,6 +21,8 @@ export interface HotFingerprintInputs {
   };
   readonly environmentRevision: number;
   readonly secretRevision: number;
+  /** Cluster bindings are create-time-fixed too: a binding/SA mutation drains warm skeletons. */
+  readonly clusterBindingRevision: number;
   readonly references: ReadonlyArray<{ readonly name: string; readonly path: string }>;
   readonly mounts: ReadonlyArray<{
     readonly name: string;
@@ -48,6 +50,7 @@ export const hotFingerprint = (inputs: HotFingerprintInputs): string => {
     },
     environmentRevision: inputs.environmentRevision,
     secretRevision: inputs.secretRevision,
+    clusterBindingRevision: inputs.clusterBindingRevision,
     references: byName(inputs.references).map((r) => ({ name: r.name, path: r.path })),
     mounts: byName(inputs.mounts).map((m) => ({
       name: m.name,
