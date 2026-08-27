@@ -1316,6 +1316,17 @@ understand the work.
 
 ### Decided
 
+- **2026-08-26: deployment strategies are named compositions; the session workspace authority is
+  identity-keyed.** The co-located store ("Mend and the workspace see the same POSIX worktree") is
+  an implementation technique of the `local` and `kubernetes` strategies, not the product invariant.
+  The invariant is: every session has one authoritative mutable workspace, and
+  checkpoints/diffs/evidence are ordered against it. The engine reaches that authority through the
+  `SessionRepository` port (identity-keyed; co-location is the explicit `worktreeMount` capability),
+  and each deployment strategy is a named, tested bundle — `local`, `kubernetes`, and a
+  `cloudflare-hosted` strategy sequenced in two tiers (hosted workspaces first, Workers-native
+  control plane later). Design: `docs/DEPLOYMENT-STRATEGIES.md`; the Sealant half is the cloudflare
+  runtime adapter + bridge Worker series.
+
 - **2026-08-21: protocol process restart policy v1.** Protocol adapters own pending provider calls
   in memory. On Mend boot, live `agent-protocol` rows are ended instead of reconstructing adapter
   state from the Sealant journal. An explicit resume starts a fresh pipe process and uses the
