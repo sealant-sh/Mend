@@ -28,6 +28,7 @@ import type {
   InferenceToolName,
   IssueSource,
   IssueStage,
+  ProjectClusterBindingId,
   ProjectEnvironmentVariableId,
   ProjectId,
   ProjectSecretId,
@@ -67,6 +68,7 @@ import type {
   AgentTurnUsage,
   AutomationChoice,
   CheckpointTrigger,
+  ClusterBindingKind,
   ContextItem,
   FollowUpStatus,
   GitAuthMode,
@@ -266,6 +268,10 @@ export const projects = pgTable("projects", {
   environmentRevision: integer().notNull().default(0),
   // Same discipline for the Secrets set.
   secretRevision: integer().notNull().default(0),
+  // …and for the Cluster bindings set (service-account changes bump the same revision).
+  clusterBindingRevision: integer().notNull().default(0),
+  // Workspace ServiceAccount trust grant (cluster installs); a NAME only, allowlisted platform-side.
+  workspaceServiceAccount: text(),
   // How many hot workspaces to keep ready for new sessions (0 = none).
   hotSessions: integer().notNull().default(0),
   createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
@@ -394,6 +400,35 @@ export const projectSecrets = pgTable(
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [unique("project_secrets_project_id_name_key").on(table.projectId, table.name)],
+);
+
+/**
+ * Cluster bindings (`.plans/cluster-env-sources.md`): the NAME of a Kubernetes Secret/ConfigMap
+ * in the platform's workspaces namespace, resolved by the Sealant worker at each fresh launch.
+ * Deliberately no value column — Mend never learns the bound object's keys or values. Same
+ * project-row lock / aggregate-revision / pointer-event discipline as the other two env kinds.
+ */
+export const projectClusterBindings = pgTable(
+  "project_cluster_bindings",
+  {
+    id: text().$type<ProjectClusterBindingId>().primaryKey(),
+    projectId: text()
+      .$type<ProjectId>()
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    kind: text().$type<ClusterBindingKind>().notNull(),
+    objectName: text().notNull(),
+    revision: integer().notNull().default(1),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("project_cluster_bindings_project_id_kind_object_name_key").on(
+      table.projectId,
+      table.kind,
+      table.objectName,
+    ),
+  ],
 );
 
 export const referenceRepos = pgTable("reference_repos", {
@@ -582,6 +617,11 @@ export const sessionRuns = pgTable(
     environmentVariableNames: jsonb().$type<ReadonlyArray<string>>(),
     secretRevision: integer(),
     secretNames: jsonb().$type<ReadonlyArray<string>>(),
+    // Cluster-binding launch manifest: aggregate revision + `kind/objectName` strings + the
+    // workspace ServiceAccount name. All NULL = explicit legacy/unknown, never inferred.
+    clusterBindingRevision: integer(),
+    clusterBindingNames: jsonb().$type<ReadonlyArray<string>>(),
+    clusterServiceAccount: text(),
     startedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     settledAt: timestamp({ mode: "date", withTimezone: true }),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),

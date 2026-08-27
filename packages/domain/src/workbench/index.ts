@@ -27,6 +27,7 @@ export * from "./hot-workspace.ts";
 export * from "./mount.ts";
 export * from "./pass.ts";
 export * from "./project.ts";
+export * from "./project-cluster-binding.ts";
 export * from "./project-environment.ts";
 export * from "./project-secret.ts";
 export * from "./reference.ts";

@@ -94,3 +94,6 @@ export type ProjectEnvironmentVariableId = typeof ProjectEnvironmentVariableId.T
 
 export const ProjectSecretId = Schema.String.pipe(Schema.brand("ProjectSecretId"));
 export type ProjectSecretId = typeof ProjectSecretId.Type;
+
+export const ProjectClusterBindingId = Schema.String.pipe(Schema.brand("ProjectClusterBindingId"));
+export type ProjectClusterBindingId = typeof ProjectClusterBindingId.Type;
