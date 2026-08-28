@@ -400,6 +400,9 @@ importers:
       typescript:
         specifier: 'catalog:'
         version: 5.9.3
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.107.0
 
   apps/marketing:
     dependencies:
@@ -14044,7 +14047,9 @@ snapshots:
       metro-runtime: 0.84.5
     transitivePeerDependencies:
       - '@babel/core'
+      - bufferutil
       - supports-color
+      - utf-8-validate
 
   '@react-native/normalize-colors@0.74.89': {}
 
