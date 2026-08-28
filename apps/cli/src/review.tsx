@@ -7,7 +7,7 @@ import {
   type ScrollBoxRenderable,
   type TextareaRenderable,
 } from "@opentui/core";
-import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
+import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
@@ -21,19 +21,24 @@ import { commentRange, deliverReview } from "./review-workflow.ts";
 import { isPendingId, pendingId } from "./shared.ts";
 import { openUrl } from "./terminal.ts";
 import {
+  ADD_WASH,
   AMBER,
-  BOLD,
+  BG,
   COBALT,
-  DIM,
-  diffWashes,
-  editorInk,
-  GRAY,
+  DELETE_WASH,
+  FAINT,
   GREEN,
+  INK,
+  INK_2,
+  MUTED,
+  PANEL,
   RED,
+  RULE,
   SYNTAX_FUNCTION,
   SYNTAX_KEYWORD,
   SYNTAX_NUMBER,
   SYNTAX_STRING,
+  WASH,
 } from "./tui-theme.ts";
 
 export interface ReviewContext {
@@ -193,16 +198,15 @@ type Editor =
 const REVIEW_KEY = (changeId: string) => ["review", changeId] as const;
 const EDITOR_KEY_BINDINGS = [{ name: "return", ctrl: true, action: "submit" }] as const;
 
-const syntaxStyleFor = (ink: string) =>
-  SyntaxStyle.fromStyles({
-    keyword: { fg: RGBA.fromHex(SYNTAX_KEYWORD) },
-    string: { fg: RGBA.fromHex(SYNTAX_STRING) },
-    comment: { fg: RGBA.fromHex(GRAY), italic: true },
-    number: { fg: RGBA.fromHex(SYNTAX_NUMBER) },
-    function: { fg: RGBA.fromHex(SYNTAX_FUNCTION) },
-    variable: { fg: RGBA.fromHex(ink) },
-    default: { fg: RGBA.fromHex(ink) },
-  });
+const syntaxStyle = SyntaxStyle.fromStyles({
+  keyword: { fg: RGBA.fromHex(SYNTAX_KEYWORD) },
+  string: { fg: RGBA.fromHex(SYNTAX_STRING) },
+  comment: { fg: RGBA.fromHex(FAINT), italic: true },
+  number: { fg: RGBA.fromHex(SYNTAX_NUMBER) },
+  function: { fg: RGBA.fromHex(SYNTAX_FUNCTION) },
+  variable: { fg: RGBA.fromHex(INK) },
+  default: { fg: RGBA.fromHex(INK) },
+});
 
 const truncate = (text: string, width: number): string => {
   const oneLine = text.replaceAll(/\s+/g, " ").trim();
@@ -259,9 +263,8 @@ const orderedComments = (comments: ReadonlyArray<ReviewCommentDto>) =>
     return byState === 0 ? b.createdAt.localeCompare(a.createdAt) : byState;
   });
 
-/** Undecided states carry amber; settled ones take the terminal's own dim. */
-const stateColor = (state: ReviewCommentDto["state"]): string | undefined =>
-  state === "draft" || state === "open" ? AMBER : undefined;
+const stateColor = (state: ReviewCommentDto["state"]): string =>
+  state === "draft" || state === "open" ? AMBER : state === "addressed" ? INK_2 : FAINT;
 
 const anchorOf = (comment: ReviewCommentDto): string =>
   comment.file === null
@@ -273,29 +276,27 @@ const passFact = (pass: ChangePassDto): { readonly text: string; readonly color:
   if (pass.status === "running") return { text: `${label} running`, color: COBALT };
   if (pass.status === "failed") return { text: `${label} failed`, color: RED };
   return {
-    text: `${label} observed ${pass.findings ?? 0} ${pass.kind === "tour" ? "stops" : "drafts"}`,
+    text: `${label} observed · ${pass.findings ?? 0} ${pass.kind === "tour" ? "stops" : "drafts"}`,
     color: GREEN,
   };
 };
 
 const FileRow = ({ file, selected }: { readonly file: ReviewFile; readonly selected: boolean }) => (
-  <box height={2} flexShrink={0}>
-    <text height={1}>
-      <span fg={COBALT}>{selected ? "> " : "  "}</span>
-      <span {...(selected ? { fg: COBALT } : {})}>{file.path}</span>
-      {file.binary ? <span fg={AMBER}> binary</span> : null}
-      {file.likelyGenerated ? <span attributes={DIM}> likely generated</span> : null}
+  <box height={2} flexShrink={0} backgroundColor={selected ? WASH : "transparent"}>
+    <text height={1} bg="transparent">
+      <span fg={selected ? COBALT : FAINT}>{selected ? "▌ " : "  "}</span>
+      <span fg={INK}>{file.path}</span>
+      {file.binary ? <span fg={AMBER}> · binary</span> : null}
+      {file.likelyGenerated ? <span fg={FAINT}> · inferred · likely generated</span> : null}
     </text>
-    <text height={1}>
+    <text height={1} bg="transparent">
       <span>{"    "}</span>
       <span fg={GREEN}>+{file.additions}</span>
-      <span> </span>
+      <span fg={FAINT}> </span>
       <span fg={RED}>−{file.deletions}</span>
-      <span attributes={DIM}>
-        {"  "}
-        {file.status}
-        {"  "}
-        {file.hunks.length} hunks
+      <span fg={FAINT}>
+        {" "}
+        · {file.status} · {file.hunks.length} hunks
       </span>
     </text>
   </box>
@@ -307,32 +308,22 @@ const CommentRow = ({
 }: {
   readonly comment: ReviewCommentDto;
   readonly selected: boolean;
-}) => {
-  const color = stateColor(comment.state);
-  return (
-    <box height={2} flexShrink={0}>
-      <text height={1}>
-        <span fg={COBALT}>{selected ? "> " : "  "}</span>
-        {color === undefined ? (
-          <span attributes={DIM}>{comment.state}</span>
-        ) : (
-          <span fg={color}>{comment.state}</span>
-        )}
-        <span attributes={DIM}>
-          {"  "}
-          {anchorOf(comment)}
-        </span>
-      </text>
-      <text height={1}>
-        <span>{"    "}</span>
-        <span {...(comment.authorKind === "mend" ? { fg: COBALT } : {})} attributes={DIM}>
-          {comment.authorKind === "mend" ? "Mend  " : "You  "}
-        </span>
-        <span>{truncate(comment.body, 27)}</span>
-      </text>
-    </box>
-  );
-};
+}) => (
+  <box height={2} flexShrink={0} backgroundColor={selected ? WASH : "transparent"}>
+    <text height={1} bg="transparent">
+      <span fg={selected ? COBALT : FAINT}>{selected ? "▌ " : "  "}</span>
+      <span fg={stateColor(comment.state)}>{comment.state}</span>
+      <span fg={FAINT}> · {anchorOf(comment)}</span>
+    </text>
+    <text height={1} bg="transparent">
+      <span>{"    "}</span>
+      <span fg={comment.authorKind === "mend" ? COBALT : MUTED}>
+        {comment.authorKind === "mend" ? "Mend · " : "You · "}
+      </span>
+      <span fg={INK}>{truncate(comment.body, 27)}</span>
+    </text>
+  </box>
+);
 
 const Description = ({
   data,
@@ -351,59 +342,68 @@ const Description = ({
   const tourStop = data.tour?.stops[tourIndex] ?? null;
   const stopEvidence = tourStop?.evidence[0] ?? null;
   return (
-    <box height={height} flexShrink={0} flexDirection="column" marginTop={1}>
-      <text height={1}>
+    <box
+      height={height}
+      border
+      borderStyle="rounded"
+      borderColor={stale ? AMBER : data.tour === null ? RULE : COBALT}
+      title=" change description "
+      titleAlignment="left"
+      backgroundColor={PANEL}
+      flexShrink={0}
+      flexDirection="column"
+      paddingX={1}
+    >
+      <text height={1} bg="transparent">
         {data.tour === null ? (
-          <span attributes={DIM}>
-            {" No description yet — t composes one from the diff and session record."}
+          <span fg={INK}>
+            No description yet — t composes one from the diff and session record.
           </span>
         ) : (
           <>
-            <span fg={COBALT}> Mend uses inference </span>
-            {stale ? <span fg={AMBER}> diff changed since </span> : null}
-            <span>{truncate(data.tour.summary, Math.max(20, width - 50))}</span>
+            <span fg={COBALT}>Mend uses inference · </span>
+            {stale ? <span fg={AMBER}>diff changed since · </span> : null}
+            <span fg={INK}>{truncate(data.tour.summary, Math.max(20, width - 50))}</span>
           </>
         )}
       </text>
-      {height >= 3 && data.tour !== null ? (
-        <text height={1}>
+      {height >= 5 && data.tour !== null ? (
+        <text height={1} bg="transparent">
           {tourStop === null ? (
-            <span attributes={DIM}>
-              {" inferred approach  "}
-              {truncate(data.tour.approach ?? "No tour stops yet.", width - 24)}
+            <span fg={FAINT}>
+              inferred approach · {truncate(data.tour.approach ?? "No tour stops yet.", width - 24)}
             </span>
           ) : (
             <>
               <span fg={COBALT}>
-                {" "}
-                stop {tourIndex + 1}/{data.tour.stops.length} {tourStop.title}
+                stop {tourIndex + 1}/{data.tour.stops.length} · {tourStop.title}
               </span>
-              <span attributes={DIM}>
+              <span fg={FAINT}>
                 {tourStop.file === null
-                  ? "  change"
-                  : `  ${tourStop.file}${tourStop.line === null ? "" : `:${tourStop.line}`}`}
-                {tourStop.grounded ? "  direct record" : "  inferred reading"}
+                  ? " · change"
+                  : ` · ${tourStop.file}${tourStop.line === null ? "" : `:${tourStop.line}`}`}
+                {tourStop.grounded ? " · direct record" : " · inferred reading"}
               </span>
             </>
           )}
         </text>
       ) : null}
-      {height >= 4 && tourStop !== null ? (
-        <text height={1}>
-          <span attributes={DIM}>
-            {tourStop.grounded ? " record-grounded  " : " inferred narration  "}
+      {height >= 6 && tourStop !== null ? (
+        <text height={1} bg="transparent">
+          <span fg={COBALT}>
+            {tourStop.grounded ? "record-grounded narration · " : "inferred narration · "}
           </span>
-          <span>{truncate(tourStop.narration, Math.max(20, width - 24))}</span>
+          <span fg={MUTED}>{truncate(tourStop.narration, Math.max(20, width - 24))}</span>
         </text>
       ) : null}
-      {height >= 5 && tourStop !== null ? (
-        <text height={1}>
+      {height >= 7 && tourStop !== null ? (
+        <text height={1} bg="transparent">
           <span fg={stopEvidence === null ? AMBER : COBALT}>
             {stopEvidence === null
-              ? " no direct evidence  "
-              : ` evidence seq ${stopEvidence.sequence}  `}
+              ? "no direct evidence · "
+              : `evidence seq ${stopEvidence.sequence} · `}
           </span>
-          <span attributes={DIM}>
+          <span fg={MUTED}>
             {truncate(
               stopEvidence?.excerpt ?? "this stop is labeled inferred",
               Math.max(20, width - 26),
@@ -411,18 +411,18 @@ const Description = ({
           </span>
         </text>
       ) : null}
-      <text height={1}>
+      <text height={1} bg="transparent">
         {passFacts.length === 0 ? (
-          <span attributes={DIM}> Mend has not read this change.</span>
+          <span fg={FAINT}>Mend has not read this change.</span>
         ) : (
           passFacts.map((fact, index) => (
             <span key={`${fact.text}-${index}`}>
-              <span> </span>
+              {index > 0 ? <span fg={FAINT}> · </span> : null}
               <span fg={fact.color}>{fact.text}</span>
             </span>
           ))
         )}
-        {data.followUp?.status === "pending" ? <span fg={AMBER}> follow-up pending</span> : null}
+        {data.followUp?.status === "pending" ? <span fg={AMBER}> · follow-up pending</span> : null}
       </text>
     </box>
   );
@@ -441,25 +441,34 @@ const CompactTourEvidence = ({
 }) => {
   const evidence = stop.evidence[0] ?? null;
   return (
-    <box height={3} flexShrink={0} flexDirection="column" marginTop={1}>
-      <text height={1}>
-        <span fg={stop.grounded ? COBALT : GRAY}>
-          {` tour stop ${index + 1}/${total}  ${stop.grounded ? "direct record" : "inferred reading"}`}
-        </span>
+    <box
+      height={5}
+      border
+      borderStyle="rounded"
+      borderColor={stop.grounded ? COBALT : RULE}
+      title={` tour stop ${index + 1}/${total} · ${stop.grounded ? "direct record" : "inferred reading"} `}
+      titleAlignment="left"
+      backgroundColor={PANEL}
+      flexShrink={0}
+      flexDirection="column"
+      paddingX={1}
+    >
+      <text height={1} fg={INK} bg="transparent">
+        {truncate(stop.narration, Math.max(12, width - 6))}
       </text>
-      <text height={1}>
-        <span> {truncate(stop.narration, Math.max(12, width - 4))}</span>
-      </text>
-      <text height={1}>
+      <text height={1} bg="transparent">
         <span fg={evidence === null ? AMBER : COBALT}>
-          {evidence === null ? " no direct record link  " : ` seq ${evidence.sequence}  `}
+          {evidence === null ? "no direct record link · " : `seq ${evidence.sequence} · `}
         </span>
-        <span attributes={DIM}>
+        <span fg={MUTED}>
           {truncate(
             evidence?.excerpt ?? "the narration is an inferred reading",
             Math.max(12, width - 26),
           )}
         </span>
+      </text>
+      <text height={1} fg={FAINT} bg="transparent">
+        , previous stop · . next stop
       </text>
     </box>
   );
@@ -473,30 +482,30 @@ const EvidenceCard = ({
   readonly width: number;
 }) => (
   <box
-    height={2 + (comment.suggestion === null ? 0 : 1) + Math.min(2, comment.evidence.length)}
+    height={Math.min(6, 4 + Math.min(2, comment.evidence.length))}
+    border
+    borderStyle="rounded"
+    borderColor={comment.state === "draft" ? AMBER : RULE}
+    title={` ${anchorOf(comment)} · ${comment.authorKind === "mend" ? "Mend" : "You"} `}
+    titleAlignment="left"
+    backgroundColor={PANEL}
     flexShrink={0}
     flexDirection="column"
-    marginTop={1}
+    paddingX={1}
   >
-    <text height={1}>
-      <span fg={comment.state === "draft" ? AMBER : COBALT}>
-        {` ${anchorOf(comment)}  ${comment.authorKind === "mend" ? "Mend" : "You"}`}
-      </span>
-    </text>
-    <text height={1}>
-      <span> {truncate(comment.body, Math.max(12, width - 4))}</span>
+    <text height={1} fg={INK} bg="transparent">
+      {truncate(comment.body, Math.max(12, width - 6))}
     </text>
     {comment.suggestion === null ? null : (
-      <text height={1}>
-        <span fg={COBALT}> proposed </span>
-        <span attributes={DIM}>{truncate(comment.suggestion, Math.max(12, width - 15))}</span>
+      <text height={1} bg="transparent">
+        <span fg={COBALT}>proposed · </span>
+        <span fg={MUTED}>{truncate(comment.suggestion, Math.max(12, width - 17))}</span>
       </text>
     )}
     {comment.evidence.slice(0, 2).map((evidence) => (
-      <text key={`${evidence.sequence}-${evidence.excerpt}`} height={1}>
-        <span attributes={DIM}>
-          {` seq ${evidence.sequence}  ${truncate(evidence.excerpt, Math.max(12, width - 16))}`}
-        </span>
+      <text key={`${evidence.sequence}-${evidence.excerpt}`} height={1} bg="transparent">
+        <span fg={FAINT}>seq {evidence.sequence} · </span>
+        <span fg={MUTED}>{truncate(evidence.excerpt, Math.max(12, width - 18))}</span>
       </text>
     ))}
   </box>
@@ -506,14 +515,11 @@ const EditorPanel = ({
   editor,
   refValue,
   busy,
-  ink,
   onSubmit,
 }: {
   readonly editor: Editor;
   readonly refValue: React.RefObject<TextareaRenderable | null>;
   readonly busy: boolean;
-  /** The terminal-side body ink — the textarea's own default is white-on-anything. */
-  readonly ink: string;
   readonly onSubmit: () => void;
 }) => {
   const title =
@@ -527,6 +533,7 @@ const EditorPanel = ({
       borderColor={COBALT}
       title={title}
       titleAlignment="left"
+      backgroundColor={BG}
       height={editor.kind === "send" ? 16 : 8}
       flexShrink={0}
       flexDirection="column"
@@ -538,18 +545,18 @@ const EditorPanel = ({
         placeholder={
           editor.kind === "send" ? "Review instruction…" : "What should change, and why?"
         }
-        backgroundColor="transparent"
-        focusedBackgroundColor="transparent"
-        textColor={ink}
-        focusedTextColor={ink}
-        placeholderColor={GRAY}
-        cursorColor={ink}
+        backgroundColor={BG}
+        focusedBackgroundColor={BG}
+        textColor={INK}
+        focusedTextColor={INK}
+        placeholderColor={FAINT}
+        cursorColor={INK}
         keyBindings={[...EDITOR_KEY_BINDINGS]}
         flexGrow={1}
         onSubmit={onSubmit}
       />
-      <text height={1} attributes={DIM}>
-        {` ctrl+enter ${busy ? "working…" : "save"} · esc cancel`}
+      <text height={1} bg="transparent">
+        <span fg={FAINT}> ctrl+enter {busy ? "working…" : "save"} · esc cancel</span>
       </text>
     </box>
   );
@@ -574,13 +581,9 @@ export function ReviewScreen({
   readonly onQuit: () => void;
 }) {
   const queryClient = useQueryClient();
-  const renderer = useRenderer();
-  const ink = editorInk(renderer.themeMode);
-  const washes = useMemo(() => diffWashes(renderer.themeMode), [renderer.themeMode]);
-  const syntaxStyle = useMemo(() => syntaxStyleFor(ink), [ink]);
   const { width, height } = useTerminalDimensions();
   const wide = width >= 100;
-  const descriptionHeight = height >= 30 ? 5 : 3;
+  const descriptionHeight = height >= 30 ? 7 : 5;
   const { data, failureReason, isFetching } = useQuery({
     queryKey: REVIEW_KEY(changeId),
     queryFn: () => fetchReview(ctx, changeId),
@@ -757,16 +760,16 @@ export function ReviewScreen({
               anchor.newLine <= Math.max(start, selectedLine),
           );
     for (const anchor of highlighted) {
-      diffRef.current.setLineColor(anchor.unifiedRow, { gutter: COBALT, content: "transparent" });
+      diffRef.current.setLineColor(anchor.unifiedRow, { gutter: COBALT, content: WASH });
     }
     return () => {
       if (diffRef.current === null) return;
       for (const anchor of highlighted) {
         const content =
           anchor.kind === "addition"
-            ? washes.add
+            ? ADD_WASH
             : anchor.kind === "deletion"
-              ? washes.del
+              ? DELETE_WASH
               : "transparent";
         diffRef.current.setLineColor(anchor.unifiedRow, {
           gutter: "transparent",
@@ -774,7 +777,7 @@ export function ReviewScreen({
         });
       }
     };
-  }, [anchors, rangeStart, selectedAnchor, view, washes]);
+  }, [anchors, rangeStart, selectedAnchor, view]);
 
   const moveFile = (delta: number): void => {
     if (files.length === 0) return;
@@ -1135,8 +1138,8 @@ export function ReviewScreen({
 
   if (data === undefined) {
     return (
-      <box flexGrow={1} alignItems="center" justifyContent="center">
-        <text>
+      <box flexGrow={1} backgroundColor={BG} alignItems="center" justifyContent="center">
+        <text bg="transparent">
           <span fg={failureReason === null ? COBALT : AMBER}>
             {failureReason === null
               ? "Loading the live change…"
@@ -1171,18 +1174,33 @@ export function ReviewScreen({
       : " ctrl+enter save · esc cancel";
 
   const sidebar: ReactNode = wide ? (
-    <box width={36} flexShrink={0} flexDirection="column">
-      <box flexGrow={1} minHeight={6} flexDirection="column">
-        <text height={1}>
-          <span {...(focus === "files" ? { fg: COBALT } : { attributes: DIM })}>
-            {` files ${files.length}`}
-          </span>
-        </text>
-        <scrollbox ref={fileScrollRef} focused={focus === "files"} flexGrow={1} minHeight={0}>
+    <box width={36} flexShrink={0} flexDirection="column" backgroundColor={BG}>
+      <box
+        border
+        borderStyle="rounded"
+        borderColor={focus === "files" ? COBALT : RULE}
+        title={` files · ${files.length} `}
+        titleAlignment="left"
+        backgroundColor={PANEL}
+        flexGrow={1}
+        minHeight={6}
+      >
+        <scrollbox
+          ref={fileScrollRef}
+          focused={focus === "files"}
+          flexGrow={1}
+          minHeight={0}
+          style={{
+            rootOptions: { backgroundColor: PANEL, border: false },
+            wrapperOptions: { backgroundColor: PANEL },
+            viewportOptions: { backgroundColor: PANEL },
+            contentOptions: { backgroundColor: PANEL },
+          }}
+        >
           {files.map((file, index) => (
             <box key={file.path} flexShrink={0} flexDirection="column">
               {index === 0 || files[index - 1]?.status !== file.status ? (
-                <text height={1} attributes={DIM}>
+                <text height={1} fg={FAINT} bg="transparent">
                   {`  ${file.status}`}
                 </text>
               ) : null}
@@ -1191,15 +1209,30 @@ export function ReviewScreen({
           ))}
         </scrollbox>
       </box>
-      <box flexGrow={1} minHeight={6} flexDirection="column" marginTop={1}>
-        <text height={1}>
-          <span {...(focus === "comments" ? { fg: COBALT } : { attributes: DIM })}>
-            {` comments ${openCount} open${draftCount > 0 ? `  ${draftCount} draft` : ""}`}
-          </span>
-        </text>
-        <scrollbox ref={commentScrollRef} focused={focus === "comments"} flexGrow={1} minHeight={0}>
+      <box
+        border
+        borderStyle="rounded"
+        borderColor={focus === "comments" ? COBALT : RULE}
+        title={` comments · ${openCount} open${draftCount > 0 ? ` · ${draftCount} draft` : ""} `}
+        titleAlignment="left"
+        backgroundColor={PANEL}
+        flexGrow={1}
+        minHeight={6}
+      >
+        <scrollbox
+          ref={commentScrollRef}
+          focused={focus === "comments"}
+          flexGrow={1}
+          minHeight={0}
+          style={{
+            rootOptions: { backgroundColor: PANEL, border: false },
+            wrapperOptions: { backgroundColor: PANEL },
+            viewportOptions: { backgroundColor: PANEL },
+            contentOptions: { backgroundColor: PANEL },
+          }}
+        >
           {comments.length === 0 ? (
-            <text height={1} attributes={DIM}>
+            <text height={1} fg={FAINT} bg="transparent">
               {"  no review comments yet"}
             </text>
           ) : (
@@ -1213,35 +1246,34 @@ export function ReviewScreen({
   ) : null;
 
   return (
-    <box flexGrow={1} flexDirection="column">
-      <box height={2} marginTop={1} flexShrink={0} flexDirection="column">
-        <text height={1}>
-          <span attributes={DIM}> mend / {projectName} / </span>
-          <span fg={COBALT} attributes={BOLD}>
-            review
-          </span>
-          <span attributes={DIM}>
-            {"  "}
-            {session.harness} {session.id.slice(0, 8)}
-          </span>
-          {isFetching ? <span fg={COBALT}>{"  syncing"}</span> : null}
-          {checkpointState === "recorded" ? null : (
-            <span fg={AMBER}>
-              {checkpointState === "recording" ? "  checkpointing" : "  checkpoint incomplete"}
-            </span>
-          )}
-        </text>
-        <text height={1}>
-          <span attributes={DIM}>
+    <box flexGrow={1} flexDirection="column" backgroundColor={BG}>
+      <box height={2} flexShrink={0} flexDirection="column" backgroundColor={BG}>
+        <text height={1} bg="transparent">
+          <span fg={INK}> mend</span>
+          <span fg={FAINT}> / </span>
+          <span fg={MUTED}>{projectName}</span>
+          <span fg={FAINT}> / </span>
+          <span fg={COBALT}>review</span>
+          <span fg={FAINT}>
             {" "}
-            {data.wire.change.branch.replace(/^mend\/session\//, "session ")} vs{" "}
-            {data.wire.change.baseSha.slice(0, 12)}
-            {"  "}
-            {files.length} files
+            · {session.harness} {session.id.slice(0, 8)}
           </span>
+          {isFetching ? <span fg={COBALT}> · syncing</span> : null}
+          <span fg={checkpointState === "failed" ? AMBER : FAINT}>
+            {checkpointState === "recording"
+              ? " · checkpointing"
+              : checkpointState === "failed"
+                ? " · checkpoint incomplete"
+                : " · checkpoint recorded"}
+          </span>
+        </text>
+        <text height={1} bg="transparent">
+          <span fg={FAINT}> {data.wire.change.branch.replace(/^mend\/session\//, "session ")}</span>
+          <span fg={FAINT}> · worktree vs {data.wire.change.baseSha.slice(0, 12)} · </span>
+          <span fg={MUTED}>{files.length} files</span>
           <span fg={GREEN}> +{additions}</span>
           <span fg={RED}> −{deletions}</span>
-          {openCount > 0 ? <span fg={AMBER}>{`  ${openCount} open`}</span> : null}
+          <span fg={AMBER}> · {openCount} open</span>
         </text>
       </box>
 
@@ -1253,67 +1285,81 @@ export function ReviewScreen({
         height={descriptionHeight}
       />
 
-      <box flexGrow={1} minHeight={0} flexDirection="row" marginTop={1}>
+      <box flexGrow={1} minHeight={0} flexDirection="row" backgroundColor={BG}>
         {sidebar}
-        <box flexGrow={1} minWidth={0} minHeight={0} flexDirection="column">
-          <text height={1}>
-            <span {...(focus === "diff" ? { fg: COBALT } : { attributes: DIM })}>
-              {selectedFile === null
-                ? " diff"
-                : ` ${selectedFile.path}  ${view}${selectedFile.likelyGenerated ? "  likely generated" : ""}${showWhitespace ? "  whitespace" : ""}${wrap ? "  wrapped" : ""}`}
-            </span>
-          </text>
-          {selectedFile === null || selectedFile.patch === "" || selectedFile.binary ? (
-            <box flexGrow={1} alignItems="center" justifyContent="center">
-              <text attributes={DIM}>
-                {files.length === 0
-                  ? "The worktree matches its base — nothing to review yet."
-                  : selectedFile?.binary === true
-                    ? "Binary change — text diff unavailable; statistics remain reviewable."
-                    : "This file has no renderable text patch."}
-              </text>
-            </box>
-          ) : (
-            <scrollbox
-              ref={diffScrollRef}
-              focused={focus === "diff"}
-              flexGrow={1}
-              minHeight={0}
-              scrollX
-            >
-              <diff
-                key={`${selectedFile.path}-${view}-${wrap}-${showWhitespace}`}
-                ref={diffRef}
-                diff={displayPatch}
-                view={view}
-                syncScroll
-                {...(selectedFile.filetype === undefined
-                  ? {}
-                  : { filetype: selectedFile.filetype })}
-                syntaxStyle={syntaxStyle}
-                wrapMode={wrap ? "word" : "none"}
-                showLineNumbers
-                fg={ink}
-                lineNumberFg={GRAY}
-                lineNumberBg="transparent"
-                contextBg="transparent"
-                contextContentBg="transparent"
-                addedBg={washes.add}
-                addedContentBg={washes.add}
-                removedBg={washes.del}
-                removedContentBg={washes.del}
-                addedSignColor={GREEN}
-                removedSignColor={RED}
-                addedLineNumberBg="transparent"
-                removedLineNumberBg="transparent"
-                selectionBg={COBALT}
-                selectionFg="#ffffff"
-                width="100%"
-                height={displayRows}
-                flexShrink={0}
-              />
-            </scrollbox>
-          )}
+        <box flexGrow={1} minWidth={0} minHeight={0} flexDirection="column" backgroundColor={BG}>
+          <box
+            border
+            borderStyle="rounded"
+            borderColor={focus === "diff" ? COBALT : RULE}
+            title={
+              selectedFile === null
+                ? " diff "
+                : ` ${selectedFile.path} · ${view}${selectedFile.likelyGenerated ? " · inferred likely generated" : ""}${showWhitespace ? " · whitespace" : ""}${wrap ? " · wrapped" : ""} `
+            }
+            titleAlignment="left"
+            backgroundColor={PANEL}
+            flexGrow={1}
+            minHeight={0}
+          >
+            {selectedFile === null || selectedFile.patch === "" || selectedFile.binary ? (
+              <box flexGrow={1} alignItems="center" justifyContent="center">
+                <text fg={FAINT} bg="transparent">
+                  {files.length === 0
+                    ? "The worktree matches its base — nothing to review yet."
+                    : selectedFile?.binary === true
+                      ? "Binary change — text diff unavailable; statistics remain reviewable."
+                      : "This file has no renderable text patch."}
+                </text>
+              </box>
+            ) : (
+              <scrollbox
+                ref={diffScrollRef}
+                focused={focus === "diff"}
+                flexGrow={1}
+                minHeight={0}
+                scrollX
+                style={{
+                  rootOptions: { backgroundColor: PANEL, border: false },
+                  wrapperOptions: { backgroundColor: PANEL },
+                  viewportOptions: { backgroundColor: PANEL },
+                  contentOptions: { backgroundColor: PANEL },
+                }}
+              >
+                <diff
+                  key={`${selectedFile.path}-${view}-${wrap}-${showWhitespace}`}
+                  ref={diffRef}
+                  diff={displayPatch}
+                  view={view}
+                  syncScroll
+                  {...(selectedFile.filetype === undefined
+                    ? {}
+                    : { filetype: selectedFile.filetype })}
+                  syntaxStyle={syntaxStyle}
+                  wrapMode={wrap ? "word" : "none"}
+                  showLineNumbers
+                  fg={INK}
+                  lineNumberFg={FAINT}
+                  lineNumberBg="transparent"
+                  contextBg="transparent"
+                  contextContentBg="transparent"
+                  addedBg={ADD_WASH}
+                  addedContentBg={ADD_WASH}
+                  removedBg={DELETE_WASH}
+                  removedContentBg={DELETE_WASH}
+                  addedSignColor={GREEN}
+                  removedSignColor={RED}
+                  addedLineNumberBg="transparent"
+                  removedLineNumberBg="transparent"
+                  selectionBg={WASH}
+                  selectionFg={INK}
+                  width="100%"
+                  height={displayRows}
+                  flexShrink={0}
+                />
+              </scrollbox>
+            )}
+          </box>
           {focus === "comments" && detailComment !== null ? (
             <EvidenceCard comment={detailComment} width={wide ? width - 38 : width} />
           ) : height < 30 && activeTourStop !== null ? (
@@ -1334,20 +1380,15 @@ export function ReviewScreen({
           editor={editor}
           refValue={editorRef}
           busy={busy}
-          ink={ink}
           onSubmit={() => void submitEditor()}
         />
       )}
-      {status === "" ? (
-        <text height={1} attributes={DIM}>
-          {` m read · g suggest · t tour · ,/. tour stops · s draft review${data.followUp?.status === "pending" ? " · y deliver & relaunch" : ""} · o web · r refresh`}
-        </text>
-      ) : (
-        <text height={1} fg={AMBER}>
-          {` ${status}`}
-        </text>
-      )}
-      <text height={1} attributes={DIM}>
+      <text height={1} fg={status === "" ? FAINT : AMBER} bg="transparent">
+        {status === ""
+          ? ` m read · g suggest · t tour · ,/. tour stops · s draft review${data.followUp?.status === "pending" ? " · y deliver & relaunch" : ""} · o web · r refresh`
+          : ` ${status}`}
+      </text>
+      <text height={1} fg={FAINT} bg="transparent">
         {footer}
       </text>
     </box>

@@ -20,7 +20,7 @@ import {
   pendingId,
 } from "./shared.ts";
 import { openUrl } from "./terminal.ts";
-import { AMBER, BOLD, COBALT, DIM, editorInk, GRAY, GREEN, RED } from "./tui-theme.ts";
+import { AMBER, BG, COBALT, FAINT, GREEN, INK, MUTED, RED, RULE, WASH } from "./tui-theme.ts";
 import { createSseParser, eventFamilies, type InvalidateFamily } from "./workbench-events.ts";
 
 /**
@@ -97,11 +97,6 @@ interface ServiceDto {
   readonly hostPort: number | null;
 }
 
-/**
- * Status is a colored word, nothing more: live states cobalt, waiting amber,
- * observed outcomes green/red. Settled states carry no color — they render in
- * the terminal's own dim.
- */
 const STATUS_COLOR: Record<string, string> = {
   starting: COBALT,
   running: COBALT,
@@ -109,6 +104,7 @@ const STATUS_COLOR: Record<string, string> = {
   idle: COBALT,
   completed: GREEN,
   failed: RED,
+  stopped: FAINT,
 };
 
 const timeAgo = (iso: string): string => {
@@ -316,20 +312,19 @@ const deriveItems = (view: View, data: Workbench | undefined): ReadonlyArray<Ite
 
 // ─── rows: JSX spans instead of StyledText chunks ───────────────────────────
 
-/** Selection is one quiet pointer; nothing else marks the row. */
-const Pointer = ({ selected }: { readonly selected: boolean }) => (
-  <span fg={COBALT}>{selected ? "> " : "  "}</span>
+const Gutter = ({ selected }: { readonly selected: boolean }) => (
+  <span fg={selected ? COBALT : FAINT}>{selected ? "▌ " : "  "}</span>
 );
 
-/** Facts separated by plain space — the terminal's dim carries the hierarchy. */
+/** Facts joined with dim separators — label, review state, age. */
 const Facts = ({ facts }: { readonly facts: ReadonlyArray<ReactNode> }) => {
-  if (facts.length === 0) return <span attributes={DIM}>—</span>;
+  if (facts.length === 0) return <span fg={FAINT}>—</span>;
   return (
     <>
       {facts.map((fact, index) => (
         // eslint-disable-next-line react/no-array-index-key -- order is the identity here
         <span key={index}>
-          {index > 0 ? <span>{"  "}</span> : null}
+          {index > 0 ? <span fg={FAINT}> · </span> : null}
           {fact}
         </span>
       ))}
@@ -345,10 +340,10 @@ const SessionRow = ({
   readonly selected: boolean;
 }) => {
   const { session, annotation, services } = item;
-  const color = STATUS_COLOR[session.status];
+  const color = STATUS_COLOR[session.status] ?? MUTED;
   const facts: Array<ReactNode> = [];
   const age = timeAgo(session.createdAt);
-  if (age !== "") facts.push(<span attributes={DIM}>{age}</span>);
+  if (age !== "") facts.push(<span fg={FAINT}>{age}</span>);
   // What runs right now: name :port → host port, observed state colored.
   for (const service of services.slice(0, 2)) {
     facts.push(
@@ -358,9 +353,9 @@ const SessionRow = ({
     );
   }
   if (services.length > 2) {
-    facts.push(<span attributes={DIM}>{`+${services.length - 2} services`}</span>);
+    facts.push(<span fg={FAINT}>{`+${services.length - 2} services`}</span>);
   }
-  if (session.label !== null) facts.push(<span>{session.label}</span>);
+  if (session.label !== null) facts.push(<span fg={MUTED}>{session.label}</span>);
   if (annotation !== undefined && annotation.openComments > 0) {
     facts.push(
       <span fg={AMBER}>
@@ -372,25 +367,25 @@ const SessionRow = ({
     facts.push(<span fg={AMBER}>follow-up pending</span>);
   }
   if (session.summary !== null && facts.length < 3) {
-    facts.push(<span attributes={DIM}>{session.summary.split("\n")[0]?.slice(0, 60) ?? ""}</span>);
+    facts.push(<span fg={FAINT}>{session.summary.split("\n")[0]?.slice(0, 60) ?? ""}</span>);
   }
   return (
-    <box height={2} flexDirection="column" flexShrink={0}>
-      <text height={1}>
-        <Pointer selected={selected} />
-        <span {...(selected ? { fg: COBALT } : {})} attributes={BOLD}>
-          {session.harness.padEnd(9)}
-        </span>
-        <span attributes={DIM}>{session.id.slice(0, 8)}</span>
-        {color === undefined ? (
-          <span attributes={DIM}>{`  ${session.status.padEnd(10)}`}</span>
-        ) : (
-          <span fg={color}>{`  ${session.status.padEnd(10)}`}</span>
-        )}
-        <span attributes={DIM}>{session.branch}</span>
+    <box
+      height={2}
+      flexDirection="column"
+      flexShrink={0}
+      backgroundColor={selected ? WASH : "transparent"}
+    >
+      <text height={1} bg="transparent">
+        <Gutter selected={selected} />
+        <span fg={INK}>{session.harness.padEnd(9)}</span>
+        <span fg={FAINT}>{session.id.slice(0, 8)}</span>
+        <span fg={color}>{`  ${session.status.padEnd(10)}`}</span>
+        <span fg={MUTED}>{session.branch}</span>
       </text>
-      <text height={1}>
-        <span>{"    "}</span>
+      <text height={1} bg="transparent">
+        <Gutter selected={selected} />
+        <span>{"  "}</span>
         <Facts facts={facts} />
       </text>
     </box>
@@ -410,21 +405,24 @@ const ProjectRow = ({
 }) => {
   const { project, total, live, open } = item;
   const counts = total === 0 ? "no sessions" : `${total} session${total === 1 ? "" : "s"}`;
-  const liveText = live > 0 ? `  ${live} live` : "";
-  const openText = open > 0 ? `  ${open} open` : "";
+  const liveText = live > 0 ? ` · ${live} live` : "";
+  const openText = open > 0 ? ` · ${open} open` : "";
+  const pad = " ".repeat(Math.max(1, 24 - counts.length - liveText.length - openText.length));
   return (
-    <box height={1} flexShrink={0}>
-      <text height={1}>
-        <Pointer selected={selected} />
-        <span {...(selected ? { fg: COBALT } : {})} attributes={BOLD}>
-          {project.name.padEnd(nameWidth)}
-        </span>
+    <box height={1} flexShrink={0} backgroundColor={selected ? WASH : "transparent"}>
+      <text height={1} bg="transparent">
+        <Gutter selected={selected} />
+        <span fg={INK}>{project.name.padEnd(nameWidth)}</span>
         <span>{"  "}</span>
-        <span attributes={DIM}>{project.defaultBranch.padEnd(branchWidth)}</span>
+        <span fg={MUTED}>{project.defaultBranch.padEnd(branchWidth)}</span>
         <span>{"  "}</span>
-        <span attributes={DIM}>{counts}</span>
+        <span fg={total === 0 ? FAINT : MUTED}>{counts}</span>
         {liveText === "" ? null : <span fg={COBALT}>{liveText}</span>}
         {openText === "" ? null : <span fg={AMBER}>{openText}</span>}
+        <span fg={FAINT}>
+          {pad}
+          {project.storePath}
+        </span>
       </text>
     </box>
   );
@@ -437,11 +435,11 @@ const HarnessRow = ({
   readonly item: HarnessItem;
   readonly selected: boolean;
 }) => (
-  <box height={1} flexShrink={0}>
-    <text height={1}>
-      <Pointer selected={selected} />
-      <span {...(selected ? { fg: COBALT } : {})}>{item.label.padEnd(12)}</span>
-      <span attributes={DIM}>{item.hint}</span>
+  <box height={1} flexShrink={0} backgroundColor={selected ? WASH : "transparent"}>
+    <text height={1} bg="transparent">
+      <Gutter selected={selected} />
+      <span fg={INK}>{item.label.padEnd(12)}</span>
+      <span fg={FAINT}>{item.hint}</span>
     </text>
   </box>
 );
@@ -483,7 +481,7 @@ const StatusLine = ({
         ? ` ${status.text}`
         : "";
   return (
-    <text height={1} fg={AMBER}>
+    <text height={1} fg={AMBER} bg="transparent">
       {text}
     </text>
   );
@@ -494,7 +492,7 @@ const errorText = (error: unknown): string =>
 
 // ─── the app ────────────────────────────────────────────────────────────────
 
-const CHROME_ROWS = 5; // margin + header + margin + status + footer
+const CHROME_ROWS = 7; // margin + header + margin + 2 borders + status + footer
 
 const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit: () => void }) => {
   const renderer = useRenderer();
@@ -871,49 +869,49 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   const nameWidth = Math.max(...projects.map((p) => p.name.length), 4);
   const branchWidth = Math.max(...projects.map((p) => p.defaultBranch.length), 4);
 
+  let title: string;
   let headerContext: ReactNode;
   let footerText: string;
   if (view.kind === "projects") {
+    title = " projects ";
     headerContext = (
       <>
-        <span attributes={BOLD}>projects</span>
-        <span attributes={DIM}>
-          {"  "}
+        <span fg={MUTED}>
           {projects.length} project{projects.length === 1 ? "" : "s"}
         </span>
-        {liveTotal > 0 ? <span fg={COBALT}>{`  ${liveTotal} live`}</span> : null}
+        <span fg={FAINT}> · </span>
+        <span fg={liveTotal > 0 ? COBALT : FAINT}>{liveTotal} live</span>
       </>
     );
-    footerText = " ↑↓ move · enter open · r refresh · q quit";
+    footerText = " ↑↓/jk move · enter/l open project · r refresh · q quit";
   } else if (view.kind === "sessions") {
     const name = detail?.project.name ?? "?";
     const live = (detail?.sessions ?? []).filter((s) => LIVE_STATUSES.has(s.status)).length;
+    title = ` sessions — ${name} `;
     headerContext = (
       <>
-        <span attributes={BOLD} fg={COBALT}>
-          {name}
-        </span>
-        <span attributes={DIM}> {detail?.project.defaultBranch ?? ""}</span>
-        {live > 0 ? <span fg={COBALT}>{`  ${live} live`}</span> : null}
+        <span fg={COBALT}>{name}</span>
+        <span fg={FAINT}> {detail?.project.defaultBranch ?? ""}</span>
+        <span fg={FAINT}> · </span>
+        <span fg={live > 0 ? COBALT : FAINT}>{live} live</span>
       </>
     );
-    footerText = " ↑↓ move · enter attach/resume · v review · o web · n new · e rename · q quit";
+    footerText =
+      " ↑↓/jk move · enter/l attach/resume · v review in TUI · o web · n new · e rename · h/- projects · q quit";
   } else {
     const forSession = view.session;
+    title =
+      forSession === null
+        ? " new session — pick a harness "
+        : ` resume ${forSession.id.slice(0, 8)} — pick a harness `;
     headerContext = (
-      <>
-        <span attributes={BOLD}>
-          {forSession === null ? "new session" : `resume ${forSession.id.slice(0, 8)}`}
-        </span>
-        <span attributes={DIM}>
-          {"  "}
-          {forSession === null
-            ? "pick a harness — a fresh worktree, recorded from the first keystroke"
-            : "pick a harness — same worktree, restored state"}
-        </span>
-      </>
+      <span fg={MUTED}>
+        {forSession === null
+          ? "a fresh worktree, recorded from the first keystroke"
+          : "same worktree, restored state"}
+      </span>
     );
-    footerText = " ↑↓ move · enter start · esc back";
+    footerText = " ↑↓ move · enter start · esc/h back";
   }
 
   const loadFailure =
@@ -939,47 +937,76 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     );
   }
 
-  const ink = editorInk(renderer.themeMode);
-
   return (
-    <box flexGrow={1} flexDirection="column">
-      <box height={1} marginTop={1} flexDirection="row" justifyContent="space-between">
-        <text height={1}>
-          <span attributes={DIM}> mend </span>
+    <box flexGrow={1} flexDirection="column" backgroundColor={BG}>
+      <box
+        height={1}
+        marginTop={1}
+        flexDirection="row"
+        justifyContent="space-between"
+        backgroundColor="transparent"
+      >
+        <text height={1} bg="transparent">
+          <span fg={INK}> mend</span>
+          <span>{"  "}</span>
           {headerContext}
         </text>
-        <text height={1} attributes={DIM}>
+        <text height={1} fg={FAINT} bg="transparent">
           {`${ctx.config.url}  `}
         </text>
       </box>
 
-      <scrollbox ref={scrollRef} flexGrow={1} flexShrink={1} minHeight={0} marginTop={1}>
-        {items.map((item, index) =>
-          item.kind === "session" ? (
-            <SessionRow key={itemKey(item)} item={item} selected={index === selectedIndex} />
-          ) : item.kind === "project" ? (
-            <ProjectRow
-              key={itemKey(item)}
-              item={item}
-              selected={index === selectedIndex}
-              nameWidth={nameWidth}
-              branchWidth={branchWidth}
-            />
-          ) : (
-            <HarnessRow key={itemKey(item)} item={item} selected={index === selectedIndex} />
-          ),
-        )}
-        {view.kind === "sessions" && data !== undefined && items.length === 0 ? (
-          <text height={1} attributes={DIM}>
-            {"  no sessions yet — n starts one"}
-          </text>
-        ) : null}
-        {loadFailure !== null ? (
-          <text height={1} fg={AMBER}>
-            {`  ${loadFailure} — retrying`}
-          </text>
-        ) : null}
-      </scrollbox>
+      <box
+        border
+        borderStyle="rounded"
+        borderColor={RULE}
+        title={title}
+        titleAlignment="left"
+        backgroundColor={BG}
+        flexGrow={1}
+        flexShrink={1}
+        minHeight={0}
+        marginTop={1}
+      >
+        <scrollbox
+          ref={scrollRef}
+          flexGrow={1}
+          flexShrink={1}
+          minHeight={0}
+          style={{
+            rootOptions: { backgroundColor: BG, border: false },
+            wrapperOptions: { backgroundColor: BG },
+            viewportOptions: { backgroundColor: BG },
+            contentOptions: { backgroundColor: BG },
+          }}
+        >
+          {items.map((item, index) =>
+            item.kind === "session" ? (
+              <SessionRow key={itemKey(item)} item={item} selected={index === selectedIndex} />
+            ) : item.kind === "project" ? (
+              <ProjectRow
+                key={itemKey(item)}
+                item={item}
+                selected={index === selectedIndex}
+                nameWidth={nameWidth}
+                branchWidth={branchWidth}
+              />
+            ) : (
+              <HarnessRow key={itemKey(item)} item={item} selected={index === selectedIndex} />
+            ),
+          )}
+          {view.kind === "sessions" && data !== undefined && items.length === 0 ? (
+            <text height={1} fg={FAINT} bg="transparent">
+              {"  no sessions yet — n starts one"}
+            </text>
+          ) : null}
+          {loadFailure !== null ? (
+            <text height={1} fg={AMBER} bg="transparent">
+              {`  ${loadFailure} — retrying`}
+            </text>
+          ) : null}
+        </scrollbox>
+      </box>
 
       {editing === null ? null : (
         <box
@@ -988,6 +1015,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           borderColor={COBALT}
           title={` label — ${editing.harness} ${editing.id.slice(0, 8)} `}
           titleAlignment="left"
+          backgroundColor={BG}
           height={3}
           flexShrink={0}
         >
@@ -995,12 +1023,12 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
             focused
             value={editing.label ?? ""}
             placeholder="a few words for what this session is doing (empty clears)"
-            backgroundColor="transparent"
-            focusedBackgroundColor="transparent"
-            textColor={ink}
-            focusedTextColor={ink}
-            placeholderColor={GRAY}
-            cursorColor={ink}
+            backgroundColor={BG}
+            focusedBackgroundColor={BG}
+            textColor={INK}
+            focusedTextColor={INK}
+            placeholderColor={FAINT}
+            cursorColor={INK}
             flexGrow={1}
             onSubmit={(value: unknown) => {
               if (typeof value === "string") submitRename(editing, value);
@@ -1010,7 +1038,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       )}
 
       <StatusLine busy={busy} busyStarted={busyStarted} status={status} />
-      <text height={1} attributes={DIM}>
+      <text height={1} fg={FAINT} bg="transparent">
         {editing === null ? footerText : " enter save · esc cancel"}
       </text>
     </box>
@@ -1021,6 +1049,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
 
 export const runDashboard = async (ctx: DashboardContext): Promise<void> => {
   const renderer = await createCliRenderer({ exitOnCtrlC: false });
+  renderer.setBackgroundColor(BG);
   const queryClient = new QueryClient();
   const controller = new AbortController();
   let eventTimer: ReturnType<typeof setTimeout> | null = null;
