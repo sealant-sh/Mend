@@ -75,6 +75,48 @@ A Service can also adopt a listener that already exists in the workspace. Adopti
 doorway without supervision: there is no Mend-owned process to restart and no log beyond what
 started it.
 
+## Writing `mend.toml`
+
+Recipes live in a `mend.toml` at the repository root, one table per Service:
+
+```toml
+[service.web]
+command = "pnpm dev"
+port = 3000
+browserScheme = "http"
+
+[service.db]
+# no command: adopt a listener something else starts (a compose sidecar, a daemon)
+port = 5432
+
+[service.game]
+command = "node server.js"
+port = 9000
+protocol = "udp"
+```
+
+The fields:
+
+- `port` is the only required field: where the process listens inside the workspace, 1–65535.
+- `command` is the shell command Mend supervises. Leave it out for an adopt-only recipe: Mend
+  creates the doorway but supervises nothing.
+- `protocol` is `"tcp"` unless you say `"udp"`.
+- `browserScheme` (`"http"` or `"https"`) is what gives a Service its Open action. TCP alone never
+  implies HTTP, and a UDP recipe cannot declare one.
+
+The table name is the lookup key (`mend service web`): lowercase letters and digits plus `.`, `_`,
+and `-`, up to 64 characters.
+
+Mend reads the file from the session's worktree, not from the project's main branch. Two things
+follow. An agent can add a recipe as part of its change, and the addition reviews like any other
+edit. And two sessions on different branches can carry different recipes. A malformed file is a
+named error, never a guess; a missing file means no declared recipes. Recipes declared on the
+project in the web app join the same set, and on a name collision the file wins, because it travels
+with the code.
+
+`mend service init` scaffolds the file from the package and Compose files it finds, and shows you
+the result before writing it.
+
 ## Evidence, not promises
 
 Every start is an attempt with a recorded log you can replay and then follow live. Restarting adds
