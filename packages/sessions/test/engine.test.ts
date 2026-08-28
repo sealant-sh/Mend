@@ -95,11 +95,13 @@ import {
   Store,
   StoreConfig,
   DeploymentConfigLocal,
+  processStatePathOf,
 } from "@mend/store";
 import type {
   CreateOptions,
   InteractiveSession,
   InteractiveSessionStatus,
+  Run,
   SessionOptions,
   Workspace,
 } from "@sealant/sdk";
@@ -151,6 +153,40 @@ const settingsLayer = (workspaceImage = defaultSettings.workspaceImage) =>
     modify: () => Effect.die("not in test"),
   });
 
+/** The evidence side of a recorded exec — inert, only there to satisfy the SDK shape. */
+const fakeExecRun: Run = {
+  id: "run-exec",
+  result: { status: "completed", outcome: "completed", exitCode: 0 },
+  changes: { files: [], diff: async () => "" },
+  artifacts: { list: async () => [], get: async () => new Uint8Array() },
+  record: {
+    runId: "run-exec",
+    replay: async () => {
+      throw new Error("not in test");
+    },
+    commands: async () => [],
+    transcript: async () => "",
+    stream: async function* () {},
+    timeline: async function* () {},
+    scrollback: async function* () {},
+    loss: async () => {
+      throw new Error("not in test");
+    },
+    summary: async () => {
+      throw new Error("not in test");
+    },
+    fileTreeAt: async () => {
+      throw new Error("not in test");
+    },
+    processTreeAt: async () => {
+      throw new Error("not in test");
+    },
+  },
+  wait: async function () {
+    return this;
+  },
+};
+
 const sealantLaunchLayer = (
   created: CreateOptions[],
   rejectCredentials: (credentials: CreateOptions["credentials"]) => boolean = () => false,
@@ -168,6 +204,8 @@ const sealantLaunchLayer = (
   createWorkspaceOverride?: (
     options: CreateOptions,
   ) => Effect.Effect<Workspace, SealantPlatformError>,
+  /** When provided, workspace execs succeed (exit 0, empty output) and land here. */
+  execCalls?: ReadonlyArray<string>[],
 ) => {
   let nextPty = 0;
   const ptys = new Map<string, InteractiveSession>();
@@ -273,15 +311,22 @@ const sealantLaunchLayer = (
     getSession: (_workspace, id) => Effect.succeed(ptys.get(id) ?? initialPty),
     // Typed failure, not a defect: the settle-path harvest must degrade
     // quietly and still reach the workspace reap.
-    exec: () =>
-      Effect.fail(
-        new SealantPlatformError({
-          code: "exec-not-in-test",
-          status: null,
-          message: "exec not available in this test world",
-          cause: null,
-        }),
-      ),
+    exec:
+      execCalls === undefined
+        ? () =>
+            Effect.fail(
+              new SealantPlatformError({
+                code: "exec-not-in-test",
+                status: null,
+                message: "exec not available in this test world",
+                cause: null,
+              }),
+            )
+        : (_workspace, argv) =>
+            Effect.sync(() => {
+              execCalls.push(argv);
+              return { exitCode: 0, stdout: "", stderr: "", run: fakeExecRun };
+            }),
     diffCommits: () => Effect.die("not in test"),
     inferenceRespond: () => Effect.die("not in test"),
     recordStream: () => Stream.fromEffect(Effect.never),
@@ -1526,6 +1571,94 @@ describe("SessionEngine", () => {
         }),
       {
         sealantLayer: sealantLaunchLayer(created, undefined, stopped),
+        protocolHostLayer: recordingProtocolHostLayer(attached, submitted),
+      },
+    );
+  });
+
+  it("restores harvested state into the fresh workspace a protocol resume provisions", async () => {
+    // Live failure 2026-08-28 (PoC session 59e473f4): launchProtocol passed an explicit
+    // null state to launchInternal, which skips the restore — while the composed argv
+    // still resumed by provider id. On a fresh workspace claude then exited 1 with
+    // "No conversation found with session ID". The restore must reach the new workspace.
+    const created: CreateOptions[] = [];
+    const stopped: string[] = [];
+    const spawned: ReadonlyArray<string>[] = [];
+    const execCalls: ReadonlyArray<string>[] = [];
+    const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
+    const submitted: string[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            ownerUserId: null,
+            base: null,
+          });
+          yield* engine.launchProtocol(
+            session.id,
+            { mode: "protocol", permissionMode: "bypass" },
+            "user-1",
+          );
+          const agent = [...world.processes.values()].find(
+            (process) => process.kind === "agent-protocol",
+          );
+          if (agent === undefined || agent.providerSessionId === null) {
+            throw new Error("the protocol launch recorded no provider session id");
+          }
+          yield* engine.stop(session.id);
+          // The settle-path harvest (forked) clears the manifest before its capture fails
+          // against the empty exec output; wait for its pack attempt before planting state.
+          const packRan = () =>
+            execCalls.some((argv) => argv.join(" ").includes("mend-harness-state.tgz"));
+          for (let i = 0; i < 400 && !packRan(); i++) {
+            yield* Effect.sleep(Duration.millis(10));
+          }
+          expect(packRan()).toBe(true);
+          const stateDir = processStatePathOf(project.storePath, session.id, agent.id);
+          fs.mkdirSync(stateDir, { recursive: true });
+          fs.writeFileSync(
+            path.join(stateDir, "manifest.json"),
+            JSON.stringify({
+              harness: "claude",
+              providerSessionId: agent.providerSessionId,
+              capturedAt: new Date().toISOString(),
+            }),
+          );
+          fs.writeFileSync(path.join(stateDir, "harness-state.tar.gz"), "fake-archive");
+
+          const resumed = yield* engine.resumeSession(session.id, null);
+
+          expect(resumed.status).toBe("running");
+          expect(created).toHaveLength(2);
+          // The saved state was staged into the worktree and unpacked in the NEW workspace
+          // before the harness started.
+          const restoreExec = execCalls.find((argv) =>
+            argv.join(" ").includes(".mend-harness-state-"),
+          );
+          expect(restoreExec?.join(" ")).toContain("tar -xzf");
+          // And the relaunch still resumes the native conversation.
+          const resumeArgv = spawned.at(-1) ?? [];
+          expect(resumeArgv).toContain("--resume");
+          expect(resumeArgv).toContain(agent.providerSessionId);
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          stopped,
+          spawned,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          execCalls,
+        ),
         protocolHostLayer: recordingProtocolHostLayer(attached, submitted),
       },
     );
