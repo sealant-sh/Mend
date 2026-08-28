@@ -1205,6 +1205,28 @@ const projectClusterBindingsMigration = Effect.gen(function* () {
     ALTER TABLE session_runs ADD COLUMN IF NOT EXISTS cluster_service_account text`;
 });
 
+/**
+ * CLI authorize requests (docs: `mend login`): pairing with the direction
+ * reversed — the CLI creates a request holding only a hashed device code, a
+ * signed-in browser approves it by user code, and the CLI's next poll mints a
+ * device token. No plaintext credential ever rests here.
+ */
+const cliAuthRequestsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE cli_auth_requests (
+      id text PRIMARY KEY,
+      device_code_hash text NOT NULL UNIQUE,
+      user_code text NOT NULL UNIQUE,
+      name text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      expires_at timestamptz NOT NULL,
+      approved_by text REFERENCES "user"(id) ON DELETE CASCADE,
+      denied_at timestamptz,
+      collected_at timestamptz
+    )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -1247,4 +1269,5 @@ export const migrations = {
   "0038_device_pairing": devicePairing,
   "0039_session_channel_tokens": sessionChannelTokens,
   "0040_project_cluster_bindings": projectClusterBindingsMigration,
+  "0041_cli_auth_requests": cliAuthRequestsMigration,
 };

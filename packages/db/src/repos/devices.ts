@@ -1,11 +1,11 @@
 import { PgClient } from "@effect/sql-pg";
 import { Timestamp } from "@mend/domain";
-import { and, desc, eq, gt, isNull, lt } from "drizzle-orm";
+import { and, desc, eq, gt, isNotNull, isNull, lt } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
-import { deviceTokens, pairingCodes } from "../schema/workbench.ts";
+import { cliAuthRequests, deviceTokens, pairingCodes } from "../schema/workbench.ts";
 
 /**
  * How long an expired pairing code is kept before minting sweeps it away. Long
@@ -61,6 +61,42 @@ export class DeviceNotFoundError extends Schema.TaggedErrorClass<DeviceNotFoundE
 ) {}
 
 /**
+ * One CLI authorize request as the browser sees it: what asked, when, and how
+ * long the code stays approvable. The device code never appears — only its
+ * hash is stored, and only the CLI that minted it can poll with it.
+ */
+export class CliAuthRequest extends Schema.Class<CliAuthRequest>("CliAuthRequest")({
+  userCode: Schema.String,
+  name: Schema.String,
+  createdAt: Timestamp,
+  expiresAt: Timestamp,
+}) {}
+
+/** No CLI authorize request with that code or device code exists. */
+export class CliAuthUnknownError extends Schema.TaggedErrorClass<CliAuthUnknownError>()(
+  "CliAuthUnknownError",
+  {},
+) {}
+
+/** The request exists but is spent: expired, already approved, or already collected. */
+export class CliAuthSpentError extends Schema.TaggedErrorClass<CliAuthSpentError>()(
+  "CliAuthSpentError",
+  {},
+) {}
+
+/** The request exists and nobody has decided yet — the CLI should keep polling. */
+export class CliAuthPendingError extends Schema.TaggedErrorClass<CliAuthPendingError>()(
+  "CliAuthPendingError",
+  {},
+) {}
+
+/** A signed-in user looked at the request and said no. */
+export class CliAuthDeniedError extends Schema.TaggedErrorClass<CliAuthDeniedError>()(
+  "CliAuthDeniedError",
+  {},
+) {}
+
+/**
  * Device pairing: a signed-in user mints a short-lived code, a phone claims it
  * once, and the claim mints a bearer token whose hash is all that is kept.
  */
@@ -83,6 +119,30 @@ export class DevicesRepo extends Context.Service<
       userId: string,
       id: string,
     ) => Effect.Effect<PairedDevice, DeviceNotFoundError>;
+    readonly createCliAuth: (input: {
+      readonly deviceCodeHash: string;
+      readonly userCode: string;
+      readonly name: string;
+      readonly expiresAt: Date;
+    }) => Effect.Effect<CliAuthRequest>;
+    readonly getCliAuth: (
+      userCode: string,
+    ) => Effect.Effect<CliAuthRequest, CliAuthUnknownError | CliAuthSpentError>;
+    readonly approveCliAuth: (input: {
+      readonly userCode: string;
+      readonly userId: string;
+    }) => Effect.Effect<CliAuthRequest, CliAuthUnknownError | CliAuthSpentError>;
+    readonly denyCliAuth: (
+      userCode: string,
+    ) => Effect.Effect<CliAuthRequest, CliAuthUnknownError | CliAuthSpentError>;
+    readonly collectCliAuth: (input: {
+      readonly deviceCodeHash: string;
+      readonly platform: string;
+      readonly tokenHash: string;
+    }) => Effect.Effect<
+      ClaimedPairing,
+      CliAuthUnknownError | CliAuthSpentError | CliAuthPendingError | CliAuthDeniedError
+    >;
   }
 >()("@mend/db/DevicesRepo") {}
 
@@ -129,6 +189,39 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
         return new PairingCode(row);
       });
 
+      // better-auth's `user` row for whoever a code or request resolved to.
+      const ownerOf = Effect.fn("DevicesRepo.ownerOf")(function* (userId: string) {
+        const ownerRows = yield* sql`
+        SELECT id, email, name FROM "user" WHERE id = ${userId} LIMIT 1`.pipe(Effect.orDie);
+        const owner = ownerRows[0] as
+          | { readonly id: string; readonly email: string; readonly name: string }
+          | undefined;
+        if (owner === undefined) return yield* Effect.die("token grant has no owner");
+        return new DeviceOwner({ id: owner.id, name: owner.name, email: owner.email });
+      });
+
+      // The one place a device row is born — pairing claims and CLI collections both end here.
+      const insertDeviceToken = Effect.fn("DevicesRepo.insertDeviceToken")(function* (input: {
+        readonly userId: string;
+        readonly name: string;
+        readonly platform: string;
+        readonly tokenHash: string;
+      }) {
+        const [device] = yield* db
+          .insert(deviceTokens)
+          .values({
+            id: crypto.randomUUID(),
+            userId: input.userId,
+            name: input.name,
+            platform: input.platform,
+            tokenHash: input.tokenHash,
+          })
+          .returning(selectedDevice)
+          .pipe(Effect.orDie);
+        if (device === undefined) return yield* Effect.die("device token insert returned no row");
+        return new PairedDevice(device);
+      });
+
       // Single use is the UPDATE's own WHERE clause: two claimants racing the
       // same code produce exactly one winner, and the loser reads as spent.
       const claim = Effect.fn("DevicesRepo.claim")(function* (input: {
@@ -162,32 +255,14 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
             : Effect.fail(new PairingCodeSpentError());
         }
 
-        const ownerRows = yield* sql`
-        SELECT id, email, name FROM "user" WHERE id = ${claimedCode.userId} LIMIT 1`.pipe(
-          Effect.orDie,
-        );
-        const owner = ownerRows[0] as
-          | { readonly id: string; readonly email: string; readonly name: string }
-          | undefined;
-        if (owner === undefined) return yield* Effect.die("pairing code has no owner");
-
-        const [device] = yield* db
-          .insert(deviceTokens)
-          .values({
-            id: crypto.randomUUID(),
-            userId: claimedCode.userId,
-            name: input.name,
-            platform: input.platform,
-            tokenHash: input.tokenHash,
-          })
-          .returning(selectedDevice)
-          .pipe(Effect.orDie);
-        if (device === undefined) return yield* Effect.die("device token insert returned no row");
-
-        return new ClaimedPairing({
-          user: new DeviceOwner({ id: owner.id, name: owner.name, email: owner.email }),
-          device: new PairedDevice(device),
+        const user = yield* ownerOf(claimedCode.userId);
+        const device = yield* insertDeviceToken({
+          userId: claimedCode.userId,
+          name: input.name,
+          platform: input.platform,
+          tokenHash: input.tokenHash,
         });
+        return new ClaimedPairing({ user, device });
       });
 
       const list = Effect.fn("DevicesRepo.list")(function* (userId: string) {
@@ -212,6 +287,172 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
         return new PairedDevice(row);
       });
 
-      return { createPairing, claim, list, revoke };
+      const selectedCliAuth = {
+        userCode: cliAuthRequests.userCode,
+        name: cliAuthRequests.name,
+        createdAt: cliAuthRequests.createdAt,
+        expiresAt: cliAuthRequests.expiresAt,
+      };
+
+      // Unknown or spent, told apart the same way a pairing code is: a row
+      // that exists but cannot be acted on answers as itself.
+      const cliAuthMiss = Effect.fn("DevicesRepo.cliAuthMiss")(function* (userCode: string) {
+        const [existing] = yield* db
+          .select({ id: cliAuthRequests.id })
+          .from(cliAuthRequests)
+          .where(eq(cliAuthRequests.userCode, userCode))
+          .pipe(Effect.orDie);
+        return yield* existing === undefined
+          ? Effect.fail(new CliAuthUnknownError())
+          : Effect.fail(new CliAuthSpentError());
+      });
+
+      const createCliAuth = Effect.fn("DevicesRepo.createCliAuth")(function* (input: {
+        readonly deviceCodeHash: string;
+        readonly userCode: string;
+        readonly name: string;
+        readonly expiresAt: Date;
+      }) {
+        yield* db
+          .delete(cliAuthRequests)
+          .where(lt(cliAuthRequests.expiresAt, new Date(Date.now() - PAIRING_SWEEP_GRACE_MS)))
+          .pipe(Effect.orDie);
+        const [row] = yield* db
+          .insert(cliAuthRequests)
+          .values({
+            id: crypto.randomUUID(),
+            deviceCodeHash: input.deviceCodeHash,
+            userCode: input.userCode,
+            name: input.name,
+            expiresAt: input.expiresAt,
+          })
+          .returning(selectedCliAuth)
+          .pipe(Effect.orDie);
+        if (row === undefined) return yield* Effect.die("cli auth insert returned no row");
+        return new CliAuthRequest(row);
+      });
+
+      // The approve page reads only requests still waiting on a decision — a
+      // reloaded page after approval answers "spent", never the request again.
+      const getCliAuth = Effect.fn("DevicesRepo.getCliAuth")(function* (userCode: string) {
+        const [row] = yield* db
+          .select(selectedCliAuth)
+          .from(cliAuthRequests)
+          .where(
+            and(
+              eq(cliAuthRequests.userCode, userCode),
+              isNull(cliAuthRequests.approvedBy),
+              isNull(cliAuthRequests.deniedAt),
+              gt(cliAuthRequests.expiresAt, new Date()),
+            ),
+          )
+          .pipe(Effect.orDie);
+        if (row === undefined) return yield* cliAuthMiss(userCode);
+        return new CliAuthRequest(row);
+      });
+
+      const approveCliAuth = Effect.fn("DevicesRepo.approveCliAuth")(function* (input: {
+        readonly userCode: string;
+        readonly userId: string;
+      }) {
+        const [row] = yield* db
+          .update(cliAuthRequests)
+          .set({ approvedBy: input.userId })
+          .where(
+            and(
+              eq(cliAuthRequests.userCode, input.userCode),
+              isNull(cliAuthRequests.approvedBy),
+              isNull(cliAuthRequests.deniedAt),
+              gt(cliAuthRequests.expiresAt, new Date()),
+            ),
+          )
+          .returning(selectedCliAuth)
+          .pipe(Effect.orDie);
+        if (row === undefined) return yield* cliAuthMiss(input.userCode);
+        return new CliAuthRequest(row);
+      });
+
+      const denyCliAuth = Effect.fn("DevicesRepo.denyCliAuth")(function* (userCode: string) {
+        const [row] = yield* db
+          .update(cliAuthRequests)
+          .set({ deniedAt: new Date() })
+          .where(
+            and(
+              eq(cliAuthRequests.userCode, userCode),
+              isNull(cliAuthRequests.approvedBy),
+              isNull(cliAuthRequests.deniedAt),
+              gt(cliAuthRequests.expiresAt, new Date()),
+            ),
+          )
+          .returning(selectedCliAuth)
+          .pipe(Effect.orDie);
+        if (row === undefined) return yield* cliAuthMiss(userCode);
+        return new CliAuthRequest(row);
+      });
+
+      // The token is born here, at collection — approval stores only who said
+      // yes, so no credential ever waits in this table. Single collection is
+      // the UPDATE's WHERE clause, like a pairing claim.
+      const collectCliAuth = Effect.fn("DevicesRepo.collectCliAuth")(function* (input: {
+        readonly deviceCodeHash: string;
+        readonly platform: string;
+        readonly tokenHash: string;
+      }) {
+        const now = new Date();
+        const [request] = yield* db
+          .update(cliAuthRequests)
+          .set({ collectedAt: now })
+          .where(
+            and(
+              eq(cliAuthRequests.deviceCodeHash, input.deviceCodeHash),
+              isNotNull(cliAuthRequests.approvedBy),
+              isNull(cliAuthRequests.collectedAt),
+              isNull(cliAuthRequests.deniedAt),
+              gt(cliAuthRequests.expiresAt, now),
+            ),
+          )
+          .returning({ name: cliAuthRequests.name, approvedBy: cliAuthRequests.approvedBy })
+          .pipe(Effect.orDie);
+
+        if (request === undefined || request.approvedBy === null) {
+          const [existing] = yield* db
+            .select({
+              approvedBy: cliAuthRequests.approvedBy,
+              deniedAt: cliAuthRequests.deniedAt,
+              collectedAt: cliAuthRequests.collectedAt,
+              expiresAt: cliAuthRequests.expiresAt,
+            })
+            .from(cliAuthRequests)
+            .where(eq(cliAuthRequests.deviceCodeHash, input.deviceCodeHash))
+            .pipe(Effect.orDie);
+          if (existing === undefined) return yield* Effect.fail(new CliAuthUnknownError());
+          if (existing.deniedAt !== null) return yield* Effect.fail(new CliAuthDeniedError());
+          if (existing.collectedAt !== null || existing.expiresAt <= now) {
+            return yield* Effect.fail(new CliAuthSpentError());
+          }
+          return yield* Effect.fail(new CliAuthPendingError());
+        }
+
+        const user = yield* ownerOf(request.approvedBy);
+        const device = yield* insertDeviceToken({
+          userId: request.approvedBy,
+          name: request.name,
+          platform: input.platform,
+          tokenHash: input.tokenHash,
+        });
+        return new ClaimedPairing({ user, device });
+      });
+
+      return {
+        createPairing,
+        claim,
+        list,
+        revoke,
+        createCliAuth,
+        getCliAuth,
+        approveCliAuth,
+        denyCliAuth,
+        collectCliAuth,
+      };
     }),
   );

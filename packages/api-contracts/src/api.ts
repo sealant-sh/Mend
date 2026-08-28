@@ -2,7 +2,7 @@ import { HttpApi } from "effect/unstable/httpapi";
 
 import { accountsGroup } from "./accounts.ts";
 import { sessionChangesGroup } from "./changes.ts";
-import { devicesGroup, userDevicesGroup, pairGroup } from "./devices.ts";
+import { cliAuthGroup, devicesGroup, userDevicesGroup, pairGroup } from "./devices.ts";
 import { githubGroup } from "./github.ts";
 import {
   projectClusterBindingsGroup,
@@ -40,4 +40,5 @@ export const MendApi = HttpApi.make("mend")
   .add(devicesGroup)
   .add(userDevicesGroup)
   .add(pairGroup)
+  .add(cliAuthGroup)
   .prefix("/api");

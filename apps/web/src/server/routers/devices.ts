@@ -14,4 +14,21 @@ export const devicesRouter = router({
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.userDevices.revoke({ params: { id: i.id } })),
     ),
+  // The CLI authorize walk (`mend login`): the /authorize page reads the
+  // pending request by its short code, then the signed-in user decides.
+  cliAuthRequest: procedure
+    .input(input(Schema.Struct({ code: Schema.String })))
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) => api.userDevices.cliAuthRequest({ params: { code: i.code } })),
+    ),
+  approveCliAuth: procedure
+    .input(input(Schema.Struct({ code: Schema.String })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => api.userDevices.approveCliAuth({ params: { code: i.code } })),
+    ),
+  denyCliAuth: procedure
+    .input(input(Schema.Struct({ code: Schema.String })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => api.userDevices.denyCliAuth({ params: { code: i.code } })),
+    ),
 });

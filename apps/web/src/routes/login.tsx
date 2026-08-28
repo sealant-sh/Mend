@@ -7,13 +7,28 @@ import { useState } from "react";
 import { MendMark } from "#/components/logo";
 import { authClient } from "#/lib/auth-client";
 
+/**
+ * Where to walk after signing in. Only a same-origin path is honoured —
+ * anything else (a full URL, a protocol-relative `//host`) falls back to the
+ * workbench, so a crafted login link cannot walk a user off this instance.
+ */
+export const safeNextPath = (value: unknown): string =>
+  typeof value === "string" && value.startsWith("/") && !value.startsWith("//") ? value : "/";
+
 export const Route = createFileRoute("/login")({
   ssr: false,
+  // `next` stays optional so every existing `navigate({ to: "/login" })` keeps
+  // compiling; absent means the workbench root.
+  validateSearch: (search: Record<string, unknown>): { readonly next?: string } => {
+    const next = safeNextPath(search["next"]);
+    return next === "/" ? {} : { next };
+  },
   component: LoginPage,
 });
 
 function LoginPage() {
   const navigate = useNavigate();
+  const next = Route.useSearch().next ?? "/";
   const [mode, setMode] = useState<"sign-in" | "sign-up">("sign-in");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -33,7 +48,10 @@ function LoginPage() {
       setError(result.error.message ?? "That did not work — check the details and try again.");
       return;
     }
-    void navigate({ to: "/" });
+    // A plain string path (validated same-origin above) — assign like the 401
+    // walk does, so the freshly signed-in session re-runs whatever loads there.
+    if (next === "/") void navigate({ to: "/" });
+    else window.location.assign(next);
   };
 
   return (

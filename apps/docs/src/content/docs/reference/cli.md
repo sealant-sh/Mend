@@ -11,14 +11,14 @@ version. One-shot commands require Node 22 or newer. The terminal dashboard requ
 
 ## Setup commands
 
-| Command                                             | Purpose                                                                         |
-| --------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `mend login [--url <server>] [--email <address>]`   | Sign in with email and password and save the token with mode `0600`             |
-| `mend logout`                                       | Remove the saved token from this machine                                        |
-| `mend connect <provider> [--from-stdin] [--remove]` | Connect or remove `claude`, `codex`, or `github` for the signed-in user         |
-| `mend accounts`                                     | List the signed-in user's connected provider accounts                           |
-| `mend doctor`                                       | Run a read-only setup checklist and print a repair command for unfinished items |
-| `mend pair [--url <base-url>]`                      | Create a single-use, ten-minute pairing code for another device                 |
+| Command                                             | Purpose                                                                                                                                                |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `mend login [--url <server>]`                       | Sign in through the browser. The CLI opens `<server>/authorize`, waits for you to press Authorize, and saves a revocable device token with mode `0600` |
+| `mend logout`                                       | Revoke this terminal's device token on the server and remove it from this machine                                                                      |
+| `mend connect <provider> [--from-stdin] [--remove]` | Connect or remove `claude`, `codex`, or `github` for the signed-in user                                                                                |
+| `mend accounts`                                     | List the signed-in user's connected provider accounts                                                                                                  |
+| `mend doctor`                                       | Run a read-only setup checklist and print a repair command for unfinished items                                                                        |
+| `mend pair [--url <base-url>]`                      | Create a single-use, ten-minute pairing code for another device                                                                                        |
 
 Read [Connect provider accounts](/guides/provider-accounts/) for credential sources and removal.
 

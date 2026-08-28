@@ -531,6 +531,24 @@ export const pairingCodes = pgTable(
   (table) => [index("pairing_codes_user_created_idx").on(table.userId, table.createdAt)],
 );
 
+/**
+ * One CLI authorize request — pairing with the direction reversed: the CLI
+ * (unauthenticated, holding only the device code) asks, a signed-in browser
+ * approves, and the CLI's next poll mints its device token. Only the device
+ * code's sha256 is stored; `user_code` is what the browser shows the human.
+ */
+export const cliAuthRequests = pgTable("cli_auth_requests", {
+  id: text().primaryKey(),
+  deviceCodeHash: text().notNull().unique(),
+  userCode: text().notNull().unique(),
+  name: text().notNull(),
+  createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp({ mode: "date", withTimezone: true }).notNull(),
+  approvedBy: text(),
+  deniedAt: timestamp({ mode: "date", withTimezone: true }),
+  collectedAt: timestamp({ mode: "date", withTimezone: true }),
+});
+
 export const contextSnapshots = pgTable("context_snapshots", {
   id: text().$type<ContextSnapshotId>().primaryKey(),
   packName: text(),
@@ -1130,6 +1148,7 @@ export type InferenceCallRow = typeof inferenceCalls.$inferSelect;
 export type PushDeviceRow = typeof pushDevices.$inferSelect;
 export type DeviceTokenRow = typeof deviceTokens.$inferSelect;
 export type PairingCodeRow = typeof pairingCodes.$inferSelect;
+export type CliAuthRequestRow = typeof cliAuthRequests.$inferSelect;
 export type ContextSnapshotRow = typeof contextSnapshots.$inferSelect;
 export type AgentSessionRow = typeof agentSessions.$inferSelect;
 export type SessionRunRow = typeof sessionRuns.$inferSelect;
