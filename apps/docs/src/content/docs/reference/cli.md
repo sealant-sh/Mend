@@ -117,7 +117,7 @@ The key bridge requires a reachable local SSH agent. Signing happens on the mach
 | Command                                                                       | Purpose                                                                     |
 | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
 | `mend service init [--yes]`                                                   | Scaffold `mend.toml` from package and Compose files                         |
-| `mend service run [session] --port <port> [options] -- <command...>`          | Start and supervise a Service command                                       |
+| `mend service run [session] --port <port> [options] -- <command...>`          | Start and supervise a Service command; tunnels the port here when remote    |
 | `mend service run [session] <name>`                                           | Start a recipe from `mend.toml`                                             |
 | `mend service <name>`                                                         | Shorthand for a named recipe                                                |
 | `mend service add [session] <port> [--name <name>] [--udp] [--http\|--https]` | Forward an existing workspace listener without supervising it               |
@@ -127,8 +127,8 @@ The key bridge requires a reachable local SSH agent. Signing happens on the mach
 | `mend service restart <name-or-id>`                                           | Start another attempt for a supervised Service                              |
 | `mend service stop <name-or-id>`                                              | Stop the process and close its host port                                    |
 
-`mend service run` accepts `--name`, `--port`, `--udp`, `--http`, and `--https`. Read
-[Development services](/guides/services/) for network and authentication boundaries.
+`mend service run` accepts `--name`, `--port`, `--udp`, `--http`, `--https`, and `--no-connect`.
+Read [Development services](/guides/services/) for network and authentication boundaries.
 
 ## Shell completion
 

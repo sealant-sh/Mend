@@ -862,7 +862,7 @@ const serviceUrl = (service: ServiceDto): string =>
  * authority is our own address; on a remote one it is an address on the
  * server's network — the honest client path is the authenticated tunnel.
  */
-const printServiceAccess = (config: CliConfig, service: ServiceDto): void => {
+const printServiceAccess = (config: CliConfig, service: ServiceDto, tunneling = false): void => {
   const gate = "no Mend sign-in on this port — network reach is the only gate";
   if (serverIsLocal(config)) {
     if (service.authority !== null) say(`  ${cobalt(serviceUrl(service))}  ${dim(gate)}`);
@@ -875,10 +875,13 @@ const printServiceAccess = (config: CliConfig, service: ServiceDto): void => {
     }
     return;
   }
-  const local = service.hostPort ?? service.workspacePort;
-  say(
-    `  ${cobalt(`mend service connect ${service.label}`)} ${dim(`→ 127.0.0.1:${local} on this machine, authenticated as you`)}`,
-  );
+  if (!tunneling) {
+    // Suggest the tunnel only when this command is not about to open it.
+    const local = service.hostPort ?? service.workspacePort;
+    say(
+      `  ${cobalt(`mend service connect ${service.label}`)} ${dim(`→ 127.0.0.1:${local} on this machine, authenticated as you`)}`,
+    );
+  }
   if (service.authority !== null) {
     say(`  ${dim(`server-side listener ${service.authority} · ${gate}`)}`);
   }
@@ -894,8 +897,8 @@ const printWorkspaceTtlFailure = (service: ServiceDto): void => {
   );
 };
 
-const printServiceEndpoint = (config: CliConfig, service: ServiceDto): void => {
-  printServiceAccess(config, service);
+const printServiceEndpoint = (config: CliConfig, service: ServiceDto, tunneling = false): void => {
+  printServiceAccess(config, service, tunneling);
   printWorkspaceTtlFailure(service);
 };
 
@@ -1001,11 +1004,26 @@ const findLiveService = async (config: CliConfig, needle: string): Promise<Servi
  * declared port to answer, then exposes it like any Service. The command
  * never occupies the agent's terminal or a tool call.
  */
+/**
+ * The point of starting a Service is reaching it. On a local server the
+ * bound authority already answers on this machine, so start-and-return is
+ * complete. On a remote server nothing local answers — stay attached and
+ * tunnel the port here, exactly what `mend service connect` would do next.
+ * Ctrl-C closes the tunnel, never the Service.
+ */
+const willAutoConnect = (config: CliConfig, service: ServiceDto, optOut: boolean): boolean =>
+  !optOut && !serverIsLocal(config) && service.protocol !== "udp";
+
+const autoConnect = async (config: CliConfig, service: ServiceDto): Promise<void> => {
+  say(dim("  remote server — tunneling the port here · Ctrl-C stops the tunnel, not the Service"));
+  await tunnelServices(config, [service], null);
+};
+
 const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const dashdash = args.indexOf("--");
   const usage =
-    "usage: mend service run [session] --port <port> [--name <n>] [--udp] [--http|--https] -- <command...>\n" +
-    "       mend service run [session] <name>          (a declared recipe)";
+    "usage: mend service run [session] --port <port> [--name <n>] [--udp] [--http|--https] [--no-connect] -- <command...>\n" +
+    "       mend service run [session] <name> [--no-connect]          (a declared recipe)";
   // No explicit command = a DECLARED Service: resolve the name against the
   // session worktree's mend.toml and start (or adopt) its recipe.
   if (dashdash === -1) {
@@ -1038,9 +1056,11 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
         name: recipe.name,
       }),
     );
+    const tunneling = willAutoConnect(config, service, args.includes("--no-connect"));
     say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
-    printServiceEndpoint(config, service);
+    printServiceEndpoint(config, service, tunneling);
     say(dim(`  logs: mend service logs ${service.label ?? service.id.slice(0, 8)}`));
+    if (tunneling) await autoConnect(config, service);
     return;
   }
   const argv = args.slice(dashdash + 1);
@@ -1075,9 +1095,11 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
       browserScheme,
     }),
   );
+  const tunneling = willAutoConnect(config, service, head.includes("--no-connect"));
   say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
-  printServiceEndpoint(config, service);
+  printServiceEndpoint(config, service, tunneling);
   say(dim(`  logs: mend service logs ${service.label ?? service.id.slice(0, 8)}`));
+  if (tunneling) await autoConnect(config, service);
 };
 
 /** Read sequence-addressed PTY output without attaching an input-capable terminal. */
@@ -1255,38 +1277,18 @@ const serviceInit = async (args: ReadonlyArray<string>) => {
 };
 
 /**
- * `mend service connect [name…] [--port <n>]`: the location-independent data
- * plane for Services. The server's own listener binds the SERVER's
- * interfaces (`MEND_SERVICE_HOSTS`) — exactly right when the server is this
- * machine, unreachable when it is a Pod or a VPS. This binds each Service's
- * port on THIS machine's loopback instead and pumps every accepted
- * connection over one authenticated WebSocket to the server, which dials the
- * same workspace forward the listener uses. No ports are opened anywhere but
- * here, and every connection carries the caller's Mend auth.
+ * The location-independent data plane for Services: bind each Service's port
+ * on THIS machine's loopback and pump every accepted connection over one
+ * authenticated WebSocket to the server, which dials the same workspace
+ * forward the server-side listener uses. No ports are opened anywhere but
+ * here, and every connection carries the caller's Mend auth. Blocks until
+ * interrupted — the listeners keep the process alive.
  */
-const serviceConnect = async (config: CliConfig, args: ReadonlyArray<string>) => {
-  const portFlag = args.indexOf("--port");
-  const portOverride = portFlag === -1 ? null : Number(args[portFlag + 1]);
-  if (portOverride !== null && !Number.isInteger(portOverride)) {
-    return fail("--port takes a port number");
-  }
-  const names = args.filter((a, i) => !a.startsWith("--") && i !== portFlag + 1);
-  const live = (await fetchServices(config)).filter((s) => s.protocol === "tcp");
-  const picked =
-    names.length === 0
-      ? live
-      : live.filter((s) => names.some((n) => s.label === n || s.id.startsWith(n)));
-  if (picked.length === 0) {
-    return fail(
-      names.length === 0
-        ? "no live TCP services — mend service run starts one"
-        : `no live TCP service matches "${names.join('", "')}"`,
-    );
-  }
-  if (portOverride !== null && picked.length !== 1) {
-    return fail("--port applies to exactly one service — name it");
-  }
-
+const tunnelServices = async (
+  config: CliConfig,
+  services: ReadonlyArray<ServiceDto>,
+  portOverride: number | null,
+): Promise<void> => {
   const tunnelUrl = (serviceId: string): URL => {
     const url = parseMendUrl(`${config.url}/api/service-tunnel`);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
@@ -1295,7 +1297,7 @@ const serviceConnect = async (config: CliConfig, args: ReadonlyArray<string>) =>
     return url;
   };
 
-  for (const service of picked) {
+  for (const service of services) {
     const port = portOverride ?? service.hostPort ?? service.workspacePort;
     const server = net.createServer((socket) => {
       // Hold local bytes until the tunnel is open; loopback buffers are tiny.
@@ -1330,11 +1332,44 @@ const serviceConnect = async (config: CliConfig, args: ReadonlyArray<string>) =>
       });
       server.listen(port, "127.0.0.1", () => resolve());
     }).catch((error: Error) => fail(error.message));
-    say(`${green("●")} ${service.label} → 127.0.0.1:${port} ${dim(`(tunnel to ${config.url})`)}`);
+    say(
+      `${green("●")} ${service.label ?? service.id.slice(0, 8)} → 127.0.0.1:${port} ${dim(`(tunnel to ${config.url})`)}`,
+    );
   }
   say(dim("  connections are authenticated as you · Ctrl-C stops"));
   // The listeners keep the process alive until the user stops it.
   await new Promise(() => {});
+};
+
+/**
+ * `mend service connect [name…] [--port <n>]`: the standalone entry to the
+ * tunnel. The server's own listener binds the SERVER's interfaces
+ * (`MEND_SERVICE_HOSTS`) — exactly right when the server is this machine,
+ * unreachable when it is a Pod or a VPS; this brings the port here instead.
+ */
+const serviceConnect = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const portFlag = args.indexOf("--port");
+  const portOverride = portFlag === -1 ? null : Number(args[portFlag + 1]);
+  if (portOverride !== null && !Number.isInteger(portOverride)) {
+    return fail("--port takes a port number");
+  }
+  const names = args.filter((a, i) => !a.startsWith("--") && i !== portFlag + 1);
+  const live = (await fetchServices(config)).filter((s) => s.protocol === "tcp");
+  const picked =
+    names.length === 0
+      ? live
+      : live.filter((s) => names.some((n) => s.label === n || s.id.startsWith(n)));
+  if (picked.length === 0) {
+    return fail(
+      names.length === 0
+        ? "no live TCP services — mend service run starts one"
+        : `no live TCP service matches "${names.join('", "')}"`,
+    );
+  }
+  if (portOverride !== null && picked.length !== 1) {
+    return fail("--port applies to exactly one service — name it");
+  }
+  await tunnelServices(config, picked, portOverride);
 };
 
 const serviceCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
