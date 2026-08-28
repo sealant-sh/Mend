@@ -18,6 +18,13 @@ builds their images, supervises their processes, and records everything that hap
 talks to Sealant only through its public SDK, and every install ships both — you never use Sealant
 directly.
 
+The supervision and recording happen inside the workspace itself. Every workspace container boots
+`sealantd`, a static Sealant binary that runs as PID 1: it starts and watches the agent, shell, and
+Service processes, writes their typed record events (process, io, file, network, runtime), and
+answers the control channel the Sealant control plane drives — a local control socket on a single
+host, an authenticated network channel on Kubernetes. When Mend attaches a terminal, replays a
+record, or runs a check, that request ends at `sealantd` in the workspace.
+
 ```mermaid
 flowchart TB
   clients[CLI · Web · Desktop · Phone]
@@ -28,7 +35,7 @@ flowchart TB
     db[(Mend database)]
     store[(Project store)]
     sealant[Sealant control plane]
-    workspace[Session workspace]
+    workspace[Session workspace · sealantd]
   end
 
   clients --> network --> mend
@@ -111,6 +118,25 @@ flowchart TD
 The session is the worktree plus its record. Agent processes can stop and resume over the life of a
 session. Supporting shells and Services use the same workspace and can keep it alive after an agent
 settles.
+
+## Where uncommitted files live
+
+The session worktree is a normal directory on the Mend machine, under
+`<store>/<project>/worktrees/`. The workspace mounts it, so every file the agent or a shell writes
+lands directly in that directory on the host, never only in a container filesystem. That placement
+decides what survives each lifecycle event:
+
+- An agent that exits, a session that settles, or a workspace that stops or is replaced leaves the
+  worktree exactly as the last process left it. Uncommitted files, staged or not, stay on disk. Mend
+  never commits, stashes, or cleans them.
+- Resuming a settled session mounts the same worktree into the next workspace. Everything is where
+  it was, committed or not, and the reviewable change (the worktree against its base) includes it.
+- Everything outside the worktree is ephemeral. Packages installed into the container, files in the
+  workspace home directory, and `/tmp` disappear when the workspace is replaced. The exception is a
+  read-write extra mount, which writes to its host folder directly.
+- Removing a session is the only operation that deletes the worktree, and it takes uncommitted
+  changes with it. Mend refuses to remove a session while its processes are live, but it does not
+  check for uncommitted work — review, commit, or export before removing.
 
 ## Environment and identity
 

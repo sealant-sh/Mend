@@ -153,6 +153,19 @@ mend rejoin 01MEND
 A resumed agent is another process in the same Mend session. Its Sealant run has its own record
 sequence, while Mend preserves the ordered process and run membership.
 
+## What happens to your files
+
+The worktree lives on the Mend machine, not inside the workspace container. When the agent settles,
+the workspace stops, or you resume days later, uncommitted files stay exactly where the last process
+left them. Nothing is committed, stashed, or cleaned automatically, and the reviewable change is the
+worktree against its base, committed or not.
+
+What does not survive a workspace replacement is everything outside the worktree: packages installed
+into the container, the workspace home directory, `/tmp`. Removing the session is the only operation
+that deletes the worktree, and it deletes uncommitted changes with it.
+
+Read [How Mend works](/concepts/how-mend-works/#where-uncommitted-files-live) for the full boundary.
+
 ## See sessions from any client
 
 The CLI, browser, desktop app, and phone connect to the same Mend server. They do not create

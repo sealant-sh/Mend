@@ -24,12 +24,12 @@ Read [Connect provider accounts](/guides/provider-accounts/) for credential sour
 
 ## Project commands
 
-| Command                                                    | Purpose                                                                   |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------- |
-| `mend adopt [source] [--name <name>] [--auth <mode>]`      | Adopt a local path or Git URL into the store                              |
-| `mend projects`                                            | List adopted projects and their live sessions                             |
-| `mend env load [file] [--secret [A,B]] [--project <name>]` | Load dotenv values into project configuration and secrets                 |
-| `mend env show [--project <name>]`                         | List stored configuration and secret names without printing secret values |
+| Command                                                    | Purpose                                                                    |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `mend adopt [source] [--name <name>] [--auth <mode>]`      | Adopt a local path or Git URL into the store                               |
+| `mend projects`                                            | List adopted projects and their live sessions                              |
+| `mend env load [file] [--secret [A,B]] [--project <name>]` | Load dotenv values into project configuration and secrets                  |
+| `mend env show [--project <name>]`                         | List configuration, secret, and cluster-binding names; never secret values |
 
 Git authentication modes for `mend adopt` are `ambient`, `mend-key`, and `bridge`.
 

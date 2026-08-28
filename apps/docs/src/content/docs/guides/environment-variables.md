@@ -1,6 +1,7 @@
 ---
 title: Environment variables and secrets
-description: Load project configuration and write-only secrets into future Mend workspaces.
+description:
+  Load project configuration, write-only secrets, and cluster bindings into future Mend workspaces.
 sidebar:
   order: 4
 ---
@@ -12,6 +13,9 @@ workspace processes, but they have different storage and read behavior.
 | ------------- | ---------------------------------- | ---------------------------------------- | -------------------------------------------------------- |
 | Configuration | Plaintext                          | Names and values can be read back        | Ports, modes, feature switches, public URLs              |
 | Secrets       | Encrypted with a machine-local key | Names are visible; values are write-only | Passwords, tokens, private keys, credential-bearing URLs |
+
+On a Kubernetes install a third source exists, [cluster bindings](#cluster-bindings): names of
+cluster Secrets and ConfigMaps whose contents Mend never stores at all.
 
 Changes apply from the next workspace launch. Running agents, shells, and Services keep the values
 their workspace started with.
@@ -65,8 +69,9 @@ This is useful for URLs that embed a password but do not look secret from their 
 mend env show
 ```
 
-The command prints configuration names and secret names. It labels configuration as plaintext and
-never prints secret values.
+The command prints configuration names, secret names, and any cluster bindings, with a revision per
+lane. It labels configuration as plaintext and never prints secret values. Cluster bindings show as
+`secret/<name>` or `configmap/<name>` because the object names are all Mend knows.
 
 ## Edit in the web app
 
@@ -75,6 +80,31 @@ replace, and remove operations. Secret rows only show whether a value is set.
 
 Renaming a secret without entering another value preserves the stored value. Replacing it writes a
 new encrypted value.
+
+## Cluster bindings
+
+On a Kubernetes install a project can bind cluster objects: each binding names a Kubernetes Secret
+or ConfigMap in the platform's workspaces namespace whose keys become workspace environment. Mend
+stores the binding itself, a kind plus an object name, and never the keys or values inside the
+object. The Sealant worker resolves the object at each fresh workspace launch, so rotating a Secret
+with `kubectl` applies from the next launch without touching Mend, and no value ever crosses Mend's
+database.
+
+The boundaries:
+
+- Only objects the operator labeled for workspace environment resolve.
+- Object names follow Kubernetes DNS-1123 subdomain grammar, and a project holds at most 16
+  bindings.
+- A project can also name a workspace service account, the Pod identity its workspaces run as. The
+  operator allowlists which accounts may be requested.
+- On a local-runner install, bindings do not resolve. A declared binding blocks launches there
+  rather than shipping an incomplete environment; remove the bindings to launch on that install.
+
+`mend env show` lists bindings and the service account alongside configuration and secret names. The
+Setup page's Cluster bindings panel shows the same state. Adding bindings and setting the service
+account stay disabled until the platform release that resolves bindings at launch ships; remove and
+clear always work, so a project whose bindings arrive on a non-cluster install is never trapped
+unlaunchable.
 
 ## Reserved names
 

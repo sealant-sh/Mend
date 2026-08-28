@@ -19,6 +19,7 @@ published release. Run `mend doctor` and check your installed versions before fo
 | Reattachment        | Detach and replay terminal output from CLI, web, desktop, and mobile clients      |
 | Workspace images    | Managed Arch, Ubuntu, Fedora, and Nix families plus custom OCI bases              |
 | Project environment | Plaintext configuration, encrypted write-only secrets, `.env` import              |
+| Cluster bindings    | Store, API, Setup panel, and `mend env show` for named cluster Secrets/ConfigMaps |
 | Identity            | Per-user Claude, Codex, and GitHub connected accounts                             |
 | Dotfiles            | Repository-backed setup and home-file snapshots per user                          |
 | Extra inputs        | Read-only references and per-project host-folder mounts                           |
@@ -36,6 +37,7 @@ boundaries where that matters.
 
 | Area                        | Status                                                          |
 | --------------------------- | --------------------------------------------------------------- |
+| Cluster binding launches    | Declaring bindings is gated until the platform resolves them    |
 | Context items and packs     | Planned; no public library or selection workflow                |
 | Immutable context snapshots | Schema exists, but session provisioning does not attach one     |
 | Editable handoffs           | Planned                                                         |
