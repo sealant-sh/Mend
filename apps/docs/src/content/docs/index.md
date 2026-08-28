@@ -22,6 +22,12 @@ Codex or Claude Code from the CLI and close the laptop. The agent keeps running 
 worktree, dependencies, and development services, and you can attach again from any client, with
 scrollback replayed and then the live process.
 
+Development servers get the same treatment. `mend service run --port 3000 --http -- pnpm dev` runs
+the command as a supervised Service in the session workspace, records its output, and forwards the
+port, so you can open the app the agent is building from any device, hot reload included. From
+another machine, `mend service connect` binds the same port on your own loopback over an
+authenticated tunnel.
+
 Each launch also carries the agent's working inputs: repository instructions, mounted references,
 project configuration, provider accounts, dotfiles, and previous session state. Named context packs
 and immutable snapshots are planned; the inputs listed here work today.
