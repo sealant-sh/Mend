@@ -7,16 +7,21 @@ description:
 
 ## Introduction
 
-Mend is a self-hosted workbench for running coding agents. It adopts repositories into one central
-store on a Linux machine you control, gives every session its own git worktree, and runs your
-existing agent inside a managed workspace on that machine. Every workspace boots `sealantd`, the
-Sealant supervisor that runs as PID 1 in the container: it starts the agent and any shells or
-Services, records what they do, and serves the control channel Mend drives through the Sealant SDK.
+Mend is a self-hosted workbench for developers who run coding agents heavily, across projects and
+devices. It co-locates the agents, their git worktrees, and the project context they run with on one
+machine you control, and keeps working there feeling like local development from whichever device
+you pick up: the terminal on your laptop, a browser, the desktop app, your phone.
+
+The pieces are ordinary. Mend adopts repositories into one central store, gives every session its
+own git worktree, and runs your existing agent inside a managed workspace over that worktree. Every
+workspace boots `sealantd`, the Sealant supervisor that runs as PID 1 in the container: it starts
+the agent and any shells or Services, records what they do, and serves the control channel Mend
+drives through the Sealant SDK.
 
 Sessions live on the Mend machine, not in your terminal, so a terminal is just one client. Start
 Codex or Claude Code from the CLI and close the laptop. The agent keeps running next to its
-worktree, dependencies, and development services, and you can attach again from the CLI, a browser,
-the desktop app, or a phone, with scrollback replayed and then the live process.
+worktree, dependencies, and development services, and you can attach again from any client, with
+scrollback replayed and then the live process.
 
 Each launch also carries the agent's working inputs: repository instructions, mounted references,
 project configuration, provider accounts, dotfiles, and previous session state. Named context packs
