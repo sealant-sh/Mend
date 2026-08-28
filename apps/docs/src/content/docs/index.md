@@ -12,11 +12,10 @@ devices. It co-locates the agents, their git worktrees, and the project context 
 machine you control, and keeps working there feeling like local development from whichever device
 you pick up: the terminal on your laptop, a browser, the desktop app, your phone.
 
-The pieces are ordinary. Mend adopts repositories into one central store, gives every session its
-own git worktree, and runs your existing agent inside a managed workspace over that worktree. Every
-workspace boots `sealantd`, the Sealant supervisor that runs as PID 1 in the container: it starts
-the agent and any shells or Services, records what they do, and serves the control channel Mend
-drives through the Sealant SDK.
+Mend adopts repositories into one central store, gives every session its own git worktree, and runs
+your existing agent inside a managed workspace over that worktree. Every workspace boots `sealantd`,
+the Sealant supervisor that runs as PID 1 in the container: it starts the agent and any shells or
+Services, records what they do, and serves the control channel Mend drives through the Sealant SDK.
 
 Sessions live on the Mend machine, not in your terminal, so a terminal is just one client. Start
 Codex or Claude Code from the CLI and close the laptop. The agent keeps running next to its
