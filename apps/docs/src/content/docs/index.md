@@ -23,12 +23,9 @@ worktree, dependencies, and development services, and you can attach again from 
 scrollback replayed and then the live process.
 
 Development servers get the same treatment. Wrap the command you already run, `pnpm dev` or anything
-else, in `mend service run` and it becomes a supervised Service of the session. In the browser it
-behaves like a local dev server, hot reload and all, while it actually runs next to the agent on the
-Mend machine. Nothing is exposed by default: opening the port to your private network is an explicit
-operator choice, and the public internet is never one of the options. When the server is remote, the
-CLI brings the port to your laptop's loopback over an authenticated tunnel automatically, so
-starting a Service and reaching it are one step.
+else, in `mend service run`, and open the app at `127.0.0.1` on your machine, wherever the server
+lives. It behaves like a local dev server, hot reload and all, while it actually runs next to the
+agent on the Mend machine, and nothing is published anywhere else.
 
 Each launch also carries the agent's working inputs: repository instructions, mounted references,
 project configuration, provider accounts, dotfiles, and previous session state. Named context packs
