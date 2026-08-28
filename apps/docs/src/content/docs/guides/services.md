@@ -28,32 +28,31 @@ browser ──TCP──▶ Mend's listener for this Service (:43127)
          ──TCP──▶ Vite on 127.0.0.1:3000   (an ordinary local connect)
 ```
 
-Only the first leg is a real network port. Everything after it rides the platform's channels: an
-authenticated WebSocket from Mend to the Sealant control plane, the control pipe into the workspace,
-and finally an ordinary local connect that your dev server experiences as a client on its own
-loopback. The dev server needs no configuration, no rebinding to `0.0.0.0`, no awareness that Mend
-exists.
+Only the first leg is a TCP connection your browser makes, and it goes to a loopback, so it never
+crosses a network. Everything after it rides the platform's channels: an authenticated WebSocket
+from Mend to the Sealant control plane, the control pipe into the workspace, and finally an ordinary
+local connect that your dev server experiences as a client on its own loopback. The dev server needs
+no configuration, no rebinding to `0.0.0.0`, no awareness that Mend exists.
 
 Because the whole thing is a dumb byte pipe with no path rewriting and no proxy logic in between,
 the app behaves exactly as it does locally: hot reload, WebSockets, cookies, everything.
 
 ## The one real port
 
-The only real port is Mend's own listener: one per Service, bound from a fixed range (43100–43999 by
-default). Where that listener lives is the only deployment-dependent question.
+The only real port is Mend's listener: one per Service, bound from a fixed range (43100–43999 by
+default). It never needs to be reachable over a network. When Mend runs on the machine you sit at,
+it binds that machine's loopback and the URL just works. When the server is remote, the CLI binds
+the same port on your laptop's loopback and carries each connection inside the authenticated
+WebSocket it already holds to Mend; starting a Service does this automatically, every tunneled
+connection is authenticated, and only the session's owner may open one. Either way, the only network
+traffic is the connection to Mend you already have.
 
-By default it binds the Mend machine's loopback. When Mend runs on the machine you sit at, the URL
-just works, and nothing at all is on your network.
-
-An operator can bind the listener to private addresses the machine actually has: a tailnet address,
-a LAN address. Wildcards and public addresses are refused outright, so publishing a Service to the
-internet through Mend is not possible, misconfigured or not. The listener carries no Mend sign-in;
-network reach is its only gate, and the interface says so next to every endpoint.
-
-Or the listener moves to your own laptop. The CLI binds the Service's port on your loopback and
-carries each connection to the server over an authenticated WebSocket. On a remote server, starting
-a Service does this automatically, so starting it and reaching it are one step. Unlike the raw
-listener, every tunneled connection is authenticated, and only the session's owner may open one.
+Letting devices hit the server-side listener directly is a separate, optional choice — useful when a
+phone on your tailnet should open the app without a CLI tunnel running. An operator can bind it to
+private addresses the machine actually has: a tailnet address, a LAN address. Wildcards and public
+addresses are refused outright, so publishing a Service to the internet through Mend is not
+possible, misconfigured or not. That listener carries no Mend sign-in; network reach is its only
+gate, and the interface says so next to every endpoint.
 
 UDP Services exist for the rare cases that need them; a datagram has no connection to tunnel, so
 they use the server-side listener only.
