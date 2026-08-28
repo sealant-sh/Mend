@@ -285,7 +285,12 @@ export const hasLiveHarnessState = (
 export const locateLiveTranscript = (
   harnessHomePath: string,
   harness: string,
-): Effect.Effect<{ readonly path: string; readonly providerSessionId: string | null } | null> =>
+): Effect.Effect<{
+  readonly path: string;
+  readonly providerSessionId: string | null;
+  /** Last write to the transcript — the observed "the agent is (still) working" signal. */
+  readonly mtimeMs: number;
+} | null> =>
   Effect.promise(async () => {
     const shape = HARNESS_STATE[harness];
     if (shape === undefined || shape.liveTranscript === null) return null;
@@ -304,7 +309,11 @@ export const locateLiveTranscript = (
         }
       }
       if (newest === null) return null;
-      return { path: newest.path, providerSessionId: shape.providerSessionId(newest.path) };
+      return {
+        path: newest.path,
+        providerSessionId: shape.providerSessionId(newest.path),
+        mtimeMs: newest.mtimeMs,
+      };
     } catch {
       return null;
     }

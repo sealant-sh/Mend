@@ -18,6 +18,12 @@ import { Timestamp } from "../timestamp.ts";
  * - `agent-pty`      a coding-agent TUI — `codex`, `claude`, `opencode` (PTY)
  * - `agent-protocol` a protocol-driven agent (`codex app-server`, claude
  *                    stream-json) — reserved; nothing launches one yet
+ * - `agent-external` a coding agent Mend OBSERVED but did not launch — run by
+ *                    hand inside a shell, an SSH session, or an editor
+ *                    terminal, detected through the session's harness home.
+ *                    No PTY of ours (`sealantSessionId` null); liveness is
+ *                    observed from harness-state writes, and the row ends when
+ *                    the writes go quiet.
  * - `service`        a recipe command: dev server, database (logs + port)
  *
  * A session holds several agent processes over its life (relaunch, follow-up,
@@ -27,6 +33,7 @@ export const SessionProcessKind = Schema.Literals([
   "shell",
   "agent-pty",
   "agent-protocol",
+  "agent-external",
   "service",
 ]);
 export type SessionProcessKind = typeof SessionProcessKind.Type;
@@ -35,6 +42,7 @@ export type SessionProcessKind = typeof SessionProcessKind.Type;
 export const AGENT_PROCESS_KINDS: ReadonlySet<SessionProcessKind> = new Set<SessionProcessKind>([
   "agent-pty",
   "agent-protocol",
+  "agent-external",
 ]);
 
 export const isAgentProcessKind = (kind: SessionProcessKind): boolean =>

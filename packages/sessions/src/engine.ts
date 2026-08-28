@@ -311,6 +311,14 @@ const workspaceIsLive = (status: string) =>
 const isLegacyBench = (session: Session): boolean =>
   session.harness === "shell" && session.label === "bench";
 
+/**
+ * An ENGINE-launched agent row — one whose transcript writes are the engine's own work. An
+ * open-workbench shell (kind agent-pty, harness "shell") writes no transcripts itself; it is
+ * where external agents run, never a reason for the observer to look away.
+ */
+const isEngineAgentProcess = (row: SessionProcess): boolean =>
+  row.kind !== "agent-external" && isAgentProcessKind(row.kind) && row.harness !== "shell";
+
 export interface ProvisionInput {
   readonly projectId: ProjectId;
   readonly harness: string;
@@ -602,6 +610,13 @@ export class SessionEngine extends Context.Service<
       | SessionLaunchSetupError
       | DotfilesResolveError
     >;
+    /**
+     * One observation pass for external agents: a coding agent the user runs by hand (mend
+     * shell, SSH, editor terminal) writes through the mounted harness home, and fresh
+     * transcript writes become observed `agent-external` process rows — ended again when the
+     * writes go quiet. Runs on its own heartbeat; exposed for deterministic ticks.
+     */
+    readonly observeExternalAgents: () => Effect.Effect<void>;
     /**
      * The session's conversation as the canonical record — read LIVE from the
      * running workspace's harness state (or from the store once settled).
@@ -1827,6 +1842,105 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }),
           ),
       );
+
+      // ─── observed external agents (the harness home as a sensor) ──────────
+      //
+      // A coding agent the user runs by hand — in a mend shell, an SSH session, an editor
+      // terminal — writes its state through the mounted harness home like any engine-launched
+      // one. That makes it observable server-side: transcript writes are the "an agent is
+      // working" signal. Observed agents become `agent-external` process rows, so the session
+      // fold reads `running`, the workspace lease holds, and the settle-time harvest captures
+      // the conversation. Mend observes; it does not own the process — it cannot steer or
+      // stop it, and the row records only what was seen.
+
+      /** A transcript this quiet no longer reads as a live agent. */
+      const EXTERNAL_AGENT_QUIET_MS = 120_000;
+      /** Writes older than the engine's own agent exit are its tail, not external work. */
+      const EXTERNAL_AGENT_EXIT_SKEW_MS = 2_000;
+
+      const observeSessionExternalAgents = Effect.fn("SessionEngine.observeSessionExternalAgents")(
+        function* (sessionId: SessionId) {
+          const session = yield* sessions.byId(sessionId);
+          if (session.sealantWorkspaceId === null) return;
+          const workspaceId = session.sealantWorkspaceId;
+          const project = yield* projects.byId(session.projectId);
+          const rows = yield* processes.listForSession(sessionId);
+          const home = harnessHomePathOf(project.storePath, session.id);
+          // While the engine runs its own agent, transcript writes are presumed to be its —
+          // observation only fills the gap where mend is otherwise blind.
+          const engineAgentLive = rows.some(
+            (row) => isLiveAgentProcess(row) && isEngineAgentProcess(row),
+          );
+          // An engine agent's final writes stay fresh for a while after it exits; only
+          // activity that postdates the newest engine-agent exit reads as external.
+          const lastEngineExitMs = rows.reduce(
+            (latest, row) =>
+              isEngineAgentProcess(row) && row.exitedAt !== null && row.exitedAt.getTime() > latest
+                ? row.exitedAt.getTime()
+                : latest,
+            0,
+          );
+          const now = Date.now();
+          for (const harness of Object.keys(HARNESS_STATE)) {
+            const observed = rows.find(
+              (row) =>
+                row.kind === "agent-external" &&
+                row.harness === harness &&
+                row.exitedAt === null &&
+                row.sealantWorkspaceId === workspaceId,
+            );
+            const transcript = yield* locateLiveTranscript(home, harness);
+            const fresh = transcript !== null && now - transcript.mtimeMs < EXTERNAL_AGENT_QUIET_MS;
+            if (observed !== undefined) {
+              if (!fresh) {
+                // The writes went quiet: record the observed end. `endProcess` settles the
+                // fold, harvests the conversation, and checkpoints the turn boundary.
+                yield* endProcess(observed, "exited", null);
+              } else if (
+                transcript.providerSessionId !== null &&
+                observed.providerSessionId !== transcript.providerSessionId
+              ) {
+                yield* processes.setProviderSessionId(observed.id, transcript.providerSessionId);
+              }
+              continue;
+            }
+            if (engineAgentLive || transcript === null || !fresh) continue;
+            if (transcript.mtimeMs <= lastEngineExitMs + EXTERNAL_AGENT_EXIT_SKEW_MS) continue;
+            yield* processes.create({
+              sessionId,
+              sealantWorkspaceId: workspaceId,
+              sealantSessionId: null,
+              sealantRunId: null,
+              kind: "agent-external",
+              harness,
+              providerSessionId: transcript.providerSessionId,
+              label: `${harness} (observed)`,
+              argv: [],
+              status: "running",
+            });
+            yield* reconcileSession(sessionId, { sweep: false });
+          }
+        },
+      );
+
+      /**
+       * One observation pass over every session that could host an external agent: any session
+       * holding a live process row (a shell keeping the workspace, a Service, an already
+       * observed agent). Quiet per session — one broken session never blinds the rest.
+       */
+      const observeExternalAgents = Effect.fn("SessionEngine.observeExternalAgents")(function* () {
+        const live = yield* processes.listLive();
+        const sessionIds = [...new Set(live.map((row) => row.sessionId))];
+        for (const sessionId of sessionIds) {
+          yield* observeSessionExternalAgents(sessionId).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("session engine: external-agent observation failed").pipe(
+                Effect.annotateLogs({ sessionId, error: String(error) }),
+              ),
+            ),
+          );
+        }
+      });
 
       /**
        * Every PTY-backed process has the same watcher, whatever its kind: poll the PTY until it
@@ -4887,6 +5001,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ),
         scope,
       );
+      // The external-agent sensor: cheap fs stats over mounted harness homes, so a tight
+      // cadence — an observed agent should appear well before its first turn completes.
+      yield* Effect.forkIn(
+        observeExternalAgents().pipe(
+          Effect.catchDefect((defect) =>
+            Effect.logWarning("session engine: external-agent observation died").pipe(
+              Effect.annotateLogs({ defect: String(defect) }),
+            ),
+          ),
+          Effect.repeat(Schedule.spaced(Duration.seconds(20))),
+        ),
+        scope,
+      );
 
       const launch = (sessionId: SessionId, argv: ReadonlyArray<string>) =>
         launchInternal(sessionId, argv, null);
@@ -4920,6 +5047,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         stopService: (serviceId) => ownedByService(serviceId)(stopService(serviceId)),
         resumeSession: (sessionId, harness, fresh) =>
           owned(sessionId)(resumeSession(sessionId, harness, fresh)),
+        observeExternalAgents,
         transcript,
       };
     }),

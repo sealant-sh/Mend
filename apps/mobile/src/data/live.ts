@@ -134,7 +134,7 @@ export interface SessionDto {
 
 export interface SessionProcessDto {
   readonly id: string;
-  readonly kind: "shell" | "agent-pty" | "agent-protocol" | "service";
+  readonly kind: "shell" | "agent-pty" | "agent-protocol" | "agent-external" | "service";
   readonly status: string;
   readonly exitedAt: string | null;
 }

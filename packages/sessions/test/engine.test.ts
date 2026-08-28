@@ -3402,6 +3402,98 @@ describe("SessionEngine", () => {
     );
   });
 
+  it("observes an external agent through the harness home and ends it when writes go quiet", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            ownerUserId: null,
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            base: null,
+          });
+          // The open workbench: a shell holds the workspace; no engine agent runs.
+          yield* engine.launch(session.id, ["bash"]);
+
+          // Quiet harness home: nothing to observe.
+          yield* engine.observeExternalAgents();
+          const externalRows = () =>
+            [...world.processes.values()].filter((process) => process.kind === "agent-external");
+          expect(externalRows()).toHaveLength(0);
+
+          // A claude run by hand inside the shell writes through the mounted harness home.
+          const providerId = crypto.randomUUID();
+          const projectDir = path.join(
+            harnessHomePathOf(project.storePath, session.id),
+            ".claude",
+            "projects",
+            "-workspace-repo",
+          );
+          fs.mkdirSync(projectDir, { recursive: true });
+          const transcript = path.join(projectDir, `${providerId}.jsonl`);
+          fs.writeFileSync(transcript, "{}\n");
+
+          yield* engine.observeExternalAgents();
+          expect(externalRows()).toHaveLength(1);
+          const observed = externalRows()[0];
+          expect(observed?.harness).toBe("claude");
+          expect(observed?.providerSessionId).toBe(providerId);
+          expect(observed?.exitedAt).toBeNull();
+          expect(observed?.sealantSessionId).toBeNull();
+          expect(world.sessions.get(session.id)?.status).toBe("running");
+
+          // A second pass while writes stay fresh observes nothing new.
+          yield* engine.observeExternalAgents();
+          expect(externalRows()).toHaveLength(1);
+
+          // Writes go quiet: the observed agent's end is recorded.
+          const past = new Date(Date.now() - 10 * 60_000);
+          fs.utimesSync(transcript, past, past);
+          yield* engine.observeExternalAgents();
+          expect(externalRows()[0]?.exitedAt).not.toBeNull();
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
+  it("presumes transcript writes belong to a live engine agent — nothing observed", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            ownerUserId: null,
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            base: null,
+          });
+          yield* engine.launch(session.id, ["claude"]);
+
+          const projectDir = path.join(
+            harnessHomePathOf(project.storePath, session.id),
+            ".claude",
+            "projects",
+            "-workspace-repo",
+          );
+          fs.mkdirSync(projectDir, { recursive: true });
+          fs.writeFileSync(path.join(projectDir, `${crypto.randomUUID()}.jsonl`), "{}\n");
+
+          yield* engine.observeExternalAgents();
+          expect(
+            [...world.processes.values()].filter((process) => process.kind === "agent-external"),
+          ).toHaveLength(0);
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
   it("resume fails sessions that died before the harness started", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mend-engine-resume-"));
     const world = makeWorld();
