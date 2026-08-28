@@ -21,11 +21,11 @@ port exists only inside the container, and your machine cannot see it. So you de
 mend service run --port 3000 --http -- pnpm dev
 ```
 
-Mend supervises the command, waits for port 3000 to answer, and hands you a local address like
-`http://127.0.0.1:43127`. Open it. That is your app, hot reload and all, because Mend pipes raw
-bytes and rewrites nothing.
+Mend supervises the command, waits for port 3000 to answer, and opens a port on your machine,
+loopback only: `http://127.0.0.1:43127`. Open it. That is your app, hot reload and all, because Mend
+pipes raw bytes and rewrites nothing.
 
-Behind that address, Mend shuttles each connection through to the dev server:
+Behind that port, Mend bridges each TCP connection through to the dev server:
 
 ```text
 browser ──TCP──▶ Mend's listener on your laptop/host (:43127)
@@ -37,12 +37,11 @@ browser ──TCP──▶ Mend's listener on your laptop/host (:43127)
 The dev server needs no configuration, no rebinding to `0.0.0.0`, no awareness that Mend exists.
 From where it sits, a client connected from its own loopback.
 
-Where the address lives is Mend's problem, not yours. When the server is the machine you sit at, the
-listener is on it and the command returns. When the server is remote, the CLI stays running and
-holds the address on your laptop instead, shuttling the bytes over the authenticated connection it
-already has to the server, like an SSH tunnel you did not have to set up. Ctrl-C closes the tunnel,
-not the Service, and only the session's owner can open one. Either way the app shows up at
-`127.0.0.1` on the machine you are using, and the internet is never involved.
+That is the only port in the picture, and it lives on your machine, bound to `127.0.0.1`. It is not
+opened on the Mend host and not on any network interface. When the server is remote, the CLI stays
+running to hold the port locally and bridges the bytes over the authenticated connection it already
+has to the server; Ctrl-C closes the bridge, not the Service. There is nothing to expose, nothing to
+firewall, and the internet is not part of any of this.
 
 ## Sharing it on your network
 
