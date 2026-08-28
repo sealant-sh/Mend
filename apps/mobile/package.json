@@ -12,7 +12,7 @@
     "ios:release": "expo run:ios --device --configuration Release",
     "lint": "oxlint .",
     "test": "vitest run --passWithNoTests",
-    "typecheck": "tsgo -p tsconfig.json --noEmit",
+    "typecheck": "CI=1 expo customize tsconfig.json && tsgo -p tsconfig.json --noEmit",
     "web": "expo start --web"
   },
   "dependencies": {
