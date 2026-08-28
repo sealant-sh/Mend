@@ -70,6 +70,14 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
           service.currentForwardId === null ? null : yield* forwards.byId(service.currentForwardId);
         const owner = yield* sessions.byId(service.sessionId).pipe(Effect.option);
         const ownerUserId = Option.isSome(owner) ? owner.value.ownerUserId : null;
+        // Authenticated is not authorized. The raw listener cannot gate per
+        // user — network reach is its only gate — but this path can, so it
+        // does: only the session owner tunnels its Services. (`/api/tty`
+        // still admits any signed-in user; align it when session sharing is
+        // decided.)
+        if (ownerUserId !== null && ownerUserId !== authed.value.user.id) {
+          return HttpServerResponse.text("not your Service", { status: 403 });
+        }
         const workspaceId =
           forward !== null && (forward.state === "binding" || forward.state === "bound")
             ? forward.sealantWorkspaceId

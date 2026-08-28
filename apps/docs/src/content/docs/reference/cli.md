@@ -117,7 +117,7 @@ The key bridge requires a reachable local SSH agent. Signing happens on the mach
 | Command                                                                       | Purpose                                                                     |
 | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
 | `mend service init [--yes]`                                                   | Scaffold `mend.toml` from package and Compose files                         |
-| `mend service run [session] --port <port> [options] -- <command...>`          | Start and supervise a Service command                                       |
+| `mend service run [session] --port <port> [options] -- <command...>`          | Start and supervise a Service command; tunnels the port here when remote    |
 | `mend service run [session] <name>`                                           | Start a recipe from `mend.toml`                                             |
 | `mend service <name>`                                                         | Shorthand for a named recipe                                                |
 | `mend service add [session] <port> [--name <name>] [--udp] [--http\|--https]` | Forward an existing workspace listener without supervising it               |
@@ -127,8 +127,29 @@ The key bridge requires a reachable local SSH agent. Signing happens on the mach
 | `mend service restart <name-or-id>`                                           | Start another attempt for a supervised Service                              |
 | `mend service stop <name-or-id>`                                              | Stop the process and close its host port                                    |
 
-`mend service run` accepts `--name`, `--port`, `--udp`, `--http`, and `--https`. Read
-[Development services](/guides/services/) for network and authentication boundaries.
+`mend service run` accepts `--name`, `--port`, `--udp`, `--http`, `--https`, and `--no-connect`.
+Read [Development services](/guides/services/) for network and authentication boundaries.
+
+### `mend` inside the workspace
+
+Every session workspace has a `mend` command of its own on the PATH. It is not the CLI above and not
+part of the workspace image: the server stages a small helper into the session's run directory,
+mounted read-only at `/run/mend` and linked to `/usr/local/bin/mend`, so it is always version-locked
+to the server. It talks only to its own session, over the session socket (or the authenticated
+session endpoint on Kubernetes), and it speaks Services only:
+
+| Command                                                               | Purpose                              |
+| --------------------------------------------------------------------- | ------------------------------------ |
+| `mend service` or `mend service list`                                 | List this session's live Services    |
+| `mend service run --port <port> [--name <n>] [--udp] -- <command...>` | Start and supervise a Service        |
+| `mend service run <name>` or `mend service <name>`                    | Start a recipe from `mend.toml`      |
+| `mend service add <port> [--name <n>] [--udp]`                        | Adopt an existing workspace listener |
+| `mend service stop <name-or-id>`                                      | Stop a Service                       |
+| `mend service restart <name-or-id>`                                   | Start another attempt                |
+
+The helper has no `--http`/`--https`, no `init`, no `logs`, and no `connect` — browser schemes,
+history, and reaching the endpoint stay on your side. Its job is declaration: an agent that starts a
+dev server can register it as a real Service instead of leaving an unobserved listener.
 
 ## Shell completion
 
