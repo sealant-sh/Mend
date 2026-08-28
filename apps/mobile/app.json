@@ -14,7 +14,8 @@
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true
         }
-      }
+      },
+      "appleTeamId": "8ELGG87AE9"
     },
     "android": {
       "package": "com.yiannisp.mend",
@@ -58,6 +59,12 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "b63192dc-2cf7-4d37-a14b-7341df1feef9"
+      }
+    },
+    "owner": "ypanagidis"
   }
 }
