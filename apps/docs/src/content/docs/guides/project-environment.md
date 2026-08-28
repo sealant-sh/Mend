@@ -49,7 +49,12 @@ They differ in storage and display:
 - names that look secret are routed to Secrets when importing a `.env` file;
 - URL-shaped names may still contain passwords, so route them explicitly when needed.
 
-Read [Environment variables and secrets](/guides/environment-variables/) for the web and CLI paths.
+On a Kubernetes install a project can additionally hold cluster bindings: names of cluster Secrets
+and ConfigMaps the platform resolves into workspace environment at each fresh launch, plus an
+optional workspace service account. Mend stores the names only and never learns the contents.
+
+Read [Environment variables and secrets](/guides/environment-variables/) for the web and CLI paths,
+including the cluster-binding rules and their current launch gate.
 
 ## Reference repositories
 

@@ -146,6 +146,21 @@ chart's `serviceHost` values (bind policy, port range, an enumerated-port Servic
 carry no Mend authentication — reachability is the gate — and the chart applies your
 `networkPolicies.clientCidrs` to the range. Default is off.
 
+## Workspace environment from the cluster
+
+Projects on a Kubernetes install can hold cluster bindings: names of Secrets and ConfigMaps in the
+workspaces namespace whose keys the Sealant worker resolves into workspace environment at each fresh
+launch. Mend stores the names only, never the contents, so rotating a value is a `kubectl` operation
+and nothing crosses Mend's database. Only objects the operator labeled for workspace environment
+resolve, and workspace service accounts requested by projects must be on the operator allowlist —
+both are Sealant-side controls, documented with its chart.
+
+At each fresh workspace launch, Mend forwards a project's bindings verbatim as the workspace's
+environment sources and the worker resolves the objects server-side; a requested service account
+rides the same launch as the Pod identity. Read
+[Environment variables and secrets](/guides/environment-variables/#cluster-bindings) for the
+project-side view.
+
 ## Upgrade and roll back
 
 `helm upgrade` rolls the single replica (`Recreate`); database migrations run before the new server

@@ -1,28 +1,36 @@
 ---
-title: Your coding agents, together on your infrastructure
+title: Mend documentation
 description:
-  Mend co-locates coding agents, worktrees, environment, and context on a machine you control while
-  keeping the workflow familiar from any device.
+  Run coding-agent sessions in per-session git worktrees on a machine you host, and work with them
+  from any of your devices.
 ---
 
 ## Introduction
 
-Mend is a self-hosted workbench for developers who run coding agents on more than one project,
-terminal, or device. Install it on a Linux machine or devbox you control. Mend adopts repositories
-into one central store, gives every session its own worktree, and runs your existing agent inside a
-managed workspace.
+Mend is a self-hosted workbench for developers who run coding agents heavily, across projects and
+devices. It co-locates the agents, their git worktrees, and the project context they run with on one
+machine you control, and keeps working there feeling like local development from whichever device
+you pick up: the terminal on your laptop, a browser, the desktop app, your phone.
 
-Your laptop becomes a way into the work, not the place where the work must live. Start Codex or
-Claude Code from the CLI, close the terminal, follow the same process in a browser, open a shell
-from the desktop app, or check it from your phone. The agent, worktree, dependencies, and
-development services stay together on the Mend machine.
+Mend adopts repositories into one central store, gives every session its own git worktree, and runs
+your existing agent inside a managed workspace over that worktree. Every workspace boots `sealantd`,
+the Sealant supervisor that runs as PID 1 in the container: it starts the agent and any shells or
+Services, records what they do, and serves the control channel Mend drives through the Sealant SDK.
 
-That is the point of Mend: remote infrastructure that still behaves like your local development
-environment.
+Sessions live on the Mend machine, not in your terminal, so a terminal is just one client. Start
+Codex or Claude Code from the CLI and close the laptop. The agent keeps running next to its
+worktree, dependencies, and development services, and you can attach again from any client, with
+scrollback replayed and then the live process.
 
-The same launch boundary brings the agent's working inputs with it: repository instructions, mounted
-references, project configuration, provider accounts, dotfiles, and previous session state. Named
-context packs and immutable snapshots are planned; the inputs listed here work today.
+Development servers get the same treatment. Wrap the command you already run, `pnpm dev` or anything
+else, in `mend service run`, and open the app at `127.0.0.1` on your machine, wherever the server
+lives. It behaves like a local dev server, hot reload and all, while it actually runs next to the
+agent on the Mend machine. Nothing is open to the public internet: no port is published, and the
+bytes travel the authenticated WebSocket the CLI already holds to your Mend server.
+
+Each launch also carries the agent's working inputs: repository instructions, mounted references,
+project configuration, provider accounts, dotfiles, and previous session state. Named context packs
+and immutable snapshots are planned; the inputs listed here work today.
 
 ```mermaid
 flowchart TB
@@ -155,7 +163,7 @@ workspace, then attaches your terminal to the agent. Read
   behavior.
 - [Workspace images](/guides/workspace-images/) covers managed OS families and custom bases.
 - [Environment variables and secrets](/guides/environment-variables/) covers `.env` import, secret
-  routing, storage, and launch timing.
+  routing, storage, launch timing, and cluster bindings on Kubernetes.
 - [Dotfiles](/guides/dotfiles/) covers repository-backed setup and local file sync.
 - [Development services](/guides/services/) covers long-running processes and private port
   forwarding.

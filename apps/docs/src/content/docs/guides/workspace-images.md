@@ -64,6 +64,11 @@ Custom mode does not expose the managed login-shell selector. It guarantees only
 by the base. Mend also does not apply user dotfiles to custom images. Put required shell setup in
 the image or its setup commands.
 
+Custom bases work because the platform overlays only static binaries onto your image: `sealantd`,
+the workspace supervisor that runs as PID 1, plus the harness CLIs. The base-image contract is any
+Linux `amd64`/`arm64` image with a POSIX shell at `/bin/sh`, Node.js with npm for the harness CLIs,
+and git. The build checks the contract and fails readably when the base misses a piece.
+
 ## Docker inside a workspace
 
 The Docker switch supplies a disposable rootless daemon for that workspace. Mend does not mount the
