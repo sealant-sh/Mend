@@ -22,11 +22,11 @@ Codex or Claude Code from the CLI and close the laptop. The agent keeps running 
 worktree, dependencies, and development services, and you can attach again from any client, with
 scrollback replayed and then the live process.
 
-Development servers get the same treatment. `mend service run --port 3000 --http -- pnpm dev` runs
-the command as a supervised Service in the session workspace, records its output, and forwards the
-port, so you can open the app the agent is building from any device, hot reload included. From
-another machine, `mend service connect` binds the same port on your own loopback over an
-authenticated tunnel.
+Development servers get the same treatment. Wrap the command you already run, `pnpm dev` or anything
+else, in `mend service run` and it becomes a supervised Service of the session. In the browser it
+behaves like a local dev server, hot reload and all, while it is actually running next to the agent
+on the Mend machine. Nothing is published to the internet: the endpoint stays inside your private
+network, and `mend service connect` can bring it to your own loopback over an authenticated tunnel.
 
 Each launch also carries the agent's working inputs: repository instructions, mounted references,
 project configuration, provider accounts, dotfiles, and previous session state. Named context packs
