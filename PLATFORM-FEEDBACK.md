@@ -7,6 +7,24 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-08-28 · 0.24.1 · Runs stuck `running` after workspace pod death; worker retry storm starves new runs
+
+- **Needed:** when a workspace's pod dies (observed: OOMKilled at the memory limit), the run backing
+  a Mend session must transition to a terminal status so Mend can show the session as ended and
+  allow relaunch. Two sessions sat "running" for 40+ minutes after their pods were killed.
+- **Today:** nothing reconciles run status against pod state on the k8s adapter. The worker's
+  telemetry ingester retries the control-WSS handshake to the dead pod IP in a tight loop (~10s
+  timeout, immediately re-queued) forever; while it does, freshly created runs fail after 15s with
+  "Telemetry ingester never attached; is the worker running?" — the retry storm starves new work.
+  The same unbounded growth pattern is the likely cause of the api's Node heap OOM crash (exit 139
+  after ~17h). Recovery required manually PATCHing the runs to `failed` via `updateRun` and
+  restarting the worker.
+- **Suggested:** a pod-informer (or periodic reconcile) in the k8s adapter that flips runs to
+  `failed` with the pod's termination reason (`OOMKilled`, exit code) when the workspace pod reaches
+  a terminal phase; a retry budget/backoff on telemetry ingest so one dead workspace cannot starve
+  the ingest pool; and surface the termination reason on the run so Mend can show "workspace ran out
+  of memory" instead of a silent hang.
+
 ## 2026-08-26 · 0.23.0 · Hosted strategies: a non-mount workspace source + capability reporting
 
 - **Needed:** the `cloudflare-hosted` deployment strategy (docs/DEPLOYMENT-STRATEGIES.md) runs

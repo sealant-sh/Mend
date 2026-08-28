@@ -1316,6 +1316,21 @@ understand the work.
 
 ### Decided
 
+- **2026-08-28: harness state is durable by construction — the mounted harness home.** Every session
+  owns a store-backed `harness-home/` directory (beside its harvested captures), mounted read-write
+  into each of its workspaces at `/workspace/harness-home`; boot moves whatever `$HOME` holds into
+  it and symlinks each harness's state dirs (`.claude`, `.codex`, `.local/share/opencode`) onto the
+  mount, so every transcript/todo/skill write lands on the store the moment the harness makes it.
+  Harvest-at-settle stays as the immutable per-process evidence capture (now dereferencing the
+  symlinks), but it is no longer the only copy: a workspace that dies without settling loses
+  nothing, and a relaunch commits a capture straight from the live harness home ("Saved harness
+  state is missing" becomes a working native resume). An archive restore runs only when no live
+  state exists (legacy sessions). Decided after an OOM-killed workspace pod took two sessions'
+  conversations with it — the container writable layer was the sole copy. The mounted home is also
+  the server-side seam for managing what a harness sees in `$HOME` (skills management writes into
+  `harness-home/.claude/skills` with no workspace exec). Trade-off accepted: harness-written
+  credential files land on the store volume, which already holds the repo and Mend's keys.
+
 - **2026-08-26: deployment strategies are named compositions; the session workspace authority is
   identity-keyed.** The co-located store ("Mend and the workspace see the same POSIX worktree") is
   an implementation technique of the `local` and `kubernetes` strategies, not the product invariant.
