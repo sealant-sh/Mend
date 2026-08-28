@@ -403,16 +403,19 @@ function ConversationRow({
 export function ProtocolConversation({
   sessionId,
   active,
+  starting = false,
   summary,
 }: {
   readonly sessionId: string;
   readonly active: boolean;
+  /** The session is still provisioning — the composer can't deliver yet. */
+  readonly starting?: boolean;
   readonly summary: string | null;
 }) {
   const { colors } = useEvidenceTheme();
   const insets = useSafeAreaInsets();
   const conversation = useAgentConversation(sessionId, true, active);
-  const { submit, respond } = useAgentConversationActions(sessionId);
+  const { submit, respond, interrupt } = useAgentConversationActions(sessionId);
   const [draft, setDraft] = useState("");
   const [composerHeight, setComposerHeight] = useState(64);
   const keyboard = useKeyboardState((state) => ({
@@ -455,14 +458,23 @@ export function ProtocolConversation({
       onSuccess: () => setDraft((current) => (current.trim() === text ? "" : current)),
     });
   };
-  const actionError = submit.error ?? respond.error;
-  let emptyMessage = summary ?? "no conversation recorded";
+  const actionError = submit.error ?? respond.error ?? interrupt.error;
+  let emptyMessage: string | null = summary ?? "no conversation recorded";
   if (conversation.isLoading) {
     emptyMessage = "reading the conversation…";
   } else if (conversation.isError) {
     emptyMessage = conversation.error.message;
   } else if (active) {
-    emptyMessage = "ready for your first message";
+    // The composer strip carries the live hint — it must track the keyboard
+    // and the session's real phase, which a list empty-state cannot.
+    emptyMessage = null;
+  }
+  // One line, one truth: the same phase the header's status word shows.
+  let composerHint: string | null = null;
+  if (active && starting) {
+    composerHint = "starting up — the conversation opens when the agent is ready…";
+  } else if (active && entries.length === 0 && !conversation.isLoading) {
+    composerHint = "ready for your first message";
   }
 
   return (
@@ -501,7 +513,9 @@ export function ProtocolConversation({
             </MonoText>
           ) : null
         }
-        ListEmptyComponent={<MonoText tone="faint">{emptyMessage}</MonoText>}
+        ListEmptyComponent={
+          emptyMessage === null ? null : <MonoText tone="faint">{emptyMessage}</MonoText>
+        }
       />
       {active && (
         <KeyboardStickyView
@@ -517,6 +531,15 @@ export function ProtocolConversation({
               </MonoText>
             </View>
           ) : null}
+          {composerHint === null ? null : (
+            <View
+              style={{ alignItems: "center", paddingVertical: 4, backgroundColor: colors.sunken }}
+            >
+              <MonoText tone="faint" size={11}>
+                {composerHint}
+              </MonoText>
+            </View>
+          )}
           <View
             onLayout={(event) => setComposerHeight(event.nativeEvent.layout.height)}
             style={{
@@ -551,6 +574,14 @@ export function ProtocolConversation({
                 fontSize: 15,
               }}
             />
+            {openTurn !== undefined && (
+              <EvButton
+                variant="ghost"
+                label={interrupt.isPending ? "…" : "Stop"}
+                disabled={interrupt.isPending}
+                onPress={() => interrupt.mutate(openTurn.id)}
+              />
+            )}
             <EvButton
               label={submit.isPending ? "Sending…" : "Send"}
               onPress={send}

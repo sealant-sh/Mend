@@ -74,6 +74,10 @@ const makeConversationWorld = () => {
         [...turns.values()].find((turn) => turn.providerTurnId === providerTurnId) ?? null,
       ),
     listTurns: () => Effect.succeed([...turns.values()]),
+    openTurns: () =>
+      Effect.succeed(
+        [...turns.values()].filter((turn) => turn.status === "queued" || turn.status === "running"),
+      ),
     claimNextTurn: () =>
       Effect.sync(() => {
         const all = [...turns.values()].toSorted((a, b) => a.ordinal - b.ordinal);

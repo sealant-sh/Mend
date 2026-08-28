@@ -15,6 +15,7 @@ import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { useEffect } from "react";
 import { AppState } from "react-native";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 
 import {
@@ -73,34 +74,37 @@ export default function RootLayout() {
   };
 
   return (
-    <KeyboardProvider>
-      <QueryClientProvider client={queryClient}>
-        <ThemeProvider value={navTheme}>
-          <StatusBar style={scheme === "dark" ? "light" : "dark"} />
-          <Stack
-            screenOptions={{
-              headerStyle: { backgroundColor: colors.bg },
-              headerShadowVisible: false,
-              headerTintColor: colors.accent,
-              headerTitleStyle: {
-                fontFamily: fontFamilies.sans.semibold,
-                fontSize: 15,
-                color: colors.ink,
-              },
-            }}
-          >
-            <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-            <Stack.Screen name="pair" options={{ title: "Pair device" }} />
-            <Stack.Screen
-              name="adopt"
-              options={{ title: "Adopt project", presentation: "modal" }}
-            />
-            <Stack.Screen name="project/[id]" options={{ title: "Project" }} />
-            <Stack.Screen name="session/[id]" options={{ title: "Session" }} />
-            <Stack.Screen name="review/[id]" options={{ title: "Review" }} />
-          </Stack>
-        </ThemeProvider>
-      </QueryClientProvider>
-    </KeyboardProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <KeyboardProvider>
+        <QueryClientProvider client={queryClient}>
+          <ThemeProvider value={navTheme}>
+            <StatusBar style={scheme === "dark" ? "light" : "dark"} />
+            <Stack
+              screenOptions={{
+                headerStyle: { backgroundColor: colors.bg },
+                headerShadowVisible: false,
+                headerTintColor: colors.accent,
+                headerTitleStyle: {
+                  fontFamily: fontFamilies.sans.semibold,
+                  fontSize: 15,
+                  color: colors.ink,
+                },
+              }}
+            >
+              <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+              <Stack.Screen name="pair" options={{ title: "Pair device" }} />
+              <Stack.Screen
+                name="adopt"
+                options={{ title: "Adopt project", presentation: "modal" }}
+              />
+              <Stack.Screen name="project/[id]" options={{ title: "Project" }} />
+              <Stack.Screen name="session/[id]" options={{ title: "Session" }} />
+              <Stack.Screen name="review/[id]" options={{ title: "Review" }} />
+              <Stack.Screen name="diff/[id]" options={{ title: "Diff" }} />
+            </Stack>
+          </ThemeProvider>
+        </QueryClientProvider>
+      </KeyboardProvider>
+    </GestureHandlerRootView>
   );
 }

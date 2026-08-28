@@ -21,6 +21,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { EvButton } from "@/components/button";
+import { BASE_LINE_H, CodeChunk, parseFiles, TOTAL_BUDGET, type DiffRow } from "@/components/diff";
 import { Panel, PanelRow } from "@/components/panel";
 import { CommentCard } from "@/components/review-comment";
 import { ScreenHeader, SectionLabel } from "@/components/screen";
@@ -47,75 +48,11 @@ import {
 import { sha256Hex } from "@/lib/sha256";
 import { radius, spacing, useEvidenceTheme } from "@/theme/evidence";
 
-// ─── diff parsing ───────────────────────────────────────────────────────────
+// Diff parsing and the row renderer live in components/diff.tsx, shared with
+// the plain Diff screen.
 
-/** Per-file and whole-change render caps — a phone is not the desktop diff. */
-const FILE_LINE_CAP = 400;
-const TOTAL_BUDGET = 1200;
-/** Unscaled row height; multiplied by the user's text scale. */
-const BASE_LINE_H = 17;
 /** Estimated file-header height, for scroll-to-stop math. */
 const HEADER_H = 34;
-
-interface DiffRow {
-  readonly kind: "hunk" | "add" | "del" | "ctx";
-  readonly text: string;
-  /** New-file line number — the coordinate comments and tour stops anchor to. */
-  readonly newLine: number | null;
-}
-
-interface FileBlock {
-  readonly path: string;
-  readonly rows: ReadonlyArray<DiffRow>;
-  readonly hidden: number;
-}
-
-const META_PREFIXES = [
-  "index ",
-  "--- ",
-  "+++ ",
-  "new file",
-  "deleted file",
-  "similarity index",
-  "rename from",
-  "rename to",
-  "old mode",
-  "new mode",
-  "Binary files",
-];
-
-const parseFiles = (diff: string): ReadonlyArray<FileBlock> => {
-  const files: Array<{ path: string; rows: Array<DiffRow>; hidden: number }> = [];
-  let newLine = 0;
-  for (const line of diff.split("\n")) {
-    if (line.startsWith("diff --git ")) {
-      files.push({ path: line.split(" b/").at(-1) ?? line, rows: [], hidden: 0 });
-      newLine = 0;
-      continue;
-    }
-    const current = files.at(-1);
-    // "" is a split artifact — real context lines carry their space prefix.
-    if (current === undefined || line === "") continue;
-    if (META_PREFIXES.some((prefix) => line.startsWith(prefix))) continue;
-    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)/.exec(line);
-    let row: DiffRow;
-    if (hunk !== null) {
-      newLine = Number(hunk[1] ?? "0");
-      row = { kind: "hunk", text: line, newLine: null };
-    } else if (line.startsWith("+")) {
-      row = { kind: "add", text: line, newLine };
-      newLine += 1;
-    } else if (line.startsWith("-")) {
-      row = { kind: "del", text: line, newLine: null };
-    } else {
-      row = { kind: "ctx", text: line, newLine };
-      newLine += 1;
-    }
-    if (current.rows.length >= FILE_LINE_CAP) current.hidden += 1;
-    else current.rows.push(row);
-  }
-  return files;
-};
 
 // ─── the follow-up instruction (ported verbatim from the web review) ────────
 
@@ -360,87 +297,6 @@ function TourDock({
         <EvButton size="sm" variant="ghost" label="End tour" onPress={onEnd} />
       </View>
     </View>
-  );
-}
-
-/** A run of diff rows in one horizontal scroll; comments split the runs. */
-function CodeChunk({
-  rows,
-  lineH,
-  highlight,
-  onPressLine,
-}: {
-  readonly rows: ReadonlyArray<DiffRow>;
-  readonly lineH: number;
-  readonly highlight: { readonly start: number; readonly end: number } | null;
-  readonly onPressLine: (line: number) => void;
-}) {
-  const { colors } = useEvidenceTheme();
-  return (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-      <View style={{ minWidth: "100%" }}>
-        {rows.map((row, index) => {
-          const highlighted =
-            highlight !== null &&
-            row.newLine !== null &&
-            row.newLine >= highlight.start &&
-            row.newLine <= highlight.end;
-          const background =
-            highlighted && row.kind === "ctx"
-              ? colors.wash
-              : row.kind === "add"
-                ? colors.addBg
-                : row.kind === "del"
-                  ? colors.delBg
-                  : "transparent";
-          const edge = highlighted
-            ? colors.accent
-            : row.kind === "add"
-              ? colors.addEdge
-              : colors.delEdge;
-          const hasEdge = highlighted || row.kind === "add" || row.kind === "del";
-          return (
-            <Pressable
-              key={index}
-              disabled={row.newLine === null}
-              onPress={() => {
-                if (row.newLine !== null) onPressLine(row.newLine);
-              }}
-              style={{
-                flexDirection: "row",
-                height: lineH,
-                backgroundColor: background,
-                borderLeftWidth: hasEdge ? 2 : 0,
-                borderLeftColor: edge,
-              }}
-            >
-              <MonoText
-                size={9.5}
-                tone="faint"
-                style={{ width: 42, textAlign: "right", paddingRight: 8, lineHeight: lineH }}
-              >
-                {row.newLine ?? ""}
-              </MonoText>
-              <MonoText
-                size={11}
-                style={{
-                  lineHeight: lineH,
-                  paddingRight: 16,
-                  color:
-                    row.kind === "hunk"
-                      ? colors.accent
-                      : row.kind === "ctx"
-                        ? colors.ink2
-                        : colors.ink,
-                }}
-              >
-                {row.text === "" ? " " : row.text}
-              </MonoText>
-            </Pressable>
-          );
-        })}
-      </View>
-    </ScrollView>
   );
 }
 
