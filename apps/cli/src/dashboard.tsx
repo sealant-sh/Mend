@@ -1,23 +1,42 @@
 import { CliRenderEvents, createCliRenderer, type ScrollBoxRenderable } from "@opentui/core";
 import { createRoot, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
-import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  QueryClient,
+  QueryClientProvider,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { reviewTargetForSession } from "./review-workflow.ts";
 import { ReviewScreen } from "./review.tsx";
-import { cwdFacts, HARNESS_COMMANDS, LIVE_STATUSES, matchProjectByCwd } from "./shared.ts";
+import {
+  cwdFacts,
+  HARNESS_COMMANDS,
+  isPendingId,
+  LIVE_STATUSES,
+  matchProjectByCwd,
+  pendingId,
+} from "./shared.ts";
 import { openUrl } from "./terminal.ts";
-import { AMBER, BG, COBALT, FAINT, GREEN, INK, MUTED, RED, RULE, WASH } from "./tui-theme.ts";
+import { COBALT, FAINT, INK, INK_2, MUTED, RED, RULE, WASH } from "./tui-theme.ts";
+import { createSseParser, eventFamilies, type InvalidateFamily } from "./workbench-events.ts";
 
 /**
- * The workbench dashboard (bare `mend`): oil-style navigation over the
- * machine's projects and sessions, rendered with @opentui/react. Server
- * state lives in one TanStack Query cache entry; the SSE stream (the same
- * one the web app uses) invalidates it from outside React, so there are no
- * data-fetching effects — components just read the query. It opens on the
- * cwd's project when one matches; `-`/`h` steps up to every project, enter
- * attaches or resumes, `v` reviews its change, `n` starts a session, and
- * `e` renames one.
+ * The workbench dashboard (bare `mend`): a drawn multi-pane interface —
+ * projects pane and sessions pane side by side, a session detail panel
+ * beneath them, and the harness picker as a panel that takes the detail
+ * slot. Focus moves between panes (tab, h/l); the cobalt border says which
+ * pane the keyboard is in. Rendered with @opentui/react.
+ *
+ * Server state lives in one TanStack Query cache entry; the SSE stream (the
+ * same one the web app uses) is parsed outside React and each pointer event
+ * invalidates only the query families it can stale — heartbeats and
+ * per-record-line progress invalidate nothing. Writes are optimistic
+ * mutations: a rename, a new session, a resume all land in the cache
+ * immediately and the server's answer reconciles on settle, so the keyboard
+ * never waits on a round trip.
  *
  * This module is imported lazily and only where node:ffi exists (Node 26
  * with --experimental-ffi — main.ts gates and re-execs), so every plain
@@ -80,22 +99,14 @@ interface ServiceDto {
   readonly hostPort: number | null;
 }
 
-const STATUS_GLYPH: Record<string, string> = {
-  starting: "○",
-  running: "●",
-  waiting: "●",
-  idle: "●",
-  completed: "●",
-  failed: "●",
-  stopped: "○",
-};
-
+// Near-mono on purpose: a status is a word, and only an observed failure
+// earns color. Live states read at full ink; settled ones recede.
 const STATUS_COLOR: Record<string, string> = {
-  starting: COBALT,
-  running: COBALT,
-  waiting: AMBER,
-  idle: COBALT,
-  completed: GREEN,
+  starting: INK_2,
+  running: INK,
+  waiting: INK_2,
+  idle: INK_2,
+  completed: FAINT,
   failed: RED,
   stopped: FAINT,
 };
@@ -143,100 +154,115 @@ const fetchWorkbench = async (ctx: DashboardContext): Promise<Workbench> => {
   };
 };
 
-// ─── the three views and their list items ───────────────────────────────────
+// ─── optimistic cache surgery: pure Workbench → Workbench ───────────────────
 
-type View =
-  | { readonly kind: "projects" }
-  | { readonly kind: "sessions"; readonly projectId: string }
-  | {
-      readonly kind: "picker";
-      readonly projectId: string;
-      /** null session = a new session; set = resume that session. */
-      readonly session: SessionDto | null;
-    };
+/** Apply `f` to every session row in every project detail. */
+const mapWorkbenchSessions = (
+  data: Workbench,
+  f: (session: SessionDto) => SessionDto,
+): Workbench => ({
+  ...data,
+  details: new Map(
+    [...data.details].map(([id, detail]) => [id, { ...detail, sessions: detail.sessions.map(f) }]),
+  ),
+});
 
-interface SessionItem {
-  readonly kind: "session";
-  readonly session: SessionDto;
-  readonly annotation: SessionAnnotationDto | undefined;
-  readonly services: ReadonlyArray<ServiceDto>;
-}
+const mapProjectSessions = (
+  data: Workbench,
+  projectId: string,
+  f: (sessions: ReadonlyArray<SessionDto>) => ReadonlyArray<SessionDto>,
+): Workbench => {
+  const detail = data.details.get(projectId);
+  if (detail === undefined) return data;
+  const details = new Map(data.details);
+  details.set(projectId, { ...detail, sessions: f(detail.sessions) });
+  return { ...data, details };
+};
+
+const prependSession = (data: Workbench, projectId: string, session: SessionDto): Workbench =>
+  mapProjectSessions(data, projectId, (sessions) => [session, ...sessions]);
+
+const replaceSession = (
+  data: Workbench,
+  projectId: string,
+  oldId: string,
+  session: SessionDto,
+): Workbench =>
+  mapProjectSessions(data, projectId, (sessions) =>
+    sessions.map((candidate) => (candidate.id === oldId ? session : candidate)),
+  );
+
+const removeSession = (data: Workbench, projectId: string, sessionId: string): Workbench =>
+  mapProjectSessions(data, projectId, (sessions) =>
+    sessions.filter((candidate) => candidate.id !== sessionId),
+  );
+
+// ─── pane derivations ───────────────────────────────────────────────────────
 
 interface ProjectItem {
-  readonly kind: "project";
   readonly project: ProjectDto;
   readonly total: number;
   readonly live: number;
   readonly open: number;
 }
 
+interface SessionItem {
+  readonly session: SessionDto;
+  readonly annotation: SessionAnnotationDto | undefined;
+  readonly services: ReadonlyArray<ServiceDto>;
+}
+
 interface HarnessItem {
-  readonly kind: "harness";
   /** null = resume with the same harness the session last ran. */
   readonly harness: string | null;
   readonly label: string;
   readonly hint: string;
 }
 
-type Item = SessionItem | ProjectItem | HarnessItem;
+const deriveProjects = (data: Workbench | undefined): ReadonlyArray<ProjectItem> =>
+  (data?.projects ?? []).map((project): ProjectItem => {
+    const detail = data?.details.get(project.id);
+    const sessions = detail?.sessions ?? [];
+    const live = sessions.filter((s) => LIVE_STATUSES.has(s.status)).length;
+    const open = (detail?.annotations ?? []).reduce((sum, a) => sum + a.openComments, 0);
+    return { project, total: sessions.length, live, open };
+  });
 
-const itemKey = (item: Item): string =>
-  item.kind === "session"
-    ? item.session.id
-    : item.kind === "project"
-      ? item.project.id
-      : String(item.harness);
-
-const itemHeight = (view: View): number => (view.kind === "sessions" ? 2 : 1);
-
-const homeView = (cwd: string, data: Workbench): View => {
-  const home = matchProjectByCwd(data.projects, cwdFacts(cwd));
-  return home === undefined ? { kind: "projects" } : { kind: "sessions", projectId: home.id };
+const deriveSessions = (
+  data: Workbench | undefined,
+  projectId: string | null,
+): ReadonlyArray<SessionItem> => {
+  if (data === undefined || projectId === null) return [];
+  const detail = data.details.get(projectId);
+  if (detail === undefined) return [];
+  return detail.sessions
+    .toSorted((a, b) => {
+      const aLive = LIVE_STATUSES.has(a.status) ? 1 : 0;
+      const bLive = LIVE_STATUSES.has(b.status) ? 1 : 0;
+      if (aLive !== bLive) return bLive - aLive;
+      return b.createdAt.localeCompare(a.createdAt);
+    })
+    .map(
+      (session): SessionItem => ({
+        session,
+        annotation: detail.annotations.find((a) => a.sessionId === session.id),
+        services: data.servicesBySession.get(session.id) ?? [],
+      }),
+    );
 };
 
-const deriveItems = (view: View, data: Workbench | undefined): ReadonlyArray<Item> => {
-  if (data === undefined) return [];
-  if (view.kind === "projects") {
-    return data.projects.map((project): ProjectItem => {
-      const detail = data.details.get(project.id);
-      const sessions = detail?.sessions ?? [];
-      const live = sessions.filter((s) => LIVE_STATUSES.has(s.status)).length;
-      const open = (detail?.annotations ?? []).reduce((sum, a) => sum + a.openComments, 0);
-      return { kind: "project", project, total: sessions.length, live, open };
-    });
-  }
-  if (view.kind === "sessions") {
-    const detail = data.details.get(view.projectId);
-    if (detail === undefined) return [];
-    return detail.sessions
-      .toSorted((a, b) => {
-        const aLive = LIVE_STATUSES.has(a.status) ? 1 : 0;
-        const bLive = LIVE_STATUSES.has(b.status) ? 1 : 0;
-        if (aLive !== bLive) return bLive - aLive;
-        return b.createdAt.localeCompare(a.createdAt);
-      })
-      .map(
-        (session): SessionItem => ({
-          kind: "session",
-          session,
-          annotation: detail.annotations.find((a) => a.sessionId === session.id),
-          services: data.servicesBySession.get(session.id) ?? [],
-        }),
-      );
-  }
-  const resuming = view.session;
+/** The picker's rows: resume offers the same harness first, then the crossings. */
+const deriveHarnesses = (resuming: SessionDto | null): ReadonlyArray<HarnessItem> => {
   if (resuming !== null) {
     const others = Object.keys(HARNESS_COMMANDS).filter((h) => h !== resuming.harness);
     return [
       {
-        kind: "harness",
         harness: null,
         label: resuming.harness,
         hint: "same harness — native resume, conversation intact",
       },
       ...others.map(
         (harness): HarnessItem => ({
-          kind: "harness",
           harness,
           label: harness,
           hint:
@@ -249,7 +275,6 @@ const deriveItems = (view: View, data: Workbench | undefined): ReadonlyArray<Ite
   }
   return Object.keys(HARNESS_COMMANDS).map(
     (harness): HarnessItem => ({
-      kind: "harness",
       harness,
       label: harness,
       hint:
@@ -260,27 +285,73 @@ const deriveItems = (view: View, data: Workbench | undefined): ReadonlyArray<Ite
   );
 };
 
-// ─── rows: JSX spans instead of StyledText chunks ───────────────────────────
+// ─── panes and rows ─────────────────────────────────────────────────────────
 
 const Gutter = ({ selected }: { readonly selected: boolean }) => (
   <span fg={selected ? COBALT : FAINT}>{selected ? "▌ " : "  "}</span>
 );
 
-/** Facts joined with dim separators — label, review state, age. */
-const Facts = ({ facts }: { readonly facts: ReadonlyArray<ReactNode> }) => {
-  if (facts.length === 0) return <span fg={FAINT}>—</span>;
-  return (
-    <>
-      {facts.map((fact, index) => (
-        // eslint-disable-next-line react/no-array-index-key -- order is the identity here
-        <span key={index}>
-          {index > 0 ? <span fg={FAINT}> · </span> : null}
-          {fact}
-        </span>
-      ))}
-    </>
-  );
-};
+/**
+ * A drawn pane: rounded border, a title in the frame, cobalt when the
+ * keyboard lives here. Everything the dashboard shows sits in one of these.
+ */
+const Pane = ({
+  title,
+  focused,
+  children,
+  width,
+  height,
+  grow,
+}: {
+  readonly title: string;
+  readonly focused: boolean;
+  readonly children: ReactNode;
+  readonly width?: number;
+  readonly height?: number;
+  readonly grow?: boolean;
+}) => (
+  <box
+    border
+    borderStyle="rounded"
+    borderColor={focused ? COBALT : RULE}
+    title={` ${title} `}
+    titleAlignment="left"
+    backgroundColor="transparent"
+    {...(width === undefined ? {} : { width, flexShrink: 0, minHeight: 0 })}
+    {...(height === undefined ? {} : { height, flexShrink: 0 })}
+    {...(grow === true ? { flexGrow: 1, flexShrink: 1, minHeight: 0, minWidth: 0 } : {})}
+    flexDirection="column"
+  >
+    {children}
+  </box>
+);
+
+const paneScrollStyle = {
+  rootOptions: { backgroundColor: "transparent", border: false },
+  wrapperOptions: { backgroundColor: "transparent" },
+  viewportOptions: { backgroundColor: "transparent" },
+  contentOptions: { backgroundColor: "transparent" },
+} as const;
+
+const ProjectRow = ({
+  item,
+  selected,
+  nameWidth,
+}: {
+  readonly item: ProjectItem;
+  readonly selected: boolean;
+  readonly nameWidth: number;
+}) => (
+  <box height={1} flexShrink={0} backgroundColor={selected ? WASH : "transparent"}>
+    <text height={1} bg="transparent">
+      <Gutter selected={selected} />
+      <span fg={INK}>{item.project.name.padEnd(nameWidth)}</span>
+      <span fg={item.total === 0 ? FAINT : MUTED}>{`  ${item.total}`}</span>
+      {item.live > 0 ? <span fg={MUTED}>{` · ${item.live} live`}</span> : null}
+      {item.open > 0 ? <span fg={MUTED}>{` · ${item.open}`}</span> : null}
+    </text>
+  </box>
+);
 
 const SessionRow = ({
   item,
@@ -289,92 +360,21 @@ const SessionRow = ({
   readonly item: SessionItem;
   readonly selected: boolean;
 }) => {
-  const { session, annotation, services } = item;
+  const { session, annotation } = item;
   const color = STATUS_COLOR[session.status] ?? MUTED;
-  const glyph = STATUS_GLYPH[session.status] ?? "·";
-  const facts: Array<ReactNode> = [];
-  const age = timeAgo(session.createdAt);
-  if (age !== "") facts.push(<span fg={FAINT}>{age}</span>);
-  // What runs right now: name :port → host port, observed state colored.
-  for (const service of services.slice(0, 2)) {
-    facts.push(
-      <span fg={service.status === "reachable" ? GREEN : AMBER}>
-        {`${service.label ?? service.id.slice(0, 6)} :${service.workspacePort ?? "?"}${service.protocol === "udp" ? "u" : ""}→${service.hostPort ?? "?"} ${service.status}`}
-      </span>,
-    );
-  }
-  if (services.length > 2) {
-    facts.push(<span fg={FAINT}>{`+${services.length - 2} services`}</span>);
-  }
-  if (session.label !== null) facts.push(<span fg={MUTED}>{session.label}</span>);
-  if (annotation !== undefined && annotation.openComments > 0) {
-    facts.push(
-      <span fg={AMBER}>
-        {annotation.openComments} open comment{annotation.openComments === 1 ? "" : "s"}
-      </span>,
-    );
-  }
-  if (annotation !== undefined && annotation.pendingFollowUp) {
-    facts.push(<span fg={AMBER}>follow-up pending</span>);
-  }
-  if (session.summary !== null && facts.length < 3) {
-    facts.push(<span fg={FAINT}>{session.summary.split("\n")[0]?.slice(0, 60) ?? ""}</span>);
-  }
-  return (
-    <box
-      height={2}
-      flexDirection="column"
-      flexShrink={0}
-      backgroundColor={selected ? WASH : "transparent"}
-    >
-      <text height={1} bg="transparent">
-        <Gutter selected={selected} />
-        <span fg={color}>{glyph} </span>
-        <span fg={INK}>{session.harness.padEnd(9)}</span>
-        <span fg={FAINT}>{session.id.slice(0, 8)}</span>
-        <span fg={color}>{`  ${session.status.padEnd(10)}`}</span>
-        <span fg={MUTED}>{session.branch}</span>
-      </text>
-      <text height={1} bg="transparent">
-        <Gutter selected={selected} />
-        <span>{"  "}</span>
-        <Facts facts={facts} />
-      </text>
-    </box>
-  );
-};
-
-const ProjectRow = ({
-  item,
-  selected,
-  nameWidth,
-  branchWidth,
-}: {
-  readonly item: ProjectItem;
-  readonly selected: boolean;
-  readonly nameWidth: number;
-  readonly branchWidth: number;
-}) => {
-  const { project, total, live, open } = item;
-  const counts = total === 0 ? "no sessions" : `${total} session${total === 1 ? "" : "s"}`;
-  const liveText = live > 0 ? ` · ${live} live` : "";
-  const openText = open > 0 ? ` · ${open} open` : "";
-  const pad = " ".repeat(Math.max(1, 24 - counts.length - liveText.length - openText.length));
+  const age = timeAgo(session.createdAt).replace(" ago", "");
   return (
     <box height={1} flexShrink={0} backgroundColor={selected ? WASH : "transparent"}>
       <text height={1} bg="transparent">
         <Gutter selected={selected} />
-        <span fg={INK}>{project.name.padEnd(nameWidth)}</span>
-        <span>{"  "}</span>
-        <span fg={MUTED}>{project.defaultBranch.padEnd(branchWidth)}</span>
-        <span>{"  "}</span>
-        <span fg={total === 0 ? FAINT : MUTED}>{counts}</span>
-        {liveText === "" ? null : <span fg={COBALT}>{liveText}</span>}
-        {openText === "" ? null : <span fg={AMBER}>{openText}</span>}
-        <span fg={FAINT}>
-          {pad}
-          {project.storePath}
-        </span>
+        <span fg={INK}>{session.harness.padEnd(9)}</span>
+        <span fg={FAINT}>{session.id.slice(0, 8)}</span>
+        <span fg={color}>{`  ${session.status.padEnd(10)}`}</span>
+        <span fg={FAINT}>{age.padEnd(9)}</span>
+        {annotation !== undefined && annotation.openComments > 0 ? (
+          <span fg={MUTED}>{`${annotation.openComments} open  `}</span>
+        ) : null}
+        <span fg={MUTED}>{(session.label ?? "").slice(0, 40)}</span>
       </text>
     </box>
   );
@@ -395,6 +395,79 @@ const HarnessRow = ({
     </text>
   </box>
 );
+
+/**
+ * The detail panel: everything about the selected session that the one-line
+ * rows no longer carry — branch and base, services, the review state, the
+ * summary. The panes above stay scannable because this panel holds the depth.
+ */
+const SessionDetail = ({ item }: { readonly item: SessionItem | null }) => {
+  if (item === null) {
+    return (
+      <text height={1} bg="transparent" fg={FAINT}>
+        {"  no session selected — n starts one"}
+      </text>
+    );
+  }
+  const { session, annotation, services } = item;
+  const color = STATUS_COLOR[session.status] ?? MUTED;
+  const summary = session.summary?.split("\n")[0] ?? null;
+  return (
+    <>
+      <text height={1} bg="transparent">
+        <span>{"  "}</span>
+        <span fg={color}>{session.status}</span>
+        <span fg={FAINT}> · </span>
+        <span fg={MUTED}>{session.branch}</span>
+        <span fg={FAINT}>
+          {session.baseSha === "" ? "" : ` vs ${session.baseSha.slice(0, 12)}`} · started{" "}
+          {timeAgo(session.createdAt)}
+        </span>
+      </text>
+      <text height={1} bg="transparent">
+        <span>{"  "}</span>
+        {services.length === 0 ? (
+          <span fg={FAINT}>no services running</span>
+        ) : (
+          services.slice(0, 3).map((service, index) => (
+            <span key={service.id}>
+              {index > 0 ? <span fg={FAINT}> · </span> : null}
+              <span fg={service.status === "reachable" ? INK_2 : MUTED}>
+                {`${service.label ?? service.id.slice(0, 6)} :${service.workspacePort ?? "?"}${service.protocol === "udp" ? "u" : ""}→${service.hostPort ?? "?"} ${service.status}`}
+              </span>
+            </span>
+          ))
+        )}
+        {services.length > 3 ? <span fg={FAINT}>{` · +${services.length - 3} more`}</span> : null}
+      </text>
+      <text height={1} bg="transparent">
+        <span>{"  "}</span>
+        {annotation === undefined || annotation.openComments === 0 ? (
+          <span fg={FAINT}>no open review comments</span>
+        ) : (
+          <span fg={INK_2}>
+            {annotation.openComments} open comment{annotation.openComments === 1 ? "" : "s"}
+          </span>
+        )}
+        {annotation?.pendingFollowUp === true ? (
+          <>
+            <span fg={FAINT}> · </span>
+            <span fg={INK_2}>follow-up pending</span>
+          </>
+        ) : null}
+        {annotation?.changeId != null ? (
+          <>
+            <span fg={FAINT}> · </span>
+            <span fg={MUTED}>v reviews the change</span>
+          </>
+        ) : null}
+      </text>
+      <text height={1} bg="transparent" fg={summary === null ? FAINT : MUTED}>
+        {`  ${summary ?? "no summary yet"}`}
+      </text>
+    </>
+  );
+};
 
 // ─── status line: busy ticker or auto-clearing message ──────────────────────
 
@@ -433,15 +506,28 @@ const StatusLine = ({
         ? ` ${status.text}`
         : "";
   return (
-    <text height={1} fg={AMBER} bg="transparent">
+    <text height={1} fg={INK_2} bg="transparent">
       {text}
     </text>
   );
 };
 
+const errorText = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+/** Keep a 1-line-per-row selection inside its scrollbox's real viewport. */
+const keepRowVisible = (scroll: ScrollBoxRenderable | null, index: number): void => {
+  if (scroll === null) return;
+  const viewH = Math.max(1, scroll.viewport.height);
+  if (index < scroll.scrollTop) scroll.scrollTo(index);
+  else if (index + 1 > scroll.scrollTop + viewH) scroll.scrollTo(index + 1 - viewH);
+};
+
 // ─── the app ────────────────────────────────────────────────────────────────
 
-const CHROME_ROWS = 7; // margin + header + margin + 2 borders + status + footer
+type Focus = "projects" | "sessions";
+
+const PROJECTS_PANE_WIDTH = 30;
 
 const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit: () => void }) => {
   const renderer = useRenderer();
@@ -454,10 +540,11 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     retryDelay: 1000,
   });
 
-  const [navigated, setNavigated] = useState<View | null>(null);
-  const view: View =
-    navigated ?? (data === undefined ? { kind: "projects" } : homeView(ctx.cwd, data));
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [focusState, setFocus] = useState<Focus>("sessions");
+  const [projectKey, setProjectKey] = useState<string | null>(null);
+  const [sessionKey, setSessionKey] = useState<string | null>(null);
+  const [picker, setPicker] = useState<{ readonly session: SessionDto | null } | null>(null);
+  const [pickerIndex, setPickerIndex] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
   const [busyStarted, setBusyStarted] = useState(0);
   const [status, setStatus] = useState<StatusMessage | null>(null);
@@ -469,40 +556,50 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   } | null>(null);
   /** Set synchronously around attach/launch so keystrokes can't double-fire. */
   const lockRef = useRef(false);
+  /** Latest modal state for mutation callbacks — closures there go stale. */
+  const modalRef = useRef(false);
+  modalRef.current = editing !== null || reviewing !== null || picker !== null;
 
-  const items = deriveItems(view, data);
-  const foundIndex = selectedKey === null ? -1 : items.findIndex((i) => itemKey(i) === selectedKey);
-  const selectedIndex = foundIndex === -1 ? 0 : foundIndex;
+  const { width: terminalCols, height: terminalRows } = useTerminalDimensions();
+  const showProjectsPane = terminalCols >= 72;
+  const showDetail = terminalRows >= 18;
+  const focus: Focus = showProjectsPane ? focusState : "sessions";
+
+  // ── pane data ──
+  const projectItems = deriveProjects(data);
+  const homeProject =
+    data === undefined ? undefined : matchProjectByCwd(data.projects, cwdFacts(ctx.cwd));
+  const projectIndexRaw =
+    projectKey === null ? -1 : projectItems.findIndex((p) => p.project.id === projectKey);
+  const projectIndex =
+    projectIndexRaw !== -1
+      ? projectIndexRaw
+      : Math.max(
+          0,
+          homeProject === undefined
+            ? 0
+            : projectItems.findIndex((p) => p.project.id === homeProject.id),
+        );
+  const selectedProject = projectItems[projectIndex] ?? null;
+  const sessionItems = deriveSessions(data, selectedProject?.project.id ?? null);
+  const sessionIndexRaw =
+    sessionKey === null ? -1 : sessionItems.findIndex((s) => s.session.id === sessionKey);
+  const sessionIndex = sessionIndexRaw === -1 ? 0 : sessionIndexRaw;
+  const selectedSession = sessionItems[sessionIndex] ?? null;
+  const pickerItems = picker === null ? [] : deriveHarnesses(picker.session);
 
   const say = (text: string): void => setStatus({ text, at: Date.now() });
   const refetch = (): void => void queryClient.invalidateQueries({ queryKey: WORKBENCH_KEY });
-  const setView = (next: View): void => {
-    setNavigated(next);
-    setSelectedKey(null);
-  };
 
-  // Keep the selection on screen — the one imperative escape hatch.
-  const scrollRef = useRef<ScrollBoxRenderable | null>(null);
-  const { height: terminalRows } = useTerminalDimensions();
-  const rowH = itemHeight(view);
+  // Keep each pane's selection on screen — the one imperative escape hatch.
+  const projectScrollRef = useRef<ScrollBoxRenderable | null>(null);
+  const sessionScrollRef = useRef<ScrollBoxRenderable | null>(null);
   useEffect(() => {
-    const scroll = scrollRef.current;
-    if (scroll === null) return;
-    const top = selectedIndex * rowH;
-    const viewH = Math.max(1, terminalRows - CHROME_ROWS - (editing === null ? 0 : 3));
-    if (top < scroll.scrollTop) scroll.scrollTo(top);
-    else if (top + rowH > scroll.scrollTop + viewH) scroll.scrollTo(top + rowH - viewH);
-  }, [selectedIndex, rowH, terminalRows, editing]);
-
-  const beginBusy = (label: string): void => {
-    lockRef.current = true;
-    setBusy(label);
-    setBusyStarted(Date.now());
-  };
-  const endBusy = (): void => {
-    lockRef.current = false;
-    setBusy(null);
-  };
+    keepRowVisible(projectScrollRef.current, projectIndex);
+  }, [projectIndex]);
+  useEffect(() => {
+    keepRowVisible(sessionScrollRef.current, sessionIndex);
+  }, [sessionIndex]);
 
   const attachFlow = async (session: SessionDto): Promise<void> => {
     const short = session.id.slice(0, 8);
@@ -540,96 +637,209 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     refetch();
   };
 
-  const startSession = async (projectId: string, harness: string): Promise<void> => {
-    const argv = HARNESS_COMMANDS[harness];
-    if (argv === undefined) return;
-    setView({ kind: "sessions", projectId });
-    beginBusy(`provisioning ${harness} workspace — a first launch builds the harness image ·`);
-    try {
-      const session = await ctx.api<SessionDto>("POST", `/projects/${projectId}/sessions`, {
-        harness,
+  /** Converge on the server's truth once, after the LAST in-flight mutation. */
+  const settleRefetch = (): void => {
+    if (queryClient.isMutating() === 1) refetch();
+  };
+  /** The current cache entry, for surgical optimistic edits. */
+  const workbench = (): Workbench | undefined => queryClient.getQueryData<Workbench>(WORKBENCH_KEY);
+  const patchWorkbench = (f: (data: Workbench) => Workbench): void => {
+    const current = workbench();
+    if (current !== undefined) queryClient.setQueryData(WORKBENCH_KEY, f(current));
+  };
+  /** Attaching yanks the terminal; only do it unasked when nothing else is open. */
+  const attachIfIdle = async (session: SessionDto): Promise<void> => {
+    if (lockRef.current || modalRef.current) {
+      say(`session ready · ${session.id.slice(0, 8)} — enter attaches`);
+      return;
+    }
+    await attachFlow(session);
+  };
+
+  // A new session appears as a `starting` row the moment enter is pressed;
+  // the keyboard stays free while the workspace provisions, and the terminal
+  // attaches when the launch answers — unless something else has the screen.
+  const launchMutation = useMutation({
+    mutationFn: async (vars: {
+      readonly projectId: string;
+      readonly harness: string;
+      readonly pendingKey: string;
+    }) => {
+      const argv = HARNESS_COMMANDS[vars.harness];
+      if (argv === undefined) throw new Error(`unknown harness "${vars.harness}"`);
+      const session = await ctx.api<SessionDto>("POST", `/projects/${vars.projectId}/sessions`, {
+        harness: vars.harness,
         label: null,
         base: null,
       });
       await ctx.api<SessionDto>("POST", `/sessions/${session.id}/launch`, { argv });
-      endBusy();
-      await attachFlow(session);
-    } catch (error) {
-      endBusy();
-      say(error instanceof Error ? error.message : String(error));
-    }
-    refetch();
+      return session;
+    },
+    onMutate: async (vars) => {
+      await queryClient.cancelQueries({ queryKey: WORKBENCH_KEY });
+      patchWorkbench((current) =>
+        prependSession(current, vars.projectId, {
+          id: vars.pendingKey,
+          harness: vars.harness,
+          label: null,
+          branch: "provisioning…",
+          baseSha: "",
+          status: "starting",
+          summary: null,
+          createdAt: new Date().toISOString(),
+        }),
+      );
+      setSessionKey(vars.pendingKey);
+      setBusy(`provisioning ${vars.harness} workspace — a first launch builds the harness image ·`);
+      setBusyStarted(Date.now());
+    },
+    onError: (error, vars) => {
+      patchWorkbench((current) => removeSession(current, vars.projectId, vars.pendingKey));
+      setBusy(null);
+      say(errorText(error));
+    },
+    onSuccess: async (session, vars) => {
+      patchWorkbench((current) =>
+        replaceSession(current, vars.projectId, vars.pendingKey, session),
+      );
+      setSessionKey(session.id);
+      setBusy(null);
+      await attachIfIdle(session);
+    },
+    onSettled: settleRefetch,
+  });
+
+  const resumeMutation = useMutation({
+    mutationFn: (vars: {
+      readonly projectId: string;
+      readonly session: SessionDto;
+      readonly harness: string | null;
+    }) =>
+      ctx.api<SessionDto>("POST", `/sessions/${vars.session.id}/resume`, {
+        harness: vars.harness,
+      }),
+    onMutate: async (vars) => {
+      await queryClient.cancelQueries({ queryKey: WORKBENCH_KEY });
+      patchWorkbench((current) =>
+        mapWorkbenchSessions(current, (session) =>
+          session.id === vars.session.id ? { ...session, status: "starting" } : session,
+        ),
+      );
+      setSessionKey(vars.session.id);
+      setBusy(
+        `resuming ${vars.session.id.slice(0, 8)} — a fresh workspace restores the saved state ·`,
+      );
+      setBusyStarted(Date.now());
+    },
+    onError: (error) => {
+      setBusy(null);
+      say(errorText(error));
+      refetch();
+    },
+    onSuccess: async (resumed, vars) => {
+      patchWorkbench((current) =>
+        replaceSession(current, vars.projectId, vars.session.id, resumed),
+      );
+      setSessionKey(resumed.id);
+      setBusy(null);
+      await attachIfIdle(resumed);
+    },
+    onSettled: settleRefetch,
+  });
+
+  // The label lands in the row before the server answers; an error puts the
+  // truth back on the next refetch.
+  const renameMutation = useMutation({
+    mutationFn: (vars: { readonly session: SessionDto; readonly label: string | null }) =>
+      ctx.api<SessionDto>("POST", `/sessions/${vars.session.id}/label`, { label: vars.label }),
+    onMutate: async (vars) => {
+      await queryClient.cancelQueries({ queryKey: WORKBENCH_KEY });
+      patchWorkbench((current) =>
+        mapWorkbenchSessions(current, (session) =>
+          session.id === vars.session.id ? { ...session, label: vars.label } : session,
+        ),
+      );
+      say(
+        vars.label === null
+          ? `label cleared · ${vars.session.id.slice(0, 8)}`
+          : `labeled · ${vars.label}`,
+      );
+    },
+    onError: (error) => {
+      say(errorText(error));
+      refetch();
+    },
+    onSettled: settleRefetch,
+  });
+
+  const startSession = (projectId: string, harness: string): void => {
+    setFocus("sessions");
+    launchMutation.mutate({ projectId, harness, pendingKey: pendingId() });
   };
 
-  const resumeSession = async (
-    projectId: string,
-    session: SessionDto,
-    harness: string | null,
-  ): Promise<void> => {
-    setView({ kind: "sessions", projectId });
-    setSelectedKey(session.id);
-    beginBusy(`resuming ${session.id.slice(0, 8)} — a fresh workspace restores the saved state ·`);
-    try {
-      const resumed = await ctx.api<SessionDto>("POST", `/sessions/${session.id}/resume`, {
-        harness,
-      });
-      endBusy();
-      await attachFlow(resumed);
-    } catch (error) {
-      endBusy();
-      say(error instanceof Error ? error.message : String(error));
-    }
-    refetch();
+  const resumeSession = (projectId: string, session: SessionDto, harness: string | null): void => {
+    setFocus("sessions");
+    resumeMutation.mutate({ projectId, session, harness });
   };
 
-  const submitRename = async (session: SessionDto, value: string): Promise<void> => {
+  const submitRename = (session: SessionDto, value: string): void => {
     setEditing(null);
     const label = value.trim() === "" ? null : value.trim();
-    try {
-      await ctx.api<SessionDto>("POST", `/sessions/${session.id}/label`, { label });
-      say(label === null ? `label cleared · ${session.id.slice(0, 8)}` : `labeled · ${label}`);
-    } catch (error) {
-      say(error instanceof Error ? error.message : String(error));
-    }
-    refetch();
+    renameMutation.mutate({ session, label });
+  };
+
+  const openPicker = (session: SessionDto | null): void => {
+    setPicker({ session });
+    setPickerIndex(0);
   };
 
   const moveSelection = (delta: number): void => {
-    if (items.length === 0) return;
-    const next = Math.max(0, Math.min(items.length - 1, selectedIndex + delta));
-    const item = items[next];
-    if (item !== undefined) setSelectedKey(itemKey(item));
+    if (picker !== null) {
+      setPickerIndex((current) => Math.max(0, Math.min(pickerItems.length - 1, current + delta)));
+      return;
+    }
+    if (focus === "projects") {
+      if (projectItems.length === 0) return;
+      const next = Math.max(0, Math.min(projectItems.length - 1, projectIndex + delta));
+      const item = projectItems[next];
+      if (item !== undefined) {
+        setProjectKey(item.project.id);
+        setSessionKey(null);
+      }
+      return;
+    }
+    if (sessionItems.length === 0) return;
+    const next = Math.max(0, Math.min(sessionItems.length - 1, sessionIndex + delta));
+    const item = sessionItems[next];
+    if (item !== undefined) setSessionKey(item.session.id);
   };
 
   const activate = (): void => {
-    const item = items[selectedIndex];
-    if (item === undefined) return;
-    if (item.kind === "project") {
-      setView({ kind: "sessions", projectId: item.project.id });
-      return;
-    }
-    if (item.kind === "session" && view.kind === "sessions") {
-      if (LIVE_STATUSES.has(item.session.status)) {
-        void attachFlow(item.session);
+    if (picker !== null) {
+      const choice = pickerItems[pickerIndex];
+      const projectId = selectedProject?.project.id;
+      if (choice === undefined || projectId === undefined) return;
+      setPicker(null);
+      if (picker.session === null) {
+        if (choice.harness !== null) startSession(projectId, choice.harness);
       } else {
-        setView({ kind: "picker", projectId: view.projectId, session: item.session });
+        resumeSession(projectId, picker.session, choice.harness);
       }
       return;
     }
-    if (item.kind === "harness" && view.kind === "picker") {
-      const { projectId, session } = view;
-      if (session === null) {
-        if (item.harness !== null) void startSession(projectId, item.harness);
-      } else {
-        void resumeSession(projectId, session, item.harness);
-      }
+    if (focus === "projects") {
+      setFocus("sessions");
+      return;
     }
-  };
-
-  /** `-`, backspace, or vim `h`: one level up. */
-  const goUp = (): void => {
-    if (view.kind === "sessions") setView({ kind: "projects" });
-    if (view.kind === "picker") setView({ kind: "sessions", projectId: view.projectId });
+    const item = selectedSession;
+    if (item === null) return;
+    if (isPendingId(item.session.id)) {
+      say("still provisioning — the row fills in when the workspace answers");
+    } else if (LIVE_STATUSES.has(item.session.status)) {
+      void attachFlow(item.session);
+    } else {
+      openPicker(item.session);
+    }
   };
 
   useKeyboard((key) => {
@@ -640,6 +850,26 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       // The input owns the keyboard; only escape leaves without saving.
       if (key.name === "escape") setEditing(null);
       return;
+    }
+    if (picker !== null) {
+      switch (key.name) {
+        case "down":
+        case "j":
+          return moveSelection(1);
+        case "up":
+        case "k":
+          return moveSelection(-1);
+        case "return":
+        case "linefeed":
+        case "l":
+          return activate();
+        case "escape":
+        case "q":
+        case "h":
+          return setPicker(null);
+        default:
+          return;
+      }
     }
     switch (key.name) {
       case "q":
@@ -652,42 +882,47 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         return moveSelection(-1);
       case "return":
       case "linefeed":
-      case "l":
         return activate();
+      case "l":
+      case "right":
+        if (focus === "projects") setFocus("sessions");
+        return;
+      case "h":
+      case "left":
       case "-":
       case "backspace":
-      case "h":
-        return goUp();
-      case "escape":
-        if (view.kind === "picker") setView({ kind: "sessions", projectId: view.projectId });
+        if (showProjectsPane) setFocus("projects");
+        return;
+      case "tab":
+        if (showProjectsPane) setFocus(focus === "projects" ? "sessions" : "projects");
         return;
       case "n":
-        if (view.kind === "sessions") {
-          setView({ kind: "picker", projectId: view.projectId, session: null });
-        }
+        if (selectedProject !== null) openPicker(null);
         return;
       case "e": {
-        const item = items[selectedIndex];
-        if (view.kind === "sessions" && item !== undefined && item.kind === "session") {
-          setEditing(item.session);
-        }
+        const item = selectedSession;
+        if (item !== null && !isPendingId(item.session.id)) setEditing(item.session);
         return;
       }
       case "o": {
-        const item = items[selectedIndex];
-        if (item !== undefined && item.kind === "session") {
+        const item = selectedSession;
+        if (item !== null && !isPendingId(item.session.id)) {
           openUrl(`${ctx.config.url}/sessions/${item.session.id}`);
           say(`opened · ${ctx.config.url}/sessions/${item.session.id.slice(0, 8)}…`);
         }
         return;
       }
       case "v": {
-        const item = items[selectedIndex];
-        if (view.kind !== "sessions" || item === undefined || item.kind !== "session") return;
+        const item = selectedSession;
+        if (item === null) return;
+        if (isPendingId(item.session.id)) {
+          say("still provisioning — nothing to review yet");
+          return;
+        }
         const target = reviewTargetForSession(
           item.session,
           item.annotation,
-          detail?.project.name ?? "project",
+          selectedProject?.project.name ?? "project",
         );
         if (target === null) {
           say("this session has no reviewable change yet");
@@ -705,62 +940,33 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     }
   });
 
-  // ── chrome derived from the view ──
-  const projects = data?.projects ?? [];
-  const liveTotal =
-    data === undefined
-      ? 0
-      : [...data.details.values()]
-          .flatMap((d) => d.sessions)
-          .filter((s) => LIVE_STATUSES.has(s.status)).length;
-  const detail = view.kind === "projects" ? undefined : data?.details.get(view.projectId);
-  const nameWidth = Math.max(...projects.map((p) => p.name.length), 4);
-  const branchWidth = Math.max(...projects.map((p) => p.defaultBranch.length), 4);
-
-  let title: string;
-  let headerContext: ReactNode;
-  let footerText: string;
-  if (view.kind === "projects") {
-    title = " projects ";
-    headerContext = (
-      <>
-        <span fg={MUTED}>
-          {projects.length} project{projects.length === 1 ? "" : "s"}
-        </span>
-        <span fg={FAINT}> · </span>
-        <span fg={liveTotal > 0 ? COBALT : FAINT}>{liveTotal} live</span>
-      </>
-    );
-    footerText = " ↑↓/jk move · enter/l open project · r refresh · q quit";
-  } else if (view.kind === "sessions") {
-    const name = detail?.project.name ?? "?";
-    const live = (detail?.sessions ?? []).filter((s) => LIVE_STATUSES.has(s.status)).length;
-    title = ` sessions — ${name} `;
-    headerContext = (
-      <>
-        <span fg={COBALT}>{name}</span>
-        <span fg={FAINT}> {detail?.project.defaultBranch ?? ""}</span>
-        <span fg={FAINT}> · </span>
-        <span fg={live > 0 ? COBALT : FAINT}>{live} live</span>
-      </>
-    );
-    footerText =
-      " ↑↓/jk move · enter/l attach/resume · v review in TUI · o web · n new · e rename · h/- projects · q quit";
-  } else {
-    const forSession = view.session;
-    title =
-      forSession === null
-        ? " new session — pick a harness "
-        : ` resume ${forSession.id.slice(0, 8)} — pick a harness `;
-    headerContext = (
-      <span fg={MUTED}>
-        {forSession === null
-          ? "a fresh worktree, recorded from the first keystroke"
-          : "same worktree, restored state"}
-      </span>
-    );
-    footerText = " ↑↓ move · enter start · esc/h back";
-  }
+  // ── chrome ──
+  const liveTotal = projectItems.reduce((sum, item) => sum + item.live, 0);
+  const nameWidth = Math.min(16, Math.max(...projectItems.map((p) => p.project.name.length), 4));
+  const sessionsTitle =
+    selectedProject === null
+      ? "sessions"
+      : `sessions — ${selectedProject.project.name}${
+          selectedProject.live > 0 ? ` · ${selectedProject.live} live` : ""
+        }`;
+  const detailTitle =
+    selectedSession === null
+      ? "session"
+      : `session — ${selectedSession.session.harness} ${selectedSession.session.id.slice(0, 8)}`;
+  const pickerTitle =
+    picker === null
+      ? ""
+      : picker.session === null
+        ? "new session — pick a harness"
+        : `resume ${picker.session.id.slice(0, 8)} — pick a harness`;
+  const footerText =
+    editing !== null
+      ? " enter save · esc cancel"
+      : picker !== null
+        ? " ↑↓ move · enter start · esc cancel"
+        : focus === "projects"
+          ? " ↑↓ move · enter/l sessions · ⇥ panes · r refresh · q quit"
+          : " ↑↓ move · enter attach/resume · n new · v review · e rename · o web · h/⇥ projects · q quit";
 
   const loadFailure =
     data === undefined && failureReason !== null
@@ -786,84 +992,86 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   }
 
   return (
-    <box flexGrow={1} flexDirection="column" backgroundColor={BG}>
-      <box
-        height={1}
-        marginTop={1}
-        flexDirection="row"
-        justifyContent="space-between"
-        backgroundColor="transparent"
-      >
+    <box flexGrow={1} flexDirection="column" backgroundColor="transparent">
+      <box height={1} flexDirection="row" justifyContent="space-between">
         <text height={1} bg="transparent">
           <span fg={INK}> mend</span>
-          <span>{"  "}</span>
-          {headerContext}
+          <span fg={MUTED}>
+            {"  "}
+            {projectItems.length} project{projectItems.length === 1 ? "" : "s"}
+          </span>
+          <span fg={FAINT}> · </span>
+          <span fg={liveTotal > 0 ? MUTED : FAINT}>{liveTotal} live</span>
         </text>
         <text height={1} fg={FAINT} bg="transparent">
           {`${ctx.config.url}  `}
         </text>
       </box>
-
-      <box
-        border
-        borderStyle="rounded"
-        borderColor={RULE}
-        title={title}
-        titleAlignment="left"
-        backgroundColor={BG}
-        flexGrow={1}
-        flexShrink={1}
-        minHeight={0}
-        marginTop={1}
-      >
-        <scrollbox
-          ref={scrollRef}
-          flexGrow={1}
-          flexShrink={1}
-          minHeight={0}
-          style={{
-            rootOptions: { backgroundColor: BG, border: false },
-            wrapperOptions: { backgroundColor: BG },
-            viewportOptions: { backgroundColor: BG },
-            contentOptions: { backgroundColor: BG },
-          }}
-        >
-          {items.map((item, index) =>
-            item.kind === "session" ? (
-              <SessionRow key={itemKey(item)} item={item} selected={index === selectedIndex} />
-            ) : item.kind === "project" ? (
-              <ProjectRow
-                key={itemKey(item)}
-                item={item}
-                selected={index === selectedIndex}
-                nameWidth={nameWidth}
-                branchWidth={branchWidth}
-              />
-            ) : (
-              <HarnessRow key={itemKey(item)} item={item} selected={index === selectedIndex} />
-            ),
-          )}
-          {view.kind === "sessions" && data !== undefined && items.length === 0 ? (
-            <text height={1} fg={FAINT} bg="transparent">
-              {"  no sessions yet — n starts one"}
-            </text>
-          ) : null}
-          {loadFailure !== null ? (
-            <text height={1} fg={AMBER} bg="transparent">
-              {`  ${loadFailure} — retrying`}
-            </text>
-          ) : null}
-        </scrollbox>
+      <box flexGrow={1} flexShrink={1} minHeight={0} flexDirection="row">
+        {showProjectsPane ? (
+          <Pane title="projects" focused={focus === "projects"} width={PROJECTS_PANE_WIDTH}>
+            <scrollbox
+              ref={projectScrollRef}
+              flexGrow={1}
+              flexShrink={1}
+              minHeight={0}
+              style={paneScrollStyle}
+            >
+              {projectItems.map((item, index) => (
+                <ProjectRow
+                  key={item.project.id}
+                  item={item}
+                  selected={index === projectIndex}
+                  nameWidth={nameWidth}
+                />
+              ))}
+              {data !== undefined && projectItems.length === 0 ? (
+                <text height={1} fg={FAINT} bg="transparent">
+                  {"  none adopted yet"}
+                </text>
+              ) : null}
+            </scrollbox>
+          </Pane>
+        ) : null}
+        <Pane title={sessionsTitle} focused={focus === "sessions"} grow>
+          <scrollbox
+            ref={sessionScrollRef}
+            flexGrow={1}
+            flexShrink={1}
+            minHeight={0}
+            style={paneScrollStyle}
+          >
+            {sessionItems.map((item, index) => (
+              <SessionRow key={item.session.id} item={item} selected={index === sessionIndex} />
+            ))}
+            {data !== undefined && sessionItems.length === 0 ? (
+              <text height={1} fg={FAINT} bg="transparent">
+                {"  no sessions yet — n starts one"}
+              </text>
+            ) : null}
+            {loadFailure !== null ? (
+              <text height={1} fg={INK_2} bg="transparent">
+                {`  ${loadFailure} — retrying`}
+              </text>
+            ) : null}
+          </scrollbox>
+        </Pane>
       </box>
 
-      {editing === null ? null : (
+      {picker !== null ? (
+        <Pane title={pickerTitle} focused height={2 + pickerItems.length}>
+          {pickerItems.map((item, index) => (
+            <HarnessRow key={String(item.harness)} item={item} selected={index === pickerIndex} />
+          ))}
+        </Pane>
+      ) : editing !== null ? (
         <box
           border
           borderStyle="rounded"
           borderColor={COBALT}
           title={` label — ${editing.harness} ${editing.id.slice(0, 8)} `}
           titleAlignment="left"
-          backgroundColor={BG}
+          backgroundColor="transparent"
           height={3}
           flexShrink={0}
         >
@@ -871,23 +1079,27 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
             focused
             value={editing.label ?? ""}
             placeholder="a few words for what this session is doing (empty clears)"
-            backgroundColor={BG}
-            focusedBackgroundColor={BG}
+            backgroundColor="transparent"
+            focusedBackgroundColor="transparent"
             textColor={INK}
             focusedTextColor={INK}
             placeholderColor={FAINT}
             cursorColor={INK}
             flexGrow={1}
             onSubmit={(value: unknown) => {
-              if (typeof value === "string") void submitRename(editing, value);
+              if (typeof value === "string") submitRename(editing, value);
             }}
           />
         </box>
-      )}
+      ) : showDetail ? (
+        <Pane title={detailTitle} focused={false} height={6}>
+          <SessionDetail item={selectedSession} />
+        </Pane>
+      ) : null}
 
       <StatusLine busy={busy} busyStarted={busyStarted} status={status} />
       <text height={1} fg={FAINT} bg="transparent">
-        {editing === null ? footerText : " enter save · esc cancel"}
+        {footerText}
       </text>
     </box>
   );
@@ -897,7 +1109,6 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
 
 export const runDashboard = async (ctx: DashboardContext): Promise<void> => {
   const renderer = await createCliRenderer({ exitOnCtrlC: false });
-  renderer.setBackgroundColor(BG);
   const queryClient = new QueryClient();
   const controller = new AbortController();
   let eventTimer: ReturnType<typeof setTimeout> | null = null;
@@ -915,13 +1126,30 @@ export const runDashboard = async (ctx: DashboardContext): Promise<void> => {
     process.nextTick(() => renderer.destroy());
   };
 
-  // The SSE stream invalidates the cache from outside React — any traffic
-  // (heartbeats included) means state may have moved, so re-read it.
-  const scheduleInvalidate = (): void => {
-    if (eventTimer !== null) clearTimeout(eventTimer);
-    eventTimer = setTimeout(() => {
-      void queryClient.invalidateQueries();
-    }, 250);
+  // The SSE stream invalidates the cache from outside React. Frames are
+  // parsed and each pointer event stales only its query families — the
+  // 25-second heartbeat and per-record-line progress invalidate nothing, so
+  // an idle dashboard makes no requests and a busy session doesn't turn push
+  // into a refetch loop. The flush waits out in-flight mutations: their
+  // onSettled refetch converges on the same truth without a mid-write
+  // snapshot clobbering an optimistic row.
+  const pendingFamilies = new Set<InvalidateFamily>();
+  const flushInvalidations = (): void => {
+    eventTimer = null;
+    if (queryClient.isMutating() > 0) {
+      eventTimer = setTimeout(flushInvalidations, 250);
+      return;
+    }
+    const families = [...pendingFamilies];
+    pendingFamilies.clear();
+    for (const family of families) {
+      void queryClient.invalidateQueries({ queryKey: [family] });
+    }
+  };
+  const scheduleInvalidate = (families: ReadonlyArray<InvalidateFamily>): void => {
+    if (families.length === 0) return;
+    for (const family of families) pendingFamilies.add(family);
+    if (eventTimer === null) eventTimer = setTimeout(flushInvalidations, 250);
   };
   const watch = async (): Promise<void> => {
     while (!controller.signal.aborted) {
@@ -934,13 +1162,22 @@ export const runDashboard = async (ctx: DashboardContext): Promise<void> => {
         });
         if (!response.ok || response.body === null) throw new Error(String(response.status));
         const reader = response.body.getReader();
+        const parser = createSseParser();
+        const decoder = new TextDecoder();
         for (;;) {
-          const { done } = await reader.read();
+          const { done, value } = await reader.read();
           if (done) break;
-          scheduleInvalidate();
+          for (const payload of parser.push(decoder.decode(value, { stream: true }))) {
+            scheduleInvalidate(eventFamilies(payload));
+          }
         }
       } catch {
         if (controller.signal.aborted) return;
+      }
+      // A dropped stream may have swallowed events — re-read once on reconnect.
+      pendingFamilies.add("workbench").add("review");
+      if (eventTimer === null && !controller.signal.aborted) {
+        eventTimer = setTimeout(flushInvalidations, 250);
       }
       await new Promise((resolve) => setTimeout(resolve, 2000));
     }
