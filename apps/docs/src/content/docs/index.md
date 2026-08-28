@@ -25,7 +25,8 @@ scrollback replayed and then the live process.
 Development servers get the same treatment. Wrap the command you already run, `pnpm dev` or anything
 else, in `mend service run`, and open the app at `127.0.0.1` on your machine, wherever the server
 lives. It behaves like a local dev server, hot reload and all, while it actually runs next to the
-agent on the Mend machine, and nothing is published anywhere else.
+agent on the Mend machine. Nothing is open to the public internet: no port is published, and the
+bytes travel the authenticated WebSocket the CLI already holds to your Mend server.
 
 Each launch also carries the agent's working inputs: repository instructions, mounted references,
 project configuration, provider accounts, dotfiles, and previous session state. Named context packs
