@@ -22,10 +22,13 @@ export const MUTED = "#a3a09a";
 export const FAINT = "#807d76";
 /** Hairlines and panel borders — visible, not vanishing. */
 export const RULE = "#37374a";
-/** Interaction and selection — the one brand accent, lifted to pop on dark. */
+/**
+ * Interaction and selection — the ONE accent, and the only place chrome is
+ * allowed color: the focused pane border and the selection gutter bar.
+ */
 export const COBALT = "#6f96f5";
-/** The selection wash: a clear cobalt-tinted row, unmistakably "you are here". */
-export const WASH = "#273754";
+/** The selection wash: a neutral lifted row — visible, not colorful. */
+export const WASH = "#2c2c35";
 export const AMBER = "#e2ab42";
 export const GREEN = "#69c189";
 export const RED = "#e87f76";

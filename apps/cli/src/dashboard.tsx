@@ -20,19 +20,7 @@ import {
   pendingId,
 } from "./shared.ts";
 import { openUrl } from "./terminal.ts";
-import {
-  AMBER,
-  BG,
-  COBALT,
-  FAINT,
-  GREEN,
-  INK,
-  MUTED,
-  PANEL,
-  RED,
-  RULE,
-  WASH,
-} from "./tui-theme.ts";
+import { BG, COBALT, FAINT, INK, INK_2, MUTED, PANEL, RED, RULE, WASH } from "./tui-theme.ts";
 import { createSseParser, eventFamilies, type InvalidateFamily } from "./workbench-events.ts";
 
 /**
@@ -111,12 +99,14 @@ interface ServiceDto {
   readonly hostPort: number | null;
 }
 
+// Near-mono on purpose: a status is a word, and only an observed failure
+// earns color. Live states read at full ink; settled ones recede.
 const STATUS_COLOR: Record<string, string> = {
-  starting: COBALT,
-  running: COBALT,
-  waiting: AMBER,
-  idle: COBALT,
-  completed: GREEN,
+  starting: INK_2,
+  running: INK,
+  waiting: INK_2,
+  idle: INK_2,
+  completed: FAINT,
   failed: RED,
   stopped: FAINT,
 };
@@ -357,8 +347,8 @@ const ProjectRow = ({
       <Gutter selected={selected} />
       <span fg={INK}>{item.project.name.padEnd(nameWidth)}</span>
       <span fg={item.total === 0 ? FAINT : MUTED}>{`  ${item.total}`}</span>
-      {item.live > 0 ? <span fg={COBALT}>{` · ${item.live} live`}</span> : null}
-      {item.open > 0 ? <span fg={AMBER}>{` · ${item.open}`}</span> : null}
+      {item.live > 0 ? <span fg={MUTED}>{` · ${item.live} live`}</span> : null}
+      {item.open > 0 ? <span fg={MUTED}>{` · ${item.open}`}</span> : null}
     </text>
   </box>
 );
@@ -382,7 +372,7 @@ const SessionRow = ({
         <span fg={color}>{`  ${session.status.padEnd(10)}`}</span>
         <span fg={FAINT}>{age.padEnd(9)}</span>
         {annotation !== undefined && annotation.openComments > 0 ? (
-          <span fg={AMBER}>{`${annotation.openComments}● `}</span>
+          <span fg={MUTED}>{`${annotation.openComments} open  `}</span>
         ) : null}
         <span fg={MUTED}>{(session.label ?? "").slice(0, 40)}</span>
       </text>
@@ -442,7 +432,7 @@ const SessionDetail = ({ item }: { readonly item: SessionItem | null }) => {
           services.slice(0, 3).map((service, index) => (
             <span key={service.id}>
               {index > 0 ? <span fg={FAINT}> · </span> : null}
-              <span fg={service.status === "reachable" ? GREEN : AMBER}>
+              <span fg={service.status === "reachable" ? INK_2 : MUTED}>
                 {`${service.label ?? service.id.slice(0, 6)} :${service.workspacePort ?? "?"}${service.protocol === "udp" ? "u" : ""}→${service.hostPort ?? "?"} ${service.status}`}
               </span>
             </span>
@@ -455,14 +445,14 @@ const SessionDetail = ({ item }: { readonly item: SessionItem | null }) => {
         {annotation === undefined || annotation.openComments === 0 ? (
           <span fg={FAINT}>no open review comments</span>
         ) : (
-          <span fg={AMBER}>
+          <span fg={INK_2}>
             {annotation.openComments} open comment{annotation.openComments === 1 ? "" : "s"}
           </span>
         )}
         {annotation?.pendingFollowUp === true ? (
           <>
             <span fg={FAINT}> · </span>
-            <span fg={AMBER}>follow-up pending</span>
+            <span fg={INK_2}>follow-up pending</span>
           </>
         ) : null}
         {annotation?.changeId != null ? (
@@ -516,7 +506,7 @@ const StatusLine = ({
         ? ` ${status.text}`
         : "";
   return (
-    <text height={1} fg={AMBER} bg="transparent">
+    <text height={1} fg={INK_2} bg="transparent">
       {text}
     </text>
   );
@@ -1017,7 +1007,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
             {projectItems.length} project{projectItems.length === 1 ? "" : "s"}
           </span>
           <span fg={FAINT}> · </span>
-          <span fg={liveTotal > 0 ? COBALT : FAINT}>{liveTotal} live</span>
+          <span fg={liveTotal > 0 ? MUTED : FAINT}>{liveTotal} live</span>
         </text>
         <text height={1} fg={FAINT} bg="transparent">
           {`${ctx.config.url}  `}
@@ -1067,7 +1057,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
               </text>
             ) : null}
             {loadFailure !== null ? (
-              <text height={1} fg={AMBER} bg="transparent">
+              <text height={1} fg={INK_2} bg="transparent">
                 {`  ${loadFailure} — retrying`}
               </text>
             ) : null}

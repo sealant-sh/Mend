@@ -22,7 +22,6 @@ import { isPendingId, pendingId } from "./shared.ts";
 import { openUrl } from "./terminal.ts";
 import {
   ADD_WASH,
-  AMBER,
   BG,
   COBALT,
   DELETE_WASH,
@@ -264,7 +263,7 @@ const orderedComments = (comments: ReadonlyArray<ReviewCommentDto>) =>
   });
 
 const stateColor = (state: ReviewCommentDto["state"]): string =>
-  state === "draft" || state === "open" ? AMBER : state === "addressed" ? INK_2 : FAINT;
+  state === "draft" || state === "open" ? INK : state === "addressed" ? INK_2 : FAINT;
 
 const anchorOf = (comment: ReviewCommentDto): string =>
   comment.file === null
@@ -273,11 +272,11 @@ const anchorOf = (comment: ReviewCommentDto): string =>
 
 const passFact = (pass: ChangePassDto): { readonly text: string; readonly color: string } => {
   const label = pass.kind === "suggest" ? "suggestions" : pass.kind;
-  if (pass.status === "running") return { text: `${label} running`, color: COBALT };
+  if (pass.status === "running") return { text: `${label} running`, color: INK_2 };
   if (pass.status === "failed") return { text: `${label} failed`, color: RED };
   return {
     text: `${label} observed · ${pass.findings ?? 0} ${pass.kind === "tour" ? "stops" : "drafts"}`,
-    color: GREEN,
+    color: MUTED,
   };
 };
 
@@ -286,7 +285,7 @@ const FileRow = ({ file, selected }: { readonly file: ReviewFile; readonly selec
     <text height={1} bg="transparent">
       <span fg={selected ? COBALT : FAINT}>{selected ? "▌ " : "  "}</span>
       <span fg={INK}>{file.path}</span>
-      {file.binary ? <span fg={AMBER}> · binary</span> : null}
+      {file.binary ? <span fg={MUTED}> · binary</span> : null}
       {file.likelyGenerated ? <span fg={FAINT}> · inferred · likely generated</span> : null}
     </text>
     <text height={1} bg="transparent">
@@ -317,9 +316,7 @@ const CommentRow = ({
     </text>
     <text height={1} bg="transparent">
       <span>{"    "}</span>
-      <span fg={comment.authorKind === "mend" ? COBALT : MUTED}>
-        {comment.authorKind === "mend" ? "Mend · " : "You · "}
-      </span>
+      <span fg={MUTED}>{comment.authorKind === "mend" ? "Mend · " : "You · "}</span>
       <span fg={INK}>{truncate(comment.body, 27)}</span>
     </text>
   </box>
@@ -346,7 +343,7 @@ const Description = ({
       height={height}
       border
       borderStyle="rounded"
-      borderColor={stale ? AMBER : data.tour === null ? RULE : COBALT}
+      borderColor={RULE}
       title=" change description "
       titleAlignment="left"
       backgroundColor={PANEL}
@@ -361,8 +358,8 @@ const Description = ({
           </span>
         ) : (
           <>
-            <span fg={COBALT}>Mend uses inference · </span>
-            {stale ? <span fg={AMBER}>diff changed since · </span> : null}
+            <span fg={MUTED}>Mend uses inference · </span>
+            {stale ? <span fg={MUTED}>diff changed since · </span> : null}
             <span fg={INK}>{truncate(data.tour.summary, Math.max(20, width - 50))}</span>
           </>
         )}
@@ -375,7 +372,7 @@ const Description = ({
             </span>
           ) : (
             <>
-              <span fg={COBALT}>
+              <span fg={INK_2}>
                 stop {tourIndex + 1}/{data.tour.stops.length} · {tourStop.title}
               </span>
               <span fg={FAINT}>
@@ -390,7 +387,7 @@ const Description = ({
       ) : null}
       {height >= 6 && tourStop !== null ? (
         <text height={1} bg="transparent">
-          <span fg={COBALT}>
+          <span fg={MUTED}>
             {tourStop.grounded ? "record-grounded narration · " : "inferred narration · "}
           </span>
           <span fg={MUTED}>{truncate(tourStop.narration, Math.max(20, width - 24))}</span>
@@ -398,7 +395,7 @@ const Description = ({
       ) : null}
       {height >= 7 && tourStop !== null ? (
         <text height={1} bg="transparent">
-          <span fg={stopEvidence === null ? AMBER : COBALT}>
+          <span fg={MUTED}>
             {stopEvidence === null
               ? "no direct evidence · "
               : `evidence seq ${stopEvidence.sequence} · `}
@@ -422,7 +419,7 @@ const Description = ({
             </span>
           ))
         )}
-        {data.followUp?.status === "pending" ? <span fg={AMBER}> · follow-up pending</span> : null}
+        {data.followUp?.status === "pending" ? <span fg={INK_2}> · follow-up pending</span> : null}
       </text>
     </box>
   );
@@ -445,7 +442,7 @@ const CompactTourEvidence = ({
       height={5}
       border
       borderStyle="rounded"
-      borderColor={stop.grounded ? COBALT : RULE}
+      borderColor={RULE}
       title={` tour stop ${index + 1}/${total} · ${stop.grounded ? "direct record" : "inferred reading"} `}
       titleAlignment="left"
       backgroundColor={PANEL}
@@ -457,7 +454,7 @@ const CompactTourEvidence = ({
         {truncate(stop.narration, Math.max(12, width - 6))}
       </text>
       <text height={1} bg="transparent">
-        <span fg={evidence === null ? AMBER : COBALT}>
+        <span fg={MUTED}>
           {evidence === null ? "no direct record link · " : `seq ${evidence.sequence} · `}
         </span>
         <span fg={MUTED}>
@@ -485,7 +482,7 @@ const EvidenceCard = ({
     height={Math.min(6, 4 + Math.min(2, comment.evidence.length))}
     border
     borderStyle="rounded"
-    borderColor={comment.state === "draft" ? AMBER : RULE}
+    borderColor={RULE}
     title={` ${anchorOf(comment)} · ${comment.authorKind === "mend" ? "Mend" : "You"} `}
     titleAlignment="left"
     backgroundColor={PANEL}
@@ -498,7 +495,7 @@ const EvidenceCard = ({
     </text>
     {comment.suggestion === null ? null : (
       <text height={1} bg="transparent">
-        <span fg={COBALT}>proposed · </span>
+        <span fg={MUTED}>proposed · </span>
         <span fg={MUTED}>{truncate(comment.suggestion, Math.max(12, width - 17))}</span>
       </text>
     )}
@@ -1140,7 +1137,7 @@ export function ReviewScreen({
     return (
       <box flexGrow={1} backgroundColor={BG} alignItems="center" justifyContent="center">
         <text bg="transparent">
-          <span fg={failureReason === null ? COBALT : AMBER}>
+          <span fg={failureReason === null ? INK_2 : MUTED}>
             {failureReason === null
               ? "Loading the live change…"
               : `${errorMessage(failureReason)} · retrying`}
@@ -1253,13 +1250,13 @@ export function ReviewScreen({
           <span fg={FAINT}> / </span>
           <span fg={MUTED}>{projectName}</span>
           <span fg={FAINT}> / </span>
-          <span fg={COBALT}>review</span>
+          <span fg={INK}>review</span>
           <span fg={FAINT}>
             {" "}
             · {session.harness} {session.id.slice(0, 8)}
           </span>
-          {isFetching ? <span fg={COBALT}> · syncing</span> : null}
-          <span fg={checkpointState === "failed" ? AMBER : FAINT}>
+          {isFetching ? <span fg={FAINT}> · syncing</span> : null}
+          <span fg={checkpointState === "failed" ? MUTED : FAINT}>
             {checkpointState === "recording"
               ? " · checkpointing"
               : checkpointState === "failed"
@@ -1273,7 +1270,7 @@ export function ReviewScreen({
           <span fg={MUTED}>{files.length} files</span>
           <span fg={GREEN}> +{additions}</span>
           <span fg={RED}> −{deletions}</span>
-          <span fg={AMBER}> · {openCount} open</span>
+          <span fg={MUTED}> · {openCount} open</span>
         </text>
       </box>
 
@@ -1383,7 +1380,7 @@ export function ReviewScreen({
           onSubmit={() => void submitEditor()}
         />
       )}
-      <text height={1} fg={status === "" ? FAINT : AMBER} bg="transparent">
+      <text height={1} fg={status === "" ? FAINT : INK_2} bg="transparent">
         {status === ""
           ? ` m read · g suggest · t tour · ,/. tour stops · s draft review${data.followUp?.status === "pending" ? " · y deliver & relaunch" : ""} · o web · r refresh`
           : ` ${status}`}
