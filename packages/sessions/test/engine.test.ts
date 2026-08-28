@@ -3404,6 +3404,7 @@ describe("SessionEngine", () => {
 
   it("observes an external agent through the harness home and ends it when writes go quiet", async () => {
     const created: CreateOptions[] = [];
+    const stopped: string[] = [];
     await withEngine(
       (world, tmp) =>
         Effect.gen(function* () {
@@ -3450,13 +3451,24 @@ describe("SessionEngine", () => {
           yield* engine.observeExternalAgents();
           expect(externalRows()).toHaveLength(1);
 
-          // Writes go quiet: the observed agent's end is recorded.
+          // Writes go quiet: the observed agent's end is recorded. The workspace is NOT
+          // swept — quiet is an inference, and the agent may just sit between turns.
           const past = new Date(Date.now() - 10 * 60_000);
           fs.utimesSync(transcript, past, past);
           yield* engine.observeExternalAgents();
           expect(externalRows()[0]?.exitedAt).not.toBeNull();
+          expect(stopped).toHaveLength(0);
+
+          // The user was only thinking: a new message writes again, and the next pass
+          // observes a fresh row — same conversation, session running again.
+          fs.utimesSync(transcript, new Date(), new Date());
+          yield* engine.observeExternalAgents();
+          const revived = externalRows().filter((process) => process.exitedAt === null);
+          expect(revived).toHaveLength(1);
+          expect(revived[0]?.providerSessionId).toBe(providerId);
+          expect(world.sessions.get(session.id)?.status).toBe("running");
         }),
-      { sealantLayer: sealantLaunchLayer(created) },
+      { sealantLayer: sealantLaunchLayer(created, undefined, stopped) },
     );
   });
 

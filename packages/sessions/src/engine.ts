@@ -1759,11 +1759,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * The tail of an agent process's end: harvest its harness state while the workspace is
        * still warm, snapshot the worktree (the end of an agent process is a turn boundary), then
        * let the fold release the workspace if nothing else holds it. `trigger` null skips the
-       * snapshot (the caller took its own).
+       * snapshot (the caller took its own). `sweep` false keeps the workspace even when nothing
+       * else leases it — the observed-agent path: quiet transcript writes are an inference, not
+       * an exit, and reaping on them would kill an agent that is merely between turns.
        */
       const finishAgentProcess = (
         agentProcess: SessionProcess,
         trigger: CheckpointTrigger | null,
+        sweep = true,
       ) =>
         Effect.gen(function* () {
           yield* tryHarvest(agentProcess);
@@ -1779,7 +1782,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             });
             yield* refreshChangeHead(session).pipe(Effect.ignore);
           }
-          yield* reconcileSession(agentProcess.sessionId, { sweep: true });
+          yield* reconcileSession(agentProcess.sessionId, { sweep });
         }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void));
 
       /**
@@ -1853,8 +1856,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // the conversation. Mend observes; it does not own the process — it cannot steer or
       // stop it, and the row records only what was seen.
 
-      /** A transcript this quiet no longer reads as a live agent. */
-      const EXTERNAL_AGENT_QUIET_MS = 120_000;
+      /**
+       * A transcript this quiet no longer reads as a live agent. Generous on purpose: a user
+       * reading output or composing the next message writes nothing, and an end here is an
+       * inference — if the writes come back, the next pass simply observes a new row and the
+       * session reopens.
+       */
+      const EXTERNAL_AGENT_QUIET_MS = 300_000;
       /** Writes older than the engine's own agent exit are its tail, not external work. */
       const EXTERNAL_AGENT_EXIT_SKEW_MS = 2_000;
 
@@ -1893,9 +1901,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const fresh = transcript !== null && now - transcript.mtimeMs < EXTERNAL_AGENT_QUIET_MS;
             if (observed !== undefined) {
               if (!fresh) {
-                // The writes went quiet: record the observed end. `endProcess` settles the
-                // fold, harvests the conversation, and checkpoints the turn boundary.
-                yield* endProcess(observed, "exited", null);
+                // The writes went quiet: record the observed end, harvest the conversation,
+                // checkpoint the turn boundary — but never sweep the workspace. Quiet is an
+                // inference, not an exit: the agent may sit between turns, and its next write
+                // revives it as a fresh observed row. The workspace outlives the inference;
+                // the platform TTL remains its backstop.
+                const recorded = yield* endAgentProcess(observed, {
+                  how: "exited",
+                  exitCode: null,
+                  outcome: "completed",
+                  summary: null,
+                });
+                if (recorded) yield* finishAgentProcess(observed, "turn-boundary", false);
               } else if (
                 transcript.providerSessionId !== null &&
                 observed.providerSessionId !== transcript.providerSessionId
@@ -1906,6 +1923,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
             if (engineAgentLive || transcript === null || !fresh) continue;
             if (transcript.mtimeMs <= lastEngineExitMs + EXTERNAL_AGENT_EXIT_SKEW_MS) continue;
+            // A settled session revives only on writes that POSTDATE the settle: its last
+            // agent's tail writes stay fresh for a while, and a workspace stopped at settle
+            // can never write again — only a genuinely live agent produces newer ones.
+            if (
+              session.settledAt !== null &&
+              transcript.mtimeMs <= session.settledAt.getTime() + EXTERNAL_AGENT_EXIT_SKEW_MS
+            ) {
+              continue;
+            }
             yield* processes.create({
               sessionId,
               sealantWorkspaceId: workspaceId,
@@ -1926,11 +1952,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /**
        * One observation pass over every session that could host an external agent: any session
        * holding a live process row (a shell keeping the workspace, a Service, an already
-       * observed agent). Quiet per session — one broken session never blinds the rest.
+       * observed agent), plus recently settled sessions whose workspace pointer survives —
+       * a quiet-settled session must revive when its agent writes again. Quiet per session —
+       * one broken session never blinds the rest.
        */
       const observeExternalAgents = Effect.fn("SessionEngine.observeExternalAgents")(function* () {
         const live = yield* processes.listLive();
-        const sessionIds = [...new Set(live.map((row) => row.sessionId))];
+        const sessionIds = new Set(live.map((row) => row.sessionId));
+        for (const settled of yield* sessions.listRecentlySettled()) {
+          sessionIds.add(settled.id);
+        }
         for (const sessionId of sessionIds) {
           yield* observeSessionExternalAgents(sessionId).pipe(
             Effect.catch((error) =>

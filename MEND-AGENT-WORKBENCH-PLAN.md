@@ -1321,11 +1321,15 @@ understand the work.
   that makes it observable server-side: fresh transcript writes become an `agent-external` process
   row ("claude (observed)"), the session fold reads `running`, the workspace lease holds, and the
   settle harvest captures the conversation like any engine-launched agent's. Mend observes; it does
-  not own the process — it cannot steer or stop it, and the row ends when the writes go quiet (two
-  minutes). While an engine-launched agent is live, transcript writes are presumed to be its;
-  observation fills only the blind spot. This is what makes opening the workspace from an editor (VS
-  Code over SSH) a normal workflow: run the agent by hand, keep the workbench's status, record, and
-  resume.
+  not own the process — it cannot steer or stop it, and the row ends when the writes go quiet (five
+  minutes). Quiet is an inference, not an exit: ending an observed row never sweeps the workspace (a
+  user reading output writes nothing, and reaping on quiet would kill an agent between turns — the
+  platform TTL stays the backstop), and the next write revives the session with a fresh observed
+  row, including a quiet-settled session whose workspace pointer survives (revival requires writes
+  that postdate the settle). While an engine-launched agent is live, transcript writes are presumed
+  to be its; observation fills only the blind spot. This is what makes opening the workspace from an
+  editor (VS Code over SSH) a normal workflow: run the agent by hand, keep the workbench's status,
+  record, and resume.
 
 - **2026-08-28: harness state is durable by construction — the mounted harness home.** Every session
   owns a store-backed `harness-home/` directory (beside its harvested captures), mounted read-write
