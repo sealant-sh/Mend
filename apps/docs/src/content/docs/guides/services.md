@@ -1,124 +1,94 @@
 ---
 title: Development services
-description: Run and reach development servers inside a Mend session workspace.
+description:
+  What a Service is, how its bytes travel, and why it feels local without opening anything to a
+  network.
 sidebar:
   order: 7
 ---
 
-A Service is an explicitly declared process or port attached to a session. Use it for development
-servers, databases, Storybook, or another long-running process that should remain reachable with the
-session.
+A Service is a long-running process you declare on a session: the dev server, a database, Storybook.
+It runs inside the session workspace, next to the agent and the worktree, and like every other
+session process it keeps running when you disconnect. The declaration is the whole contract: Mend
+never scans the workspace for listeners and never exposes anything you did not name.
 
-Services share the session workspace and worktree. They are not separate sessions.
+## The problem it solves
 
-## Run a command as a Service
+A workspace is a container with no published ports. When Vite listens on port 3000 in there, that
+port exists only inside the container's own network namespace. Your machine cannot see it, and
+neither can anything else. A Service is Mend's answer to "then how do I open the app?", and the
+answer is deliberately not "publish the port".
 
-```sh
-mend service run --port 3000 --http -- pnpm dev
+The bytes travel Mend's existing authenticated channels instead:
+
+```text
+browser ──TCP──▶ the doorway: Mend's listener for this Service (:43127)
+         ──WS───▶ Sealant API
+         ──pipe─▶ sealantd, inside the container
+         ──TCP──▶ Vite on 127.0.0.1:3000   (an ordinary local connect)
 ```
 
-Useful options include:
+Only the first leg is a real network port. Everything after it rides the platform's channels: an
+authenticated WebSocket from Mend to the Sealant control plane, the control pipe into the workspace,
+and finally an ordinary local connect that your dev server experiences as a client on its own
+loopback. The dev server needs no configuration, no rebinding to `0.0.0.0`, no awareness that Mend
+exists.
 
-- `--name <name>` for a stable display name;
-- `--port <port>` for the workspace listener;
-- `--http` or `--https` when the endpoint belongs in a browser;
-- `--udp` for a UDP transport;
-- `--no-connect` to start and return without opening the tunnel below.
+Because the whole thing is a dumb byte pipe with no path rewriting and no proxy logic in between,
+the app behaves exactly as it does locally: hot reload, WebSockets, cookies, everything.
 
-Mend supervises the command, records its output, waits for the declared target, and opens a host
-forward. It does not scan the workspace and expose listeners automatically.
+## The doorway
 
-When the Mend server is this machine, the command returns and the endpoint already answers locally.
-When the server is remote, the CLI keeps running and tunnels the Service's port to `127.0.0.1` on
-your machine — the same authenticated connection `mend service connect` opens — so starting a
-Service and reaching it is one step everywhere. Ctrl-C ends the tunnel; the Service keeps running on
-the server.
+The only real port is the doorway: one TCP listener per Service that Mend itself binds, from a fixed
+range (43100–43999 by default). Where that doorway lives is the only deployment-dependent question
+in the whole model.
 
-## Declare recipes in `mend.toml`
+By default it binds the Mend machine's loopback. When Mend runs on the machine you sit at, the URL
+simply works, and nothing at all is on your network.
 
-Scaffold recipes from common project files:
+An operator can widen the doorway to private addresses the machine actually has: a tailnet address,
+a LAN address. Wildcards and public addresses are refused outright, so publishing a Service to the
+internet through Mend is not possible, misconfigured or not. The doorway itself carries no Mend
+sign-in; network reach is its only gate, and the interface says so next to every endpoint.
 
-```sh
-mend service init
-```
+Or the doorway moves to your own laptop. The CLI binds the Service's port on your loopback and
+carries each connection to the server over an authenticated WebSocket. On a remote server, starting
+a Service does this automatically, so starting it and reaching it are one step. Unlike the raw
+doorway, every tunneled connection is authenticated, and only the session's owner may open one.
 
-Review the generated `mend.toml`, then start a named recipe:
+UDP Services exist for the rare cases that need them; a datagram has no connection to tunnel, so
+they use the doorway path only.
 
-```sh
-mend service run web
-```
+## Declaring
 
-The shorthand form is:
+Three surfaces feed the same model:
 
-```sh
-mend service web
-```
+- **A recipe in `mend.toml`.** The repository's own declaration: every session can start `web` by
+  name, and the recipe travels with the code.
+- **The CLI**, wrapping the command you already run in `mend service run`.
+- **The agent itself.** Each workspace has a scoped-down `mend` on its PATH that can run, adopt,
+  list, stop, and restart Services for its own session. When the agent starts a dev server, it can
+  declare it properly instead of leaving a listener nobody can reach. It cannot open ports or change
+  exposure; that authority stays on the server.
 
-A recipe belongs to the repository, so every session can use the same name and command.
+A Service can also adopt a listener that already exists in the workspace. Adoption creates the
+doorway without supervision: there is no Mend-owned process to restart and no log beyond what
+started it.
 
-## From inside the workspace
+## Evidence, not promises
 
-The workspace has its own `mend` on the PATH: a small helper the server stages into the session and
-links to `/usr/local/bin/mend`, talking only to this session over the session socket. It speaks
-`mend service run`, `add`, `list`, `stop`, and `restart`, plus the recipe shorthand — nothing else.
-The point is that the agent can declare what it starts: a dev server the agent launches through
-`mend service run` becomes a supervised, recorded, reachable Service exactly as if you had declared
-it from outside, instead of an unobserved listener nobody can reach. The helper never opens ports
-itself; the forward and its policy stay on the server.
+Every start is an attempt with a recorded log you can replay and then follow live. Restarting adds
+another attempt under the same Service identity and endpoint, so history accumulates instead of
+being replaced. Status words are observations: "reachable" means the declared target answered when
+Mend checked, not a guarantee about the next request.
 
-## Adopt an existing listener
+A live Service also keeps the session workspace retained after the agent settles, the same way a
+detached shell does. Stopping the agent does not stop its Services; stop them when you are done, or
+let them hold the workspace deliberately.
 
-When a process is already listening inside the session workspace:
+## Commands
 
-```sh
-mend service add <session-id> 3000 --name web
-```
-
-This creates a forward but does not supervise the existing process. There is no Mend-owned command
-to restart and no process log beyond the process that originally created it.
-
-## Inspect and control Services
-
-```sh
-mend service list
-mend service logs web
-mend service restart web
-mend service stop web
-```
-
-Logs replay recorded output and then follow it live. Restart starts another recorded attempt with
-the same Service identity and endpoint. Stop ends the process and closes its host forward.
-
-## Reach the endpoint
-
-HTTP and HTTPS Services show an **Open** action. Other transports show an endpoint to copy.
-WebSockets and hot reload work through the raw per-port forward because Mend does not rewrite paths
-or proxy the application under a URL prefix.
-
-The server's listener binds the **server's** interfaces. When the CLI and the server share a
-machine, that endpoint is yours already. When the server is remote — a devbox, a VPS, or a
-Kubernetes Pod — bring the port to your own machine instead:
-
-```sh
-mend service connect web --port 43100
-```
-
-`mend service connect [name...]` binds each selected Service on this machine's loopback and carries
-every connection over an authenticated WebSocket to the Mend server. It works the same on every
-deployment shape and adds Mend authentication to each connection. TCP only; keep it running like an
-SSH tunnel. `mend service run` opens this tunnel automatically when the server is remote, so the
-standalone command is for Services that are already running, or after a `--no-connect` start. The
-tunnel serves only the Service's session owner; other authenticated users are refused.
-
-The raw forwarded port itself has no Mend request authentication. Bind it only to loopback and
-private interfaces you intend to expose. Anyone who can reach that port can talk directly to the
-Service.
-
-## Workspace lifetime
-
-A live Service can keep the session workspace retained after the agent settles. Mend renews the
-ordinary workspace lease while the Service, another supporting process, or a selected forward is
-live.
-
-Stopping the agent does not imply stopping every Service. Inspect the session before assuming its
-workspace can be released.
+The command surface is small and listed once, in the
+[CLI reference](/reference/cli/#service-commands): `mend service run`, `list`, `logs`, `restart`,
+`stop`, and `connect`, recipe scaffolding with `mend service init`, and the in-workspace helper's
+smaller surface.
