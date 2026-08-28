@@ -56,6 +56,16 @@ mend service web
 
 A recipe belongs to the repository, so every session can use the same name and command.
 
+## From inside the workspace
+
+The workspace has its own `mend` on the PATH: a small helper the server stages into the session and
+links to `/usr/local/bin/mend`, talking only to this session over the session socket. It speaks
+`mend service run`, `add`, `list`, `stop`, and `restart`, plus the recipe shorthand — nothing else.
+The point is that the agent can declare what it starts: a dev server the agent launches through
+`mend service run` becomes a supervised, recorded, reachable Service exactly as if you had declared
+it from outside, instead of an unobserved listener nobody can reach. The helper never opens ports
+itself; the forward and its policy stay on the server.
+
 ## Adopt an existing listener
 
 When a process is already listening inside the session workspace:
