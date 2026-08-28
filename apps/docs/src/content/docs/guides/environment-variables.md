@@ -101,10 +101,11 @@ The boundaries:
   rather than shipping an incomplete environment; remove the bindings to launch on that install.
 
 `mend env show` lists bindings and the service account alongside configuration and secret names. The
-Setup page's Cluster bindings panel shows the same state. Adding bindings and setting the service
-account stay disabled until the platform release that resolves bindings at launch ships; remove and
-clear always work, so a project whose bindings arrive on a non-cluster install is never trapped
-unlaunchable.
+Setup page's Cluster bindings panel is where you add and remove bindings and set the service
+account. At each fresh workspace launch Mend forwards the declared bindings to the platform
+verbatim; the worker resolves the objects server-side and their keys become workspace environment.
+An install that cannot resolve them refuses the launch with a failure naming every binding; remove
+the bindings in project setup to launch there.
 
 ## Reserved names
 

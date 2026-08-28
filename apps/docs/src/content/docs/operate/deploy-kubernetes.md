@@ -155,9 +155,10 @@ and nothing crosses Mend's database. Only objects the operator labeled for works
 resolve, and workspace service accounts requested by projects must be on the operator allowlist —
 both are Sealant-side controls, documented with its chart.
 
-Declaring new bindings from Mend is gated until the platform release that resolves them at launch;
-until then the Setup panel and `mend env show` display the stored state, and remove always works.
-Read [Environment variables and secrets](/guides/environment-variables/#cluster-bindings) for the
+At each fresh workspace launch, Mend forwards a project's bindings verbatim as the workspace's
+environment sources and the worker resolves the objects server-side; a requested service account
+rides the same launch as the Pod identity. Read
+[Environment variables and secrets](/guides/environment-variables/#cluster-bindings) for the
 project-side view.
 
 ## Upgrade and roll back
