@@ -22,7 +22,6 @@ import { isPendingId, pendingId } from "./shared.ts";
 import { openUrl } from "./terminal.ts";
 import {
   ADD_WASH,
-  BG,
   COBALT,
   DELETE_WASH,
   FAINT,
@@ -30,7 +29,6 @@ import {
   INK,
   INK_2,
   MUTED,
-  PANEL,
   RED,
   RULE,
   SYNTAX_FUNCTION,
@@ -346,7 +344,7 @@ const Description = ({
       borderColor={RULE}
       title=" change description "
       titleAlignment="left"
-      backgroundColor={PANEL}
+      backgroundColor="transparent"
       flexShrink={0}
       flexDirection="column"
       paddingX={1}
@@ -445,7 +443,7 @@ const CompactTourEvidence = ({
       borderColor={RULE}
       title={` tour stop ${index + 1}/${total} · ${stop.grounded ? "direct record" : "inferred reading"} `}
       titleAlignment="left"
-      backgroundColor={PANEL}
+      backgroundColor="transparent"
       flexShrink={0}
       flexDirection="column"
       paddingX={1}
@@ -485,7 +483,7 @@ const EvidenceCard = ({
     borderColor={RULE}
     title={` ${anchorOf(comment)} · ${comment.authorKind === "mend" ? "Mend" : "You"} `}
     titleAlignment="left"
-    backgroundColor={PANEL}
+    backgroundColor="transparent"
     flexShrink={0}
     flexDirection="column"
     paddingX={1}
@@ -530,7 +528,7 @@ const EditorPanel = ({
       borderColor={COBALT}
       title={title}
       titleAlignment="left"
-      backgroundColor={BG}
+      backgroundColor="transparent"
       height={editor.kind === "send" ? 16 : 8}
       flexShrink={0}
       flexDirection="column"
@@ -542,8 +540,8 @@ const EditorPanel = ({
         placeholder={
           editor.kind === "send" ? "Review instruction…" : "What should change, and why?"
         }
-        backgroundColor={BG}
-        focusedBackgroundColor={BG}
+        backgroundColor="transparent"
+        focusedBackgroundColor="transparent"
         textColor={INK}
         focusedTextColor={INK}
         placeholderColor={FAINT}
@@ -1135,7 +1133,7 @@ export function ReviewScreen({
 
   if (data === undefined) {
     return (
-      <box flexGrow={1} backgroundColor={BG} alignItems="center" justifyContent="center">
+      <box flexGrow={1} backgroundColor="transparent" alignItems="center" justifyContent="center">
         <text bg="transparent">
           <span fg={failureReason === null ? INK_2 : MUTED}>
             {failureReason === null
@@ -1171,14 +1169,14 @@ export function ReviewScreen({
       : " ctrl+enter save · esc cancel";
 
   const sidebar: ReactNode = wide ? (
-    <box width={36} flexShrink={0} flexDirection="column" backgroundColor={BG}>
+    <box width={36} flexShrink={0} flexDirection="column" backgroundColor="transparent">
       <box
         border
         borderStyle="rounded"
         borderColor={focus === "files" ? COBALT : RULE}
         title={` files · ${files.length} `}
         titleAlignment="left"
-        backgroundColor={PANEL}
+        backgroundColor="transparent"
         flexGrow={1}
         minHeight={6}
       >
@@ -1188,10 +1186,10 @@ export function ReviewScreen({
           flexGrow={1}
           minHeight={0}
           style={{
-            rootOptions: { backgroundColor: PANEL, border: false },
-            wrapperOptions: { backgroundColor: PANEL },
-            viewportOptions: { backgroundColor: PANEL },
-            contentOptions: { backgroundColor: PANEL },
+            rootOptions: { backgroundColor: "transparent", border: false },
+            wrapperOptions: { backgroundColor: "transparent" },
+            viewportOptions: { backgroundColor: "transparent" },
+            contentOptions: { backgroundColor: "transparent" },
           }}
         >
           {files.map((file, index) => (
@@ -1212,7 +1210,7 @@ export function ReviewScreen({
         borderColor={focus === "comments" ? COBALT : RULE}
         title={` comments · ${openCount} open${draftCount > 0 ? ` · ${draftCount} draft` : ""} `}
         titleAlignment="left"
-        backgroundColor={PANEL}
+        backgroundColor="transparent"
         flexGrow={1}
         minHeight={6}
       >
@@ -1222,10 +1220,10 @@ export function ReviewScreen({
           flexGrow={1}
           minHeight={0}
           style={{
-            rootOptions: { backgroundColor: PANEL, border: false },
-            wrapperOptions: { backgroundColor: PANEL },
-            viewportOptions: { backgroundColor: PANEL },
-            contentOptions: { backgroundColor: PANEL },
+            rootOptions: { backgroundColor: "transparent", border: false },
+            wrapperOptions: { backgroundColor: "transparent" },
+            viewportOptions: { backgroundColor: "transparent" },
+            contentOptions: { backgroundColor: "transparent" },
           }}
         >
           {comments.length === 0 ? (
@@ -1243,8 +1241,8 @@ export function ReviewScreen({
   ) : null;
 
   return (
-    <box flexGrow={1} flexDirection="column" backgroundColor={BG}>
-      <box height={2} flexShrink={0} flexDirection="column" backgroundColor={BG}>
+    <box flexGrow={1} flexDirection="column" backgroundColor="transparent">
+      <box height={2} flexShrink={0} flexDirection="column" backgroundColor="transparent">
         <text height={1} bg="transparent">
           <span fg={INK}> mend</span>
           <span fg={FAINT}> / </span>
@@ -1282,9 +1280,15 @@ export function ReviewScreen({
         height={descriptionHeight}
       />
 
-      <box flexGrow={1} minHeight={0} flexDirection="row" backgroundColor={BG}>
+      <box flexGrow={1} minHeight={0} flexDirection="row" backgroundColor="transparent">
         {sidebar}
-        <box flexGrow={1} minWidth={0} minHeight={0} flexDirection="column" backgroundColor={BG}>
+        <box
+          flexGrow={1}
+          minWidth={0}
+          minHeight={0}
+          flexDirection="column"
+          backgroundColor="transparent"
+        >
           <box
             border
             borderStyle="rounded"
@@ -1295,7 +1299,7 @@ export function ReviewScreen({
                 : ` ${selectedFile.path} · ${view}${selectedFile.likelyGenerated ? " · inferred likely generated" : ""}${showWhitespace ? " · whitespace" : ""}${wrap ? " · wrapped" : ""} `
             }
             titleAlignment="left"
-            backgroundColor={PANEL}
+            backgroundColor="transparent"
             flexGrow={1}
             minHeight={0}
           >
@@ -1317,10 +1321,10 @@ export function ReviewScreen({
                 minHeight={0}
                 scrollX
                 style={{
-                  rootOptions: { backgroundColor: PANEL, border: false },
-                  wrapperOptions: { backgroundColor: PANEL },
-                  viewportOptions: { backgroundColor: PANEL },
-                  contentOptions: { backgroundColor: PANEL },
+                  rootOptions: { backgroundColor: "transparent", border: false },
+                  wrapperOptions: { backgroundColor: "transparent" },
+                  viewportOptions: { backgroundColor: "transparent" },
+                  contentOptions: { backgroundColor: "transparent" },
                 }}
               >
                 <diff

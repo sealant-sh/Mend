@@ -1,17 +1,12 @@
 /**
- * The TUI's painted theme: a designed dark surface in the Evidence Review
- * family, tuned for terminal cells rather than transcribed from the web's
- * CSS. The canvas paints over whatever the terminal has, so the look is the
- * same everywhere — depth comes from a real canvas/panel split, selection is
- * a wash you can actually see, and the accents are bright enough to read as
- * intentional on the dark ground. Component code imports semantic names from
- * here; this file is the CLI's single color authority.
+ * The TUI's theme: a drawn interface with NO painted background — the
+ * terminal's own ground shows through everything, and the borders alone
+ * draw the panes. The only fills left are the ones that state something:
+ * the selection row and the diff add/delete washes. Chrome is near-mono;
+ * color appears only where it is a fact. Component code imports semantic
+ * names from here; this file is the CLI's single color authority.
  */
 
-/** The canvas behind everything — deep, so panels genuinely lift off it. */
-export const BG = "#141419";
-/** Raised panels; two steps above the canvas instead of the old near-tie. */
-export const PANEL = "#1e1e26";
 /** Primary text. */
 export const INK = "#eeece8";
 /** Secondary text. */

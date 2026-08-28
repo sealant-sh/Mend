@@ -20,7 +20,7 @@ import {
   pendingId,
 } from "./shared.ts";
 import { openUrl } from "./terminal.ts";
-import { BG, COBALT, FAINT, INK, INK_2, MUTED, PANEL, RED, RULE, WASH } from "./tui-theme.ts";
+import { COBALT, FAINT, INK, INK_2, MUTED, RED, RULE, WASH } from "./tui-theme.ts";
 import { createSseParser, eventFamilies, type InvalidateFamily } from "./workbench-events.ts";
 
 /**
@@ -316,7 +316,7 @@ const Pane = ({
     borderColor={focused ? COBALT : RULE}
     title={` ${title} `}
     titleAlignment="left"
-    backgroundColor={PANEL}
+    backgroundColor="transparent"
     {...(width === undefined ? {} : { width, flexShrink: 0, minHeight: 0 })}
     {...(height === undefined ? {} : { height, flexShrink: 0 })}
     {...(grow === true ? { flexGrow: 1, flexShrink: 1, minHeight: 0, minWidth: 0 } : {})}
@@ -327,10 +327,10 @@ const Pane = ({
 );
 
 const paneScrollStyle = {
-  rootOptions: { backgroundColor: PANEL, border: false },
-  wrapperOptions: { backgroundColor: PANEL },
-  viewportOptions: { backgroundColor: PANEL },
-  contentOptions: { backgroundColor: PANEL },
+  rootOptions: { backgroundColor: "transparent", border: false },
+  wrapperOptions: { backgroundColor: "transparent" },
+  viewportOptions: { backgroundColor: "transparent" },
+  contentOptions: { backgroundColor: "transparent" },
 } as const;
 
 const ProjectRow = ({
@@ -992,7 +992,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   }
 
   return (
-    <box flexGrow={1} flexDirection="column" backgroundColor={BG}>
+    <box flexGrow={1} flexDirection="column" backgroundColor="transparent">
       <box
         height={1}
         marginTop={1}
@@ -1078,7 +1078,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           borderColor={COBALT}
           title={` label — ${editing.harness} ${editing.id.slice(0, 8)} `}
           titleAlignment="left"
-          backgroundColor={PANEL}
+          backgroundColor="transparent"
           height={3}
           flexShrink={0}
         >
@@ -1086,8 +1086,8 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
             focused
             value={editing.label ?? ""}
             placeholder="a few words for what this session is doing (empty clears)"
-            backgroundColor={PANEL}
-            focusedBackgroundColor={PANEL}
+            backgroundColor="transparent"
+            focusedBackgroundColor="transparent"
             textColor={INK}
             focusedTextColor={INK}
             placeholderColor={FAINT}
@@ -1116,7 +1116,6 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
 
 export const runDashboard = async (ctx: DashboardContext): Promise<void> => {
   const renderer = await createCliRenderer({ exitOnCtrlC: false });
-  renderer.setBackgroundColor(BG);
   const queryClient = new QueryClient();
   const controller = new AbortController();
   let eventTimer: ReturnType<typeof setTimeout> | null = null;
