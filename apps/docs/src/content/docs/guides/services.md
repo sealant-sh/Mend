@@ -22,7 +22,7 @@ answer is deliberately not "publish the port".
 The bytes travel Mend's existing authenticated channels instead:
 
 ```text
-browser ──TCP──▶ the doorway: Mend's listener for this Service (:43127)
+browser ──TCP──▶ Mend's listener for this Service (:43127)
          ──WS───▶ Sealant API
          ──pipe─▶ sealantd, inside the container
          ──TCP──▶ Vite on 127.0.0.1:3000   (an ordinary local connect)
@@ -37,31 +37,30 @@ exists.
 Because the whole thing is a dumb byte pipe with no path rewriting and no proxy logic in between,
 the app behaves exactly as it does locally: hot reload, WebSockets, cookies, everything.
 
-## The doorway
+## The one real port
 
-The only real port is the doorway: one TCP listener per Service that Mend itself binds, from a fixed
-range (43100–43999 by default). Where that doorway lives is the only deployment-dependent question
-in the whole model.
+The only real port is Mend's own listener: one per Service, bound from a fixed range (43100–43999 by
+default). Where that listener lives is the only deployment-dependent question.
 
 By default it binds the Mend machine's loopback. When Mend runs on the machine you sit at, the URL
-simply works, and nothing at all is on your network.
+just works, and nothing at all is on your network.
 
-An operator can widen the doorway to private addresses the machine actually has: a tailnet address,
+An operator can bind the listener to private addresses the machine actually has: a tailnet address,
 a LAN address. Wildcards and public addresses are refused outright, so publishing a Service to the
-internet through Mend is not possible, misconfigured or not. The doorway itself carries no Mend
-sign-in; network reach is its only gate, and the interface says so next to every endpoint.
+internet through Mend is not possible, misconfigured or not. The listener carries no Mend sign-in;
+network reach is its only gate, and the interface says so next to every endpoint.
 
-Or the doorway moves to your own laptop. The CLI binds the Service's port on your loopback and
+Or the listener moves to your own laptop. The CLI binds the Service's port on your loopback and
 carries each connection to the server over an authenticated WebSocket. On a remote server, starting
 a Service does this automatically, so starting it and reaching it are one step. Unlike the raw
-doorway, every tunneled connection is authenticated, and only the session's owner may open one.
+listener, every tunneled connection is authenticated, and only the session's owner may open one.
 
 UDP Services exist for the rare cases that need them; a datagram has no connection to tunnel, so
-they use the doorway path only.
+they use the server-side listener only.
 
 ## Declaring
 
-Three surfaces feed the same model:
+A Service can be declared from three places, and they all feed the same model:
 
 - **A recipe in `mend.toml`.** The repository's own declaration: every session can start `web` by
   name, and the recipe travels with the code.
@@ -71,9 +70,9 @@ Three surfaces feed the same model:
   declare it properly instead of leaving a listener nobody can reach. It cannot open ports or change
   exposure; that authority stays on the server.
 
-A Service can also adopt a listener that already exists in the workspace. Adoption creates the
-doorway without supervision: there is no Mend-owned process to restart and no log beyond what
-started it.
+A Service can also adopt a port that something else already listens on inside the workspace.
+Adoption makes it reachable without supervision: there is no Mend-owned process to restart and no
+log beyond what started it.
 
 ## Writing `mend.toml`
 
@@ -98,8 +97,8 @@ protocol = "udp"
 The fields:
 
 - `port` is the only required field: where the process listens inside the workspace, 1–65535.
-- `command` is the shell command Mend supervises. Leave it out for an adopt-only recipe: Mend
-  creates the doorway but supervises nothing.
+- `command` is the shell command Mend supervises. Leave it out for an adopt-only recipe: Mend binds
+  the listener but supervises nothing.
 - `protocol` is `"tcp"` unless you say `"udp"`.
 - `browserScheme` (`"http"` or `"https"`) is what gives a Service its Open action. TCP alone never
   implies HTTP, and a UDP recipe cannot declare one.
@@ -130,7 +129,6 @@ let them hold the workspace deliberately.
 
 ## Commands
 
-The command surface is small and listed once, in the
-[CLI reference](/reference/cli/#service-commands): `mend service run`, `list`, `logs`, `restart`,
-`stop`, and `connect`, recipe scaffolding with `mend service init`, and the in-workspace helper's
-smaller surface.
+The commands are few and listed once, in the [CLI reference](/reference/cli/#service-commands):
+`mend service run`, `list`, `logs`, `restart`, `stop`, and `connect`, recipe scaffolding with
+`mend service init`, and the in-workspace helper's smaller set.
