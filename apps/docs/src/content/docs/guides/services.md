@@ -12,50 +12,49 @@ It runs inside the session workspace, next to the agent and the worktree, and li
 session process it keeps running when you disconnect. The declaration is the whole contract: Mend
 never scans the workspace for listeners and never exposes anything you did not name.
 
-## The problem it solves
+## Opening the app
 
 A workspace is a container with no published ports. When Vite listens on port 3000 in there, that
-port exists only inside the container's own network namespace. Your machine cannot see it, and
-neither can anything else. A Service is Mend's answer to "then how do I open the app?", and the
-answer is deliberately not "publish the port".
+port exists only inside the container, and your machine cannot see it. So you declare it:
 
-The bytes travel Mend's existing authenticated channels instead:
+```sh
+mend service run --port 3000 --http -- pnpm dev
+```
+
+Mend supervises the command, waits for port 3000 to answer, and hands you a local address like
+`http://127.0.0.1:43127`. Open it. That is your app, hot reload and all, because Mend pipes raw
+bytes and rewrites nothing.
+
+Behind that address, Mend shuttles each connection through to the dev server:
 
 ```text
-browser ──TCP──▶ Mend's listener for this Service (:43127)
+browser ──TCP──▶ Mend's listener on your laptop/host (:43127)
          ──WS───▶ Sealant API
          ──pipe─▶ sealantd, inside the container
          ──TCP──▶ Vite on 127.0.0.1:3000   (an ordinary local connect)
 ```
 
-Only the first leg is a TCP connection your browser makes, and it goes to a loopback, so it never
-crosses a network. Everything after it rides the platform's channels: an authenticated WebSocket
-from Mend to the Sealant control plane, the control pipe into the workspace, and finally an ordinary
-local connect that your dev server experiences as a client on its own loopback. The dev server needs
-no configuration, no rebinding to `0.0.0.0`, no awareness that Mend exists.
+The dev server needs no configuration, no rebinding to `0.0.0.0`, no awareness that Mend exists.
+From where it sits, a client connected from its own loopback.
 
-Because the whole thing is a dumb byte pipe with no path rewriting and no proxy logic in between,
-the app behaves exactly as it does locally: hot reload, WebSockets, cookies, everything.
+Where the address lives is Mend's problem, not yours. When the server is the machine you sit at, the
+listener is on it and the command returns. When the server is remote, the CLI stays running and
+holds the address on your laptop instead, shuttling the bytes over the authenticated connection it
+already has to the server, like an SSH tunnel you did not have to set up. Ctrl-C closes the tunnel,
+not the Service, and only the session's owner can open one. Either way the app shows up at
+`127.0.0.1` on the machine you are using, and the internet is never involved.
 
-## The one real port
+## Sharing it on your network
 
-The only real port is Mend's listener: one per Service, bound from a fixed range (43100–43999 by
-default). It never needs to be reachable over a network. When Mend runs on the machine you sit at,
-it binds that machine's loopback and the URL just works. When the server is remote, the CLI binds
-the same port on your laptop's loopback and carries each connection inside the authenticated
-WebSocket it already holds to Mend; starting a Service does this automatically, every tunneled
-connection is authenticated, and only the session's owner may open one. Either way, the only network
-traffic is the connection to Mend you already have.
-
-Letting devices hit the server-side listener directly is a separate, optional choice — useful when a
-phone on your tailnet should open the app without a CLI tunnel running. An operator can bind it to
-private addresses the machine actually has: a tailnet address, a LAN address. Wildcards and public
-addresses are refused outright, so publishing a Service to the internet through Mend is not
-possible, misconfigured or not. That listener carries no Mend sign-in; network reach is its only
-gate, and the interface says so next to every endpoint.
+The local address serves you. When another device should open the app too, your phone or a
+teammate's laptop on the same tailnet, an operator can bind the server-side listener to private
+addresses the machine actually has, and those devices connect directly. Two rules keep this
+contained: wildcards and public addresses are refused outright, so a Service cannot be published to
+the internet through Mend, and the listener carries no Mend sign-in, so network reach is the gate
+and the interface says so next to every endpoint.
 
 UDP Services exist for the rare cases that need them; a datagram has no connection to tunnel, so
-they use the server-side listener only.
+they always use the server-side listener.
 
 ## Declaring
 
