@@ -1,6 +1,13 @@
 import { createHash, randomBytes } from "node:crypto";
 
 import {
+  CliAuthApproved,
+  CliAuthDenied,
+  CliAuthNotFound,
+  CliAuthPending,
+  CliAuthRequestView,
+  CliAuthSpent,
+  CliAuthStartView,
   CurrentUser,
   DeviceView,
   MendApi,
@@ -11,7 +18,14 @@ import {
   PairingRateLimited,
   PairingView,
 } from "@mend/api-contracts";
-import { DevicesRepo, DevicesRepoLive, type PairedDevice } from "@mend/db";
+import {
+  DevicesRepo,
+  DevicesRepoLive,
+  type CliAuthRequest,
+  type CliAuthSpentError,
+  type CliAuthUnknownError,
+  type PairedDevice,
+} from "@mend/db";
 import { Config, Effect, Layer, Option } from "effect";
 import { HttpServerRequest } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
@@ -67,6 +81,23 @@ export const generatePairingCode = (
 export const mintDeviceToken = (): string =>
   `${DEVICE_TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
 
+export const DEVICE_CODE_PREFIX = "mdc_";
+
+/**
+ * The CLI's polling secret for one authorize request — same entropy as a
+ * device token, distinct prefix so a leaked log line is legible. Stored
+ * hashed, like everything else that grants access.
+ */
+export const mintCliDeviceCode = (): string =>
+  `${DEVICE_CODE_PREFIX}${randomBytes(32).toString("base64url")}`;
+
+/** How often the CLI should ask again. LAN-local; two seconds feels immediate. */
+export const CLI_AUTH_POLL_SECONDS = 2;
+
+/** Where a browser approves the code — resolved against whichever base URL the CLI called. */
+export const cliAuthVerifyPath = (userCode: string): string =>
+  `/authorize?code=${groupPairingCode(userCode)}`;
+
 /**
  * What is kept at rest. `packages/auth` computes the same hash on the way in —
  * the two must stay identical, which is why it is one line of stock sha256.
@@ -116,6 +147,13 @@ export const makeClaimLimiter = (max = 10, windowMs = 60_000): ClaimLimiter => {
 };
 
 const claimLimiter = makeClaimLimiter();
+
+/**
+ * The CLI authorize surface keeps its own budget: opening a request and
+ * polling with an unknown device code both count, so an address can neither
+ * fill the table with pending requests nor fish for device codes.
+ */
+const cliAuthLimiter = makeClaimLimiter();
 
 const bareAddress = (address: string): string =>
   address.startsWith("::ffff:") ? address.slice("::ffff:".length) : address;
@@ -205,6 +243,23 @@ const toDeviceView = (device: PairedDevice): DeviceView =>
     lastUsedAt: device.lastUsedAt === null ? null : device.lastUsedAt.toISOString(),
   });
 
+const toCliAuthView = (request: CliAuthRequest): CliAuthRequestView =>
+  new CliAuthRequestView({
+    code: request.userCode,
+    name: request.name,
+    createdAt: request.createdAt.toISOString(),
+    expiresAt: request.expiresAt.toISOString(),
+  });
+
+/** Repo misses as the contract speaks them: unknown is 404, anything spent is 410. */
+const mapCliAuthMiss = <A, R>(
+  effect: Effect.Effect<A, CliAuthUnknownError | CliAuthSpentError, R>,
+): Effect.Effect<A, CliAuthNotFound | CliAuthSpent, R> =>
+  effect.pipe(
+    Effect.catchTag("CliAuthUnknownError", () => Effect.fail(new CliAuthNotFound())),
+    Effect.catchTag("CliAuthSpentError", () => Effect.fail(new CliAuthSpent())),
+  );
+
 /** The URL this request actually arrived on — what the claimer should keep using. */
 const arrivalUrl = (request: HttpServerRequest.HttpServerRequest, port: number): string => {
   const host = request.headers["host"];
@@ -223,6 +278,17 @@ const arrivalUrl = (request: HttpServerRequest.HttpServerRequest, port: number):
  */
 const devicePairingGroups = Effect.gen(function* () {
   const devices = yield* DevicesRepo;
+
+  /** Who this unauthenticated request is, for rate-limiting purposes. */
+  const requestAddress = Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const trusted = yield* trustedProxyCidrs.pipe(Effect.orDie);
+    return claimAddress(
+      Option.getOrUndefined(request.remoteAddress),
+      request.headers["x-forwarded-for"],
+      trusted,
+    );
+  });
 
   const userDevices = HttpApiBuilder.group(MendApi, "userDevices", (handlers) =>
     handlers
@@ -256,6 +322,34 @@ const devicePairingGroups = Effect.gen(function* () {
             .revoke(caller.user.id, params.id)
             .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
           return toDeviceView(device);
+        }),
+      )
+      .handle("cliAuthRequest", ({ params }) =>
+        Effect.gen(function* () {
+          const request = yield* mapCliAuthMiss(
+            devices.getCliAuth(normalisePairingCode(params.code)),
+          );
+          return toCliAuthView(request);
+        }),
+      )
+      .handle("approveCliAuth", ({ params }) =>
+        Effect.gen(function* () {
+          const caller = yield* CurrentUser;
+          const request = yield* mapCliAuthMiss(
+            devices.approveCliAuth({
+              userCode: normalisePairingCode(params.code),
+              userId: caller.user.id,
+            }),
+          );
+          return toCliAuthView(request);
+        }),
+      )
+      .handle("denyCliAuth", ({ params }) =>
+        Effect.gen(function* () {
+          const request = yield* mapCliAuthMiss(
+            devices.denyCliAuth(normalisePairingCode(params.code)),
+          );
+          return toCliAuthView(request);
         }),
       ),
   );
@@ -306,7 +400,83 @@ const devicePairingGroups = Effect.gen(function* () {
     ),
   );
 
-  return Layer.mergeAll(userDevices, pair);
+  const cliAuth = HttpApiBuilder.group(MendApi, "cliAuth", (handlers) =>
+    handlers
+      .handle("start", ({ payload }) =>
+        Effect.gen(function* () {
+          const address = yield* requestAddress;
+          const retryAfterSeconds = cliAuthLimiter.retryAfter(address, Date.now());
+          if (retryAfterSeconds !== null) {
+            return yield* Effect.fail(new PairingRateLimited({ retryAfterSeconds }));
+          }
+          // Every open request spends budget — pending rows are not free.
+          cliAuthLimiter.recordFailure(address, Date.now());
+
+          const deviceCode = mintCliDeviceCode();
+          const name = payload.name.trim();
+          const opened = yield* devices.createCliAuth({
+            deviceCodeHash: hashDeviceToken(deviceCode),
+            userCode: generatePairingCode(),
+            name: name === "" ? "cli" : name,
+            expiresAt: new Date(Date.now() + PAIRING_TTL_MS),
+          });
+          return new CliAuthStartView({
+            deviceCode,
+            code: opened.userCode,
+            verifyPath: cliAuthVerifyPath(opened.userCode),
+            expiresAt: opened.expiresAt.toISOString(),
+            intervalSeconds: CLI_AUTH_POLL_SECONDS,
+          });
+        }),
+      )
+      .handle("poll", ({ payload }) =>
+        Effect.gen(function* () {
+          const address = yield* requestAddress;
+          const retryAfterSeconds = cliAuthLimiter.retryAfter(address, Date.now());
+          if (retryAfterSeconds !== null) {
+            return yield* Effect.fail(new PairingRateLimited({ retryAfterSeconds }));
+          }
+
+          // The token is minted for this poll and kept only if the collection
+          // wins; a pending request answers pending and the mint is forgotten.
+          const token = mintDeviceToken();
+          return yield* devices
+            .collectCliAuth({
+              deviceCodeHash: hashDeviceToken(payload.deviceCode),
+              platform: "cli",
+              tokenHash: hashDeviceToken(token),
+            })
+            .pipe(
+              Effect.map(
+                (claimed) =>
+                  new CliAuthApproved({
+                    status: "approved",
+                    token,
+                    user: {
+                      id: claimed.user.id,
+                      name: claimed.user.name,
+                      email: claimed.user.email,
+                    },
+                    device: { id: claimed.device.id, name: claimed.device.name },
+                  }),
+              ),
+              Effect.catchTag("CliAuthPendingError", () =>
+                Effect.succeed(new CliAuthPending({ status: "pending" })),
+              ),
+              // Only unknown codes count as fishing; a real CLI seeing its own
+              // request denied or expired is not an attack.
+              Effect.catchTag("CliAuthUnknownError", () => {
+                cliAuthLimiter.recordFailure(address, Date.now());
+                return Effect.fail(new CliAuthNotFound());
+              }),
+              Effect.catchTag("CliAuthDeniedError", () => Effect.fail(new CliAuthDenied())),
+              Effect.catchTag("CliAuthSpentError", () => Effect.fail(new CliAuthSpent())),
+            );
+        }),
+      ),
+  );
+
+  return Layer.mergeAll(userDevices, pair, cliAuth);
 });
 
 export const DevicePairingLive = Layer.unwrap(devicePairingGroups).pipe(

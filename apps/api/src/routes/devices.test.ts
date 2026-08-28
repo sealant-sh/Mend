@@ -4,8 +4,10 @@ import { HttpApi } from "effect/unstable/httpapi";
 import { describe, expect, it } from "vitest";
 
 import {
+  DEVICE_CODE_PREFIX,
   DEVICE_TOKEN_PREFIX,
   claimAddress,
+  cliAuthVerifyPath,
   inCidr,
   PAIRING_ALPHABET,
   PAIRING_CODE_LENGTH,
@@ -13,6 +15,7 @@ import {
   groupPairingCode,
   hashDeviceToken,
   makeClaimLimiter,
+  mintCliDeviceCode,
   mintDeviceToken,
   normalisePairingCode,
 } from "./devices.ts";
@@ -69,6 +72,19 @@ describe("device tokens", () => {
     expect(hash).toMatch(/^[0-9a-f]{64}$/);
     expect(hash).not.toContain("mdt_");
     expect(hashDeviceToken("mdt_example")).toBe(hash);
+  });
+});
+
+describe("cli authorize", () => {
+  it("mints a device code as strong as a token, under its own prefix", () => {
+    const code = mintCliDeviceCode();
+    expect(code.startsWith(DEVICE_CODE_PREFIX)).toBe(true);
+    expect(code.slice(DEVICE_CODE_PREFIX.length)).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(mintCliDeviceCode()).not.toBe(code);
+  });
+
+  it("points the browser at the grouped code on /authorize", () => {
+    expect(cliAuthVerifyPath("ABCDEFGH")).toBe("/authorize?code=ABCD-EFGH");
   });
 });
 

@@ -1227,8 +1227,9 @@ function DevicesPanel() {
         <div>
           <h2 className="font-sans text-sm font-semibold">Devices</h2>
           <p className="mt-1 max-w-[58ch] text-[13px] leading-relaxed text-muted-foreground">
-            A paired phone holds a token of its own and reaches this machine over your private
-            network. Revoking ends that token.
+            A paired phone or a signed-in terminal (
+            <span className="font-mono text-[12px]">mend login</span>) holds a token of its own and
+            reaches this machine over your private network. Revoking ends that token.
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-3">

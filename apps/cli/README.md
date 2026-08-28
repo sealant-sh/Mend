@@ -88,22 +88,30 @@ mend doctor                           read-only checklist of this machine's setu
 ## Signing in
 
 ```
-mend login                 # asks for the email + password of your Mend account, saves a token
-mend login --url https://mend.example.com --email you@example.com
-mend logout
+mend login                 # opens the browser at <server>/authorize; press Authorize there
+mend login --url https://mend.example.com
+mend logout                # revokes this terminal's device token and forgets it
 ```
+
+`mend login` opens the browser at `<server>/authorize?code=…` and waits, using the server already
+configured (`--url`, `MEND_URL`, or the config file). Only a fresh machine with nothing set asks for
+the URL, with Enter accepting `http://localhost:3105`. Sign in there if needed, check that the code
+on the page matches the one in the terminal, and press **Authorize**. The CLI receives a device
+token of its own, the same revocable kind a paired phone holds, listed under Settings → Devices. No
+password is ever typed into the terminal. Over SSH the browser does not open by itself; open the
+printed URL on any signed-in device instead.
 
 The token is stored 0600 in the CLI config below; every command uses it until `mend logout`. On a
 dev instance with `MEND_STATIC_TOKEN` set, `MEND_TOKEN=<that value>` also works.
 
 ## Configuration
 
-| Source                    | What                                                                                      |
-| ------------------------- | ----------------------------------------------------------------------------------------- |
-| `MEND_URL`                | The Mend server (default `http://localhost:3105`)                                         |
-| `MEND_TOKEN`              | Bearer token for that server (normally written by `mend login`)                           |
-| `MEND_DETACH_KEY`         | Set to `none` when an outer multiplexer detaches                                          |
-| `~/.config/mend/cli.json` | `{ "url": ..., "token": ... }` — env vars win; a pre-XDG `~/.mend/cli.json` keeps working |
+| Source                    | What                                                                                                       |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `MEND_URL`                | The Mend server (default `http://localhost:3105`)                                                          |
+| `MEND_TOKEN`              | Bearer token for that server (normally written by `mend login`)                                            |
+| `MEND_DETACH_KEY`         | Set to `none` when an outer multiplexer detaches                                                           |
+| `~/.config/mend/cli.json` | `{ "url": ..., "token": ..., "deviceId": ... }` — env vars win; a pre-XDG `~/.mend/cli.json` keeps working |
 
 ## Herdr
 

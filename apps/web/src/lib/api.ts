@@ -343,6 +343,10 @@ export const deleteDotfilesSnapshot = () =>
 
 export const createPairing = () => orLogin(trpcClient.devices.createPairing.mutate());
 export const revokeDevice = (id: string) => orLogin(trpcClient.devices.revoke.mutate({ id }));
+export const approveCliAuth = (code: string) =>
+  orLogin(trpcClient.devices.approveCliAuth.mutate({ code }));
+export const denyCliAuth = (code: string) =>
+  orLogin(trpcClient.devices.denyCliAuth.mutate({ code }));
 
 // ─── Pure helpers (unchanged behavior) ──────────────────────────────────────
 

@@ -9,6 +9,7 @@ import * as path from "node:path";
 import { doctorCommand } from "./doctor.ts";
 import { readSyncFiles, scanDotfileCandidates } from "./dotfiles.ts";
 import { formatLoadReport, type EnvironmentLoadReportDto } from "./env.ts";
+import { loginCommand } from "./login.ts";
 import { type ApiCall, pairCommand, qrCommand } from "./pair.ts";
 import {
   isComposeFile,
@@ -57,7 +58,11 @@ import {
 
 interface CliConfig {
   readonly url: string;
+  /** The url as the user actually set it (MEND_URL or the config file); null on a fresh machine. */
+  readonly configuredUrl: string | null;
   readonly token: string | null;
+  /** The device row the token belongs to — lets `mend logout` revoke it server-side. */
+  readonly deviceId: string | null;
 }
 
 interface ProjectDto {
@@ -144,9 +149,12 @@ const loadConfig = (): CliConfig => {
       fail(`could not parse ${CONFIG_PATH}`);
     }
   }
+  const configuredUrl = process.env["MEND_URL"] ?? fileConfig.url ?? null;
   return {
-    url: process.env["MEND_URL"] ?? fileConfig.url ?? "http://localhost:3105",
+    url: configuredUrl ?? "http://localhost:3105",
+    configuredUrl,
     token: process.env["MEND_TOKEN"] ?? fileConfig.token ?? null,
+    deviceId: fileConfig.deviceId ?? null,
   };
 };
 
@@ -1481,116 +1489,59 @@ const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
   process.stdout.write(`${accountLine(account)}\n`);
 };
 
-// ─── login: obtain and save the bearer token ────────────────────────────────
+// ─── login: authorize this terminal through the browser (login.ts) ──────────
 
 const takeFlagValue = (args: ReadonlyArray<string>, flag: string): string | null => {
   const at = args.indexOf(flag);
   return at !== -1 && args[at + 1] !== undefined ? String(args[at + 1]) : null;
 };
 
-/**
- * Read a password: raw-mode without echo on a TTY; on a pipe, one line through the SAME readline
- * that read the email (a second reader would find the buffered pipe already drained).
- */
-const readSecretLine = async (
-  prompt: string,
-  rl: { readonly question: (query: string) => Promise<string> },
-): Promise<string> => {
-  if (process.stdin.isTTY !== true) {
-    return (await rl.question(prompt)).trim();
-  }
-  process.stdout.write(prompt);
-  return new Promise((resolve) => {
-    const stdin = process.stdin;
-    stdin.setRawMode(true);
-    stdin.resume();
-    stdin.setEncoding("utf8");
-    let buffer = "";
-    const onData = (chunk: string) => {
-      for (const char of chunk) {
-        if (char === "\r" || char === "\n") {
-          stdin.setRawMode(false);
-          stdin.pause();
-          stdin.off("data", onData);
-          process.stdout.write("\n");
-          resolve(buffer);
-          return;
-        }
-        if (char === "\u0003") {
-          stdin.setRawMode(false);
-          process.stdout.write("\n");
-          process.exit(130);
-        }
-        if (char === "\u007f" || char === "\b") {
-          buffer = buffer.slice(0, -1);
-          continue;
-        }
-        buffer += char;
-      }
-    };
-    stdin.on("data", onData);
-  });
-};
-
-const saveCliConfig = (next: CliConfig) => {
+// Only these three fields persist; `configuredUrl` is derived on every load.
+const saveCliConfig = (next: {
+  readonly url: string;
+  readonly token: string | null;
+  readonly deviceId: string | null;
+}) => {
   fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true, mode: 0o700 });
   fs.writeFileSync(
     CONFIG_PATH,
-    `${JSON.stringify({ url: next.url, token: next.token }, null, 2)}\n`,
+    `${JSON.stringify({ url: next.url, token: next.token, deviceId: next.deviceId }, null, 2)}\n`,
     { mode: 0o600 },
   );
   fs.chmodSync(CONFIG_PATH, 0o600);
 };
 
-/**
- * `mend login [--url <server>] [--email <address>]`: sign in with email + password against the
- * server's auth endpoint (the bearer plugin answers with a `set-auth-token` header) and save the
- * token 0600 in the CLI config. Nothing else asks for a password again.
- */
+/** `mend login [--url <server>]` — the browser authorize walk; login.ts owns the flow. */
 const login = async (config: CliConfig, args: ReadonlyArray<string>) => {
-  const url = takeFlagValue(args, "--url") ?? process.env["MEND_URL"] ?? config.url;
-  const emailFlag = takeFlagValue(args, "--email");
-  const readline = await import("node:readline/promises");
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const email = emailFlag ?? (await rl.question(`email for ${url}: `)).trim();
-  if (email === "") {
-    rl.close();
-    return fail("an email is required");
-  }
-  const password = await readSecretLine("password: ", rl);
-  rl.close();
-  if (password === "") return fail("a password is required");
-
-  let response: Response;
-  try {
-    response = await fetch(`${url}/api/auth/sign-in/email`, {
-      method: "POST",
-      // better-auth's CSRF check rejects the `Origin: null` a non-browser fetch sends; the
-      // server's own URL is always a trusted origin, so present that.
-      headers: { "content-type": "application/json", origin: url },
-      body: JSON.stringify({ email, password }),
-    });
-  } catch {
-    return fail(`cannot reach the Mend server at ${url} — is it running?`);
-  }
-  if (response.status === 401 || response.status === 403 || response.status === 400) {
-    return fail(`sign-in refused for ${email} at ${url}`);
-  }
-  if (!response.ok) return fail(`sign-in failed: ${url} responded ${response.status}`);
-  const token = response.headers.get("set-auth-token");
-  if (token === null || token === "") {
-    return fail("the server signed you in but returned no bearer token (bearer plugin missing?)");
-  }
-  saveCliConfig({ ...config, url, token });
-  say(`${green("✓")} signed in as ${email} · ${dim(`token saved to ${CONFIG_PATH}`)}`);
+  await loginCommand(args, {
+    configuredUrl: config.configuredUrl,
+    defaultUrl: config.url,
+    save: (next) => {
+      saveCliConfig({ url: next.url, token: next.token, deviceId: next.deviceId });
+      say(dim(`  token saved to ${CONFIG_PATH} (0600)`));
+    },
+  });
 };
 
-const logout = (config: CliConfig) => {
-  if (!fs.existsSync(CONFIG_PATH)) {
+/**
+ * Signing out revokes the device server-side when it can — merely forgetting
+ * a live token would leave it valid until someone found it in Settings →
+ * Devices. A server that cannot be reached still loses the local copy.
+ */
+const logout = async (config: CliConfig) => {
+  if (!fs.existsSync(CONFIG_PATH) && config.token === null) {
     say(dim("nothing saved — already signed out"));
     return;
   }
-  saveCliConfig({ ...config, token: null });
+  if (config.token !== null && config.deviceId !== null) {
+    try {
+      await request(config, "DELETE", `/me/devices/${config.deviceId}`);
+      say(`${green("✓")} device revoked on ${config.url}`);
+    } catch {
+      say(dim("  could not revoke on the server — end it under Settings → Devices"));
+    }
+  }
+  saveCliConfig({ ...config, token: null, deviceId: null });
   say(`${green("✓")} signed out · ${dim(`token removed from ${CONFIG_PATH}`)}`);
 };
 
@@ -2636,7 +2587,10 @@ const dashboard = async (config: CliConfig) => {
 const HELP = `mend — the agent workbench
 
 start
-  mend login [--url <server>]           sign in with email + password; saves the token (0600)
+  mend login [--url <server>]           sign this terminal in through the browser: opens
+                                        <server>/authorize, you press Authorize there, and the
+                                        CLI saves a revocable device token (0600); no password
+                                        is ever typed here
   mend connect <provider> [--from-stdin] [--remove]
                                         send THIS machine's claude/codex/github credential to the
                                         platform under your own user (reads the file the provider's
@@ -2657,7 +2611,7 @@ start
 
 everything else
   mend                                  the dashboard: every project and session, live
-  mend logout                           forget the saved token
+  mend logout                           revoke this terminal's device token and forget it
   mend keys init                        generate the machine's Mend deploy key (ed25519)
   mend keys show                        print the public key — add it as a deploy key on your git host
   mend env load [file] [--secret [A,B]] load a .env into the project: ordinary names → configuration,
@@ -2697,7 +2651,7 @@ everything else
 
   server: MEND_URL (default http://localhost:3105) · auth: MEND_TOKEN
   detach key: Ctrl+] (set MEND_DETACH_KEY=none when an outer multiplexer owns detaching)
-  config file: ~/.config/mend/cli.json { "url": ..., "token": ... }
+  config file: ~/.config/mend/cli.json { "url": ..., "token": ..., "deviceId": ... }
 `;
 
 const main = async () => {

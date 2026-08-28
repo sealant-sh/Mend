@@ -36,6 +36,16 @@ export const makeTrpcProxy = (queryClient: QueryClient) =>
 export type TrpcProxy = ReturnType<typeof makeTrpcProxy>;
 
 /**
+ * The login walk, carrying where the user was: `/login?next=<here>` so signing
+ * in returns them instead of dumping them at the workbench. The workbench root
+ * itself needs no `next`.
+ */
+export const loginWalkUrl = (): string => {
+  const here = `${window.location.pathname}${window.location.search}`;
+  return here === "/" ? "/login" : `/login?next=${encodeURIComponent(here)}`;
+};
+
+/**
  * Map a mutation's 401 (surfaced as UNAUTHORIZED) to the login walk. These
  * wrappers run from event handlers and menus — no loader is watching, so a
  * thrown TanStack `redirect()` would be inert; navigate directly and rethrow
@@ -48,7 +58,7 @@ export const orLogin = async <A>(promise: Promise<A>): Promise<A> => {
   } catch (error) {
     if (error instanceof TRPCClientError && error.data?.code === "UNAUTHORIZED") {
       if (typeof window !== "undefined" && window.location.pathname !== "/login") {
-        window.location.assign("/login");
+        window.location.assign(loginWalkUrl());
       }
     }
     throw error;

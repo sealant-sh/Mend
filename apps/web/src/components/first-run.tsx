@@ -76,9 +76,10 @@ export function FirstRun() {
           title="Sign the CLI in"
           status={<StatusDot tone="hollow" word="not observed here" />}
         >
-          Run <Command>mend login</Command> on this machine. The token lands in{" "}
-          <span className="font-mono text-[12px]">~/.config/mend/cli.json</span>, which the server
-          never sees.
+          Run <Command>mend login</Command> on this machine and press Authorize in the browser page
+          it opens. The token lands in{" "}
+          <span className="font-mono text-[12px]">~/.config/mend/cli.json</span>; the server keeps
+          only its hash.
         </Step>
 
         <Step

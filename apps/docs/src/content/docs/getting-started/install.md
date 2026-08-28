@@ -98,7 +98,10 @@ For a remote host:
 mend login --url http://mend-host:3105
 ```
 
-The CLI saves the URL and bearer token in `~/.config/mend/cli.json` with file mode `0600`.
+`mend login` opens the browser at `<server>/authorize` and waits. Check that the code on the page
+matches the one in the terminal, then press **Authorize**. No password is typed into the terminal;
+the CLI receives a device token of its own, revocable any time under Settings → Devices. The URL and
+token land in `~/.config/mend/cli.json` with file mode `0600`.
 
 ## Connect providers
 
