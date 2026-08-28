@@ -3,6 +3,7 @@ import mermaid from "astro-mermaid";
 import { defineConfig } from "astro/config";
 
 export default defineConfig({
+  site: "https://docs.mend.run",
   integrations: [
     mermaid({ autoTheme: true, enableLog: false }),
     starlight({

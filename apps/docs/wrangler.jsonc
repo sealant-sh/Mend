@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "mend-docs",
+  "compatibility_date": "2026-03-28",
+  // A pure static-assets Worker: Astro builds to dist/ and there is no server
+  // code, so there is no `main`. Starlight emits 404.html; serve it for misses.
+  "assets": { "directory": "./dist", "not_found_handling": "404-page" },
+  // Decided 2026-08-28: docs live under Mend's own domain (see
+  // apps/marketing/wrangler.jsonc for the domain decision). Wrangler creates
+  // the DNS record in the mend.run zone on deploy.
+  "routes": [{ "pattern": "docs.mend.run", "custom_domain": true }],
+  "observability": {
+    "enabled": true,
+  },
+}

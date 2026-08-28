@@ -4,9 +4,14 @@
   "compatibility_date": "2026-03-28",
   "compatibility_flags": ["nodejs_compat"],
   "main": "@tanstack/react-start/server-entry",
-  // Decided 2026-08-02: Mend lives under the platform's domain. Wrangler creates the
-  // DNS record in the sealant.dev zone on deploy.
-  "routes": [{ "pattern": "mend.sealant.dev", "custom_domain": true }],
+  // Decided 2026-08-28: mend.run is Mend's own domain and the primary address for the
+  // marketing site; docs live at docs.mend.run (apps/docs). The original
+  // mend.sealant.dev stays alive as-is (install.sh links point there), but nothing
+  // new lands under sealant.dev. Wrangler creates each DNS record in its zone on deploy.
+  "routes": [
+    { "pattern": "mend.run", "custom_domain": true },
+    { "pattern": "mend.sealant.dev", "custom_domain": true },
+  ],
   "observability": {
     "enabled": true,
   },

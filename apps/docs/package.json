@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "astro build",
+    "deploy": "pnpm run build && wrangler deploy",
     "dev": "astro dev --port 3103",
     "lint": "oxlint src scripts astro.config.mjs --no-error-on-unmatched-pattern",
     "preview": "astro preview --port 3103",
@@ -24,6 +25,7 @@
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.10",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "wrangler": "catalog:"
   }
 }
