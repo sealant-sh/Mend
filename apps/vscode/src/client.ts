@@ -57,6 +57,9 @@ const parseSession = (value: unknown): Session => {
     worktree: stringField(value, "worktree"),
     branch: stringField(value, "branch"),
     status: parseSessionStatus(value["status"]),
+    // Tolerant: an older server omits the field; the workspace open then falls back.
+    sealantWorkspaceId:
+      typeof value["sealantWorkspaceId"] === "string" ? value["sealantWorkspaceId"] : null,
     createdAt: stringField(value, "createdAt"),
   };
 };
@@ -205,6 +208,13 @@ export class MendClient {
 
   async stopSession(sessionId: string): Promise<Session> {
     return parseSession(await this.post(`/sessions/${encodeURIComponent(sessionId)}/stop`, {}));
+  }
+
+  /** Rejoin a settled session. `harness` "shell" opens the workbench without launching an agent. */
+  async resumeSession(sessionId: string, harness: string | null): Promise<Session> {
+    return parseSession(
+      await this.post(`/sessions/${encodeURIComponent(sessionId)}/resume`, { harness }),
+    );
   }
 
   async adoptProject(name: string, source: string): Promise<Project> {

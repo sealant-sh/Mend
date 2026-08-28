@@ -259,6 +259,15 @@ class MendCommands {
     try {
       const location = await this.sessionLocation(argument);
       if (location === null) return;
+      // Prefer the session's workspace over the raw host path: same files (the worktree is
+      // mounted), but the integrated terminal runs INSIDE the workspace — with its image,
+      // its env, and the mounted harness home, so hand-run agents stay first-class.
+      const workspaceUri = await this.workspaceUri(location);
+      if (workspaceUri === "cancelled") return;
+      if (workspaceUri !== "unconfigured") {
+        await this.openNamedWorkspace(location, workspaceUri);
+        return;
+      }
       const folderUri = await this.worktreeUri(location.worktreePath);
       if (folderUri === null) return;
       await this.openNamedWorkspace(location, folderUri);
@@ -599,29 +608,109 @@ class MendCommands {
         .getConfiguration("mend")
         .update("remoteSshHost", host, vscode.ConfigurationTarget.Global);
     }
-    if (vscode.extensions.getExtension("ms-vscode-remote.remote-ssh") === undefined) {
-      const choice = await vscode.window.showInformationMessage(
-        "Opening a remote Mend worktree requires Microsoft Remote SSH.",
-        "Install Remote SSH",
-        "Copy code command",
-      );
-      if (choice === "Install Remote SSH") {
-        await vscode.commands.executeCommand(
-          "workbench.extensions.installExtension",
-          "ms-vscode-remote.remote-ssh",
-        );
-      } else if (choice === "Copy code command") {
-        await vscode.env.clipboard.writeText(
-          `code --remote ssh-remote+${host} ${JSON.stringify(worktree)}`,
-        );
-      }
-      return null;
-    }
+    if (!(await this.ensureRemoteSsh(`ssh-remote+${host}`, worktree))) return null;
     return vscode.Uri.from({
       scheme: "vscode-remote",
       authority: `ssh-remote+${host}`,
       path: worktree,
     });
+  }
+
+  /**
+   * The session's WORKSPACE over the Sealant workspace SSH gateway — the environment its
+   * worktree is mounted in. A terminal there runs where the harness state lives (the mounted
+   * harness home), so a `claude`/`codex` run by hand is observed by Mend, recorded, and
+   * resumable. "unconfigured" when no gateway is set (the caller falls back to the host
+   * worktree path); "cancelled" when the user declined a needed resume or Remote SSH is
+   * missing (the caller stops — a silent host-path open would not be what was asked).
+   */
+  private async workspaceUri(
+    location: SessionLocation,
+  ): Promise<vscode.Uri | "unconfigured" | "cancelled"> {
+    const configuration = vscode.workspace.getConfiguration("mend");
+    const gateway = configuration.get<string>("workspaceSshGateway")?.trim() ?? "";
+    if (gateway === "") return "unconfigured";
+    const prefix = configuration.get<string>("workspaceSshUsernamePrefix")?.trim() ?? "";
+    const username = `${prefix === "" ? "ws" : prefix}-`;
+    let workspaceId = liveStatuses.has(location.session.status)
+      ? location.session.sealantWorkspaceId
+      : null;
+    if (workspaceId === null) {
+      workspaceId = await this.resumeForEditor(location);
+      if (workspaceId === null) return "cancelled";
+    }
+    const authority = `ssh-remote+${username}${workspaceId}@${gateway}`;
+    if (!(await this.ensureRemoteSsh(authority, "/workspace/repo"))) return "cancelled";
+    return vscode.Uri.from({
+      scheme: "vscode-remote",
+      authority,
+      path: "/workspace/repo",
+    });
+  }
+
+  /**
+   * A settled session has no live workspace to attach to. Offer a SHELL resume: it provisions
+   * a fresh workspace over the same worktree and the shell holds the lease while the editor
+   * is attached — no agent is launched. Resolves the new workspace id, or null.
+   */
+  private async resumeForEditor(location: SessionLocation): Promise<string | null> {
+    const answer = await vscode.window.showInformationMessage(
+      `${displaySession(location.session)} has no live workspace.`,
+      {
+        modal: true,
+        detail:
+          "Resume it as a workbench shell and open the workspace? The shell keeps the workspace alive while the editor is attached; an agent you run inside is observed by Mend.",
+      },
+      "Resume and open",
+    );
+    if (answer !== "Resume and open") return null;
+    return vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `Resuming ${displaySession(location.session)}…`,
+      },
+      async () => {
+        await this.client.resumeSession(location.session.id, "shell");
+        for (let attempt = 0; attempt < 60; attempt += 1) {
+          const found = await this.client.findSession(location.session.id);
+          const session = found?.session;
+          if (
+            session !== undefined &&
+            session.sealantWorkspaceId !== null &&
+            liveStatuses.has(session.status)
+          ) {
+            this.tree.refresh();
+            return session.sealantWorkspaceId;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 2_000));
+        }
+        void vscode.window.showErrorMessage(
+          "The resumed session did not report a workspace in time.",
+        );
+        return null;
+      },
+    );
+  }
+
+  /** True when Microsoft Remote SSH is available; otherwise offers the install or the CLI line. */
+  private async ensureRemoteSsh(authority: string, remotePath: string): Promise<boolean> {
+    if (vscode.extensions.getExtension("ms-vscode-remote.remote-ssh") !== undefined) return true;
+    const choice = await vscode.window.showInformationMessage(
+      "Opening a remote Mend worktree requires Microsoft Remote SSH.",
+      "Install Remote SSH",
+      "Copy code command",
+    );
+    if (choice === "Install Remote SSH") {
+      await vscode.commands.executeCommand(
+        "workbench.extensions.installExtension",
+        "ms-vscode-remote.remote-ssh",
+      );
+    } else if (choice === "Copy code command") {
+      await vscode.env.clipboard.writeText(
+        `code --remote ${authority} ${JSON.stringify(remotePath)}`,
+      );
+    }
+    return false;
   }
 
   private async openNamedWorkspace(location: SessionLocation, folder: vscode.Uri): Promise<void> {
