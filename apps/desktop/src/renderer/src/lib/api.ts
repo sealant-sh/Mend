@@ -237,11 +237,16 @@ export interface DeliverFollowUpInput {
   readonly idempotencyKey: string;
 }
 
-/** `agent-protocol` is reserved — nothing launches one yet. */
-export type SessionProcessKind = "shell" | "agent-pty" | "agent-protocol" | "service";
+/** `agent-protocol` is reserved — nothing launches one yet. `agent-external` is an agent Mend observed but did not launch (run by hand in a shell/SSH/editor terminal); it has no PTY to attach. */
+export type SessionProcessKind =
+  | "shell"
+  | "agent-pty"
+  | "agent-protocol"
+  | "agent-external"
+  | "service";
 
 export const isAgentProcessKind = (kind: SessionProcessKind): boolean =>
-  kind === "agent-pty" || kind === "agent-protocol";
+  kind === "agent-pty" || kind === "agent-protocol" || kind === "agent-external";
 
 /** Observed lifecycle only — never a judgment about the work. */
 export type SessionProcessStatus =
