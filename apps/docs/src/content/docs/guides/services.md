@@ -9,8 +9,8 @@ sidebar:
 
 A Service is a long-running process you declare on a session: the dev server, a database, Storybook.
 It runs inside the session workspace, next to the agent and the worktree, and like every other
-session process it keeps running when you disconnect. The declaration is the whole contract: Mend
-never scans the workspace for listeners and never exposes anything you did not name.
+session process it keeps running when you disconnect. Mend never scans the workspace for listeners
+and never exposes anything you did not name; a Service exists because you declared it.
 
 ## Opening the app
 
@@ -21,43 +21,31 @@ port exists only inside the container, and your machine cannot see it. So you de
 mend service run --port 3000 --http -- pnpm dev
 ```
 
-Mend supervises the command, waits for port 3000 to answer, and opens a port on your machine,
-loopback only: `http://127.0.0.1:43127`. Open it. That is your app, hot reload and all, because Mend
-pipes raw bytes and rewrites nothing.
+Mend supervises the command, waits for port 3000 to answer, and opens a port on your machine (your
+laptop, not the Mend host), loopback only: `http://127.0.0.1:43127`. Open it. That is your app, hot
+reload and all, because Mend pipes raw bytes and rewrites nothing.
 
 Behind that port, Mend bridges each TCP connection through to the dev server:
 
 ```text
-browser ──TCP──▶ Mend's listener on your laptop/host (:43127)
+browser ──TCP──▶ Mend's listener on your machine (:43127)
          ──WS───▶ Sealant API
          ──pipe─▶ sealantd, inside the container
          ──TCP──▶ Vite on 127.0.0.1:3000   (an ordinary local connect)
 ```
 
-The dev server needs no configuration, no rebinding to `0.0.0.0`, no awareness that Mend exists.
-From where it sits, a client connected from its own loopback.
+The dev server needs no configuration and no rebinding to `0.0.0.0`. To it, every connection looks
+like a client on its own loopback.
 
 That is the only port in the picture, and it lives on your machine, bound to `127.0.0.1`. It is not
 opened on the Mend host and not on any network interface. When the server is remote, the CLI stays
 running to hold the port locally and bridges the bytes over the authenticated connection it already
 has to the server; Ctrl-C closes the bridge, not the Service. There is nothing to expose, nothing to
-firewall, and the internet is not part of any of this.
-
-## Sharing it on your network
-
-The local address serves you. When another device should open the app too, your phone or a
-teammate's laptop on the same tailnet, an operator can bind the server-side listener to private
-addresses the machine actually has, and those devices connect directly. Two rules keep this
-contained: wildcards and public addresses are refused outright, so a Service cannot be published to
-the internet through Mend, and the listener carries no Mend sign-in, so network reach is the gate
-and the interface says so next to every endpoint.
-
-UDP Services exist for the rare cases that need them; a datagram has no connection to tunnel, so
-they always use the server-side listener.
+firewall, and nothing ever touches the public internet.
 
 ## Declaring
 
-A Service can be declared from three places, and they all feed the same model:
+You can declare a Service from three places, and the result is the same:
 
 - **A recipe in `mend.toml`.** The repository's own declaration: every session can start `web` by
   name, and the recipe travels with the code.
@@ -113,7 +101,7 @@ with the code.
 `mend service init` scaffolds the file from the package and Compose files it finds, and shows you
 the result before writing it.
 
-## Evidence, not promises
+## Records and status
 
 Every start is an attempt with a recorded log you can replay and then follow live. Restarting adds
 another attempt under the same Service identity and endpoint, so history accumulates instead of
@@ -126,6 +114,6 @@ let them hold the workspace deliberately.
 
 ## Commands
 
-The commands are few and listed once, in the [CLI reference](/reference/cli/#service-commands):
+Every command is listed in the [CLI reference](/reference/cli/#service-commands):
 `mend service run`, `list`, `logs`, `restart`, `stop`, and `connect`, recipe scaffolding with
 `mend service init`, and the in-workspace helper's smaller set.
