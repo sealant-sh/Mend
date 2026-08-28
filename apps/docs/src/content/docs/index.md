@@ -25,8 +25,10 @@ scrollback replayed and then the live process.
 Development servers get the same treatment. Wrap the command you already run, `pnpm dev` or anything
 else, in `mend service run` and it becomes a supervised Service of the session. In the browser it
 behaves like a local dev server, hot reload and all, while it is actually running next to the agent
-on the Mend machine. Nothing is published to the internet: the endpoint stays inside your private
-network, and `mend service connect` can bring it to your own loopback over an authenticated tunnel.
+on the Mend machine. The port opens on the Mend machine itself, so your devices reach it over the
+same private network they already reach Mend on; nothing is published to the internet. When that
+port is out of reach, on Kubernetes for instance, `mend service connect` binds the Service on your
+own loopback over an authenticated tunnel.
 
 Each launch also carries the agent's working inputs: repository instructions, mounted references,
 project configuration, provider accounts, dotfiles, and previous session state. Named context packs
