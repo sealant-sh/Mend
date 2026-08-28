@@ -993,30 +993,13 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
 
   return (
     <box flexGrow={1} flexDirection="column" backgroundColor="transparent">
-      <box
-        height={1}
-        marginTop={1}
-        flexDirection="row"
-        justifyContent="space-between"
-        backgroundColor="transparent"
-      >
-        <text height={1} bg="transparent">
-          <span fg={INK}> mend</span>
-          <span fg={FAINT}>{"  "}</span>
-          <span fg={MUTED}>
-            {projectItems.length} project{projectItems.length === 1 ? "" : "s"}
-          </span>
-          <span fg={FAINT}> · </span>
-          <span fg={liveTotal > 0 ? MUTED : FAINT}>{liveTotal} live</span>
-        </text>
-        <text height={1} fg={FAINT} bg="transparent">
-          {`${ctx.config.url}  `}
-        </text>
-      </box>
-
-      <box flexGrow={1} flexShrink={1} minHeight={0} flexDirection="row" marginTop={1}>
+      <box flexGrow={1} flexShrink={1} minHeight={0} flexDirection="row">
         {showProjectsPane ? (
-          <Pane title="projects" focused={focus === "projects"} width={PROJECTS_PANE_WIDTH}>
+          <Pane
+            title={liveTotal > 0 ? `projects · ${liveTotal} live` : "projects"}
+            focused={focus === "projects"}
+            width={PROJECTS_PANE_WIDTH}
+          >
             <scrollbox
               ref={projectScrollRef}
               flexGrow={1}
@@ -1105,9 +1088,14 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       ) : null}
 
       <StatusLine busy={busy} busyStarted={busyStarted} status={status} />
-      <text height={1} fg={FAINT} bg="transparent">
-        {footerText}
-      </text>
+      <box height={1} flexDirection="row" justifyContent="space-between">
+        <text height={1} fg={FAINT} bg="transparent">
+          {footerText}
+        </text>
+        <text height={1} fg={FAINT} bg="transparent">
+          {`${ctx.config.url}  `}
+        </text>
+      </box>
     </box>
   );
 };
