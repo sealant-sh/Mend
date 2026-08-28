@@ -234,5 +234,11 @@ export const useAgentConversationActions = (sessionId: string) => {
       api<unknown>("POST", `/requests/${input.requestId}/respond`, input.response),
     onSettled: invalidate,
   });
-  return { submit, respond };
+  // Steering: a queued turn is cancelled outright; a running one reaches the
+  // harness's own interrupt. The process stays live for the next message.
+  const interrupt = useMutation({
+    mutationFn: (turnId: string) => api<unknown>("POST", `/turns/${turnId}/interrupt`, {}),
+    onSettled: invalidate,
+  });
+  return { submit, respond, interrupt };
 };

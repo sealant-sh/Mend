@@ -1,28 +1,35 @@
 // Project — repository state and its sessions, live (plan §6.2). The place
-// to start an agent and step into any session. Context packs join when the
-// context library ships (plan M3) — no mock stand-ins.
+// to start an agent (with launch tunables) and step into any session; slide
+// a session left to rename or delete, clear the settled set in one sweep.
+// Context packs join when the context library ships (plan M3).
 
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { useState } from "react";
 import { View } from "react-native";
 
-import { EvButton } from "@/components/button";
+import { ClearSettledButton } from "@/components/clear-settled";
 import { Panel, PanelRow } from "@/components/panel";
+import { RenameSessionModal, type RenameTarget } from "@/components/rename-session";
 import { Screen, ScreenHeader, SectionLabel } from "@/components/screen";
 import { SessionRow } from "@/components/session-row";
-import { BodyText, MonoText } from "@/components/typography";
+import { StartSessionRows } from "@/components/start-session";
+import { BodyText, Eyebrow, MonoText } from "@/components/typography";
+import type { LaunchOptions } from "@/data/harness-options";
 import {
-  PROTOCOL_HARNESSES,
+  ACTIVE,
   annotationDetail,
   toSession,
   useProjectSessions,
   useSessionActions,
 } from "@/data/live";
+import { spacing } from "@/theme/evidence";
 
 export default function ProjectScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const detail = useProjectSessions(id ?? null);
-  const { start } = useSessionActions();
+  const { start, remove, removeSettled } = useSessionActions();
+  const [renaming, setRenaming] = useState<RenameTarget | null>(null);
   const project = detail.data?.project;
   const sessions = detail.data?.sessions ?? [];
 
@@ -43,9 +50,9 @@ export default function ProjectScreen() {
     );
   }
 
-  const fire = (harness: string) => {
+  const fire = (harness: string, options: LaunchOptions) => {
     start.mutate(
-      { projectId: project.id, harness },
+      { projectId: project.id, harness, options },
       {
         onSuccess: (session) =>
           router.push({
@@ -55,6 +62,8 @@ export default function ProjectScreen() {
       },
     );
   };
+
+  const settled = sessions.filter((session) => !ACTIVE.has(session.status));
 
   return (
     <Screen>
@@ -66,23 +75,26 @@ export default function ProjectScreen() {
 
       <SectionLabel>Start a session</SectionLabel>
       <Panel>
-        <PanelRow first>
-          <View style={{ flexDirection: "row", gap: 8 }}>
-            {PROTOCOL_HARNESSES.map((harness) => (
-              <EvButton
-                key={harness}
-                variant="outline"
-                label={start.isPending ? "…" : harness}
-                disabled={start.isPending}
-                onPress={() => fire(harness)}
-                style={{ flex: 1 }}
-              />
-            ))}
-          </View>
-        </PanelRow>
+        <StartSessionRows pending={start.isPending} onStart={fire} />
       </Panel>
 
-      <SectionLabel>Sessions</SectionLabel>
+      <View
+        style={{
+          marginBottom: -spacing.sm,
+          paddingHorizontal: 4,
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8,
+        }}
+      >
+        <Eyebrow>Sessions</Eyebrow>
+        <ClearSettledButton
+          sessionIds={settled.map((session) => session.id)}
+          pending={removeSettled.isPending}
+          onClear={(ids) => removeSettled.mutate(ids)}
+        />
+      </View>
       <Panel>
         {sessions.length === 0 ? (
           <PanelRow first>
@@ -99,10 +111,13 @@ export default function ProjectScreen() {
               )}
               first={index === 0}
               onPress={() => router.push({ pathname: "/session/[id]", params: { id: session.id } })}
+              onRename={() => setRenaming({ sessionId: session.id, label: session.label })}
+              {...(ACTIVE.has(session.status) ? {} : { onDelete: () => remove.mutate(session.id) })}
             />
           ))
         )}
       </Panel>
+      <RenameSessionModal target={renaming} onClose={() => setRenaming(null)} />
     </Screen>
   );
 }

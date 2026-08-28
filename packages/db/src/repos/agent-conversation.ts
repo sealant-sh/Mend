@@ -10,6 +10,7 @@ import {
   AgentItem,
   AgentRequest,
   AgentTurn,
+  OPEN_AGENT_TURN_STATUSES,
   type AgentApprovalDecision,
   type AgentEventItem,
   type AgentEventRequest,
@@ -17,7 +18,7 @@ import {
   type AgentTurnStatus,
   type AgentTurnUsage,
 } from "@mend/domain/workbench";
-import { and, asc, eq, gt, isNull, max, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, max, sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -102,6 +103,8 @@ export class AgentConversationRepo extends Context.Service<
       providerTurnId: string,
     ) => Effect.Effect<AgentTurn | null>;
     readonly listTurns: (sessionId: SessionId) => Effect.Effect<ReadonlyArray<AgentTurn>>;
+    /** Every queued or running turn, oldest first. */
+    readonly openTurns: (sessionId: SessionId) => Effect.Effect<ReadonlyArray<AgentTurn>>;
     readonly claimNextTurn: (processId: SessionProcessId) => Effect.Effect<AgentTurn | null>;
     readonly setProviderTurnId: (
       id: AgentTurnId,
@@ -319,6 +322,23 @@ export const AgentConversationRepoLive: Layer.Layer<
         .select()
         .from(agentTurns)
         .where(eq(agentTurns.sessionId, sessionId))
+        .orderBy(asc(agentTurns.ordinal))
+        .pipe(Effect.orDie);
+      return rows.map(toTurn);
+    });
+
+    const openTurns = Effect.fn("AgentConversationRepo.openTurns")(function* (
+      sessionId: SessionId,
+    ) {
+      const rows = yield* db
+        .select()
+        .from(agentTurns)
+        .where(
+          and(
+            eq(agentTurns.sessionId, sessionId),
+            inArray(agentTurns.status, [...OPEN_AGENT_TURN_STATUSES]),
+          ),
+        )
         .orderBy(asc(agentTurns.ordinal))
         .pipe(Effect.orDie);
       return rows.map(toTurn);
@@ -812,6 +832,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       byLaunchCorrelation,
       byProviderTurnId,
       listTurns,
+      openTurns,
       claimNextTurn,
       setProviderTurnId,
       bindRunningProviderTurn,

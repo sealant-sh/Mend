@@ -9,6 +9,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 import { useSyncExternalStore } from "react";
 
 import type { StatusTone } from "@/components/status";
+import type { LaunchOptions } from "@/data/harness-options";
 
 // ─── config ─────────────────────────────────────────────────────────────────
 
@@ -153,6 +154,12 @@ export interface SessionChangeDto {
   readonly headSha: string | null;
 }
 
+/** The outcome of a destructive removal — what went, what would not. */
+export interface RemovalReportDto {
+  readonly removed: boolean;
+  readonly leftover: string | null;
+}
+
 /** The server answered and said no — carries its own words when it gave any. */
 export class ApiError extends Error {
   constructor(
@@ -164,7 +171,11 @@ export class ApiError extends Error {
 }
 
 /** Shared by the review data module — one transport, one error shape. */
-export const api = async <T>(method: "GET" | "POST", route: string, body?: unknown): Promise<T> => {
+export const api = async <T>(
+  method: "GET" | "POST" | "DELETE",
+  route: string,
+  body?: unknown,
+): Promise<T> => {
   const config = await loadConfig();
   if (config.url === "") throw new ApiError("Set the server URL in Settings first.", 0);
   const response = await fetch(`${config.url}/api${route}`, {
@@ -476,7 +487,11 @@ export const useSessionActions = () => {
   const queryClient = useQueryClient();
   const invalidate = () => queryClient.invalidateQueries();
   const start = useMutation({
-    mutationFn: async (input: { readonly projectId: string; readonly harness: string }) => {
+    mutationFn: async (input: {
+      readonly projectId: string;
+      readonly harness: string;
+      readonly options?: LaunchOptions;
+    }) => {
       const session = await api<SessionDto>("POST", `/projects/${input.projectId}/sessions`, {
         harness: input.harness,
         mode: "protocol",
@@ -484,9 +499,14 @@ export const useSessionActions = () => {
         base: null,
       });
       // Fire-and-forget: the server settles the session if provisioning fails.
-      void api("POST", `/sessions/${session.id}/launch`, { mode: "protocol" }).catch(
-        () => undefined,
-      );
+      // A null option means "the harness's own default" and stays off the wire.
+      const launch: Record<string, unknown> = { mode: "protocol" };
+      if (input.options !== undefined) {
+        if (input.options.model !== null) launch.model = input.options.model;
+        if (input.options.effort !== null) launch.effort = input.options.effort;
+        if (input.options.speed !== null) launch.speed = input.options.speed;
+      }
+      void api("POST", `/sessions/${session.id}/launch`, launch).catch(() => undefined);
       return session;
     },
     onSettled: invalidate,
@@ -500,6 +520,27 @@ export const useSessionActions = () => {
   });
   const stop = useMutation({
     mutationFn: (sessionId: string) => api<SessionDto>("POST", `/sessions/${sessionId}/stop`, {}),
+    onSettled: invalidate,
+  });
+  const setLabel = useMutation({
+    mutationFn: (input: { readonly sessionId: string; readonly label: string | null }) =>
+      api<SessionDto>("POST", `/sessions/${input.sessionId}/label`, { label: input.label }),
+    onSettled: invalidate,
+  });
+  // Settled sessions only — the server answers 409 for a live one.
+  const remove = useMutation({
+    mutationFn: (sessionId: string) => api<RemovalReportDto>("DELETE", `/sessions/${sessionId}`),
+    onSettled: invalidate,
+  });
+  // No bulk endpoint exists; mirror web's client-side sweep. Partial failure
+  // is fine — whatever refused (a session that went live again) stays listed.
+  const removeSettled = useMutation({
+    mutationFn: async (sessionIds: ReadonlyArray<string>) => {
+      const outcomes = await Promise.allSettled(
+        sessionIds.map((id) => api<RemovalReportDto>("DELETE", `/sessions/${id}`)),
+      );
+      return outcomes.filter((outcome) => outcome.status === "fulfilled").length;
+    },
     onSettled: invalidate,
   });
   const openShell = useMutation({
@@ -537,5 +578,15 @@ export const useSessionActions = () => {
     },
     onSettled: invalidate,
   });
-  return { start, resume, stop, openShell, stopShell, deliverFollowUp };
+  return {
+    start,
+    resume,
+    stop,
+    setLabel,
+    remove,
+    removeSettled,
+    openShell,
+    stopShell,
+    deliverFollowUp,
+  };
 };

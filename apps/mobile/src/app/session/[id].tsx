@@ -359,7 +359,12 @@ export default function SessionScreen() {
   );
   if (session !== undefined) {
     conversation = protocol ? (
-      <ProtocolConversation sessionId={session.id} active={agentActive} summary={session.summary} />
+      <ProtocolConversation
+        sessionId={session.id}
+        active={agentActive}
+        starting={session.status === "starting"}
+        summary={session.summary}
+      />
     ) : (
       <PtyConversation sessionId={session.id} active={agentActive} summary={session.summary} />
     );
@@ -397,6 +402,14 @@ export default function SessionScreen() {
                   }
                 />
               )}
+              {change !== null && (
+                <EvButton
+                  size="sm"
+                  variant="outline"
+                  label="Diff"
+                  onPress={() => router.push({ pathname: "/diff/[id]", params: { id: change.id } })}
+                />
+              )}
               {!agentActive && followUp !== null && canDeliverFollowUp(followUp) && (
                 <EvButton
                   size="sm"
@@ -427,7 +440,7 @@ export default function SessionScreen() {
                 <EvButton
                   size="sm"
                   variant="ghost"
-                  label={stop.isPending ? "…" : "Stop"}
+                  label={stop.isPending ? "…" : "Stop session"}
                   onPress={() => stop.mutate(session.id)}
                 />
               )}

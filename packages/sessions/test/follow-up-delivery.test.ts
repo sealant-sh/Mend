@@ -384,6 +384,7 @@ const testLayer = (world: TestWorld) => {
       ),
     byProviderTurnId: () => Effect.succeed(null),
     listTurns: () => Effect.succeed([]),
+    openTurns: () => Effect.succeed([]),
     claimNextTurn: () => Effect.succeed(null),
     setProviderTurnId: () => Effect.die("not in test"),
     bindRunningProviderTurn: () => Effect.succeed(null),
