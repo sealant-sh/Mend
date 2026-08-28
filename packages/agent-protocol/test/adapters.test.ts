@@ -366,6 +366,87 @@ describe("regression: reviewer findings", () => {
     ),
   );
 
+  it.effect("claude does not duplicate a text block echoed by a per-block assistant event", () =>
+    // Captured live 2026-08-28 (PoC session 59e473f4): with --include-partial-messages the
+    // CLI streams a thinking block at index 0 and the text at index 1, then echoes EACH
+    // completed block as its own `assistant` event whose content array holds just that one
+    // block. Keying the echo by its position in that array (always 0) attributed the text
+    // to the thinking block's id, leaving two identical assistant-message items.
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* makeTransport(() => {});
+        const latest = new Map<string, { text: string | null; kind: string }>();
+        const session = yield* ClaudeAdapter.start(fake.transport, {
+          cwd: "/workspace/repo",
+          permissionMode: "bypass",
+          providerSessionId: "11111111-2222-4333-8444-555566667777",
+          onEvent: (event) =>
+            Effect.sync(() => {
+              if (event._tag === "item.updated") {
+                latest.set(event.item.providerItemId, {
+                  text: event.item.text,
+                  kind: event.item.kind,
+                });
+              }
+            }),
+        });
+        yield* session.sendTurn("ground this");
+        const push = (event: unknown) =>
+          fake.push({
+            type: "stream_event",
+            session_id: "11111111-2222-4333-8444-555566667777",
+            parent_tool_use_id: null,
+            event,
+          });
+        push({ type: "message_start", message: { id: "msg_01AB", content: [] } });
+        push({ type: "content_block_start", index: 0, content_block: { type: "thinking" } });
+        push({
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "thinking_delta", thinking: "" },
+        });
+        fake.push({
+          type: "assistant",
+          session_id: "11111111-2222-4333-8444-555566667777",
+          parent_tool_use_id: null,
+          message: {
+            id: "msg_01AB",
+            role: "assistant",
+            content: [{ type: "thinking", thinking: "" }],
+          },
+        });
+        push({ type: "content_block_stop", index: 0 });
+        push({ type: "content_block_start", index: 1, content_block: { type: "text" } });
+        push({
+          type: "content_block_delta",
+          index: 1,
+          delta: { type: "text_delta", text: "Let me ground this." },
+        });
+        fake.push({
+          type: "assistant",
+          session_id: "11111111-2222-4333-8444-555566667777",
+          parent_tool_use_id: null,
+          message: {
+            id: "msg_01AB",
+            role: "assistant",
+            content: [{ type: "text", text: "Let me ground this." }],
+          },
+        });
+        push({ type: "content_block_stop", index: 1 });
+        fake.push({
+          type: "result",
+          session_id: "11111111-2222-4333-8444-555566667777",
+          subtype: "success",
+        });
+        yield* firstEvent(session.events, "turn.completed");
+        const messages = [...latest.entries()].filter(
+          ([, item]) => item.kind === "assistant-message",
+        );
+        expect(messages.map(([, item]) => item.text)).toEqual(["Let me ground this."]);
+      }),
+    ),
+  );
+
   it.effect("codex refuses to answer a request it is not holding", () =>
     Effect.scoped(
       Effect.gen(function* () {

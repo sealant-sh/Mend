@@ -2681,12 +2681,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (composed instanceof ProtocolHarnessUnsupportedError) {
           return yield* Effect.fail(composed);
         }
+        // A fresh-workspace relaunch must carry the harvested state with it: the composed
+        // argv resumes by provider id, and without the restored transcript the harness
+        // refuses the resume ("No conversation found"). A first launch (no prior protocol
+        // process) keeps the explicit null, which skips the read and stays hot-claimable.
+        const located =
+          providerSessionId === undefined
+            ? null
+            : yield* harnessStateFor(session).pipe(
+                Effect.catchTag("HarnessStateNotFoundError", () => Effect.succeed(null)),
+              );
         const launchFresh = () =>
           launchInternal(
             sessionId,
             composed,
             null,
-            null,
+            located,
             launchCorrelationId,
             start,
             author,

@@ -159,6 +159,13 @@ export const ClaudeAdapter: AgentAdapter = {
       // content_block_start (tool_use blocks carry a real id; text blocks get the fallback).
       let messageOrdinal = 0;
       const blockIds = new Map<number, string>();
+      // The CLI echoes each completed block as its own `assistant` event whose content
+      // array holds just that one block, so the array position is NOT the stream's
+      // content-block index. Recover it by counting the blocks consumed per provider
+      // message id; `streamingMessageId` scopes the `blockIds` lookup to the message the
+      // deltas actually belong to (sub-agent echoes carry their own message ids).
+      let streamingMessageId: string | null = null;
+      const assistantBlockCursors = new Map<string, number>();
       let announcedSessionId: string | null = null;
       let closed = false;
 
@@ -174,19 +181,31 @@ export const ClaudeAdapter: AgentAdapter = {
         return publish({ _tag: "item.updated", item });
       };
 
-      const completeContentBlocks = (message: JsonObject): Effect.Effect<void> => {
+      const completeContentBlocks = (envelope: JsonObject): Effect.Effect<void> => {
         if (currentTurnId === null) return Effect.void;
-        const content = objectField(message, "message")?.["content"];
+        const message = objectField(envelope, "message");
+        const content = message?.["content"];
         if (!Array.isArray(content)) return Effect.void;
+        const messageId = stringField(message, "id");
         return Effect.forEach(
           content,
-          (block, index) => {
+          (block, position) => {
             if (!isObject(block)) return Effect.void;
             const type = stringField(block, "type");
+            const streamIndex = (() => {
+              if (messageId === null) return position;
+              const next = assistantBlockCursors.get(messageId) ?? 0;
+              assistantBlockCursors.set(messageId, next + 1);
+              return next;
+            })();
             const id =
               stringField(block, "id") ??
-              blockIds.get(index) ??
-              `${currentTurnId}:m${messageOrdinal}:block:${index}`;
+              (messageId === null || messageId === streamingMessageId
+                ? blockIds.get(streamIndex)
+                : undefined) ??
+              (messageId === null
+                ? `${currentTurnId}:m${messageOrdinal}:block:${streamIndex}`
+                : `${messageId}:block:${streamIndex}`);
             const kind: AgentItemKind =
               type === "text"
                 ? "assistant-message"
@@ -217,6 +236,7 @@ export const ClaudeAdapter: AgentAdapter = {
         if (eventType === "message_start") {
           messageOrdinal += 1;
           blockIds.clear();
+          streamingMessageId = stringField(objectField(event, "message"), "id");
           return Effect.void;
         }
         const index = integerField(event, "index") ?? 0;
