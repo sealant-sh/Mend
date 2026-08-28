@@ -1,10 +1,19 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+
+import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
+  HARNESS_HOME_MOUNT_PATH,
   HARNESS_STATE,
   distillOpeningPrompt,
   extractTranscript,
+  hasLiveHarnessState,
+  locateLiveTranscript,
   nativeResumeArgv,
+  relocateHarnessHomeScript,
 } from "./harness-state.ts";
 
 const claudeJsonl = [
@@ -123,5 +132,55 @@ describe("transcript adapters", () => {
   it("leaves launches without resumable native state unchanged", () => {
     expect(nativeResumeArgv("codex", null, ["codex"])).toEqual(["codex"]);
     expect(nativeResumeArgv("opencode", "session-id", ["opencode"])).toEqual(["opencode"]);
+  });
+});
+
+describe("harness home", () => {
+  it("relocation script covers every harness's state dirs and keeps mount-side files", () => {
+    const script = relocateHarnessHomeScript();
+    for (const shape of Object.values(HARNESS_STATE)) {
+      for (const dir of shape.homeDirs) {
+        expect(script).toContain(`${HARNESS_HOME_MOUNT_PATH}/${dir}`);
+        expect(script).toContain(`ln -s "${HARNESS_HOME_MOUNT_PATH}/${dir}" "$HOME/${dir}"`);
+      }
+    }
+    // -n: on a collision the mounted (live, newer) copy wins over a restored one.
+    expect(script).toContain("cp -an");
+  });
+
+  it("reads live state presence from the harness home, absence as false", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-harness-home-"));
+    expect(await Effect.runPromise(hasLiveHarnessState(home, "claude"))).toBe(false);
+    fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
+    expect(await Effect.runPromise(hasLiveHarnessState(home, "claude"))).toBe(false);
+    fs.writeFileSync(path.join(home, ".claude", "settings.json"), "{}");
+    expect(await Effect.runPromise(hasLiveHarnessState(home, "claude"))).toBe(true);
+    expect(await Effect.runPromise(hasLiveHarnessState(home, "codex"))).toBe(false);
+    expect(await Effect.runPromise(hasLiveHarnessState(home, "unknown"))).toBe(false);
+  });
+
+  it("locates the newest live transcript and derives its provider session id", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-harness-home-"));
+    const projectDir = path.join(home, ".claude", "projects", "-workspace-repo");
+    fs.mkdirSync(projectDir, { recursive: true });
+    const older = path.join(projectDir, "0f9a2c3d-1111-2222-3333-444455556666.jsonl");
+    const newer = path.join(projectDir, "aabbccdd-1111-2222-3333-444455556666.jsonl");
+    fs.writeFileSync(older, "{}\n");
+    fs.writeFileSync(newer, "{}\n");
+    const past = new Date(Date.now() - 60_000);
+    fs.utimesSync(older, past, past);
+
+    const located = await Effect.runPromise(locateLiveTranscript(home, "claude"));
+    expect(located?.path).toBe(newer);
+    expect(located?.providerSessionId).toBe("aabbccdd-1111-2222-3333-444455556666");
+  });
+
+  it("live transcript lookup answers null for empty homes and transcript-less harnesses", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-harness-home-"));
+    expect(await Effect.runPromise(locateLiveTranscript(home, "claude"))).toBeNull();
+    expect(await Effect.runPromise(locateLiveTranscript(home, "opencode"))).toBeNull();
+    expect(
+      await Effect.runPromise(locateLiveTranscript(path.join(home, "missing"), "codex")),
+    ).toBeNull();
   });
 });

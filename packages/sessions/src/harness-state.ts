@@ -17,6 +17,13 @@
  * Sessions harvested before 2026-08-21 kept the same three files at the
  * session root; `locateHarnessState` reads those when no process capture
  * exists. Nothing migrates the tarballs.
+ *
+ * Since 2026-08-28 the captures are the settle-time snapshot of a LIVE source:
+ * `sessions/<session-id>/harness-home/` is mounted read-write into every
+ * workspace at `HARNESS_HOME_MOUNT_PATH`, and boot symlinks each harness's
+ * `$HOME` state dirs onto it (`relocateHarnessHomeScript`). State survives any
+ * workspace death; a relaunch with no committed capture harvests from the live
+ * home server-side (`locateLiveTranscript`) instead of refusing.
  */
 
 import * as fs from "node:fs/promises";
@@ -170,8 +177,19 @@ export const locateHarnessState = (
 interface HarnessStateShape {
   /** `$HOME`-relative directories/files that hold the harness's session state. */
   readonly paths: ReadonlyArray<string>;
+  /**
+   * `$HOME`-relative top-level state directories relocated onto the session's durable
+   * harness-home mount at boot (`$HOME/<dir>` becomes a symlink into the mount). Everything the
+   * harness writes under them — transcripts, todos, skills — lands on the store and survives
+   * workspace death. Single files at the `$HOME` root (`.claude.json`) stay ephemeral: an
+   * atomic-rename there would replace a symlink with a plain file, so they ride the
+   * settle-time harvest only.
+   */
+  readonly homeDirs: ReadonlyArray<string>;
   /** Shell snippet printing the path of the primary transcript file, newest first. */
   readonly latestTranscript: string;
+  /** `harness-home`-relative glob for the primary transcript, matched server-side. */
+  readonly liveTranscript: RegExp | null;
   /** Derive the provider session id from the primary transcript's path/name. */
   readonly providerSessionId: (transcriptPath: string) => string | null;
 }
@@ -189,20 +207,108 @@ export const HARNESS_STATE: Record<string, HarnessStateShape> = {
       ".claude/settings.json",
       ".claude.json",
     ],
+    homeDirs: [".claude"],
     latestTranscript: 'ls -t "$HOME"/.claude/projects/*/*.jsonl 2>/dev/null | head -1',
+    liveTranscript: /^\.claude\/projects\/[^/]+\/[^/]+\.jsonl$/,
     providerSessionId: (file) => CLAUDE_JSONL.exec(file)?.[1] ?? null,
   },
   codex: {
     paths: [".codex/sessions", ".codex/history.jsonl"],
+    homeDirs: [".codex"],
     latestTranscript: 'ls -t "$HOME"/.codex/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | head -1',
+    liveTranscript: /^\.codex\/sessions\/[^/]+\/[^/]+\/[^/]+\/rollout-[^/]+\.jsonl$/,
     providerSessionId: (file) => CODEX_ROLLOUT.exec(file)?.[1] ?? null,
   },
   opencode: {
     paths: [".local/share/opencode"],
+    homeDirs: [".local/share/opencode"],
     latestTranscript: "true",
+    liveTranscript: null,
     providerSessionId: () => null,
   },
 };
+
+/**
+ * Where the session's durable harness home is mounted inside every workspace (read-write; the
+ * source is `harnessHomePathOf` in the store). Boot symlinks each harness's `homeDirs` here.
+ */
+export const HARNESS_HOME_MOUNT_PATH = "/workspace/harness-home";
+
+/**
+ * The boot step that makes harness state durable: for every supported harness (a workspace
+ * carries them all, and a session can switch mid-life), move whatever `$HOME` already holds —
+ * image-baked defaults, a restored capture — into the mounted harness home, then symlink the
+ * `$HOME` directory to the mount. `cp -an` keeps mount-side files on collision: when both a
+ * restore and live state exist, the live state is newer by construction. Idempotent; a rerun
+ * over existing symlinks does nothing.
+ */
+export const relocateHarnessHomeScript = (mountPath: string = HARNESS_HOME_MOUNT_PATH): string => {
+  const dirs = [...new Set(Object.values(HARNESS_STATE).flatMap((shape) => shape.homeDirs))];
+  const perDir = dirs.map(
+    (dir) =>
+      `mkdir -p "${mountPath}/${dir}" "$(dirname "$HOME/${dir}")"; ` +
+      `if [ -e "$HOME/${dir}" ] && [ ! -L "$HOME/${dir}" ]; then ` +
+      `cp -an "$HOME/${dir}/." "${mountPath}/${dir}/" 2>/dev/null; rm -rf "$HOME/${dir}"; fi; ` +
+      `[ -L "$HOME/${dir}" ] || ln -s "${mountPath}/${dir}" "$HOME/${dir}"`,
+  );
+  return perDir.join("; ");
+};
+
+/**
+ * Whether the session's harness home already holds state for `harness` — the signal that a
+ * relaunch needs no archive restore: the mounted home carries everything, boot just symlinks
+ * it back into `$HOME`. Unreadable or absent reads as false.
+ */
+export const hasLiveHarnessState = (
+  harnessHomePath: string,
+  harness: string,
+): Effect.Effect<boolean> =>
+  Effect.promise(async () => {
+    const dirs = HARNESS_STATE[harness]?.homeDirs ?? [];
+    for (const dir of dirs) {
+      try {
+        if ((await fs.readdir(path.join(harnessHomePath, dir))).length > 0) return true;
+      } catch {
+        // Missing or unreadable — not live state.
+      }
+    }
+    return false;
+  });
+
+/**
+ * Find the newest primary transcript in a session's harness home, server-side — no workspace
+ * exec, so it works when the workspace is already gone (the crash-recovery path). Returns the
+ * transcript's absolute path and the provider session id derived from its name; null when the
+ * harness keeps no locatable transcript, none was written, or the harness home is unreadable
+ * (a locator, not a validator — absence is an answer, never an error).
+ */
+export const locateLiveTranscript = (
+  harnessHomePath: string,
+  harness: string,
+): Effect.Effect<{ readonly path: string; readonly providerSessionId: string | null } | null> =>
+  Effect.promise(async () => {
+    const shape = HARNESS_STATE[harness];
+    if (shape === undefined || shape.liveTranscript === null) return null;
+    const pattern = shape.liveTranscript;
+    try {
+      const entries = await fs.readdir(harnessHomePath, { recursive: true, withFileTypes: true });
+      let newest: { readonly path: string; readonly mtimeMs: number } | null = null;
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+        const absolute = path.join(entry.parentPath, entry.name);
+        const relative = path.relative(harnessHomePath, absolute);
+        if (!pattern.test(relative)) continue;
+        const stat = await fs.stat(absolute);
+        if (newest === null || stat.mtimeMs > newest.mtimeMs) {
+          newest = { path: absolute, mtimeMs: stat.mtimeMs };
+        }
+      }
+      if (newest === null) return null;
+      return { path: newest.path, providerSessionId: shape.providerSessionId(newest.path) };
+    } catch {
+      return null;
+    }
+  });
 
 /** Turn a normal harness launch into that harness's native session resume. */
 export const nativeResumeArgv = (

@@ -221,6 +221,17 @@ export const processStatePathOf = (storePath: string, sessionId: string, process
   path.join(sessionStatePathOf(storePath, sessionId), "processes", processId);
 
 /**
+ * Where a session's LIVE harness home lives: the durable backing directory mounted read-write
+ * into every workspace of the session, holding the harness state dirs (`.claude`, `.codex`, …)
+ * that the workspace symlinks into `$HOME` at boot. State written here survives any workspace
+ * death — harvest-at-settle reads it, and a relaunch after a crash resumes from it. It is also
+ * the server-side seam for managing what a harness sees in `$HOME` (skills, settings) without
+ * a workspace exec.
+ */
+export const harnessHomePathOf = (storePath: string, sessionId: string) =>
+  path.join(sessionStatePathOf(storePath, sessionId), "harness-home");
+
+/**
  * The central repository store (plan §5.2, §8.1.A): bare clone per project,
  * one git worktree per session, checkpoints as commits on hidden refs that
  * never touch the visible branch. Everything here is host-side plain git —

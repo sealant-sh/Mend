@@ -82,6 +82,7 @@ import {
   MendKeys,
   NO_SIGNER_MESSAGE,
   SecretCipher,
+  harnessHomePathOf,
   processStatePathOf,
   sessionStatePathOf,
   sshTransportArgs,
@@ -97,6 +98,7 @@ import * as Semaphore from "effect/Semaphore";
 import { DotfilesResolveError, resolveDotfilesArchives } from "./dotfiles.ts";
 import { parseGitRemoteCommand } from "./git-transport.ts";
 import {
+  HARNESS_HOME_MOUNT_PATH,
   HARNESS_STATE,
   HarnessStateCommandError,
   type HarnessStateError,
@@ -104,7 +106,10 @@ import {
   HarnessStateInvalidError,
   distillOpeningPrompt,
   extractTranscript,
+  hasLiveHarnessState,
+  locateLiveTranscript,
   nativeResumeArgv,
+  relocateHarnessHomeScript,
   type HarnessStateManifest,
   type LocatedHarnessState,
   locateHarnessState,
@@ -1164,8 +1169,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const pack = yield* sealant.exec(workspace, [
           "sh",
           "-c",
+          // -h dereferences: the boot step turns `$HOME` state dirs into symlinks onto the
+          // harness-home mount, and the capture must carry their contents, not the links.
           `cd "$HOME" || exit 1; L=""; for p in ${list}; do [ -e "$p" ] && L="$L $p"; done; ` +
-            `[ -n "$L" ] || exit 3; tar -czf /tmp/mend-harness-state.tgz $L && ` +
+            `[ -n "$L" ] || exit 3; tar -czhf /tmp/mend-harness-state.tgz $L && ` +
             `base64 -w0 /tmp/mend-harness-state.tgz`,
         ]);
         if (pack.exitCode !== 0 || pack.stdout.trim() === "") {
@@ -1283,6 +1290,87 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // agent process's.
           yield* sessions.setProviderSessionId(session.id, providerSessionId);
         }
+      });
+
+      /**
+       * Commit a capture from the session's durable harness home — the crash path. The
+       * workspace died before the exec harvest could reach it, but the mounted harness home
+       * kept everything the harness wrote. Reads the store directly and writes the same
+       * capture the exec harvest would (transcript, canonical, manifest) into the newest
+       * matching agent process's directory. No `harness-state.tar.gz`: a session whose harness
+       * home holds live state never restores from an archive. Null when nothing is
+       * recoverable — an absent home, no transcript yet, a transcript-less harness.
+       */
+      const harvestFromHarnessHome = Effect.fn("SessionEngine.harvestFromHarnessHome")(function* (
+        session: Session,
+      ) {
+        const harness = session.harness;
+        if (HARNESS_STATE[harness] === undefined) return null;
+        const project = yield* projects.byId(session.projectId);
+        const agents = agentProcessesOf(yield* processes.listForSession(session.id));
+        const agent = agents.findLast((candidate) => candidate.harness === harness) ?? null;
+        if (agent === null) return null;
+        const harnessHome = harnessHomePathOf(project.storePath, session.id);
+        const live = yield* locateLiveTranscript(harnessHome, harness);
+        if (live === null) return null;
+        const native = yield* Effect.tryPromise({
+          try: () => fs.readFile(live.path, "utf8"),
+          catch: (cause) =>
+            new HarnessStateIOError({
+              sessionId: session.id,
+              operation: "read-transcript",
+              path: live.path,
+              message: `Could not read the live ${harness} transcript for session ${session.id}.`,
+              cause,
+            }),
+        });
+        if (native === "") return null;
+        const stateDir = processStatePathOf(project.storePath, session.id, agent.id);
+        const manifestPath = path.join(stateDir, "manifest.json");
+        yield* Effect.tryPromise({
+          try: async () => {
+            await fs.mkdir(stateDir, { recursive: true });
+            // Commit-marker discipline: never let a half-written capture read as current.
+            await fs.rm(manifestPath, { force: true });
+            await fs.writeFile(path.join(stateDir, "transcript.native"), native);
+            const canonical = ingestNativeSession(harness, native, "/workspace/repo");
+            if (canonical !== null) {
+              await fs.writeFile(
+                path.join(stateDir, "session.canonical.json"),
+                JSON.stringify(canonical, null, 2),
+              );
+            }
+          },
+          catch: (cause) =>
+            new HarnessStateIOError({
+              sessionId: session.id,
+              operation: "write-transcript",
+              path: stateDir,
+              message: `Could not save the live ${harness} capture for session ${session.id}.`,
+              cause,
+            }),
+        });
+        const manifest: HarnessStateManifest = {
+          harness,
+          providerSessionId: live.providerSessionId,
+          capturedAt: new Date().toISOString(),
+        };
+        yield* Effect.tryPromise({
+          try: () => fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2)),
+          catch: (cause) =>
+            new HarnessStateIOError({
+              sessionId: session.id,
+              operation: "write-manifest",
+              path: manifestPath,
+              message: `Could not commit saved harness state for session ${session.id}.`,
+              cause,
+            }),
+        });
+        if (live.providerSessionId !== null) {
+          yield* processes.setProviderSessionId(agent.id, live.providerSessionId);
+          yield* sessions.setProviderSessionId(session.id, live.providerSessionId);
+        }
+        return { stateDir, manifest } satisfies LocatedHarnessState;
       });
 
       const closeWorkspaceServiceForwards = Effect.fn(
@@ -1482,7 +1570,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               () => false,
             ),
           );
-          if (!captured) yield* tryHarvest(agent);
+          if (!captured) {
+            yield* tryHarvest(agent);
+            // The exec harvest needs a live workspace; after a crash there is none. The
+            // durable harness home still holds the state — commit the capture from it.
+            const landed = yield* Effect.promise(() =>
+              fs.access(manifestPath).then(
+                () => true,
+                () => false,
+              ),
+            );
+            if (!landed) {
+              yield* harvestFromHarnessHome(session).pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("session engine: live-state harvest failed").pipe(
+                    Effect.annotateLogs({ sessionId, error: String(error) }),
+                    Effect.as(null),
+                  ),
+                ),
+              );
+            }
+          }
         }).pipe(
           Effect.catch((error) =>
             Effect.logWarning("session engine: late harvest skipped").pipe(
@@ -1511,6 +1619,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           sessionStatePathOf(project.storePath, session.id),
           processDirs,
           session.id,
+        ).pipe(
+          // No committed capture — the settle never harvested (a crashed workspace). The
+          // durable harness home may still hold the state; committing a capture from it
+          // here is what turns "Saved harness state is missing" into a working resume.
+          Effect.catchTag("HarnessStateNotFoundError", (error) =>
+            harvestFromHarnessHome(session).pipe(
+              Effect.orElseSucceed(() => null),
+              Effect.flatMap((located) =>
+                located === null ? Effect.fail(error) : Effect.succeed(located),
+              ),
+            ),
+          ),
         );
       });
 
@@ -1832,8 +1952,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const declaredMounts = yield* projectMounts
           .listForProject(project.id)
           .pipe(Effect.orElseSucceed(() => []));
+        // The durable harness home (harness-state.ts): a store-backed directory mounted
+        // read-write into the workspace; boot symlinks each harness's `$HOME` state dirs into
+        // it, so conversation state survives any workspace death. A failed mkdir costs
+        // durability for this launch, never the launch itself.
+        const harnessHome = harnessHomePathOf(project.storePath, sessionId);
+        const harnessHomeReady = yield* Effect.promise(() =>
+          fs.mkdir(harnessHome, { recursive: true }).then(
+            () => true,
+            () => false,
+          ),
+        );
+        if (!harnessHomeReady) {
+          yield* Effect.logWarning("session engine: harness home could not be created").pipe(
+            Effect.annotateLogs({ sessionId, harnessHome }),
+          );
+        }
         const workspaceMounts = [
           { hostPath: socketDir, mountPath: SESSION_SOCKET_MOUNT_PATH },
+          ...(harnessHomeReady
+            ? [{ hostPath: harnessHome, mountPath: HARNESS_HOME_MOUNT_PATH, readOnly: false }]
+            : []),
           ...selectedReferences.map((reference) => ({
             hostPath: reference.path,
             mountPath: `/workspace/ref/${reference.name}`,
@@ -2368,74 +2507,81 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ? interactiveShellArgv(workspaceImage, argv.slice(1))
           : argv;
         if (manifest !== null) {
-          const tarName = `.mend-harness-state-${session.id.slice(0, 8)}.tgz`;
-          const archivePath = path.join(stateDir, "harness-state.tar.gz");
-          const stagedPath = path.join(worktree, tarName);
-          const restore = Effect.tryPromise({
-            try: () => fs.copyFile(archivePath, stagedPath),
-            catch: (cause) =>
-              new HarnessStateIOError({
-                sessionId,
-                operation: "stage-archive",
-                path: archivePath,
-                message: `Could not stage saved ${manifest.harness} state for session ${sessionId}.`,
-                cause,
-              }),
-          }).pipe(
-            Effect.andThen(
-              sealant.exec(workspace, [
-                "sh",
-                "-c",
-                `tar -xzf "/workspace/repo/${tarName}" -C "$HOME"; ` +
-                  `code=$?; rm -f "/workspace/repo/${tarName}"; exit $code`,
-              ]),
-            ),
-            Effect.flatMap((result) =>
-              result.exitCode === 0
-                ? Effect.void
-                : Effect.fail(
-                    new HarnessStateCommandError({
+          // A live harness home already carries the state this archive would restore — and
+          // newer: the harness wrote it up to the moment the last workspace ended. Boot
+          // symlinks it back into `$HOME`; untarring an older settle-time capture over it
+          // would only roll files back. Restore from the archive only when no live state
+          // exists (legacy sessions, a cleared home).
+          const liveState = yield* hasLiveHarnessState(
+            harnessHomePathOf(project.storePath, session.id),
+            manifest.harness,
+          );
+          if (!liveState) {
+            const tarName = `.mend-harness-state-${session.id.slice(0, 8)}.tgz`;
+            const archivePath = path.join(stateDir, "harness-state.tar.gz");
+            const stagedPath = path.join(worktree, tarName);
+            const restore = Effect.tryPromise({
+              try: () => fs.copyFile(archivePath, stagedPath),
+              catch: (cause) =>
+                new HarnessStateIOError({
+                  sessionId,
+                  operation: "stage-archive",
+                  path: archivePath,
+                  message: `Could not stage saved ${manifest.harness} state for session ${sessionId}.`,
+                  cause,
+                }),
+            }).pipe(
+              Effect.andThen(
+                sealant.exec(workspace, [
+                  "sh",
+                  "-c",
+                  `tar -xzf "/workspace/repo/${tarName}" -C "$HOME"; ` +
+                    `code=$?; rm -f "/workspace/repo/${tarName}"; exit $code`,
+                ]),
+              ),
+              Effect.flatMap((result) =>
+                result.exitCode === 0
+                  ? Effect.void
+                  : Effect.fail(
+                      new HarnessStateCommandError({
+                        sessionId,
+                        harness: manifest.harness,
+                        operation: "restore-archive",
+                        exitCode: result.exitCode,
+                        stderr: result.stderr,
+                        message: `Could not restore saved ${manifest.harness} state for session ${sessionId}.`,
+                      }),
+                    ),
+              ),
+              // Belt: never leave the staging tarball in the worktree.
+              Effect.ensuring(
+                Effect.promise(() => fs.rm(stagedPath, { force: true })).pipe(Effect.ignore),
+              ),
+            );
+            if (manifest.harness === session.harness) {
+              yield* restore.pipe(
+                Effect.tapError((error) =>
+                  sessions
+                    .settle(sessionId, "failed", `resume failed: ${error.message}`)
+                    .pipe(Effect.andThen(sealant.stopWorkspace(workspace)), Effect.ignore),
+                ),
+              );
+            } else {
+              yield* restore.pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("session engine: original-state restore failed").pipe(
+                    Effect.annotateLogs({
                       sessionId,
                       harness: manifest.harness,
-                      operation: "restore-archive",
-                      exitCode: result.exitCode,
-                      stderr: result.stderr,
-                      message: `Could not restore saved ${manifest.harness} state for session ${sessionId}.`,
+                      error: String(error),
                     }),
                   ),
-            ),
-            // Belt: never leave the staging tarball in the worktree.
-            Effect.ensuring(
-              Effect.promise(() => fs.rm(stagedPath, { force: true })).pipe(Effect.ignore),
-            ),
-          );
-          if (manifest.harness === session.harness) {
-            yield* restore.pipe(
-              Effect.tapError((error) =>
-                sessions
-                  .settle(sessionId, "failed", `resume failed: ${error.message}`)
-                  .pipe(Effect.andThen(sealant.stopWorkspace(workspace)), Effect.ignore),
-              ),
-            );
-            if (protocolStart === null) {
-              shapedArgv = nativeResumeArgv(
-                session.harness,
-                manifest.providerSessionId,
-                shapedArgv,
+                ),
               );
             }
-          } else {
-            yield* restore.pipe(
-              Effect.catch((error) =>
-                Effect.logWarning("session engine: original-state restore failed").pipe(
-                  Effect.annotateLogs({
-                    sessionId,
-                    harness: manifest.harness,
-                    error: String(error),
-                  }),
-                ),
-              ),
-            );
+          }
+          if (manifest.harness === session.harness && protocolStart === null) {
+            shapedArgv = nativeResumeArgv(session.harness, manifest.providerSessionId, shapedArgv);
           }
         }
 
@@ -2504,6 +2650,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (provisioned.extraMounts.length > 0) {
           yield* sessions.setExtraMounts(sessionId, provisioned.extraMounts);
         }
+        // Make harness state durable from the first turn: whatever restore/import just laid
+        // into $HOME moves onto the mounted harness home, and the $HOME state dirs become
+        // symlinks into it (harness-state.ts). After the restore/import steps so their
+        // output migrates too; before the harness starts so nothing is written ephemerally.
+        // Best-effort: a failure costs durability, never the launch.
+        yield* sealant.exec(workspace, ["sh", "-c", relocateHarnessHomeScript()]).pipe(
+          Effect.flatMap((result) =>
+            result.exitCode === 0
+              ? Effect.void
+              : Effect.fail(new Error(`exit ${result.exitCode}: ${result.stderr}`)),
+          ),
+          Effect.catch((error) =>
+            Effect.logWarning("session engine: harness-home relocation failed").pipe(
+              Effect.annotateLogs({ sessionId, error: String(error) }),
+            ),
+          ),
+        );
         // State restore can rewrite $HOME, while a hot claim can freshen mend.toml after prewarm.
         // Rewrite the managed note after both paths so it reflects the claimed worktree now.
         yield* appendWorkspaceNote(

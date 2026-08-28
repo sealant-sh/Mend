@@ -95,6 +95,7 @@ import {
   Store,
   StoreConfig,
   DeploymentConfigLocal,
+  harnessHomePathOf,
   processStatePathOf,
 } from "@mend/store";
 import type {
@@ -3305,6 +3306,99 @@ describe("SessionEngine", () => {
         expect(error).toBeInstanceOf(HarnessStateNotFoundError);
         expect(error.message).toContain(String(session.id));
       }),
+    );
+  });
+
+  it("resumes a crashed session natively from its live harness home", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            ownerUserId: null,
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            base: null,
+          });
+          // A crashed agent process: it ran, its workspace died, no capture was harvested.
+          const processId = SessionProcessId.make(crypto.randomUUID());
+          world.processes.set(
+            processId,
+            new SessionProcess({
+              id: processId,
+              sessionId: session.id,
+              sealantWorkspaceId: SealantWorkspaceId.make("ws-crashed"),
+              sealantSessionId: "pty-crashed",
+              sealantRunId: SealantRunId.make("run-crashed"),
+              launchCorrelationId: null,
+              serviceId: null,
+              attemptOrdinal: null,
+              kind: "agent-pty",
+              harness: "codex",
+              providerSessionId: null,
+              label: "codex",
+              argv: ["codex"],
+              status: "exited",
+              exitCode: 137,
+              workspacePort: null,
+              protocol: "tcp",
+              hostPort: null,
+              createdAt: now(),
+              exitedAt: now(),
+              updatedAt: now(),
+            }),
+          );
+          // What the durable harness-home mount kept: the rollout, live on the store.
+          const rolloutId = crypto.randomUUID();
+          const rolloutDir = path.join(
+            harnessHomePathOf(project.storePath, session.id),
+            ".codex",
+            "sessions",
+            "2026",
+            "08",
+            "28",
+          );
+          fs.mkdirSync(rolloutDir, { recursive: true });
+          fs.writeFileSync(
+            path.join(rolloutDir, `rollout-2026-08-28T10-00-00-${rolloutId}.jsonl`),
+            `${JSON.stringify({
+              type: "response_item",
+              payload: {
+                type: "message",
+                role: "user",
+                content: [{ type: "text", text: "keep going" }],
+              },
+            })}\n`,
+          );
+          world.sessions.set(
+            session.id,
+            new Session({ ...session, status: "failed", settledAt: now(), updatedAt: now() }),
+          );
+
+          const resumed = yield* engine.resumeSession(session.id, null);
+          expect(resumed.status).toBe("running");
+          // The relaunch is a NATIVE resume addressed at the live rollout's own session id.
+          const liveAgent = [...world.processes.values()].find(
+            (process) => process.exitedAt === null,
+          );
+          expect(liveAgent?.argv.slice(0, 3)).toEqual(["codex", "resume", rolloutId]);
+          expect(liveAgent?.providerSessionId).toBe(rolloutId);
+          // The live state became a committed capture for the crashed process.
+          const manifest = JSON.parse(
+            fs.readFileSync(
+              path.join(
+                processStatePathOf(project.storePath, session.id, processId),
+                "manifest.json",
+              ),
+              "utf8",
+            ),
+          ) as { readonly providerSessionId: string | null };
+          expect(manifest.providerSessionId).toBe(rolloutId);
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
     );
   });
 
