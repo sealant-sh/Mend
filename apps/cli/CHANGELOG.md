@@ -1,5 +1,38 @@
 # @sealant/mend
 
+## 0.10.0
+
+### Minor Changes
+
+- 5930a45: `mend login` signs in through the browser instead of asking for a password. The CLI opens
+  an authorize request against the server, points the browser at `<server>/authorize?code=…`, and
+  polls until you press Authorize there. Approval mints a revocable device token, the same kind a
+  paired phone holds. It shows up under Settings → Devices and replaces the old expiring session
+  token, so the CLI no longer signs itself out when a browser session would have lapsed. A server
+  that is already configured (`--url`, `MEND_URL`, or the config file) is used without asking; only
+  a fresh machine with nothing set prompts for the URL, and Enter accepts the default. `--email` and
+  the terminal password prompt are gone. `mend logout` now revokes the device server-side before
+  forgetting the token locally.
+- 8e71837: `mend service run` reaches the Service in one step. On a local server nothing changes:
+  the command starts the Service and returns, and the bound endpoint already answers on this
+  machine. On a remote server (a VPS, a Kubernetes Pod) the CLI now keeps running and tunnels the
+  Service's port to `127.0.0.1` here — the same authenticated WebSocket `mend service connect` opens
+  — instead of printing a suggestion to run a second command. Ctrl-C closes the tunnel, never the
+  Service. `--no-connect` restores start-and-return. UDP Services are unchanged (no connection to
+  tunnel).
+
+  The server side of the tunnel is now authorized as well as authenticated: `/api/service-tunnel`
+  refuses callers who are not the Service's session owner with 403.
+
+- 00c683a: The dashboard is a drawn multi-pane workbench: projects and sessions panes side by side,
+  a session detail panel beneath them, and the harness picker as a panel in the detail slot — no
+  painted background, the terminal's own ground shows through, and chrome is near-mono with color
+  only where it states a fact. Async state moved to optimistic mutations: starting or resuming a
+  session puts a `starting` row in the list at the keystroke and leaves the keyboard free while the
+  workspace provisions, renames land immediately, and review comment triage never waits on a round
+  trip. The event stream is now parsed properly — heartbeats and per-record-line progress no longer
+  refetch the workbench, so an idle dashboard makes no requests.
+
 ## 0.9.0
 
 ### Minor Changes
