@@ -1,23 +1,40 @@
 import { CliRenderEvents, createCliRenderer, type ScrollBoxRenderable } from "@opentui/core";
 import { createRoot, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
-import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  QueryClient,
+  QueryClientProvider,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { reviewTargetForSession } from "./review-workflow.ts";
 import { ReviewScreen } from "./review.tsx";
-import { cwdFacts, HARNESS_COMMANDS, LIVE_STATUSES, matchProjectByCwd } from "./shared.ts";
+import {
+  cwdFacts,
+  HARNESS_COMMANDS,
+  isPendingId,
+  LIVE_STATUSES,
+  matchProjectByCwd,
+  pendingId,
+} from "./shared.ts";
 import { openUrl } from "./terminal.ts";
 import { AMBER, BG, COBALT, FAINT, GREEN, INK, MUTED, RED, RULE, WASH } from "./tui-theme.ts";
+import { createSseParser, eventFamilies, type InvalidateFamily } from "./workbench-events.ts";
 
 /**
  * The workbench dashboard (bare `mend`): oil-style navigation over the
  * machine's projects and sessions, rendered with @opentui/react. Server
  * state lives in one TanStack Query cache entry; the SSE stream (the same
- * one the web app uses) invalidates it from outside React, so there are no
- * data-fetching effects — components just read the query. It opens on the
- * cwd's project when one matches; `-`/`h` steps up to every project, enter
- * attaches or resumes, `v` reviews its change, `n` starts a session, and
- * `e` renames one.
+ * one the web app uses) is parsed outside React and each pointer event
+ * invalidates only the query families it can stale — heartbeats and
+ * per-record-line progress invalidate nothing. Writes are optimistic
+ * mutations: a rename, a new session, a resume all land in the cache
+ * immediately and the server's answer reconciles on settle, so the keyboard
+ * never waits on a round trip. It opens on the cwd's project when one
+ * matches; `-`/`h` steps up to every project, enter attaches or resumes,
+ * `v` reviews its change, `n` starts a session, and `e` renames one.
  *
  * This module is imported lazily and only where node:ffi exists (Node 26
  * with --experimental-ffi — main.ts gates and re-execs), so every plain
@@ -142,6 +159,49 @@ const fetchWorkbench = async (ctx: DashboardContext): Promise<Workbench> => {
     servicesBySession,
   };
 };
+
+// ─── optimistic cache surgery: pure Workbench → Workbench ───────────────────
+
+/** Apply `f` to every session row in every project detail. */
+const mapWorkbenchSessions = (
+  data: Workbench,
+  f: (session: SessionDto) => SessionDto,
+): Workbench => ({
+  ...data,
+  details: new Map(
+    [...data.details].map(([id, detail]) => [id, { ...detail, sessions: detail.sessions.map(f) }]),
+  ),
+});
+
+const mapProjectSessions = (
+  data: Workbench,
+  projectId: string,
+  f: (sessions: ReadonlyArray<SessionDto>) => ReadonlyArray<SessionDto>,
+): Workbench => {
+  const detail = data.details.get(projectId);
+  if (detail === undefined) return data;
+  const details = new Map(data.details);
+  details.set(projectId, { ...detail, sessions: f(detail.sessions) });
+  return { ...data, details };
+};
+
+const prependSession = (data: Workbench, projectId: string, session: SessionDto): Workbench =>
+  mapProjectSessions(data, projectId, (sessions) => [session, ...sessions]);
+
+const replaceSession = (
+  data: Workbench,
+  projectId: string,
+  oldId: string,
+  session: SessionDto,
+): Workbench =>
+  mapProjectSessions(data, projectId, (sessions) =>
+    sessions.map((candidate) => (candidate.id === oldId ? session : candidate)),
+  );
+
+const removeSession = (data: Workbench, projectId: string, sessionId: string): Workbench =>
+  mapProjectSessions(data, projectId, (sessions) =>
+    sessions.filter((candidate) => candidate.id !== sessionId),
+  );
 
 // ─── the three views and their list items ───────────────────────────────────
 
@@ -439,6 +499,9 @@ const StatusLine = ({
   );
 };
 
+const errorText = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
 // ─── the app ────────────────────────────────────────────────────────────────
 
 const CHROME_ROWS = 7; // margin + header + margin + 2 borders + status + footer
@@ -469,6 +532,9 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   } | null>(null);
   /** Set synchronously around attach/launch so keystrokes can't double-fire. */
   const lockRef = useRef(false);
+  /** Latest modal state for mutation callbacks — closures there go stale. */
+  const modalRef = useRef(false);
+  modalRef.current = editing !== null || reviewing !== null;
 
   const items = deriveItems(view, data);
   const foundIndex = selectedKey === null ? -1 : items.findIndex((i) => itemKey(i) === selectedKey);
@@ -493,16 +559,6 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     if (top < scroll.scrollTop) scroll.scrollTo(top);
     else if (top + rowH > scroll.scrollTop + viewH) scroll.scrollTo(top + rowH - viewH);
   }, [selectedIndex, rowH, terminalRows, editing]);
-
-  const beginBusy = (label: string): void => {
-    lockRef.current = true;
-    setBusy(label);
-    setBusyStarted(Date.now());
-  };
-  const endBusy = (): void => {
-    lockRef.current = false;
-    setBusy(null);
-  };
 
   const attachFlow = async (session: SessionDto): Promise<void> => {
     const short = session.id.slice(0, 8);
@@ -540,58 +596,155 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     refetch();
   };
 
-  const startSession = async (projectId: string, harness: string): Promise<void> => {
-    const argv = HARNESS_COMMANDS[harness];
-    if (argv === undefined) return;
-    setView({ kind: "sessions", projectId });
-    beginBusy(`provisioning ${harness} workspace — a first launch builds the harness image ·`);
-    try {
-      const session = await ctx.api<SessionDto>("POST", `/projects/${projectId}/sessions`, {
-        harness,
+  /** Converge on the server's truth once, after the LAST in-flight mutation. */
+  const settleRefetch = (): void => {
+    if (queryClient.isMutating() === 1) refetch();
+  };
+  /** The current cache entry, for surgical optimistic edits. */
+  const workbench = (): Workbench | undefined => queryClient.getQueryData<Workbench>(WORKBENCH_KEY);
+  const patchWorkbench = (f: (data: Workbench) => Workbench): void => {
+    const current = workbench();
+    if (current !== undefined) queryClient.setQueryData(WORKBENCH_KEY, f(current));
+  };
+  /** Attaching yanks the terminal; only do it unasked when nothing else is open. */
+  const attachIfIdle = async (session: SessionDto): Promise<void> => {
+    if (lockRef.current || modalRef.current) {
+      say(`session ready · ${session.id.slice(0, 8)} — enter attaches`);
+      return;
+    }
+    await attachFlow(session);
+  };
+
+  // A new session appears as a `starting` row the moment enter is pressed;
+  // the keyboard stays free while the workspace provisions, and the terminal
+  // attaches when the launch answers — unless something else has the screen.
+  const launchMutation = useMutation({
+    mutationFn: async (vars: {
+      readonly projectId: string;
+      readonly harness: string;
+      readonly pendingKey: string;
+    }) => {
+      const argv = HARNESS_COMMANDS[vars.harness];
+      if (argv === undefined) throw new Error(`unknown harness "${vars.harness}"`);
+      const session = await ctx.api<SessionDto>("POST", `/projects/${vars.projectId}/sessions`, {
+        harness: vars.harness,
         label: null,
         base: null,
       });
       await ctx.api<SessionDto>("POST", `/sessions/${session.id}/launch`, { argv });
-      endBusy();
-      await attachFlow(session);
-    } catch (error) {
-      endBusy();
-      say(error instanceof Error ? error.message : String(error));
-    }
-    refetch();
-  };
+      return session;
+    },
+    onMutate: async (vars) => {
+      await queryClient.cancelQueries({ queryKey: WORKBENCH_KEY });
+      patchWorkbench((current) =>
+        prependSession(current, vars.projectId, {
+          id: vars.pendingKey,
+          harness: vars.harness,
+          label: null,
+          branch: "provisioning…",
+          baseSha: "",
+          status: "starting",
+          summary: null,
+          createdAt: new Date().toISOString(),
+        }),
+      );
+      setSelectedKey(vars.pendingKey);
+      setBusy(`provisioning ${vars.harness} workspace — a first launch builds the harness image ·`);
+      setBusyStarted(Date.now());
+    },
+    onError: (error, vars) => {
+      patchWorkbench((current) => removeSession(current, vars.projectId, vars.pendingKey));
+      setBusy(null);
+      say(errorText(error));
+    },
+    onSuccess: async (session, vars) => {
+      patchWorkbench((current) =>
+        replaceSession(current, vars.projectId, vars.pendingKey, session),
+      );
+      setSelectedKey(session.id);
+      setBusy(null);
+      await attachIfIdle(session);
+    },
+    onSettled: settleRefetch,
+  });
 
-  const resumeSession = async (
-    projectId: string,
-    session: SessionDto,
-    harness: string | null,
-  ): Promise<void> => {
+  const resumeMutation = useMutation({
+    mutationFn: (vars: {
+      readonly projectId: string;
+      readonly session: SessionDto;
+      readonly harness: string | null;
+    }) =>
+      ctx.api<SessionDto>("POST", `/sessions/${vars.session.id}/resume`, {
+        harness: vars.harness,
+      }),
+    onMutate: async (vars) => {
+      await queryClient.cancelQueries({ queryKey: WORKBENCH_KEY });
+      patchWorkbench((current) =>
+        mapWorkbenchSessions(current, (session) =>
+          session.id === vars.session.id ? { ...session, status: "starting" } : session,
+        ),
+      );
+      setSelectedKey(vars.session.id);
+      setBusy(
+        `resuming ${vars.session.id.slice(0, 8)} — a fresh workspace restores the saved state ·`,
+      );
+      setBusyStarted(Date.now());
+    },
+    onError: (error) => {
+      setBusy(null);
+      say(errorText(error));
+      refetch();
+    },
+    onSuccess: async (resumed, vars) => {
+      patchWorkbench((current) =>
+        replaceSession(current, vars.projectId, vars.session.id, resumed),
+      );
+      setSelectedKey(resumed.id);
+      setBusy(null);
+      await attachIfIdle(resumed);
+    },
+    onSettled: settleRefetch,
+  });
+
+  // The label lands in the row before the server answers; an error puts the
+  // truth back on the next refetch.
+  const renameMutation = useMutation({
+    mutationFn: (vars: { readonly session: SessionDto; readonly label: string | null }) =>
+      ctx.api<SessionDto>("POST", `/sessions/${vars.session.id}/label`, { label: vars.label }),
+    onMutate: async (vars) => {
+      await queryClient.cancelQueries({ queryKey: WORKBENCH_KEY });
+      patchWorkbench((current) =>
+        mapWorkbenchSessions(current, (session) =>
+          session.id === vars.session.id ? { ...session, label: vars.label } : session,
+        ),
+      );
+      say(
+        vars.label === null
+          ? `label cleared · ${vars.session.id.slice(0, 8)}`
+          : `labeled · ${vars.label}`,
+      );
+    },
+    onError: (error) => {
+      say(errorText(error));
+      refetch();
+    },
+    onSettled: settleRefetch,
+  });
+
+  const startSession = (projectId: string, harness: string): void => {
     setView({ kind: "sessions", projectId });
-    setSelectedKey(session.id);
-    beginBusy(`resuming ${session.id.slice(0, 8)} — a fresh workspace restores the saved state ·`);
-    try {
-      const resumed = await ctx.api<SessionDto>("POST", `/sessions/${session.id}/resume`, {
-        harness,
-      });
-      endBusy();
-      await attachFlow(resumed);
-    } catch (error) {
-      endBusy();
-      say(error instanceof Error ? error.message : String(error));
-    }
-    refetch();
+    launchMutation.mutate({ projectId, harness, pendingKey: pendingId() });
   };
 
-  const submitRename = async (session: SessionDto, value: string): Promise<void> => {
+  const resumeSession = (projectId: string, session: SessionDto, harness: string | null): void => {
+    setView({ kind: "sessions", projectId });
+    resumeMutation.mutate({ projectId, session, harness });
+  };
+
+  const submitRename = (session: SessionDto, value: string): void => {
     setEditing(null);
     const label = value.trim() === "" ? null : value.trim();
-    try {
-      await ctx.api<SessionDto>("POST", `/sessions/${session.id}/label`, { label });
-      say(label === null ? `label cleared · ${session.id.slice(0, 8)}` : `labeled · ${label}`);
-    } catch (error) {
-      say(error instanceof Error ? error.message : String(error));
-    }
-    refetch();
+    renameMutation.mutate({ session, label });
   };
 
   const moveSelection = (delta: number): void => {
@@ -609,7 +762,9 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       return;
     }
     if (item.kind === "session" && view.kind === "sessions") {
-      if (LIVE_STATUSES.has(item.session.status)) {
+      if (isPendingId(item.session.id)) {
+        say("still provisioning — the row fills in when the workspace answers");
+      } else if (LIVE_STATUSES.has(item.session.status)) {
         void attachFlow(item.session);
       } else {
         setView({ kind: "picker", projectId: view.projectId, session: item.session });
@@ -619,9 +774,9 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     if (item.kind === "harness" && view.kind === "picker") {
       const { projectId, session } = view;
       if (session === null) {
-        if (item.harness !== null) void startSession(projectId, item.harness);
+        if (item.harness !== null) startSession(projectId, item.harness);
       } else {
-        void resumeSession(projectId, session, item.harness);
+        resumeSession(projectId, session, item.harness);
       }
     }
   };
@@ -668,14 +823,19 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         return;
       case "e": {
         const item = items[selectedIndex];
-        if (view.kind === "sessions" && item !== undefined && item.kind === "session") {
+        if (
+          view.kind === "sessions" &&
+          item !== undefined &&
+          item.kind === "session" &&
+          !isPendingId(item.session.id)
+        ) {
           setEditing(item.session);
         }
         return;
       }
       case "o": {
         const item = items[selectedIndex];
-        if (item !== undefined && item.kind === "session") {
+        if (item !== undefined && item.kind === "session" && !isPendingId(item.session.id)) {
           openUrl(`${ctx.config.url}/sessions/${item.session.id}`);
           say(`opened · ${ctx.config.url}/sessions/${item.session.id.slice(0, 8)}…`);
         }
@@ -684,6 +844,10 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       case "v": {
         const item = items[selectedIndex];
         if (view.kind !== "sessions" || item === undefined || item.kind !== "session") return;
+        if (isPendingId(item.session.id)) {
+          say("still provisioning — nothing to review yet");
+          return;
+        }
         const target = reviewTargetForSession(
           item.session,
           item.annotation,
@@ -879,7 +1043,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
             cursorColor={INK}
             flexGrow={1}
             onSubmit={(value: unknown) => {
-              if (typeof value === "string") void submitRename(editing, value);
+              if (typeof value === "string") submitRename(editing, value);
             }}
           />
         </box>
@@ -915,13 +1079,30 @@ export const runDashboard = async (ctx: DashboardContext): Promise<void> => {
     process.nextTick(() => renderer.destroy());
   };
 
-  // The SSE stream invalidates the cache from outside React — any traffic
-  // (heartbeats included) means state may have moved, so re-read it.
-  const scheduleInvalidate = (): void => {
-    if (eventTimer !== null) clearTimeout(eventTimer);
-    eventTimer = setTimeout(() => {
-      void queryClient.invalidateQueries();
-    }, 250);
+  // The SSE stream invalidates the cache from outside React. Frames are
+  // parsed and each pointer event stales only its query families — the
+  // 25-second heartbeat and per-record-line progress invalidate nothing, so
+  // an idle dashboard makes no requests and a busy session doesn't turn push
+  // into a refetch loop. The flush waits out in-flight mutations: their
+  // onSettled refetch converges on the same truth without a mid-write
+  // snapshot clobbering an optimistic row.
+  const pendingFamilies = new Set<InvalidateFamily>();
+  const flushInvalidations = (): void => {
+    eventTimer = null;
+    if (queryClient.isMutating() > 0) {
+      eventTimer = setTimeout(flushInvalidations, 250);
+      return;
+    }
+    const families = [...pendingFamilies];
+    pendingFamilies.clear();
+    for (const family of families) {
+      void queryClient.invalidateQueries({ queryKey: [family] });
+    }
+  };
+  const scheduleInvalidate = (families: ReadonlyArray<InvalidateFamily>): void => {
+    if (families.length === 0) return;
+    for (const family of families) pendingFamilies.add(family);
+    if (eventTimer === null) eventTimer = setTimeout(flushInvalidations, 250);
   };
   const watch = async (): Promise<void> => {
     while (!controller.signal.aborted) {
@@ -934,13 +1115,22 @@ export const runDashboard = async (ctx: DashboardContext): Promise<void> => {
         });
         if (!response.ok || response.body === null) throw new Error(String(response.status));
         const reader = response.body.getReader();
+        const parser = createSseParser();
+        const decoder = new TextDecoder();
         for (;;) {
-          const { done } = await reader.read();
+          const { done, value } = await reader.read();
           if (done) break;
-          scheduleInvalidate();
+          for (const payload of parser.push(decoder.decode(value, { stream: true }))) {
+            scheduleInvalidate(eventFamilies(payload));
+          }
         }
       } catch {
         if (controller.signal.aborted) return;
+      }
+      // A dropped stream may have swallowed events — re-read once on reconnect.
+      pendingFamilies.add("workbench").add("review");
+      if (eventTimer === null && !controller.signal.aborted) {
+        eventTimer = setTimeout(flushInvalidations, 250);
       }
       await new Promise((resolve) => setTimeout(resolve, 2000));
     }

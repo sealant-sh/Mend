@@ -8,7 +8,7 @@ import {
   type TextareaRenderable,
 } from "@opentui/core";
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import {
@@ -18,6 +18,7 @@ import {
   type ReviewFile,
 } from "./review-model.ts";
 import { commentRange, deliverReview } from "./review-workflow.ts";
+import { isPendingId, pendingId } from "./shared.ts";
 import { openUrl } from "./terminal.ts";
 import {
   ADD_WASH,
@@ -184,6 +185,8 @@ type Editor =
       readonly file: string | null;
       readonly line: number | null;
       readonly endLine: number | null;
+      /** A failed optimistic save reopens the editor with the text intact. */
+      readonly initialBody?: string;
     }
   | {
       readonly kind: "send";
@@ -542,7 +545,7 @@ const EditorPanel = ({
       <textarea
         ref={refValue}
         focused
-        initialValue={editor.kind === "send" ? editor.instruction : ""}
+        initialValue={editor.kind === "send" ? editor.instruction : (editor.initialBody ?? "")}
         placeholder={
           editor.kind === "send" ? "Review instruction…" : "What should change, and why?"
         }
@@ -658,6 +661,80 @@ export function ReviewScreen({
   const refresh = (): void => {
     void queryClient.invalidateQueries({ queryKey: REVIEW_KEY(changeId) });
   };
+  /** Converge on the server's truth once, after the LAST in-flight mutation. */
+  const settleRefresh = (): void => {
+    if (queryClient.isMutating() === 1) refresh();
+  };
+  const patchReview = (f: (current: ReviewData) => ReviewData): void => {
+    const current = queryClient.getQueryData<ReviewData>(REVIEW_KEY(changeId));
+    if (current !== undefined) queryClient.setQueryData(REVIEW_KEY(changeId), f(current));
+  };
+
+  // A state flip (accept, address, dismiss, reopen) lands in the list at the
+  // keystroke — triage never waits on a round trip. An error refetches the
+  // truth back; the settled refetch reconciles everything else.
+  const commentStateMutation = useMutation({
+    mutationFn: (vars: {
+      readonly commentId: string;
+      readonly state: "open" | "addressed" | "dismissed";
+    }) =>
+      ctx.api("POST", `/changes/${changeId}/comments/${vars.commentId}/state`, {
+        state: vars.state,
+      }),
+    onMutate: async (vars) => {
+      await queryClient.cancelQueries({ queryKey: REVIEW_KEY(changeId) });
+      patchReview((current) => ({
+        ...current,
+        comments: current.comments.map((comment) =>
+          comment.id === vars.commentId ? { ...comment, state: vars.state } : comment,
+        ),
+      }));
+    },
+    onError: (error) => {
+      setStatus(errorMessage(error));
+      refresh();
+    },
+    onSettled: settleRefresh,
+  });
+
+  // A new comment appears in the list the moment ctrl+enter lands and the
+  // editor closes; a failed save reopens the editor with the text intact.
+  const commentCreateMutation = useMutation({
+    mutationFn: (vars: {
+      readonly sliceId: string;
+      readonly body: string;
+      readonly target: unknown;
+      readonly optimistic: ReviewCommentDto;
+    }) =>
+      ctx.api("POST", `/changes/${changeId}/reviews/${vars.sliceId}/comments`, {
+        target: vars.target,
+        body: vars.body,
+      }),
+    onMutate: async (vars) => {
+      await queryClient.cancelQueries({ queryKey: REVIEW_KEY(changeId) });
+      patchReview((current) => ({
+        ...current,
+        comments: [vars.optimistic, ...current.comments],
+      }));
+      setEditor(null);
+      setStatus(vars.optimistic.file === null ? "Change comment added" : "Inline comment added");
+    },
+    onError: (error, vars) => {
+      patchReview((current) => ({
+        ...current,
+        comments: current.comments.filter((comment) => comment.id !== vars.optimistic.id),
+      }));
+      setEditor({
+        kind: "comment",
+        file: vars.optimistic.file,
+        line: vars.optimistic.line,
+        endLine: vars.optimistic.endLine,
+        initialBody: vars.body,
+      });
+      setStatus(errorMessage(error));
+    },
+    onSettled: settleRefresh,
+  });
 
   useEffect(() => {
     fileScrollRef.current?.scrollTo(Math.max(0, fileIndex * 2 - 2));
@@ -811,8 +888,11 @@ export function ReviewScreen({
 
   const openSendEditor = (): void => {
     if (data === undefined) return;
+    // A pending id is an optimistic row the server has not named yet — it
+    // cannot ride a follow-up until the settle refetch replaces it.
     const sendable = data.comments.filter(
-      (comment) => comment.state === "open" && comment.sentToSessionId === null,
+      (comment) =>
+        comment.state === "open" && comment.sentToSessionId === null && !isPendingId(comment.id),
     );
     if (sendable.length === 0) {
       setStatus("No unsent open comments — accept a draft or write a comment first");
@@ -833,62 +913,81 @@ export function ReviewScreen({
       setStatus("Write something before saving");
       return;
     }
+    if (data === undefined) {
+      setStatus("The pinned Review is not available.");
+      return;
+    }
+    if (editor.kind === "comment") {
+      const anchorFile = data.anchorFiles.find(
+        (file) => (file.newPath ?? file.oldPath) === editor.file,
+      );
+      const endLine = editor.endLine ?? editor.line;
+      const hunk =
+        editor.line === null || endLine === null
+          ? null
+          : (anchorFile?.hunks.find(
+              (candidate) =>
+                candidate.newLines > 0 &&
+                editor.line !== null &&
+                editor.line >= candidate.newStart &&
+                endLine <= candidate.newStart + candidate.newLines - 1,
+            ) ?? null);
+      if (editor.file !== null && (anchorFile === undefined || hunk === null)) {
+        setStatus("The selected line is outside the pinned Review anchor.");
+        return;
+      }
+      commentCreateMutation.mutate({
+        sliceId: data.sliceId,
+        body: value,
+        target:
+          editor.file === null
+            ? {
+                oldPath: null,
+                newPath: null,
+                side: null,
+                startLine: null,
+                endLine: null,
+                hunkContextHash: null,
+              }
+            : {
+                oldPath: anchorFile?.oldPath ?? null,
+                newPath: anchorFile?.newPath ?? null,
+                side: "new",
+                startLine: editor.line,
+                endLine,
+                hunkContextHash: hunk?.contextHash ?? null,
+              },
+        optimistic: {
+          id: pendingId(),
+          file: editor.file,
+          line: editor.line,
+          endLine: editor.endLine,
+          authorKind: "reviewer",
+          authorName: "You",
+          body: value,
+          suggestion: null,
+          state: "open",
+          evidence: [],
+          sentToSessionId: null,
+          createdAt: new Date().toISOString(),
+        },
+      });
+      return;
+    }
+    // Delivery stays pessimistic: it starts a run against the session, and
+    // pretending it happened before the server agreed would fake a fact.
     setWorking(true);
     try {
-      if (editor.kind === "comment") {
-        if (data === undefined) throw new Error("The pinned Review is not available.");
-        const anchorFile = data.anchorFiles.find(
-          (file) => (file.newPath ?? file.oldPath) === editor.file,
-        );
-        const endLine = editor.endLine ?? editor.line;
-        const hunk =
-          editor.line === null || endLine === null
-            ? null
-            : (anchorFile?.hunks.find(
-                (candidate) =>
-                  candidate.newLines > 0 &&
-                  editor.line !== null &&
-                  editor.line >= candidate.newStart &&
-                  endLine <= candidate.newStart + candidate.newLines - 1,
-              ) ?? null);
-        if (editor.file !== null && (anchorFile === undefined || hunk === null)) {
-          throw new Error("The selected line is outside the pinned Review anchor.");
-        }
-        await ctx.api("POST", `/changes/${changeId}/reviews/${data.sliceId}/comments`, {
-          target:
-            editor.file === null
-              ? {
-                  oldPath: null,
-                  newPath: null,
-                  side: null,
-                  startLine: null,
-                  endLine: null,
-                  hunkContextHash: null,
-                }
-              : {
-                  oldPath: anchorFile?.oldPath ?? null,
-                  newPath: anchorFile?.newPath ?? null,
-                  side: "new",
-                  startLine: editor.line,
-                  endLine,
-                  hunkContextHash: hunk?.contextHash ?? null,
-                },
-          body: value,
-        });
-        setStatus(editor.file === null ? "Change comment saved" : "Inline comment saved");
-      } else {
-        if (data === undefined) throw new Error("The pinned Review is not available.");
-        await deliverReview(ctx.api, session.id, {
-          reviewSliceId: data.sliceId,
-          checkpointAId: data.checkpointAId,
-          checkpointBId: data.checkpointBId,
-          diffDigest: data.diffDigest,
-          commentIds: editor.commentIds,
-          instruction: value,
-          idempotencyKey: editor.idempotencyKey,
-        });
-        setStatus("Follow-up delivery requested · retry keeps the same run");
-      }
+      await deliverReview(ctx.api, session.id, {
+        reviewSliceId: data.sliceId,
+        checkpointAId: data.checkpointAId,
+        checkpointBId: data.checkpointBId,
+        diffDigest: data.diffDigest,
+        commentIds: editor.commentIds,
+        instruction: value,
+        idempotencyKey: editor.idempotencyKey,
+      });
+      setStatus("Follow-up delivery requested · retry keeps the same run");
       setEditor(null);
       refresh();
     } catch (error) {
@@ -900,9 +999,12 @@ export function ReviewScreen({
 
   const updateComment = (state: "open" | "addressed" | "dismissed"): void => {
     if (selectedComment === null) return;
-    void runAction(`${state} ${anchorOf(selectedComment)}`, () =>
-      ctx.api("POST", `/changes/${changeId}/comments/${selectedComment.id}/state`, { state }),
-    );
+    if (isPendingId(selectedComment.id)) {
+      setStatus("That comment is still saving — one moment");
+      return;
+    }
+    setStatus(`${state} · ${anchorOf(selectedComment)}`);
+    commentStateMutation.mutate({ commentId: selectedComment.id, state });
   };
 
   const deliverAndRelaunch = (): void => {

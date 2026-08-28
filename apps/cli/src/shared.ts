@@ -25,6 +25,15 @@ export const CONTINUE_COMMANDS: Record<string, (instruction: string) => Readonly
 /** Mirror of @mend/domain/workbench harness-launch.ts — the CLI ships dependency-free. */
 export const EFFORT_LEVELS: ReadonlyArray<string> = ["low", "medium", "high", "xhigh", "max"];
 
+/**
+ * Ids of optimistic cache rows the server has not named yet — a session still
+ * provisioning, a review comment still saving. Anything that would send such
+ * an id to the server checks here first and waits instead.
+ */
+export const PENDING_ID_PREFIX = "pending:";
+export const pendingId = (): string => `${PENDING_ID_PREFIX}${crypto.randomUUID()}`;
+export const isPendingId = (id: string): boolean => id.startsWith(PENDING_ID_PREFIX);
+
 /** A parsed `mend <harness> …` invocation; `error` set means "print and exit". */
 export interface LaunchArgs {
   readonly project: string | null;
