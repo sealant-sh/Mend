@@ -83,12 +83,13 @@
       },
       {
         "command": "mend.adoptProject",
-        "title": "Mend: Adopt a project…"
+        "title": "Mend: Adopt a project…",
+        "icon": "$(cloud-download)"
       },
       {
         "command": "mend.openWorktree",
-        "title": "Mend: Open worktree",
-        "icon": "$(folder-opened)"
+        "title": "Mend: Open in VS Code",
+        "icon": "$(vm)"
       },
       {
         "command": "mend.openInMend",
@@ -105,11 +106,13 @@
       },
       {
         "command": "mend.stopSession",
-        "title": "Mend: Stop session"
+        "title": "Mend: Stop session",
+        "icon": "$(debug-stop)"
       },
       {
         "command": "mend.newSession",
-        "title": "Mend: New session…"
+        "title": "Mend: New Session…",
+        "icon": "$(add)"
       },
       {
         "command": "mend.newManualWorktree",
@@ -122,6 +125,11 @@
     ],
     "menus": {
       "view/title": [
+        {
+          "command": "mend.newSession",
+          "when": "view == mend.sessions",
+          "group": "navigation@1"
+        },
         {
           "command": "mend.refresh",
           "when": "view == mend.sessions",
@@ -139,6 +147,11 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "mend.newSession",
+          "when": "view == mend.sessions && viewItem == mend.project",
+          "group": "inline@1"
+        },
         {
           "command": "mend.openWorktree",
           "when": "view == mend.sessions && viewItem =~ /^mend\\.session/",
