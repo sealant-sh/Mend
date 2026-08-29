@@ -9,6 +9,10 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
 ## 2026-08-28 · 0.24.1 · Workspace SSH is invisible to the SDK: no gateway discovery, no key registration
 
+**Plan:** `docs/WORKSPACE-SSH.md` (2026-08-29) — phase 1 closes this entry (discovery + self-service
+keys + SDK surface), phase 2 replaces registration with short-lived SSH certificates, phase 3 makes
+gateway attachments visible as leases.
+
 - **Needed:** Mend's VS Code extension opens a session's workspace over the Sealant workspace SSH
   gateway (`ws-<workspaceId>@<gateway>`), which needs three things Mend cannot obtain through the
   SDK: the gateway address (host/port/username prefix — deployment config the platform already
