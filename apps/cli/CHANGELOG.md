@@ -1,5 +1,29 @@
 # @sealant/mend
 
+## 0.11.0
+
+### Minor Changes
+
+- 9a6567a: Harness state is durable by construction: every session mounts a store-backed harness
+  home into its workspace, and boot symlinks each harness's `$HOME` state dirs (`.claude`, `.codex`,
+  `.local/share/opencode`) onto it. A workspace that dies without settling no longer loses the
+  conversation — relaunch commits a capture from the live harness home and resumes natively instead
+  of failing with "Saved harness state is missing". The mounted home is also the server-side seam
+  for upcoming skills management.
+- 19da134: Agents run by hand — in a mend shell, an SSH session, an editor terminal — become
+  first-class: their transcript writes through the mounted harness home are observed server-side and
+  surfaced as `agent-external` process rows ("claude (observed)"). The session reads as running, the
+  workspace lease holds while the agent works, and the conversation is harvested and natively
+  resumable like any engine-launched agent's. The row ends when the writes go quiet (five minutes) —
+  but quiet is an inference, not an exit: the workspace is never reaped on it, and the next write
+  revives the session with a fresh observed row. Mend observes, it does not own the process.
+- 6487570: Workspace SSH sets itself up. `mend ssh` shows the observed state (gateway, registered
+  keys, ssh config); `mend ssh setup` makes a machine ready once — it prefers the running
+  ssh-agent's key so no new key material is created, registers it under the signed-in user, and
+  writes one managed `Host mend-ws` block. The VS Code extension discovers the gateway through the
+  server and offers the same setup as a single dialog on first open; the manual gateway settings
+  become overrides.
+
 ## 0.10.1
 
 ### Patch Changes
