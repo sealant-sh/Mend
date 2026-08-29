@@ -7,6 +7,24 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-08-28 · 0.24.1 · Workspace SSH is invisible to the SDK: no gateway discovery, no key registration
+
+- **Needed:** Mend's VS Code extension opens a session's workspace over the Sealant workspace SSH
+  gateway (`ws-<workspaceId>@<gateway>`), which needs three things Mend cannot obtain through the
+  SDK: the gateway address (host/port/username prefix — deployment config the platform already
+  holds), a way to register the user's SSH public key (so the gateway can resolve the principal),
+  and ideally the workspace's SSH reachability so the UI can degrade honestly. Separately: an SSH
+  attachment (VS Code, plain `ssh`) holds no lease Mend can see, so a workspace with an editor
+  attached but no Mend process can be reaped underneath it.
+- **Today:** the core API has `sshKeys` (create/list/resolve-principal) and
+  `GET /v1/workspaces/:id/ssh-target` (gateway-token-guarded), but none of it reaches
+  `@sealant/sdk`. Mend ships a manual `mend.workspaceSshGateway` extension setting and points users
+  at Sealant for key registration.
+- **Suggested:** expose on the SDK a read of the deployment's workspace SSH entry point (address +
+  username prefix, nothing secret), an `sshKeys.create`/`list` surface so Mend can offer "register
+  this machine's key", and surface live SSH attachments (count or last-activity) on the workspace so
+  consumers can treat an attached editor as a lease.
+
 ## 2026-08-28 · 0.24.1 · Runs stuck `running` after workspace pod death; worker retry storm starves new runs
 
 - **Needed:** when a workspace's pod dies (observed: OOMKilled at the memory limit), the run backing

@@ -26,6 +26,8 @@ export interface Session {
   readonly worktree: string;
   readonly branch: string;
   readonly status: SessionStatus;
+  /** The session's current workspace — the SSH-reachable environment its worktree is mounted in. */
+  readonly sealantWorkspaceId: string | null;
   readonly createdAt: string;
 }
 

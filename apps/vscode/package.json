@@ -179,6 +179,16 @@
           "type": "string",
           "default": "",
           "description": "Existing ~/.ssh/config host alias used to open worktrees on a remote Mend machine."
+        },
+        "mend.workspaceSshGateway": {
+          "type": "string",
+          "default": "",
+          "description": "Sealant workspace SSH gateway, as host:port or an ~/.ssh/config alias (e.g. 10.0.0.214:2222). When set, opening a session opens its WORKSPACE over SSH: same worktree files, but the integrated terminal runs inside the workspace, where Mend observes agents you run by hand. Your SSH public key must be registered with Sealant."
+        },
+        "mend.workspaceSshUsernamePrefix": {
+          "type": "string",
+          "default": "ws",
+          "description": "Username prefix the workspace SSH gateway expects; the SSH username is <prefix>-<workspace id>."
         }
       }
     }
