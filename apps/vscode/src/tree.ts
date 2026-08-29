@@ -159,7 +159,7 @@ export class MendTreeProvider implements vscode.TreeDataProvider<MendNode> {
           : "mend.session.settled";
         item.command = {
           command: "mend.openWorktree",
-          title: "Open worktree",
+          title: "Open in VS Code",
           arguments: [element],
         };
         return item;

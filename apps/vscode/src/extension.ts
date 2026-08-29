@@ -166,6 +166,10 @@ interface ActionPick extends vscode.QuickPickItem {
   readonly action: "new-session" | "new-worktree" | "open-mend";
 }
 
+interface SessionKindPick extends vscode.QuickPickItem {
+  readonly sessionKind: "workbench" | "claude" | "codex" | "advanced";
+}
+
 interface HarnessPick extends vscode.QuickPickItem {
   readonly id: "claude" | "codex";
 }
@@ -338,9 +342,131 @@ class MendCommands {
     }
   }
 
+  /**
+   * The core loop's front door: one chooser, then at most one question, then VS Code opens
+   * inside the new session's workspace. The editor-native flavor comes first — a workbench
+   * (fresh worktree, shell-held workspace, you run the agent yourself and Mend observes it).
+   * The six-question flow survives only behind "Agent with options…".
+   */
   async newSession(argument?: unknown): Promise<void> {
     const project = await this.pickProject(argument);
     if (project === null) return;
+    const kind = await vscode.window.showQuickPick<SessionKindPick>(
+      [
+        {
+          label: "$(terminal) Workbench",
+          detail:
+            "A fresh worktree, open in VS Code. Run claude or codex yourself in the terminal — Mend observes and records it.",
+          sessionKind: "workbench",
+        },
+        {
+          label: "$(sparkle) Claude agent",
+          detail: "Mend starts Claude on your prompt; the workspace opens in VS Code alongside.",
+          sessionKind: "claude",
+        },
+        {
+          label: "$(sparkle) Codex agent",
+          detail: "Mend starts Codex on your prompt; the workspace opens in VS Code alongside.",
+          sessionKind: "codex",
+        },
+        {
+          label: "$(settings-gear) Agent with options…",
+          detail: "Choose harness, model, thinking, permissions, and base branch.",
+          sessionKind: "advanced",
+        },
+      ],
+      { title: `New session · ${project.name}`, ignoreFocusOut: true },
+    );
+    if (kind === undefined) return;
+    if (kind.sessionKind === "workbench") return this.startWorkbench(project);
+    if (kind.sessionKind === "advanced") return this.newSessionAdvanced(project);
+    return this.startAgent(project, kind.sessionKind);
+  }
+
+  /** A fresh worktree with a shell holding the workspace — VS Code opens straight into it. */
+  private async startWorkbench(project: Project): Promise<void> {
+    try {
+      const session = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `Preparing workbench · ${project.name}…`,
+        },
+        async () => {
+          const created = await this.createSessionSafely(project, "claude");
+          await this.client.resumeSession(created.id, "shell");
+          return created;
+        },
+      );
+      this.tree.refresh();
+      await this.scope.refresh();
+      await this.openWorktree(session.id);
+    } catch (cause) {
+      void vscode.window.showErrorMessage(errorMessage(cause));
+    }
+  }
+
+  /** Launch the harness on a prompt with defaults, then open the workspace in VS Code. */
+  private async startAgent(project: Project, harness: "claude" | "codex"): Promise<void> {
+    const prompt = await vscode.window.showInputBox({
+      title: `New ${harness} session · ${project.name}`,
+      prompt: "What should the agent do? Empty opens the harness without a prompt.",
+      ignoreFocusOut: true,
+    });
+    if (prompt === undefined) return;
+    if (prompt.trim().startsWith("-")) {
+      void vscode.window.showErrorMessage(
+        "A prompt cannot start with '-'. The harness would read it as a flag.",
+      );
+      return;
+    }
+    try {
+      const session = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Starting ${harness}…` },
+        async () => {
+          const created = await this.createSessionSafely(project, harness);
+          await this.client.launchSession(
+            created.id,
+            prompt.trim() === "" ? {} : { prompt: prompt.trim() },
+          );
+          return created;
+        },
+      );
+      this.tree.refresh();
+      await this.scope.refresh();
+      await this.openWorktree(session.id);
+    } catch (cause) {
+      void vscode.window.showErrorMessage(errorMessage(cause));
+    }
+  }
+
+  /** The base for quick flows — the open window's branch when it IS the project; else the default. */
+  private async quietBase(project: Project): Promise<string | null> {
+    const branch =
+      this.scope.currentProject()?.id === project.id
+        ? await currentBranch(this.scope.currentFolder() ?? undefined)
+        : null;
+    return branch;
+  }
+
+  /**
+   * Create with the quietly inferred base; when the store does not know that ref (a local
+   * branch never pushed), fall back to the project default instead of failing the quick path.
+   */
+  private async createSessionSafely(project: Project, harness: string): Promise<Session> {
+    const base = await this.quietBase(project);
+    if (base === null) return this.client.createSession(project.id, harness, null, null);
+    try {
+      return await this.client.createSession(project.id, harness, null, base);
+    } catch {
+      void vscode.window.setStatusBarMessage(
+        `Mend: base ${base} is not in the project store — starting from the default branch`,
+        5_000,
+      );
+      return this.client.createSession(project.id, harness, null, null);
+    }
+  }
+
+  private async newSessionAdvanced(project: Project): Promise<void> {
     const prompt = await vscode.window.showInputBox({
       title: `New session · ${project.name}`,
       prompt: "What should the session do? Leave empty to open the harness without a prompt.",
@@ -435,13 +561,7 @@ class MendCommands {
       );
       this.tree.refresh();
       await this.scope.refresh();
-      const action = await vscode.window.showInformationMessage(
-        `Started ${harness.description} in ${project.name}.`,
-        "Open worktree",
-      );
-      if (action === "Open worktree") {
-        await this.openWorktree({ kind: "session", project, session } satisfies SessionNode);
-      }
+      await this.openWorktree({ kind: "session", project, session } satisfies SessionNode);
     } catch (cause) {
       void vscode.window.showErrorMessage(errorMessage(cause));
     }
@@ -785,6 +905,15 @@ class MendCommands {
   }
 
   private async openNamedWorkspace(location: SessionLocation, folder: vscode.Uri): Promise<void> {
+    // A remote folder opens DIRECTLY: `vscode.openFolder` on the vscode-remote URI is what
+    // reliably attaches Remote-SSH. The .code-workspace wrapper (kept for local opens, where
+    // it names the window) carries a `remoteAuthority` field VS Code does not always honor —
+    // the failure mode is a LOCAL window pointing at a remote URI: an empty-looking folder
+    // and a terminal on the wrong machine.
+    if (folder.scheme === "vscode-remote") {
+      await vscode.commands.executeCommand("vscode.openFolder", folder, { forceNewWindow: true });
+      return;
+    }
     await vscode.workspace.fs.createDirectory(this.context.globalStorageUri);
     const title = `${location.project.name} › ${displaySession(location.session)}`;
     const file = vscode.Uri.joinPath(
@@ -792,7 +921,6 @@ class MendCommands {
       `${safeFileName(location.project.name)}-${location.session.id.slice(0, 12)}.code-workspace`,
     );
     const document = {
-      remoteAuthority: folder.scheme === "vscode-remote" ? folder.authority : undefined,
       folders: [{ uri: folder.toString(true) }],
       settings: { "window.title": title },
     };

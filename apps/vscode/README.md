@@ -2,6 +2,11 @@
 
 Use VS Code as a quiet front door to Mend projects and coding-agent sessions.
 
+The core loop: click **+** in the Mend view → pick **Workbench** (a fresh worktree that opens in VS
+Code — run `claude` or `codex` yourself in the terminal, Mend observes and records it) or a
+**Claude/Codex agent** on a prompt. Either way a window opens inside the session's workspace. Click
+any existing session to open it the same way.
+
 - Browse projects and sessions from the Mend Activity Bar view.
 - Open a session's workspace over SSH — or its worktree locally / on the Mend machine.
 - Start Claude or Codex sessions without building harness arguments in the extension.

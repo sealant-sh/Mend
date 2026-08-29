@@ -3317,7 +3317,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (session.settledAt !== null) return false;
         const rows = yield* processes.listForSession(session.id);
         if (rows.some(isLiveAgentProcess)) return true;
-        if (session.status === "starting") return true;
+        // "starting" is a launch in flight only when something was actually launched. A
+        // provisioned-but-never-launched session carries the same status (the schema default)
+        // with nothing behind it — refusing that would dead-end every provision-then-resume
+        // flow (the editor's workbench: create → shell resume → open).
+        if (session.status === "starting") {
+          return session.sealantWorkspaceId !== null || session.sealantRunId !== null;
+        }
         if (session.status === "running" || session.status === "waiting") {
           const activeRun = yield* sessionRuns.activeForSession(session.id);
           return (
