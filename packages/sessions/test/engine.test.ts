@@ -2821,6 +2821,32 @@ describe("SessionEngine", () => {
     );
   });
 
+  it("resumes a provisioned-but-never-launched session as a workbench shell", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          // The editor's workbench flow: create only — no launch — then shell-resume.
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            ownerUserId: null,
+            base: null,
+          });
+          expect(session.status).toBe("starting");
+
+          const resumed = yield* engine.resumeSession(session.id, "shell");
+          expect(resumed.status).toBe("running");
+          const live = [...world.processes.values()].filter((process) => process.exitedAt === null);
+          expect(live.map((process) => process.argv)).toEqual([["bash"]]);
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
   it("resumes a settled session with shell — no saved state required", async () => {
     const created: CreateOptions[] = [];
     await withEngine(
