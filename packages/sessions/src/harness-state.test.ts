@@ -146,6 +146,10 @@ describe("harness home", () => {
     }
     // -n: on a collision the mounted (live, newer) copy wins over a restored one.
     expect(script).toContain("cp -an");
+    // The mode keeper: harnesses that tighten their state to 0700 (codex) would blind the
+    // store-side observer; a detached root loop re-opens read bits.
+    expect(script).toContain("chmod -R go+rX");
+    expect(script).toContain(".mode-keeper.pid");
   });
 
   it("reads live state presence from the harness home, absence as false", async () => {

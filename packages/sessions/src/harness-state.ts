@@ -251,7 +251,19 @@ export const relocateHarnessHomeScript = (mountPath: string = HARNESS_HOME_MOUNT
       `cp -an "$HOME/${dir}/." "${mountPath}/${dir}/" 2>/dev/null; rm -rf "$HOME/${dir}"; fi; ` +
       `[ -L "$HOME/${dir}" ] || ln -s "${mountPath}/${dir}" "$HOME/${dir}"`,
   );
-  return perDir.join("; ");
+  // The mode keeper: workspace processes run as root and some harnesses tighten their state to
+  // 0700/0600 (codex does), which blinds the store-side reader (the observer, crash harvest —
+  // uid 1000; NFS checks modes server-side, so only opening the modes helps). A detached root
+  // loop inside the workspace re-opens read bits every 15s. The pidfile keeps relaunches from
+  // stacking keepers. Interim by design: the structural fix is a single uid story for
+  // workspace-written store files (PLATFORM-FEEDBACK.md 2026-08-29).
+  const keeper =
+    `if ! kill -0 "$(cat "${mountPath}/.mode-keeper.pid" 2>/dev/null)" 2>/dev/null; then ` +
+    `setsid sh -c 'echo $$ > "${mountPath}/.mode-keeper.pid"; ` +
+    `while sleep 15; do chmod -R go+rX "${mountPath}" 2>/dev/null || exit 0; done' ` +
+    `>/dev/null 2>&1 & fi; ` +
+    `chmod -R go+rX "${mountPath}" 2>/dev/null || true`;
+  return [...perDir, keeper].join("; ");
 };
 
 /**

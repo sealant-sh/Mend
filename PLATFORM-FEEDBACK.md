@@ -7,6 +7,24 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-08-29 · 0.25.2 · One uid story for workspace-written store files
+
+- **Needed:** Mend's engine reads workspace-written files server-side — the external-agent observer
+  and the crash harvest read the mounted harness home as uid 1000. Workspace processes run as ROOT,
+  and harnesses that tighten their own state (codex chmods `~/.codex` to 0700 and its files to 0600)
+  make those files unreadable to the engine: NFS checks modes server-side, so no capability helps
+  and only uid 0 passes — which PSS `restricted` on the control-plane namespace rightly forbids.
+  Observed live: a codex conversation running in a workspace was invisible to the observer until the
+  modes were opened by hand.
+- **Today:** Mend ships a workspace-side countermeasure — the relocate boot script starts a detached
+  root "mode keeper" loop that re-opens `go+rX` on the harness home every 15s, and the observer
+  warns (once per session+harness) when a harness home is unreadable instead of going silently
+  blind.
+- **Suggested:** a single uid story at the platform layer, either: run workspace processes as a
+  fixed non-root uid matching the store consumers (1000), or export the store share with
+  `all_squash`+`anonuid` so every writer maps to one owner. Either retires the chmod loop and makes
+  crash harvests of tightened state dirs reliable.
+
 ## ✅ 2026-08-28 · 0.24.1 · Workspace SSH is invisible to the SDK: no gateway discovery, no key registration
 
 **Shipped in 0.25.0** ([sealant#214](https://github.com/sealant-sh/sealant/pull/214)) —

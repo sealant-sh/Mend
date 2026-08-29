@@ -1,3 +1,4 @@
+import { constants as fsConstants } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
@@ -1866,6 +1867,44 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /** Writes older than the engine's own agent exit are its tail, not external work. */
       const EXTERNAL_AGENT_EXIT_SKEW_MS = 2_000;
 
+      /**
+       * Blindness is worth a warning, once per session+harness: a harness home the engine
+       * cannot read (a root-owned 0700 dir written by the workspace — codex does this) makes
+       * every external agent in it invisible, and the observer would otherwise stay silent
+       * about it. The mode keeper in the relocate script is the countermeasure; this is the
+       * alarm for when it is not enough.
+       */
+      const observerBlindnessWarned = new Set<string>();
+      const warnIfHarnessHomeUnreadable = (
+        harnessHome: string,
+        harness: string,
+        sessionId: SessionId,
+      ) =>
+        Effect.gen(function* () {
+          const key = `${sessionId}:${harness}`;
+          if (observerBlindnessWarned.has(key)) return;
+          const blocked = yield* Effect.promise(async () => {
+            for (const dir of HARNESS_STATE[harness]?.homeDirs ?? []) {
+              const target = path.join(harnessHome, dir);
+              try {
+                await fs.access(target, fsConstants.R_OK | fsConstants.X_OK);
+              } catch (cause) {
+                const code =
+                  typeof cause === "object" && cause !== null && "code" in cause
+                    ? cause.code
+                    : null;
+                if (code === "EACCES" || code === "EPERM") return target;
+              }
+            }
+            return null;
+          });
+          if (blocked === null) return;
+          observerBlindnessWarned.add(key);
+          yield* Effect.logWarning(
+            "session engine: harness home unreadable — external agents in it are invisible",
+          ).pipe(Effect.annotateLogs({ sessionId, harness, path: blocked }));
+        });
+
       const observeSessionExternalAgents = Effect.fn("SessionEngine.observeSessionExternalAgents")(
         function* (sessionId: SessionId) {
           const session = yield* sessions.byId(sessionId);
@@ -1921,7 +1960,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               }
               continue;
             }
-            if (engineAgentLive || transcript === null || !fresh) continue;
+            if (engineAgentLive) continue;
+            if (transcript === null) {
+              yield* warnIfHarnessHomeUnreadable(home, harness, sessionId);
+              continue;
+            }
             if (transcript.mtimeMs <= lastEngineExitMs + EXTERNAL_AGENT_EXIT_SKEW_MS) continue;
             // A settled session revives only on writes that POSTDATE the settle: its last
             // agent's tail writes stay fresh for a while, and a workspace stopped at settle
@@ -1932,7 +1975,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ) {
               continue;
             }
-            yield* processes.create({
+            // A conversation some past row already carries needs no new row while quiet —
+            // late observation is for work mend never saw, not a re-run of history.
+            const alreadyObserved =
+              transcript.providerSessionId !== null &&
+              rows.some((row) => row.providerSessionId === transcript.providerSessionId);
+            if (!fresh && alreadyObserved) continue;
+            const created = yield* processes.create({
               sessionId,
               sealantWorkspaceId: workspaceId,
               sealantSessionId: null,
@@ -1945,6 +1994,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               status: "running",
             });
             yield* reconcileSession(sessionId, { sweep: false });
+            if (!fresh) {
+              // LATE observation: the conversation happened and went quiet before mend could
+              // see it (an unreadable window, a mend restart). It still becomes part of the
+              // record — the row is observed and immediately ends, and the end-path harvest
+              // captures the conversation.
+              const recorded = yield* endAgentProcess(created, {
+                how: "exited",
+                exitCode: null,
+                outcome: "completed",
+                summary: null,
+              });
+              if (recorded) yield* finishAgentProcess(created, "turn-boundary", false);
+            }
           }
         },
       );
