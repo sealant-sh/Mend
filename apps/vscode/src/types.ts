@@ -64,3 +64,17 @@ export interface SessionLocation {
   readonly session: Session;
   readonly worktreePath: string;
 }
+
+/** GET /workspace-ssh — the gateway plus the signed-in user's registered keys. */
+export interface WorkspaceSshView {
+  readonly gateway: {
+    readonly host: string;
+    readonly port: number;
+    readonly usernamePrefix: string;
+  } | null;
+  readonly keys: ReadonlyArray<{
+    readonly sshKeyId: string;
+    readonly name: string;
+    readonly fingerprint: string;
+  }>;
+}

@@ -14,12 +14,13 @@ import { projectsGroup, gitKeysGroup, referencesGroup, projectMountsGroup } from
 import { issuesGroup, briefsGroup, runsGroup } from "./queue.ts";
 import { sessionsGroup } from "./sessions.ts";
 import { settingsGroup, dotfilesGroup } from "./settings.ts";
-import { healthGroup, machineGroup, sealantGroup } from "./system.ts";
+import { healthGroup, machineGroup, sealantGroup, workspaceSshGroup } from "./system.ts";
 
 export const MendApi = HttpApi.make("mend")
   .add(healthGroup)
   .add(machineGroup)
   .add(sealantGroup)
+  .add(workspaceSshGroup)
   .add(accountsGroup)
   .add(settingsGroup)
   .add(dotfilesGroup)

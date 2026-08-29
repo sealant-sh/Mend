@@ -13,17 +13,21 @@ extension.
 
 ## Opening the workspace (recommended)
 
-Set `mend.workspaceSshGateway` to the Sealant workspace SSH gateway (`host:port` or an
-`~/.ssh/config` alias). Opening a session then opens its workspace: the same worktree files, but the
-integrated terminal runs inside the workspace — its image, its environment, and the mounted harness
-home. A `claude` or `codex` you run there is observed by Mend: the session shows running, the
-workspace stays leased, and the conversation is recorded and natively resumable from any device.
-Your SSH public key must be registered with Sealant; the gateway authenticates you by it (username
-`ws-<workspace id>` is set automatically). A settled session offers a shell resume first — the shell
-keeps the fresh workspace alive while the editor is attached.
+Opening a session opens its workspace: the same worktree files, but the integrated terminal runs
+inside the workspace — its image, its environment, and the mounted harness home. A `claude` or
+`codex` you run there is observed by Mend: the session shows running, the workspace stays leased,
+and the conversation is recorded and natively resumable from any device. A settled session offers a
+shell resume first — the shell keeps the fresh workspace alive while the editor is attached.
 
-Without the gateway setting, opening falls back to the worktree path: local when it exists, else via
-`mend.remoteSshHost` on the Mend machine. Note the fallback terminal runs on the host, not in the
-workspace — agents run there are outside Mend's observation.
+Setup is one dialog, once per machine: the first open offers "Set up workspace SSH?" — Mend uses
+your ssh-agent key (or creates a dedicated one under `~/.config/mend/ssh`), registers it under your
+account, and adds one managed Host block to `~/.ssh/config`. Re-run it any time with
+`Mend: Set up workspace SSH` (or `mend ssh setup` in a terminal). The gateway address comes from the
+server; `mend.workspaceSshGateway` and `mend.workspaceSshUsernamePrefix` remain as overrides for
+unusual networks.
+
+When the deployment exposes no gateway, opening falls back to the worktree path: local when it
+exists, else via `mend.remoteSshHost` on the Mend machine. The fallback terminal runs on the host,
+not in the workspace — agents run there are outside Mend's observation.
 
 Deep links: `vscode://sealant-sh.mend/open?session=<session-id>`

@@ -31,6 +31,7 @@ import {
   normalizeProjectName,
   parseLaunchArgs,
 } from "./shared.ts";
+import { sshCommand } from "./ssh-setup.ts";
 
 /**
  * The mend CLI (plan §7.2): the terminal-first entry into the workbench.
@@ -2764,6 +2765,9 @@ everything else
   mend sessions [--all] [--project p] [--json]
                                         sessions with review facts; JSON is stable for integrations
   mend status                           active sessions (alias of mend sessions)
+  mend ssh                              workspace SSH status: gateway, registered keys, ssh config
+  mend ssh setup [--key <path>]         make this machine ready once: offer a key (ssh-agent
+                                        preferred — nothing new created), write Host mend-ws
   mend completions zsh|bash             print the TAB-completion hook (live session ids under TAB)
 
   server: MEND_URL (default http://localhost:3105) · auth: MEND_TOKEN
@@ -2809,6 +2813,8 @@ const main = async () => {
       return doctorCommand(config, localCredential);
     case "env":
       return envCommand(config, rest);
+    case "ssh":
+      return sshCommand(rest, boundApi(config), mendCliHome());
     case "completions":
       return completionsCommand(rest);
     case "__complete":

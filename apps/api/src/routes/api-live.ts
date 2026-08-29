@@ -17,6 +17,9 @@ import {
   TraceEntryView,
   TracePage,
   Unauthorized,
+  WorkspaceSshGateway,
+  WorkspaceSshKey,
+  WorkspaceSshView,
 } from "@mend/api-contracts";
 import { Auth } from "@mend/auth";
 import {
@@ -149,6 +152,67 @@ export const AccountsGroupLive = HttpApiBuilder.group(MendApi, "accounts", (hand
         return yield* clients.connectedAccounts(caller.user.id).disconnect(params.id);
       }).pipe(
         Effect.catchTag("SealantPlatformError", (error) => Effect.fail(accountFailure(error))),
+      ),
+    ),
+);
+
+/**
+ * Workspace SSH for the signed-in user (docs/WORKSPACE-SSH.md phase 1): gateway discovery plus
+ * self-service key registration. Keys are registered under the user's own Sealant identity —
+ * the gateway resolves a connection to its key's owner and authorizes that principal against
+ * the workspace, so one user's key never opens another user's workspace.
+ */
+export const WorkspaceSshGroupLive = HttpApiBuilder.group(MendApi, "workspaceSsh", (handlers) =>
+  handlers
+    .handle("get", () =>
+      Effect.gen(function* () {
+        const clients = yield* SealantClients;
+        const caller = yield* CurrentUser;
+        const gateway = yield* clients.workspaceSshInfo();
+        const keys = yield* clients.sshKeys(caller.user.id).list();
+        return new WorkspaceSshView({
+          gateway: gateway === null ? null : new WorkspaceSshGateway(gateway),
+          keys: keys.map(
+            (key) =>
+              new WorkspaceSshKey({
+                sshKeyId: key.sshKeyId,
+                name: key.name,
+                algorithm: key.algorithm,
+                fingerprint: key.fingerprint,
+                createdAt: key.createdAt,
+              }),
+          ),
+        });
+      }).pipe(
+        Effect.catchTag("SealantPlatformError", (error) =>
+          Effect.fail(new SealantUnavailable({ code: error.code, message: error.message })),
+        ),
+      ),
+    )
+    .handle("ensureKey", ({ payload }) =>
+      Effect.gen(function* () {
+        const clients = yield* SealantClients;
+        const caller = yield* CurrentUser;
+        const key = yield* clients.sshKeys(caller.user.id).ensure({
+          publicKey: payload.publicKey,
+          ...(payload.name === undefined ? {} : { name: payload.name }),
+        });
+        return new WorkspaceSshKey({
+          sshKeyId: key.sshKeyId,
+          name: key.name,
+          algorithm: key.algorithm,
+          fingerprint: key.fingerprint,
+          createdAt: key.createdAt,
+        });
+      }).pipe(
+        Effect.catchTag("SealantPlatformError", (error) =>
+          Effect.fail(
+            // 4xx = the platform judged the key (invalid line, another account holds it).
+            error.status !== null && error.status >= 400 && error.status < 500
+              ? new AccountRejected({ message: error.message })
+              : new SealantUnavailable({ code: error.code, message: error.message }),
+          ),
+        ),
       ),
     ),
 );
@@ -470,7 +534,13 @@ export const DevicesGroupLive = HttpApiBuilder.group(MendApi, "devices", (handle
 export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
   // `pipe` takes at most twenty steps; the identity groups ride one merged layer.
   Layer.provide(
-    Layer.mergeAll(HealthGroupLive, MachineGroupLive, SealantGroupLive, AccountsGroupLive),
+    Layer.mergeAll(
+      HealthGroupLive,
+      MachineGroupLive,
+      SealantGroupLive,
+      AccountsGroupLive,
+      WorkspaceSshGroupLive,
+    ),
   ),
   Layer.provide(SettingsGroupLive),
   Layer.provide(DotfilesGroupLive),

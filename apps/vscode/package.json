@@ -100,6 +100,10 @@
         "title": "Mend: Copy worktree path"
       },
       {
+        "command": "mend.setupWorkspaceSsh",
+        "title": "Mend: Set up workspace SSH"
+      },
+      {
         "command": "mend.stopSession",
         "title": "Mend: Stop session"
       },

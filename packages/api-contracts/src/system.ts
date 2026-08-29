@@ -66,6 +66,60 @@ export class SealantUnavailable extends Schema.TaggedErrorClass<SealantUnavailab
   { httpApiStatus: 502 },
 ) {}
 
+/** Connect coordinates for the platform's workspace SSH gateway (docs/WORKSPACE-SSH.md). */
+export class WorkspaceSshGateway extends Schema.Class<WorkspaceSshGateway>("WorkspaceSshGateway")({
+  host: Schema.String,
+  port: Schema.Number,
+  /** The SSH username is `<usernamePrefix>-<workspaceId>`. */
+  usernamePrefix: Schema.String,
+}) {}
+
+/** One registered SSH public key — never carries the key material back. */
+export class WorkspaceSshKey extends Schema.Class<WorkspaceSshKey>("WorkspaceSshKey")({
+  sshKeyId: Schema.String,
+  name: Schema.String,
+  algorithm: Schema.String,
+  fingerprint: Schema.String,
+  createdAt: Schema.String,
+}) {}
+
+/** Everything a client needs to decide whether workspace SSH is ready for this user. */
+export class WorkspaceSshView extends Schema.Class<WorkspaceSshView>("WorkspaceSshView")({
+  /** Null when the deployment exposes no workspace SSH gateway. */
+  gateway: Schema.NullOr(WorkspaceSshGateway),
+  /** The signed-in user's registered keys. */
+  keys: Schema.Array(WorkspaceSshKey),
+}) {}
+
+/** Offer the signed-in user's SSH public key; idempotent — re-offering returns the existing row. */
+export class EnsureWorkspaceSshKeyRequest extends Schema.Class<EnsureWorkspaceSshKeyRequest>(
+  "EnsureWorkspaceSshKeyRequest",
+)({
+  /** Raw `<algorithm> <base64> [comment]` line; normalized and fingerprinted platform-side. */
+  publicKey: Schema.String,
+  name: Schema.optionalKey(Schema.String),
+}) {}
+
+/**
+ * Workspace SSH for the signed-in user: gateway discovery plus self-service key registration —
+ * what the editor extension's one-time setup runs against (docs/WORKSPACE-SSH.md phase 1).
+ */
+export const workspaceSshGroup = HttpApiGroup.make("workspaceSsh")
+  .add(
+    HttpApiEndpoint.get("get", "/workspace-ssh", {
+      success: WorkspaceSshView,
+      error: [SealantUnavailable],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("ensureKey", "/workspace-ssh/keys", {
+      payload: EnsureWorkspaceSshKeyRequest,
+      success: WorkspaceSshKey,
+      error: [AccountRejected, SealantUnavailable],
+    }),
+  )
+  .middleware(AuthMiddleware);
+
 /**
  * The signed-in user's platform identity and connected accounts
  * (docs/SEALANT-IDENTITY.md). Secrets pass straight through to Sealant under

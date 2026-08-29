@@ -18,14 +18,18 @@ import type {
 } from "@sealant/sdk";
 import { Sealant, SealantApiError, SealantError } from "@sealant/sdk";
 import type { Harness, SealantConfig } from "@sealant/sdk";
+import type { SshKey, WorkspaceSshInfo } from "@sealant/sdk";
 import {
   archiveConnectedAccountOp,
   createConnectedAccountOp,
   createRunOp,
+  createSshKeyOp,
   expireWorkspaceOp,
   getSessionOutputOp,
+  getSetupStateOp,
   inferenceRespondOp,
   listConnectedAccountsOp,
+  listSshKeysOp,
   listWorkspacesOp,
   resolveInternalConfig,
   SealantApiClient,
@@ -551,6 +555,16 @@ export interface ConnectedAccountsApi {
   readonly disconnect: (id: string) => Effect.Effect<ConnectedAccount, SealantPlatformError>;
 }
 
+/** A user's SSH public keys on the platform — what the workspace SSH gateway resolves. */
+export interface SshKeysApi {
+  /** Idempotent per owner: re-offering the same key returns the existing row. */
+  readonly ensure: (input: {
+    readonly publicKey: string;
+    readonly name?: string;
+  }) => Effect.Effect<SshKey, SealantPlatformError>;
+  readonly list: () => Effect.Effect<ReadonlyArray<SshKey>, SealantPlatformError>;
+}
+
 /**
  * One client per Sealant user, built on first use and kept for the process
  * (docs/SEALANT-IDENTITY.md). Mend authenticates as a service principal; each
@@ -569,6 +583,10 @@ export class SealantClients extends Context.Service<
     readonly sealantUserId: (userId: string) => Effect.Effect<string, SealantPlatformError>;
     /** The user's Claude / Codex / GitHub accounts on the platform. */
     readonly connectedAccounts: (userId: string) => ConnectedAccountsApi;
+    /** Workspace SSH gateway connect coordinates; null when the deployment exposes none. */
+    readonly workspaceSshInfo: () => Effect.Effect<WorkspaceSshInfo | null, SealantPlatformError>;
+    /** The user's SSH public keys — what the workspace SSH gateway resolves a connection to. */
+    readonly sshKeys: (userId: string) => SshKeysApi;
   }
 >()("@mend/sealant/SealantClients") {}
 
@@ -597,6 +615,22 @@ const toConnectedAccount = (wire: {
 
 const platformFailure = (code: string, message: string) =>
   new SealantPlatformError({ code, status: null, message, cause: null });
+
+const toSshKey = (wire: {
+  readonly sshKeyId: string;
+  readonly ownerUserId: string;
+  readonly name: string;
+  readonly algorithm: string;
+  readonly fingerprint: string;
+  readonly createdAt: string;
+}): SshKey => ({
+  sshKeyId: wire.sshKeyId,
+  ownerUserId: wire.ownerUserId,
+  name: wire.name,
+  algorithm: wire.algorithm,
+  fingerprint: wire.fingerprint,
+  createdAt: wire.createdAt,
+});
 
 export const SealantClientsLive: Layer.Layer<
   SealantClients,
@@ -719,7 +753,56 @@ export const SealantClientsLive: Layer.Layer<
       };
     };
 
-    return { forUser, forPrincipal, sealantUserId: sealantUserIdFor, connectedAccounts };
+    const workspaceSshInfo = Effect.fn("SealantClients.workspaceSshInfo")(function* () {
+      const state = yield* getSetupStateOp().pipe(
+        Effect.provideContext(adminContext),
+        Effect.mapError(toPlatformError),
+      );
+      return state.sshGateway === null
+        ? null
+        : {
+            host: state.sshGateway.host,
+            port: state.sshGateway.port,
+            usernamePrefix: state.sshGateway.usernamePrefix,
+          };
+    });
+
+    const sshKeys = (userId: string): SshKeysApi => {
+      const withOwner = <A>(
+        run: (ownerUserId: string) => Effect.Effect<A, unknown, SealantApiClient>,
+      ): Effect.Effect<A, SealantPlatformError> =>
+        sealantUserIdFor(userId).pipe(
+          Effect.flatMap((ownerUserId) =>
+            run(ownerUserId).pipe(
+              Effect.provideContext(adminContext),
+              Effect.mapError(toPlatformError),
+            ),
+          ),
+        );
+      return {
+        ensure: (input) =>
+          withOwner((ownerUserId) =>
+            createSshKeyOp({
+              ownerUserId,
+              publicKey: input.publicKey,
+              ...(input.name === undefined ? {} : { name: input.name }),
+            }).pipe(Effect.map(toSshKey)),
+          ),
+        list: () =>
+          withOwner((ownerUserId) =>
+            listSshKeysOp(ownerUserId).pipe(Effect.map((response) => response.items.map(toSshKey))),
+          ),
+      };
+    };
+
+    return {
+      forUser,
+      forPrincipal,
+      sealantUserId: sealantUserIdFor,
+      connectedAccounts,
+      workspaceSshInfo,
+      sshKeys,
+    };
   }),
 );
 

@@ -7,7 +7,13 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
-## 2026-08-28 · 0.24.1 · Workspace SSH is invisible to the SDK: no gateway discovery, no key registration
+## ✅ 2026-08-28 · 0.24.1 · Workspace SSH is invisible to the SDK: no gateway discovery, no key registration
+
+**Shipped in 0.25.0** ([sealant#214](https://github.com/sealant-sh/sealant/pull/214)) —
+`sealant.workspaceSsh.info()` and `sealant.sshKeys.ensure/list/remove`; Mend consumes them via
+`/api/workspace-ssh`, `mend ssh setup`, and the extension's one-dialog setup (docs/WORKSPACE-SSH.md
+phase 1). Still open: SSH attachments hold no lease the engine can see (phase 3); phase 2's
+short-lived certificates would retire registration entirely.
 
 **Plan:** `docs/WORKSPACE-SSH.md` (2026-08-29) — phase 1 closes this entry (discovery + self-service
 keys + SDK surface), phase 2 replaces registration with short-lived SSH certificates, phase 3 makes
