@@ -12,6 +12,7 @@ import {
   type RepositoryFacts,
   type Session,
   type SessionStatus,
+  type WorkspaceSshView,
 } from "./types.js";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -215,6 +216,37 @@ export class MendClient {
     return parseSession(
       await this.post(`/sessions/${encodeURIComponent(sessionId)}/resume`, { harness }),
     );
+  }
+
+  /** The workspace SSH gateway plus the signed-in user's registered keys. */
+  async workspaceSsh(): Promise<WorkspaceSshView> {
+    const value = await this.request("/workspace-ssh");
+    if (!isRecord(value)) throw new Error("Mend returned an invalid workspace-ssh view.");
+    const gateway = value["gateway"];
+    const keys = Array.isArray(value["keys"]) ? value["keys"] : [];
+    return {
+      gateway:
+        isRecord(gateway) &&
+        typeof gateway["host"] === "string" &&
+        typeof gateway["port"] === "number" &&
+        typeof gateway["usernamePrefix"] === "string"
+          ? {
+              host: gateway["host"],
+              port: gateway["port"],
+              usernamePrefix: gateway["usernamePrefix"],
+            }
+          : null,
+      keys: keys.filter(isRecord).map((key) => ({
+        sshKeyId: stringField(key, "sshKeyId"),
+        name: stringField(key, "name"),
+        fingerprint: stringField(key, "fingerprint"),
+      })),
+    };
+  }
+
+  /** Offer this machine's SSH public key under the signed-in user; idempotent per owner. */
+  async ensureWorkspaceSshKey(publicKey: string, name: string): Promise<void> {
+    await this.post("/workspace-ssh/keys", { publicKey, name });
   }
 
   async adoptProject(name: string, source: string): Promise<Project> {

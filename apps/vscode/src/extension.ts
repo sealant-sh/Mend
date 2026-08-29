@@ -14,7 +14,15 @@ import {
   type ProjectNode,
   type SessionNode,
 } from "./tree.js";
-import type { LaunchStart, Project, ProjectDetail, Session, SessionLocation } from "./types.js";
+import type {
+  LaunchStart,
+  Project,
+  ProjectDetail,
+  Session,
+  SessionLocation,
+  WorkspaceSshView,
+} from "./types.js";
+import { runWorkspaceSshSetup, sshConfigReady, SSH_HOST_ALIAS } from "./workspace-ssh.js";
 
 const MODEL_OPTIONS: Readonly<Record<string, ReadonlyArray<readonly [string, string]>>> = {
   claude: [
@@ -628,10 +636,17 @@ class MendCommands {
     location: SessionLocation,
   ): Promise<vscode.Uri | "unconfigured" | "cancelled"> {
     const configuration = vscode.workspace.getConfiguration("mend");
-    const gateway = configuration.get<string>("workspaceSshGateway")?.trim() ?? "";
-    if (gateway === "") return "unconfigured";
-    const prefix = configuration.get<string>("workspaceSshUsernamePrefix")?.trim() ?? "";
-    const username = `${prefix === "" ? "ws" : prefix}-`;
+    const override = configuration.get<string>("workspaceSshGateway")?.trim() ?? "";
+    let destination: { readonly host: string; readonly usernamePrefix: string };
+    if (override !== "") {
+      // The manual setting stays as an override for unusual networks.
+      const prefix = configuration.get<string>("workspaceSshUsernamePrefix")?.trim() ?? "";
+      destination = { host: override, usernamePrefix: prefix === "" ? "ws" : prefix };
+    } else {
+      const resolved = await this.resolveWorkspaceSsh(false);
+      if (resolved === "unconfigured" || resolved === "cancelled") return resolved;
+      destination = resolved;
+    }
     let workspaceId = liveStatuses.has(location.session.status)
       ? location.session.sealantWorkspaceId
       : null;
@@ -639,13 +654,69 @@ class MendCommands {
       workspaceId = await this.resumeForEditor(location);
       if (workspaceId === null) return "cancelled";
     }
-    const authority = `ssh-remote+${username}${workspaceId}@${gateway}`;
+    const authority = `ssh-remote+${destination.usernamePrefix}-${workspaceId}@${destination.host}`;
     if (!(await this.ensureRemoteSsh(authority, "/workspace/repo"))) return "cancelled";
     return vscode.Uri.from({
       scheme: "vscode-remote",
       authority,
       path: "/workspace/repo",
     });
+  }
+
+  /**
+   * Discover the workspace SSH gateway through Mend and make this machine ready — the
+   * once-per-machine moment (docs/WORKSPACE-SSH.md phase 1). Ready means: this user has a
+   * registered key AND ~/.ssh/config carries the managed Host block; either missing (a new
+   * machine, a wiped server) re-offers the one setup dialog. "unconfigured" = no gateway on
+   * this deployment, or a server predating the endpoint — the caller falls back to the host
+   * worktree path.
+   */
+  private async resolveWorkspaceSsh(
+    force: boolean,
+  ): Promise<
+    { readonly host: string; readonly usernamePrefix: string } | "unconfigured" | "cancelled"
+  > {
+    let view: WorkspaceSshView;
+    try {
+      view = await this.client.workspaceSsh();
+    } catch {
+      return "unconfigured";
+    }
+    const gateway = view.gateway;
+    if (gateway === null) return "unconfigured";
+    const ready = !force && view.keys.length > 0 && sshConfigReady();
+    if (!ready) {
+      const answer = await vscode.window.showInformationMessage(
+        "Set up workspace SSH?",
+        {
+          modal: true,
+          detail:
+            "One time per machine: Mend uses your ssh-agent key (or creates a dedicated one under ~/.config/mend/ssh), registers it under your account, and adds one Host block to ~/.ssh/config. After this, sessions open in their workspace directly.",
+        },
+        "Set up",
+      );
+      if (answer !== "Set up") return "cancelled";
+      try {
+        await runWorkspaceSshSetup({ ...view, gateway }, (publicKey, name) =>
+          this.client.ensureWorkspaceSshKey(publicKey, name),
+        );
+        void vscode.window.setStatusBarMessage("Mend workspace SSH is ready", 3_000);
+      } catch (cause) {
+        void vscode.window.showErrorMessage(errorMessage(cause));
+        return "cancelled";
+      }
+    }
+    return { host: SSH_HOST_ALIAS, usernamePrefix: gateway.usernamePrefix };
+  }
+
+  /** The explicit re-run: `Mend: Set Up Workspace SSH` — for a new machine or after a key wipe. */
+  async setupWorkspaceSsh(): Promise<void> {
+    const resolved = await this.resolveWorkspaceSsh(true);
+    if (resolved === "unconfigured") {
+      void vscode.window.showInformationMessage(
+        "This Mend deployment exposes no workspace SSH gateway.",
+      );
+    }
   }
 
   /**
@@ -776,6 +847,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("mend.openInMend", (argument?: unknown) =>
       commands.openInMend(argument),
     ),
+    vscode.commands.registerCommand("mend.setupWorkspaceSsh", () => commands.setupWorkspaceSsh()),
     vscode.commands.registerCommand("mend.copyWorktreePath", (argument?: unknown) =>
       commands.copyWorktreePath(argument),
     ),

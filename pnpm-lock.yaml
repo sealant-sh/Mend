@@ -40,11 +40,11 @@ catalogs:
       specifier: ^1.2.12
       version: 1.3.1
     '@sealant/api-contracts':
-      specifier: 0.24.0
-      version: 0.24.0
+      specifier: 0.25.0
+      version: 0.25.0
     '@sealant/sdk':
-      specifier: 0.24.0
-      version: 0.24.0
+      specifier: 0.25.0
+      version: 0.25.0
     '@tailwindcss/vite':
       specifier: ^4.1.18
       version: 4.3.2
@@ -880,7 +880,7 @@ importers:
     dependencies:
       '@sealant/api-contracts':
         specifier: 'catalog:'
-        version: 0.24.0(effect@4.0.0-beta.93)
+        version: 0.25.0(effect@4.0.0-beta.93)
       effect:
         specifier: 'catalog:'
         version: 4.0.0-beta.93
@@ -920,7 +920,7 @@ importers:
         version: link:../store
       '@sealant/sdk':
         specifier: 'catalog:'
-        version: 0.24.0(effect@4.0.0-beta.93)
+        version: 0.25.0(effect@4.0.0-beta.93)
       effect:
         specifier: 'catalog:'
         version: 4.0.0-beta.93
@@ -963,7 +963,7 @@ importers:
         version: link:../store
       '@sealant/sdk':
         specifier: 'catalog:'
-        version: 0.24.0(effect@4.0.0-beta.93)
+        version: 0.25.0(effect@4.0.0-beta.93)
       effect:
         specifier: 'catalog:'
         version: 4.0.0-beta.93
@@ -997,7 +997,7 @@ importers:
         version: link:../domain
       '@sealant/sdk':
         specifier: 'catalog:'
-        version: 0.24.0(effect@4.0.0-beta.93)
+        version: 0.25.0(effect@4.0.0-beta.93)
       effect:
         specifier: 'catalog:'
         version: 4.0.0-beta.93
@@ -1037,7 +1037,7 @@ importers:
         version: link:../store
       '@sealant/sdk':
         specifier: 'catalog:'
-        version: 0.24.0(effect@4.0.0-beta.93)
+        version: 0.25.0(effect@4.0.0-beta.93)
       effect:
         specifier: 'catalog:'
         version: 4.0.0-beta.93
@@ -4410,14 +4410,14 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@sealant/api-contracts@0.24.0':
-    resolution: {integrity: sha512-7aiszs2GdDSIFJBJTYebfwIqG2qBe1J5P11smtzDZ+M8LocwkHXHOEe+vxeEPTFYk50mekWfb6SC/AP7XMnBVQ==}
+  '@sealant/api-contracts@0.25.0':
+    resolution: {integrity: sha512-V4+s3hJeuIlVFauwWvderdKIZDLgV1lLdKT/+bCc030SFOivvRrzdPdgEoIeDQBHLOJKh0iq4QxOff3dbizanw==}
     engines: {node: '>=20'}
     peerDependencies:
       effect: '>=4.0.0-beta.85 <5'
 
-  '@sealant/sdk@0.24.0':
-    resolution: {integrity: sha512-wL73QrNYAB6ha2+31rAUlUJcUAgezuHvUWLCobtNbgfsXTQZtVr1nqb61bBbGZen4dY7eLoAiNC8v7r+yFYUCg==}
+  '@sealant/sdk@0.25.0':
+    resolution: {integrity: sha512-nS8I2bwEuo6/Lc8RpslOeUQ2SoCCoLeulRqTsuBHi8os/WBEMXO04GsITW6uhvMFtOYPGm+TIJY1mZp7s0wTQA==}
     engines: {node: '>=20'}
     peerDependencies:
       effect: '>=4.0.0-beta.85 <5'
@@ -14202,13 +14202,13 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.62.2':
     optional: true
 
-  '@sealant/api-contracts@0.24.0(effect@4.0.0-beta.93)':
+  '@sealant/api-contracts@0.25.0(effect@4.0.0-beta.93)':
     dependencies:
       effect: 4.0.0-beta.93
 
-  '@sealant/sdk@0.24.0(effect@4.0.0-beta.93)':
+  '@sealant/sdk@0.25.0(effect@4.0.0-beta.93)':
     dependencies:
-      '@sealant/api-contracts': 0.24.0(effect@4.0.0-beta.93)
+      '@sealant/api-contracts': 0.25.0(effect@4.0.0-beta.93)
       effect: 4.0.0-beta.93
 
   '@secretlint/config-creator@10.2.2':
