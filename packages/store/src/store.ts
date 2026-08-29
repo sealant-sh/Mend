@@ -417,6 +417,39 @@ export class Store extends Context.Service<
         );
       });
 
+      /**
+       * Resolve a requested base to a commit. A base the bare store does not know yet may still
+       * exist on the project origin — a branch pushed but never fetched into the store (adopt
+       * configures the fetch refspec for exactly this) — so a miss fetches once (best-effort,
+       * never interactive) and retries, then tries the remote-tracking name. The final failure
+       * keeps the GitError shape but says something a person can act on instead of raw stderr.
+       */
+      const resolveBaseSha = Effect.fn("Store.resolveBaseSha")(function* (
+        storePath: string,
+        baseRef: string,
+      ) {
+        const tryResolve = (ref: string) => git(["rev-parse", `${ref}^{commit}`], storePath);
+        return yield* tryResolve(baseRef).pipe(
+          Effect.catch(() =>
+            git(["fetch", "origin"], storePath, { GIT_TERMINAL_PROMPT: "0" }).pipe(
+              Effect.ignore,
+              Effect.andThen(
+                tryResolve(baseRef).pipe(Effect.catch(() => tryResolve(`origin/${baseRef}`))),
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new GitError({
+                    args: ["rev-parse", `${baseRef}^{commit}`],
+                    cwd: storePath,
+                    exitCode: cause.exitCode,
+                    stderr: `base "${baseRef}" is not a branch, tag, or commit this project's store knows (origin was fetched and it is still unknown) — push it to the project origin or start from another base`,
+                  }),
+              ),
+            ),
+          ),
+        );
+      });
+
       const createWorktree = Effect.fn("Store.createWorktree")(function* (
         storePath: string,
         sessionId: SessionId,
@@ -425,7 +458,7 @@ export class Store extends Context.Service<
         // Idempotent: stores adopted before the exclude policy get it here.
         yield* ensureExcludes(storePath);
         const baseRef = base ?? (yield* git(["symbolic-ref", "--short", "HEAD"], storePath));
-        const baseSha = yield* git(["rev-parse", `${baseRef}^{commit}`], storePath);
+        const baseSha = yield* resolveBaseSha(storePath, baseRef);
         const name = `session-${sessionId}`;
         const branch = `mend/session/${sessionId}`;
         const worktreePath = path.join(path.dirname(storePath), "worktrees", name);
@@ -440,7 +473,7 @@ export class Store extends Context.Service<
       ) {
         const worktreePath = path.join(path.dirname(storePath), "worktrees", name);
         const baseRef = base ?? (yield* git(["symbolic-ref", "--short", "HEAD"], storePath));
-        const baseSha = yield* git(["rev-parse", `${baseRef}^{commit}`], storePath);
+        const baseSha = yield* resolveBaseSha(storePath, baseRef);
         yield* git(["reset", "--hard", baseSha], worktreePath);
         yield* git(["clean", "-fd"], worktreePath);
         return { path: worktreePath, baseSha: sha(baseSha) };

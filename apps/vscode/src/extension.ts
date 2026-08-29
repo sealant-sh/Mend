@@ -392,12 +392,7 @@ class MendCommands {
           title: `Preparing workbench · ${project.name}…`,
         },
         async () => {
-          const created = await this.client.createSession(
-            project.id,
-            "claude",
-            null,
-            await this.quietBase(project),
-          );
+          const created = await this.createSessionSafely(project, "claude");
           await this.client.resumeSession(created.id, "shell");
           return created;
         },
@@ -428,12 +423,7 @@ class MendCommands {
       const session = await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: `Starting ${harness}…` },
         async () => {
-          const created = await this.client.createSession(
-            project.id,
-            harness,
-            null,
-            await this.quietBase(project),
-          );
+          const created = await this.createSessionSafely(project, harness);
           await this.client.launchSession(
             created.id,
             prompt.trim() === "" ? {} : { prompt: prompt.trim() },
@@ -456,6 +446,24 @@ class MendCommands {
         ? await currentBranch(this.scope.currentFolder() ?? undefined)
         : null;
     return branch;
+  }
+
+  /**
+   * Create with the quietly inferred base; when the store does not know that ref (a local
+   * branch never pushed), fall back to the project default instead of failing the quick path.
+   */
+  private async createSessionSafely(project: Project, harness: string): Promise<Session> {
+    const base = await this.quietBase(project);
+    if (base === null) return this.client.createSession(project.id, harness, null, null);
+    try {
+      return await this.client.createSession(project.id, harness, null, base);
+    } catch {
+      void vscode.window.setStatusBarMessage(
+        `Mend: base ${base} is not in the project store — starting from the default branch`,
+        5_000,
+      );
+      return this.client.createSession(project.id, harness, null, null);
+    }
   }
 
   private async newSessionAdvanced(project: Project): Promise<void> {
