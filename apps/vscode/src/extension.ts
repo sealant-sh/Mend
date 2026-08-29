@@ -905,6 +905,15 @@ class MendCommands {
   }
 
   private async openNamedWorkspace(location: SessionLocation, folder: vscode.Uri): Promise<void> {
+    // A remote folder opens DIRECTLY: `vscode.openFolder` on the vscode-remote URI is what
+    // reliably attaches Remote-SSH. The .code-workspace wrapper (kept for local opens, where
+    // it names the window) carries a `remoteAuthority` field VS Code does not always honor —
+    // the failure mode is a LOCAL window pointing at a remote URI: an empty-looking folder
+    // and a terminal on the wrong machine.
+    if (folder.scheme === "vscode-remote") {
+      await vscode.commands.executeCommand("vscode.openFolder", folder, { forceNewWindow: true });
+      return;
+    }
     await vscode.workspace.fs.createDirectory(this.context.globalStorageUri);
     const title = `${location.project.name} › ${displaySession(location.session)}`;
     const file = vscode.Uri.joinPath(
@@ -912,7 +921,6 @@ class MendCommands {
       `${safeFileName(location.project.name)}-${location.session.id.slice(0, 12)}.code-workspace`,
     );
     const document = {
-      remoteAuthority: folder.scheme === "vscode-remote" ? folder.authority : undefined,
       folders: [{ uri: folder.toString(true) }],
       settings: { "window.title": title },
     };
