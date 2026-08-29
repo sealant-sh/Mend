@@ -3498,6 +3498,65 @@ describe("SessionEngine", () => {
     );
   });
 
+  it("late-observes a quiet external conversation mend never saw — captured, then ended", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            ownerUserId: null,
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            base: null,
+          });
+          yield* engine.launch(session.id, ["bash"]);
+
+          // A codex conversation ran and went quiet before any observer tick saw it (an
+          // unreadable window, a mend restart) — the transcript is 10 minutes old.
+          const rolloutId = crypto.randomUUID();
+          const rolloutDir = path.join(
+            harnessHomePathOf(project.storePath, session.id),
+            ".codex",
+            "sessions",
+            "2026",
+            "08",
+            "29",
+          );
+          fs.mkdirSync(rolloutDir, { recursive: true });
+          const rollout = path.join(rolloutDir, `rollout-2026-08-29T18-00-00-${rolloutId}.jsonl`);
+          fs.writeFileSync(
+            rollout,
+            `${JSON.stringify({
+              type: "response_item",
+              payload: { type: "message", role: "user", content: [{ type: "text", text: "hi" }] },
+            })}\n`,
+          );
+          const past = new Date(Date.now() - 10 * 60_000);
+          fs.utimesSync(rollout, past, past);
+
+          yield* engine.observeExternalAgents();
+          const observed = [...world.processes.values()].filter(
+            (process) => process.kind === "agent-external",
+          );
+          expect(observed).toHaveLength(1);
+          expect(observed[0]?.harness).toBe("codex");
+          expect(observed[0]?.providerSessionId).toBe(rolloutId);
+          // Late observation: the row records that it happened — already ended.
+          expect(observed[0]?.exitedAt).not.toBeNull();
+
+          // A second pass does not re-observe history.
+          yield* engine.observeExternalAgents();
+          expect(
+            [...world.processes.values()].filter((process) => process.kind === "agent-external"),
+          ).toHaveLength(1);
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
   it("presumes transcript writes belong to a live engine agent — nothing observed", async () => {
     const created: CreateOptions[] = [];
     await withEngine(
