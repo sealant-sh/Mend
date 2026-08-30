@@ -30,9 +30,14 @@ export default function ProjectsScreen() {
   const { start, remove } = useSessionActions();
   const [renaming, setRenaming] = useState<RenameTarget | null>(null);
 
-  const fire = (projectId: string, harness: string, options: LaunchOptions) => {
+  const fire = (
+    projectId: string,
+    harness: string,
+    options: LaunchOptions,
+    base: string | null,
+  ) => {
     start.mutate(
-      { projectId, harness, options },
+      { projectId, harness, base, options },
       {
         onSuccess: (session) =>
           router.push({
@@ -80,7 +85,8 @@ export default function ProjectsScreen() {
             <StartSessionRows
               first={false}
               pending={start.isPending}
-              onStart={(harness, options) => fire(project.id, harness, options)}
+              projectId={project.id}
+              onStart={(harness, options, base) => fire(project.id, harness, options, base)}
             />
             {sessions.map(({ session, annotation }) => (
               <SessionRow

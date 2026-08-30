@@ -28,6 +28,8 @@ export interface SessionWorktreeSummary {
   readonly name: string;
   readonly branch: string;
   readonly baseSha: Sha;
+  /** The base as resolved — the caller's ref, or the default branch when none was given. */
+  readonly baseRef: string;
 }
 
 export type SessionRepositoryError = GitError | ProjectNotFoundError;
@@ -35,18 +37,23 @@ export type SessionRepositoryError = GitError | ProjectNotFoundError;
 export class SessionRepository extends Context.Service<
   SessionRepository,
   {
-    /** Create the session's worktree on its own branch from `base` (default branch when null). */
+    /**
+     * Create the session's worktree on its own branch from `base` (default branch when null).
+     * `remoteEnv` freshens the base from origin first (best-effort); null skips the fetch.
+     */
     readonly createWorktree: (
       projectId: ProjectId,
       sessionId: SessionId,
       base: string | null,
+      remoteEnv: Record<string, string> | null,
     ) => Effect.Effect<SessionWorktreeSummary, SessionRepositoryError>;
     /** Freshen an existing worktree to `base` without recreating it (hot-pool claims). */
     readonly resetWorktree: (
       projectId: ProjectId,
       worktreeName: string,
       base: string | null,
-    ) => Effect.Effect<{ readonly baseSha: Sha }, SessionRepositoryError>;
+      remoteEnv: Record<string, string> | null,
+    ) => Effect.Effect<{ readonly baseSha: Sha; readonly baseRef: string }, SessionRepositoryError>;
     /** Best-effort removal; a surviving path is reported, never thrown. */
     readonly removeWorktreeForce: (
       projectId: ProjectId,
@@ -88,15 +95,19 @@ export const SessionRepositoryLocalLive: Layer.Layer<
     const projects = yield* ProjectsRepo;
 
     return {
-      createWorktree: (projectId, sessionId, base) =>
+      createWorktree: (projectId, sessionId, base, remoteEnv) =>
         projects.byId(projectId).pipe(
-          Effect.flatMap((project) => store.createWorktree(project.storePath, sessionId, base)),
-          Effect.map(({ name, branch, baseSha }) => ({ name, branch, baseSha })),
+          Effect.flatMap((project) =>
+            store.createWorktree(project.storePath, sessionId, base, remoteEnv),
+          ),
+          Effect.map(({ name, branch, baseSha, baseRef }) => ({ name, branch, baseSha, baseRef })),
         ),
-      resetWorktree: (projectId, worktreeName, base) =>
+      resetWorktree: (projectId, worktreeName, base, remoteEnv) =>
         projects.byId(projectId).pipe(
-          Effect.flatMap((project) => store.resetWorktree(project.storePath, worktreeName, base)),
-          Effect.map(({ baseSha }) => ({ baseSha })),
+          Effect.flatMap((project) =>
+            store.resetWorktree(project.storePath, worktreeName, base, remoteEnv),
+          ),
+          Effect.map(({ baseSha, baseRef }) => ({ baseSha, baseRef })),
         ),
       removeWorktreeForce: (projectId, worktreeName) =>
         projects

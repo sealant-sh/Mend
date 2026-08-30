@@ -86,6 +86,7 @@ import {
   harnessHomePathOf,
   processStatePathOf,
   sessionStatePathOf,
+  resolveRemoteEnv,
   sshTransportArgs,
   worktreePathOf,
   DeploymentConfig,
@@ -1013,6 +1014,31 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         (effect, input) => effect.pipe(asSealantUser(input.ownerUserId)),
       );
 
+      /**
+       * The credential env for freshening a session's base at provision — BEST-EFFORT by
+       * design: provisioning must survive a disconnected bridge or a broken key the way it
+       * survives an unreachable remote (the fetch itself is already best-effort). Null means
+       * "skip the fetch", with the reason logged, never a refused session.
+       */
+      const provisionRemoteEnv = Effect.fn("SessionEngine.provisionRemoteEnv")(function* (
+        project: Project,
+      ) {
+        return yield* resolveRemoteEnv(project.gitAuthMode).pipe(
+          Effect.provideService(MendKeys, mendKeys),
+          Effect.provideService(AgentBridge, agentBridge),
+          Effect.catch((error) =>
+            Effect.logInfo("session engine: base freshen skipped — no credentials").pipe(
+              Effect.annotateLogs({
+                projectId: project.id,
+                gitAuthMode: project.gitAuthMode,
+                reason: error.message,
+              }),
+              Effect.as(null),
+            ),
+          ),
+        );
+      });
+
       const provisionAs = Effect.fn("SessionEngine.provisionAs")(function* (input: ProvisionInput) {
         const project = yield* projects.byId(input.projectId);
         // Hot path: adopt a pre-provisioned skeleton when the project keeps them ready. Any
@@ -1029,7 +1055,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (claimed !== null) return claimed;
         }
         const sessionId = SessionId.make(crypto.randomUUID());
-        const worktree = yield* sessionRepo.createWorktree(project.id, sessionId, input.base);
+        const remoteEnv = yield* provisionRemoteEnv(project);
+        const worktree = yield* sessionRepo.createWorktree(
+          project.id,
+          sessionId,
+          input.base,
+          remoteEnv,
+        );
         const session = yield* sessions.create({
           id: sessionId,
           projectId: project.id,
@@ -1039,6 +1071,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           worktree: worktree.name,
           branch: worktree.branch,
           baseSha: worktree.baseSha,
+          baseRef: worktree.baseRef,
           contextSnapshotId: null,
         });
         yield* tryCheckpoint(session, "session-start", { sealantRunId: null, sequence: 0n });
@@ -4538,7 +4571,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         fingerprint: string,
       ) {
         const sessionId = SessionId.make(crypto.randomUUID());
-        const worktree = yield* sessionRepo.createWorktree(project.id, sessionId, null);
+        // Skeletons pre-provision on the default branch without freshening: the claim resets
+        // to the requested base with credentials anyway, and warming must not race a fetch.
+        const worktree = yield* sessionRepo.createWorktree(project.id, sessionId, null, null);
         const worktreePath = worktreePathOf(project.storePath, worktree.name);
         const entry = yield* hotWorkspaces.create({
           id: sessionId,
@@ -4730,8 +4765,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (entry === null) return null;
         // The replacement warms in the background while this session launches.
         yield* requestHotReconcile(project.id);
+        const remoteEnv = yield* provisionRemoteEnv(project);
         const freshened = yield* sessionRepo
-          .resetWorktree(project.id, entry.worktree, input.base)
+          .resetWorktree(project.id, entry.worktree, input.base, remoteEnv)
           .pipe(Effect.tapError(() => drainHotWorkspace(entry)));
         const session = yield* sessions.create({
           id: entry.id,
@@ -4742,6 +4778,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           worktree: entry.worktree,
           branch: entry.branch,
           baseSha: freshened.baseSha,
+          baseRef: freshened.baseRef,
           contextSnapshotId: null,
         });
         yield* tryCheckpoint(session, "session-start", { sealantRunId: null, sequence: 0n });

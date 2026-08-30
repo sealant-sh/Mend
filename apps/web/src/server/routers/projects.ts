@@ -61,6 +61,16 @@ export const projectsRouter = router({
     .query(({ ctx, input: i }) =>
       run(ctx, (api) => api.projects.hotSessionsStatus({ params: { id: i.id } })),
     ),
+  branches: procedure
+    .input(byId)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) => api.projects.branches({ params: { id: i.id } })),
+    ),
+  refresh: procedure
+    .input(byId)
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => api.projects.refresh({ params: { id: i.id } })),
+    ),
   references: procedure
     .input(byId)
     .query(({ ctx, input: i }) =>

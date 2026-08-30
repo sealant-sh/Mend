@@ -123,6 +123,7 @@ export interface SessionDto {
   readonly label: string | null;
   readonly branch: string;
   readonly baseSha: string;
+  readonly baseRef: string | null;
   readonly status: string;
   readonly summary: string | null;
   readonly sealantRunId: string | null;
@@ -290,6 +291,21 @@ export const annotationDetail = (
   if (parts.length === 0) return summary;
   return parts.join(" · ");
 };
+
+export interface ProjectBranchDto {
+  readonly name: string;
+  readonly sha: string;
+  readonly committedAt: string;
+  readonly isDefault: boolean;
+}
+
+/** Branches a session can base on — what the project store holds right now. */
+export const useProjectBranches = (projectId: string | null, enabled: boolean) =>
+  useQuery({
+    queryKey: ["project-branches", projectId],
+    enabled: enabled && projectId !== null,
+    queryFn: () => api<ReadonlyArray<ProjectBranchDto>>("GET", `/projects/${projectId}/branches`),
+  });
 
 export const useProjectSessions = (projectId: string | null) =>
   useQuery({
@@ -490,13 +506,14 @@ export const useSessionActions = () => {
     mutationFn: async (input: {
       readonly projectId: string;
       readonly harness: string;
+      readonly base?: string | null;
       readonly options?: LaunchOptions;
     }) => {
       const session = await api<SessionDto>("POST", `/projects/${input.projectId}/sessions`, {
         harness: input.harness,
         mode: "protocol",
         label: null,
-        base: null,
+        base: input.base ?? null,
       });
       // Fire-and-forget: the server settles the session if provisioning fails.
       // A null option means "the harness's own default" and stays off the wire.

@@ -71,6 +71,7 @@ interface SessionDto {
   readonly label: string | null;
   readonly branch: string;
   readonly baseSha: string;
+  readonly baseRef: string | null;
   readonly status: string;
   readonly summary: string | null;
   readonly createdAt: string;
@@ -420,8 +421,8 @@ const SessionDetail = ({ item }: { readonly item: SessionItem | null }) => {
         <span fg={FAINT}> · </span>
         <span fg={MUTED}>{session.branch}</span>
         <span fg={FAINT}>
-          {session.baseSha === "" ? "" : ` vs ${session.baseSha.slice(0, 12)}`} · started{" "}
-          {timeAgo(session.createdAt)}
+          {session.baseSha === "" ? "" : ` vs ${session.baseRef ?? session.baseSha.slice(0, 12)}`} ·
+          started {timeAgo(session.createdAt)}
         </span>
       </text>
       <text height={1} bg="transparent">
@@ -684,6 +685,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           label: null,
           branch: "provisioning…",
           baseSha: "",
+          baseRef: null,
           status: "starting",
           summary: null,
           createdAt: new Date().toISOString(),

@@ -1227,6 +1227,18 @@ const cliAuthRequestsMigration = Effect.gen(function* () {
     )`;
 });
 
+/**
+ * Sessions carry the base as the user named it (branch, tag, or sha — the
+ * project's default branch when nothing was chosen). `base_sha` already pins
+ * the commit; this preserves the human name for lists and review headers.
+ * Pre-column rows stay null — the name was never recorded, and inventing one
+ * from the project's current default branch would fabricate history.
+ */
+const sessionBaseRef = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE agent_sessions ADD COLUMN base_ref text`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -1270,4 +1282,5 @@ export const migrations = {
   "0039_session_channel_tokens": sessionChannelTokens,
   "0040_project_cluster_bindings": projectClusterBindingsMigration,
   "0041_cli_auth_requests": cliAuthRequestsMigration,
+  "0042_session_base_ref": sessionBaseRef,
 };

@@ -573,6 +573,8 @@ export const agentSessions = pgTable(
     worktree: text().notNull(),
     branch: text().notNull(),
     baseSha: text().$type<Sha>().notNull(),
+    /** The base as the user named it; null only for pre-column rows. */
+    baseRef: text(),
     contextSnapshotId: text()
       .$type<ContextSnapshotId>()
       .references(() => contextSnapshots.id, { onDelete: "set null" }),

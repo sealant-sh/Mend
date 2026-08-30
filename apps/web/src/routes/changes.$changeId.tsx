@@ -210,7 +210,11 @@ function ChangePage() {
           {review.checkpointA.sha.slice(0, 12)} → {review.checkpointB.sha.slice(0, 12)} ·{" "}
           {files.length} file
           {files.length === 1 ? "" : "s"} · +{additions} −{deletions} · {openUnsent.length} open
-          comment{openUnsent.length === 1 ? "" : "s"} ·{" "}
+          comment{openUnsent.length === 1 ? "" : "s"}
+          {sessionDetail?.session.baseRef == null
+            ? ""
+            : ` · base ${sessionDetail.session.baseRef}`}{" "}
+          ·{" "}
           <Link
             to="/sessions/$sessionId"
             params={{ sessionId: change.sessionId }}

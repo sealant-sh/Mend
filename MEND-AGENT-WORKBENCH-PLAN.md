@@ -1544,6 +1544,21 @@ understand the work.
   are live clones with a per-session pinned SHA; a later bridge may let a context item point into a
   reference. Needs §8.1.G.
 
+- **2026-08-30 — Sessions are (project, base ref, worktree); bases stay current.** The base a
+  session starts from is part of its identity, not a launch flag: the requested ref (branch, tag, or
+  sha — the project's default branch when nothing was chosen) is recorded on the session as
+  `baseRef` beside the pinned `baseSha`, and every surface that names a session names its base (web
+  lists and review header, CLI table and dashboard, mobile detail). The composer picks from the
+  store's real branches (`GET /projects/:id/branches`) instead of a blind text field, on web and
+  mobile alike. Bases also stay current: provisioning freshens the base ref from origin through the
+  project's git auth before the worktree is created — best-effort by design, so an unreachable
+  remote, a disconnected bridge signer, or plain offline work costs currency, never a session — and
+  base resolution prefers `refs/remotes/origin/<ref>` over the store's own heads, which freeze at
+  adoption. `POST /projects/:id/refresh` (`mend refresh`) fetches every origin branch into the store
+  on demand; nothing is ever pruned (session branches live in `refs/heads`). This dissolves the
+  duplicate-project-per-branch workaround; a per-branch default project remains possible but is no
+  longer the mechanism.
+
 ### Still open
 
 These decisions should not block the first vertical slice. Choose the smallest reversible

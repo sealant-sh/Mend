@@ -96,6 +96,7 @@ const makeWorld = (launcherMode: TestWorld["launcherMode"] = "success"): TestWor
     worktree: "session-1",
     branch: "mend/session-1",
     baseSha: Sha.make("base-sha"),
+    baseRef: "main",
     contextSnapshotId: null,
     referenceMounts: [],
     extraMounts: [],

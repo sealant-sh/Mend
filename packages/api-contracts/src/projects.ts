@@ -28,6 +28,16 @@ import {
   StoreFailure,
 } from "./workbench-views.ts";
 
+/** One branch a session can base on — origin's view merged with local-only heads. */
+export class ProjectBranch extends Schema.Class<ProjectBranch>("ProjectBranch")({
+  /** Short branch name (`main`, `yiannisp/refactor`) — never a session branch. */
+  name: Schema.String,
+  sha: Schema.String,
+  /** Committer date of the tip, ISO 8601. */
+  committedAt: Schema.String,
+  isDefault: Schema.Boolean,
+}) {}
+
 export const projectsGroup = HttpApiGroup.make("projects")
   .add(HttpApiEndpoint.get("list", "/projects", { success: Schema.Array(Project) }))
   .add(
@@ -101,6 +111,23 @@ export const projectsGroup = HttpApiGroup.make("projects")
       params: { id: ProjectId },
       success: ProjectHotSessionsStatus,
       error: NotFound,
+    }),
+  )
+  .add(
+    // What the store holds right now — no fetch. The composer's branch picker reads this.
+    HttpApiEndpoint.get("branches", "/projects/:id/branches", {
+      params: { id: ProjectId },
+      success: Schema.Array(ProjectBranch),
+      error: [NotFound, StoreFailure],
+    }),
+  )
+  .add(
+    // Fetch every origin branch into the store (heads + remote-tracking, never pruned),
+    // then answer with the refreshed listing — one call serves "refresh" buttons everywhere.
+    HttpApiEndpoint.post("refresh", "/projects/:id/refresh", {
+      params: { id: ProjectId },
+      success: Schema.Array(ProjectBranch),
+      error: [NotFound, StoreFailure],
     }),
   )
   .add(

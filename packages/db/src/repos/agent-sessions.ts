@@ -39,6 +39,8 @@ export interface NewSession {
   readonly worktree: string;
   readonly branch: string;
   readonly baseSha: Sha;
+  /** The base as the user named it (default branch when nothing was chosen). */
+  readonly baseRef: string;
   readonly contextSnapshotId: ContextSnapshotId | null;
   /** Who provisioned the session — whose dotfiles apply at launch. */
   readonly ownerUserId: string | null;
