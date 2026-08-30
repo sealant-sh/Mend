@@ -58,9 +58,10 @@ describe("Store", () => {
         expect(fs.existsSync(adopted.storePath)).toBe(true);
 
         // Session worktree on its own branch from the default branch.
-        const wt = yield* store.createWorktree(adopted.storePath, sessionId, null);
+        const wt = yield* store.createWorktree(adopted.storePath, sessionId, null, null);
         expect(wt.branch).toBe(`mend/session/${sessionId}`);
         expect(wt.baseSha).toBe(adopted.headSha);
+        expect(wt.baseRef).toBe("main");
         expect(fs.existsSync(path.join(wt.path, "app.ts"))).toBe(true);
 
         // "Agent" edits a tracked file and adds an untracked one.
@@ -141,6 +142,79 @@ describe("Store", () => {
         yield* store.removeWorktree(adopted.storePath, wt.name);
         const survivingDiff = yield* store.diffRange(adopted.storePath, cp1.sha, cp2.sha);
         expect(survivingDiff).toContain("extra.ts");
+      }),
+    );
+  });
+
+  it("freshens bases from origin, lists branches, and refreshes", async () => {
+    await withStore((tmp) =>
+      Effect.gen(function* () {
+        const store = yield* Store;
+        const origin = path.join(tmp, "origin");
+        makeOrigin(origin);
+        const runOrigin = (...args: ReadonlyArray<string>) =>
+          execFileSync("git", [...args], {
+            cwd: origin,
+            env: {
+              ...process.env,
+              GIT_AUTHOR_NAME: "origin",
+              GIT_AUTHOR_EMAIL: "origin@localhost",
+              GIT_COMMITTER_NAME: "origin",
+              GIT_COMMITTER_EMAIL: "origin@localhost",
+            },
+          });
+
+        const adopted = yield* store.adopt("fixture", origin, { GIT_TERMINAL_PROMPT: "0" });
+
+        // Origin moves on after adoption: main advances, a feature branch appears.
+        fs.writeFileSync(path.join(origin, "app.ts"), "export const answer = 42\n");
+        runOrigin("commit", "-am", "advance main");
+        const newMainSha = String(runOrigin("rev-parse", "HEAD")).trim();
+        runOrigin("checkout", "-b", "feature/x");
+        fs.writeFileSync(path.join(origin, "feature.ts"), "export const x = 1\n");
+        runOrigin("add", "-A");
+        runOrigin("commit", "-m", "feature work");
+        const featureSha = String(runOrigin("rev-parse", "HEAD")).trim();
+        runOrigin("checkout", "main");
+
+        // A worktree with remoteEnv freshens: it bases on origin's CURRENT main,
+        // not the store's adoption-time head.
+        const fresh = yield* store.createWorktree(adopted.storePath, sessionId, null, {
+          GIT_TERMINAL_PROMPT: "0",
+        });
+        expect(fresh.baseRef).toBe("main");
+        expect(fresh.baseSha).toBe(newMainSha);
+        expect(fresh.baseSha).not.toBe(adopted.headSha);
+
+        // A never-fetched branch resolves too, by name, at origin's tip.
+        const onFeature = yield* store.createWorktree(
+          adopted.storePath,
+          SessionId.make("01TEST2"),
+          "feature/x",
+          { GIT_TERMINAL_PROMPT: "0" },
+        );
+        expect(onFeature.baseRef).toBe("feature/x");
+        expect(onFeature.baseSha).toBe(featureSha);
+
+        // Null remoteEnv skips the fetch — offline still provisions, on what the store has.
+        const offline = yield* store.createWorktree(
+          adopted.storePath,
+          SessionId.make("01TEST3"),
+          null,
+          null,
+        );
+        expect(offline.baseSha).toBe(newMainSha); // already fetched above
+
+        // Refresh pulls every head; the listing reads current, session branches never appear.
+        yield* store.refreshFromOrigin(adopted.storePath, { GIT_TERMINAL_PROMPT: "0" });
+        const branches = yield* store.listBranches(adopted.storePath);
+        const names = branches.map((b) => b.name);
+        expect(names).toContain("main");
+        expect(names).toContain("feature/x");
+        expect(names.some((n) => n.startsWith("mend/session/"))).toBe(false);
+        expect(branches.find((b) => b.name === "main")?.isDefault).toBe(true);
+        expect(branches.find((b) => b.name === "main")?.sha).toBe(newMainSha);
+        expect(branches.find((b) => b.name === "feature/x")?.sha).toBe(featureSha);
       }),
     );
   });

@@ -189,6 +189,11 @@ export const setProjectGitAuth = (projectId: string, gitAuthMode: GitAuthModeDto
   orLogin(trpcClient.projects.setGitAuth.mutate({ id: projectId, request: { gitAuthMode } }));
 export const setProjectHotSessions = (projectId: string, hotSessions: number) =>
   orLogin(trpcClient.projects.setHotSessions.mutate({ id: projectId, request: { hotSessions } }));
+export const listProjectBranches = (projectId: string) =>
+  orLogin(trpcClient.projects.branches.query({ id: projectId }));
+export const refreshProjectBranches = (projectId: string) =>
+  orLogin(trpcClient.projects.refresh.mutate({ id: projectId }));
+export type ProjectBranchDto = Outputs["projects"]["branches"][number];
 export const selectProjectReferences = (projectId: string, referenceIds: ReadonlyArray<string>) =>
   orLogin(
     trpcClient.projects.selectReferences.mutate({ id: projectId, selection: { referenceIds } }),

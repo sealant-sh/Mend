@@ -139,6 +139,7 @@ describe("Mend Drizzle schema", () => {
       "worktree",
       "branch",
       "base_sha",
+      "base_ref",
       "context_snapshot_id",
       "reference_mounts",
       "extra_mounts",

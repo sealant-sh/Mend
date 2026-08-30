@@ -50,9 +50,9 @@ export default function ProjectScreen() {
     );
   }
 
-  const fire = (harness: string, options: LaunchOptions) => {
+  const fire = (harness: string, options: LaunchOptions, base: string | null) => {
     start.mutate(
-      { projectId: project.id, harness, options },
+      { projectId: project.id, harness, base, options },
       {
         onSuccess: (session) =>
           router.push({
@@ -75,7 +75,7 @@ export default function ProjectScreen() {
 
       <SectionLabel>Start a session</SectionLabel>
       <Panel>
-        <StartSessionRows pending={start.isPending} onStart={fire} />
+        <StartSessionRows pending={start.isPending} projectId={project.id} onStart={fire} />
       </Panel>
 
       <View

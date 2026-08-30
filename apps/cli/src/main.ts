@@ -106,6 +106,7 @@ interface SessionDto {
   readonly worktree: string;
   readonly branch: string;
   readonly baseSha: string;
+  readonly baseRef: string | null;
   readonly status: string;
   readonly summary: string | null;
   readonly createdAt: string;
@@ -414,8 +415,9 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
     base: parsed.base,
   });
   say(`${green("✓")} worktree ${session.worktree} ${dim(`· branch ${session.branch}`)}`);
+  const baseWord = session.baseRef === null ? "" : `${session.baseRef} `;
   say(
-    `${green("✓")} base ${dim(session.baseSha.slice(0, 12))} · session ${dim(session.id.slice(0, 8))}`,
+    `${green("✓")} base ${baseWord}${dim(session.baseSha.slice(0, 12))} · session ${dim(session.id.slice(0, 8))}`,
   );
   say(`${cobalt("  watch")} · ${config.url}/sessions/${session.id}`);
 
@@ -2119,7 +2121,7 @@ _mend() {
     'connect:send this machine'"'"'s claude/codex/github credential to the platform'
     'continue:resume with the pending follow-up' 'resume:rejoin a settled session'
     'rejoin:attach if live, otherwise resume'
-    'projects:adopted projects' 'sessions:sessions with review facts' 'status:active sessions'
+    'refresh:fetch origin branches into the store' 'projects:adopted projects' 'sessions:sessions with review facts' 'status:active sessions'
     'ui:the dashboard' 'help:help'
   )
   if (( CURRENT == 2 )); then
@@ -2140,7 +2142,7 @@ _mend "$@"
 const BASH_COMPLETIONS = `_mend() {
   local cur=\${COMP_WORDS[COMP_CWORD]}
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "adopt codex claude opencode run attach shell service keys pair doctor continue resume rejoin projects sessions status ui help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "adopt codex claude opencode run attach shell service keys pair doctor continue resume rejoin refresh projects sessions status ui help" -- "$cur") )
     return
   fi
   case \${COMP_WORDS[1]} in
@@ -2518,6 +2520,36 @@ const projectsCommand = async (config: CliConfig) => {
   if (here !== undefined) say(dim(`  ▸ ${here.name} is the cwd's project`));
 };
 
+interface ProjectBranchDto {
+  readonly name: string;
+  readonly sha: string;
+  readonly committedAt: string;
+  readonly isDefault: boolean;
+}
+
+/**
+ * `mend refresh [project]`: fetch every origin branch into the project's
+ * store (new sessions base on current tips), then show what it holds. The
+ * project resolves like the launch commands: named, or the cwd's.
+ */
+const refreshCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const explicit = args.find((a) => !a.startsWith("--")) ?? takeFlagValue(args, "--project");
+  const project = await findProject(config, explicit ?? null);
+  const branches = await api<ReadonlyArray<ProjectBranchDto>>(
+    config,
+    "POST",
+    `/projects/${project.id}/refresh`,
+  );
+  say(`${green("✓")} refreshed ${project.name} ${dim(`· ${branches.length} branches`)}`);
+  for (const branch of branches.slice(0, 12)) {
+    const marker = branch.isDefault ? cobalt("▸ ") : "  ";
+    say(
+      `${marker}${branch.name}  ${dim(branch.sha.slice(0, 12))}  ${dim(branch.committedAt.slice(0, 10))}`,
+    );
+  }
+  if (branches.length > 12) say(dim(`  … ${branches.length - 12} more`));
+};
+
 interface SessionRow {
   readonly session: SessionDto;
   readonly projectName: string;
@@ -2533,6 +2565,7 @@ interface SessionJson {
   readonly worktree: string;
   readonly branch: string;
   readonly baseSha: string;
+  readonly baseRef: string | null;
   readonly status: string;
   readonly summary: string | null;
   readonly createdAt: string;
@@ -2560,8 +2593,9 @@ const printSessionRow = (row: SessionRow) => {
   }
   if (annotation !== undefined && annotation.pendingFollowUp)
     facts.push(amber("follow-up pending"));
+  const base = session.baseRef === null ? session.baseSha.slice(0, 12) : session.baseRef;
   say(
-    `${session.harness.padEnd(8)}  ${dim(session.id.slice(0, 8))}  ${live ? green(status) : dim(status)}  ${row.projectName}  ${dim(session.branch)}${facts.length > 0 ? `  ${facts.join(dim(" · "))}` : ""}`,
+    `${session.harness.padEnd(8)}  ${dim(session.id.slice(0, 8))}  ${live ? green(status) : dim(status)}  ${row.projectName}  ${dim(`${session.branch} · base ${base}`)}${facts.length > 0 ? `  ${facts.join(dim(" · "))}` : ""}`,
   );
 };
 
@@ -2633,6 +2667,7 @@ const sessionsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
         worktree: session.worktree,
         branch: session.branch,
         baseSha: session.baseSha,
+        baseRef: session.baseRef,
         status: session.status,
         summary: session.summary,
         createdAt: session.createdAt,
@@ -2761,6 +2796,8 @@ everything else
   mend continue [session-id]            resume a session with its pending review follow-up
   mend resume [session-id] [--with h]   rejoin a settled session (state restored; --with switches harness)
   mend rejoin [session-id] [--harness h] attach if live, otherwise resume; newest live wins
+  mend refresh [project]                fetch origin's branches into the store — new sessions
+                                        base on current tips (default: the cwd's project)
   mend projects                         adopted projects and their live sessions
   mend sessions [--all] [--project p] [--json]
                                         sessions with review facts; JSON is stable for integrations
@@ -2827,6 +2864,8 @@ const main = async () => {
       return rejoinCommand(config, rest);
     case "projects":
       return projectsCommand(config);
+    case "refresh":
+      return refreshCommand(config, rest);
     case "sessions":
     case "status":
       return sessionsCommand(config, rest);

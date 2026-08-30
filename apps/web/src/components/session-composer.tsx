@@ -5,13 +5,14 @@ import {
   type EffortLevel,
   type PermissionMode,
 } from "@mend/domain/workbench";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Check, ChevronDown } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import type { ProjectDto } from "#/lib/api";
+import { refreshProjectBranches } from "#/lib/api";
 import {
   effectiveHarnessPrefs,
   setComposerHarness,
@@ -67,7 +68,33 @@ export function SessionComposer({
       : (projects[0]?.id ?? null);
   const projectId = fixedProjectId ?? pickedProjectId ?? fallbackProjectId;
   const project = projects.find((row) => row.id === projectId);
+
+  // Branches load when the settings sheet opens (a bare compose never pays for them);
+  // "refresh" fetches origin through the project's git auth and re-reads the list.
+  const branchesOpen = menu?.kind === "settings" || menu?.kind === "options";
+  const branchesQuery = useQuery({
+    ...trpc.projects.branches.queryOptions({ id: projectId ?? "" }),
+    enabled: branchesOpen && projectId !== null,
+  });
+  const [refreshing, setRefreshing] = useState(false);
+
   if (projectId === null || project === undefined) return null;
+
+  const refreshBranches = async () => {
+    setRefreshing(true);
+    try {
+      await refreshProjectBranches(projectId);
+      await queryClient.invalidateQueries({
+        queryKey: trpc.projects.branches.queryOptions({ id: projectId }).queryKey,
+      });
+    } finally {
+      setRefreshing(false);
+    }
+  };
+  const branchFilter = base.trim();
+  const visibleBranches = (branchesQuery.data ?? [])
+    .filter((branch) => branchFilter === "" || branch.name.includes(branchFilter))
+    .slice(0, 8);
 
   // A sticky "shell" from before shell left the composer degrades to claude.
   const stickyHarness = prefs.byProject[projectId]?.harness ?? "claude";
@@ -290,7 +317,17 @@ export function SessionComposer({
                 }))}
               />
               <div className="border-t border-rule-faint px-3.5 pb-1.5 pt-2">
-                <p className="text-xs font-medium text-label">Base</p>
+                <div className="flex items-baseline justify-between">
+                  <p className="text-xs font-medium text-label">Base</p>
+                  <button
+                    type="button"
+                    disabled={refreshing}
+                    onClick={() => void refreshBranches()}
+                    className="font-mono text-[11px] text-faint transition-colors hover:text-foreground disabled:opacity-50"
+                  >
+                    {refreshing ? "fetching…" : "refresh"}
+                  </button>
+                </div>
                 <input
                   value={base}
                   placeholder={project.defaultBranch}
@@ -301,6 +338,22 @@ export function SessionComposer({
                   className="mt-1.5 w-full rounded-lg border border-input bg-background px-2 py-1 font-mono text-[12px] text-foreground outline-none transition-colors placeholder:text-faint focus:border-[var(--sw-accent)]"
                 />
               </div>
+              {visibleBranches.length > 0 && (
+                <MenuRadioGroup
+                  mono
+                  items={visibleBranches.map((branch) => ({
+                    key: branch.name,
+                    label: branch.name,
+                    detail: branch.isDefault ? "default" : branch.sha.slice(0, 7),
+                    selected:
+                      base.trim() === branch.name || (base.trim() === "" && branch.isDefault),
+                    onSelect: () => {
+                      setBase(branch.isDefault ? "" : branch.name);
+                      setMenu(null);
+                    },
+                  }))}
+                />
+              )}
             </>
           )}
         </ComposerMenu>

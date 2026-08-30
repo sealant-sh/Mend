@@ -67,6 +67,18 @@ export interface SessionWorktree {
   readonly name: string;
   readonly branch: string;
   readonly baseSha: Sha;
+  /** The base as resolved — the caller's ref, or the default branch when none was given. */
+  readonly baseRef: string;
+}
+
+/** One branch the store can base a session on, as `listBranches` reports it. */
+export interface StoreBranch {
+  /** Short branch name (`main`, `yiannisp/refactor`) — never a session branch. */
+  readonly name: string;
+  readonly sha: Sha;
+  /** Committer date of the tip, ISO 8601. */
+  readonly committedAt: string;
+  readonly isDefault: boolean;
 }
 
 export interface CheckpointSnapshot {
@@ -250,11 +262,16 @@ export class Store extends Context.Service<
       source: string,
       remoteEnv: Record<string, string>,
     ) => Effect.Effect<AdoptedRepo, AdoptError>;
-    /** Create the session's worktree on its own branch from `base` (default branch when null). */
+    /**
+     * Create the session's worktree on its own branch from `base` (default branch when null).
+     * `remoteEnv` freshens the base from origin first — best-effort, so an unreachable remote
+     * costs currency, never the session; null skips the fetch (caller had no credentials).
+     */
     readonly createWorktree: (
       storePath: string,
       sessionId: SessionId,
       base: string | null,
+      remoteEnv: Record<string, string> | null,
     ) => Effect.Effect<SessionWorktree, GitError>;
     /**
      * Freshen an existing worktree to `base` (default branch when null) without recreating it:
@@ -266,7 +283,24 @@ export class Store extends Context.Service<
       storePath: string,
       name: string,
       base: string | null,
-    ) => Effect.Effect<{ readonly path: string; readonly baseSha: Sha }, GitError>;
+      remoteEnv: Record<string, string> | null,
+    ) => Effect.Effect<
+      { readonly path: string; readonly baseSha: Sha; readonly baseRef: string },
+      GitError
+    >;
+    /**
+     * Fetch every origin branch into the store — remote-tracking names AND local heads, so
+     * session bases and the default-branch tree both read current. Never prunes: session
+     * branches live in `refs/heads` and a deleted upstream branch must not take them along.
+     */
+    readonly refreshFromOrigin: (
+      storePath: string,
+      remoteEnv: Record<string, string>,
+    ) => Effect.Effect<void, GitError>;
+    /** Branches a session can base on — origin's view merged with local-only heads. */
+    readonly listBranches: (
+      storePath: string,
+    ) => Effect.Effect<ReadonlyArray<StoreBranch>, GitError>;
     /** Remove a session worktree; checkpoint refs survive in the bare repo. */
     readonly removeWorktree: (storePath: string, name: string) => Effect.Effect<void, GitError>;
     /**
@@ -418,20 +452,46 @@ export class Store extends Context.Service<
       });
 
       /**
-       * Resolve a requested base to a commit. A base the bare store does not know yet may still
-       * exist on the project origin — a branch pushed but never fetched into the store (adopt
-       * configures the fetch refspec for exactly this) — so a miss fetches once (best-effort,
-       * never interactive) and retries, then tries the remote-tracking name. The final failure
-       * keeps the GitError shape but says something a person can act on instead of raw stderr.
+       * Freshen one base ref from the project origin before resolving it — best-effort by
+       * contract: a session must start offline, on a disconnected bridge, or against a gone
+       * remote, just on the base the store already has. `remoteEnv` null means the caller could
+       * not resolve credentials (and said why); no fetch is attempted at all.
+       */
+      const freshenBase = Effect.fn("Store.freshenBase")(function* (
+        storePath: string,
+        baseRef: string,
+        remoteEnv: Record<string, string> | null,
+      ) {
+        if (remoteEnv === null) return;
+        yield* git(["fetch", "origin", baseRef], storePath, remoteEnv).pipe(
+          Effect.tapError((error) =>
+            Effect.logDebug("store: base freshen skipped").pipe(
+              Effect.annotateLogs({ storePath, baseRef, stderr: error.stderr }),
+            ),
+          ),
+          Effect.ignore,
+        );
+      });
+
+      /**
+       * Resolve a requested base to a commit, preferring what origin says over the store's own
+       * head: local `refs/heads/*` freeze at adoption, while `refs/remotes/origin/*` move with
+       * every fetch — so the remote-tracking name is the current answer and the local name is
+       * the fallback (shas, tags, and never-pushed local branches). A base the store does not
+       * know at all gets one authenticated fetch (a branch pushed but never fetched — adopt
+       * configures the refspec for exactly this) before failing with something a person can act
+       * on instead of raw stderr.
        */
       const resolveBaseSha = Effect.fn("Store.resolveBaseSha")(function* (
         storePath: string,
         baseRef: string,
+        remoteEnv: Record<string, string> | null,
       ) {
         const tryResolve = (ref: string) => git(["rev-parse", `${ref}^{commit}`], storePath);
-        return yield* tryResolve(baseRef).pipe(
+        return yield* tryResolve(`refs/remotes/origin/${baseRef}`).pipe(
+          Effect.catch(() => tryResolve(baseRef)),
           Effect.catch(() =>
-            git(["fetch", "origin"], storePath, { GIT_TERMINAL_PROMPT: "0" }).pipe(
+            git(["fetch", "origin"], storePath, remoteEnv ?? { GIT_TERMINAL_PROMPT: "0" }).pipe(
               Effect.ignore,
               Effect.andThen(
                 tryResolve(baseRef).pipe(Effect.catch(() => tryResolve(`origin/${baseRef}`))),
@@ -454,29 +514,85 @@ export class Store extends Context.Service<
         storePath: string,
         sessionId: SessionId,
         base: string | null,
+        remoteEnv: Record<string, string> | null,
       ) {
         // Idempotent: stores adopted before the exclude policy get it here.
         yield* ensureExcludes(storePath);
         const baseRef = base ?? (yield* git(["symbolic-ref", "--short", "HEAD"], storePath));
-        const baseSha = yield* resolveBaseSha(storePath, baseRef);
+        yield* freshenBase(storePath, baseRef, remoteEnv);
+        const baseSha = yield* resolveBaseSha(storePath, baseRef, remoteEnv);
         const name = `session-${sessionId}`;
         const branch = `mend/session/${sessionId}`;
         const worktreePath = path.join(path.dirname(storePath), "worktrees", name);
         yield* git(["worktree", "add", "-b", branch, worktreePath, baseSha], storePath);
-        return { path: worktreePath, name, branch, baseSha: sha(baseSha) };
+        return { path: worktreePath, name, branch, baseSha: sha(baseSha), baseRef };
       });
 
       const resetWorktree = Effect.fn("Store.resetWorktree")(function* (
         storePath: string,
         name: string,
         base: string | null,
+        remoteEnv: Record<string, string> | null,
       ) {
         const worktreePath = path.join(path.dirname(storePath), "worktrees", name);
         const baseRef = base ?? (yield* git(["symbolic-ref", "--short", "HEAD"], storePath));
-        const baseSha = yield* resolveBaseSha(storePath, baseRef);
+        yield* freshenBase(storePath, baseRef, remoteEnv);
+        const baseSha = yield* resolveBaseSha(storePath, baseRef, remoteEnv);
         yield* git(["reset", "--hard", baseSha], worktreePath);
         yield* git(["clean", "-fd"], worktreePath);
-        return { path: worktreePath, baseSha: sha(baseSha) };
+        return { path: worktreePath, baseSha: sha(baseSha), baseRef };
+      });
+
+      const refreshFromOrigin = Effect.fn("Store.refreshFromOrigin")(function* (
+        storePath: string,
+        remoteEnv: Record<string, string>,
+      ) {
+        // Both refspecs in one fetch: heads for the store's own tree reads (files listing,
+        // default-branch resolution), remote-tracking for base resolution. Forced — the store
+        // holds no local work on origin's branches; sessions commit on `mend/session/*` only.
+        yield* git(
+          ["fetch", "origin", "+refs/heads/*:refs/heads/*", "+refs/heads/*:refs/remotes/origin/*"],
+          storePath,
+          remoteEnv,
+        );
+      });
+
+      /** `for-each-ref` line → parts; the formats below join with a tab (refnames cannot hold one). */
+      const branchLine = (line: string): { name: string; sha: Sha; committedAt: string } | null => {
+        const [name, refSha, committedAt] = line.split("\t");
+        if (name === undefined || name === "" || refSha === undefined || committedAt === undefined)
+          return null;
+        return { name, sha: sha(refSha), committedAt };
+      };
+
+      const listBranches = Effect.fn("Store.listBranches")(function* (storePath: string) {
+        const fields = "%09%(objectname)%09%(committerdate:iso-strict)";
+        const defaultBranch = yield* git(["symbolic-ref", "--short", "HEAD"], storePath);
+        // Origin's view wins where both exist: local heads freeze at adoption, remote-tracking
+        // refs move with every fetch. Local-only heads still list (bases can be local).
+        const remote = yield* git(
+          ["for-each-ref", `--format=%(refname:lstrip=3)${fields}`, "refs/remotes/origin"],
+          storePath,
+        );
+        const local = yield* git(
+          ["for-each-ref", `--format=%(refname:lstrip=2)${fields}`, "refs/heads"],
+          storePath,
+        );
+        const byName = new Map<string, { name: string; sha: Sha; committedAt: string }>();
+        for (const line of local.split("\n")) {
+          const parsed = branchLine(line);
+          if (parsed === null) continue;
+          if (parsed.name.startsWith("mend/session/")) continue;
+          byName.set(parsed.name, parsed);
+        }
+        for (const line of remote.split("\n")) {
+          const parsed = branchLine(line);
+          if (parsed === null || parsed.name === "HEAD") continue;
+          byName.set(parsed.name, parsed);
+        }
+        return [...byName.values()]
+          .toSorted((a, b) => b.committedAt.localeCompare(a.committedAt))
+          .map((entry) => ({ ...entry, isDefault: entry.name === defaultBranch }));
       });
 
       const removeWorktree = Effect.fn("Store.removeWorktree")(function* (
@@ -749,6 +865,8 @@ export class Store extends Context.Service<
         adopt,
         createWorktree,
         resetWorktree,
+        refreshFromOrigin,
+        listBranches,
         removeWorktree,
         removeWorktreeForce,
         removeProjectStore,

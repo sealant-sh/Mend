@@ -1027,6 +1027,7 @@ const sessionsLayer = (world: World) => {
           worktree: input.worktree,
           branch: input.branch,
           baseSha: input.baseSha,
+          baseRef: input.baseRef,
           contextSnapshotId: input.contextSnapshotId,
           referenceMounts: [],
           extraMounts: [],
@@ -2493,6 +2494,7 @@ describe("SessionEngine", () => {
               worktree: "session-retained-at-boot",
               branch: "mend/session-retained-at-boot",
               baseSha: Sha.make("base-sha"),
+              baseRef: "main",
               contextSnapshotId: null,
               referenceMounts: [],
               extraMounts: [],
@@ -3167,6 +3169,7 @@ describe("SessionEngine", () => {
         });
 
         expect(session.branch).toBe(`mend/session/${session.id}`);
+        expect(session.baseRef).toBe("main");
         expect(session.status).toBe("starting");
         expect(session.recordHistoryComplete).toBe(true);
         const worktree = path.join(tmp, "store", "fixture", "worktrees", session.worktree);
@@ -3604,6 +3607,7 @@ describe("SessionEngine", () => {
       worktree: "session-x",
       branch: "mend/session/x",
       baseSha: Sha.make("0000000000000000000000000000000000000000"),
+      baseRef: "main",
       contextSnapshotId: null,
       referenceMounts: [],
       extraMounts: [],
@@ -3737,7 +3741,7 @@ describe("SessionEngine hot sessions", () => {
           world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
           const store = yield* Store;
           const skeletonId = SessionId.make(crypto.randomUUID());
-          const worktree = yield* store.createWorktree(project.storePath, skeletonId, null);
+          const worktree = yield* store.createWorktree(project.storePath, skeletonId, null, null);
           pool.entries.push(
             new HotWorkspace({
               id: skeletonId,

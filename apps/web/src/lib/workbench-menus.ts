@@ -161,6 +161,10 @@ export const sessionMenu = (
     { label: "Copy worktree path", flash: "Copied", onSelect: () => copyText(session.worktree) },
     { label: "Copy branch name", flash: "Copied", onSelect: () => copyText(session.branch) },
   );
+  if (session.baseRef !== null) {
+    const baseRef = session.baseRef;
+    entries.push({ label: "Copy base ref", flash: "Copied", onSelect: () => copyText(baseRef) });
+  }
   if (!live) {
     entries.push("separator", {
       label: "Delete session…",

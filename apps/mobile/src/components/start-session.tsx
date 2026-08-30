@@ -18,7 +18,7 @@ import {
   useLaunchOptions,
   type LaunchOptions,
 } from "@/data/harness-options";
-import { PROTOCOL_HARNESSES } from "@/data/live";
+import { PROTOCOL_HARNESSES, useProjectBranches } from "@/data/live";
 import { radius, useEvidenceTheme } from "@/theme/evidence";
 
 function Chip({
@@ -82,16 +82,21 @@ function HarnessRow({
   harness,
   first,
   pending,
+  projectId,
   onStart,
 }: {
   readonly harness: string;
   readonly first: boolean;
   readonly pending: boolean;
-  readonly onStart: (harness: string, options: LaunchOptions) => void;
+  readonly projectId: string;
+  readonly onStart: (harness: string, options: LaunchOptions, base: string | null) => void;
 }) {
   const { colors } = useEvidenceTheme();
   const options = useLaunchOptions(harness);
   const [open, setOpen] = useState(false);
+  // Per-launch, not persisted: "which branch" is a decision about THIS session.
+  const [base, setBase] = useState<string | null>(null);
+  const branches = useProjectBranches(projectId, open);
   const set = (patch: Partial<LaunchOptions>) =>
     setLaunchOptions(harness, { ...options, ...patch });
   const Chevron = open ? ChevronDown : ChevronRight;
@@ -119,7 +124,7 @@ function HarnessRow({
             variant="outline"
             label={pending ? "…" : "Start"}
             disabled={pending}
-            onPress={() => onStart(harness, options)}
+            onPress={() => onStart(harness, options, base)}
           />
         </View>
         {open && (
@@ -154,6 +159,22 @@ function HarnessRow({
                 />
               ))}
             </OptionGroup>
+            {(branches.data ?? []).length > 0 && (
+              <OptionGroup label="base">
+                <Chip label="default" chosen={base === null} onPress={() => setBase(null)} />
+                {(branches.data ?? [])
+                  .filter((branch) => !branch.isDefault)
+                  .slice(0, 8)
+                  .map((branch) => (
+                    <Chip
+                      key={branch.name}
+                      label={branch.name}
+                      chosen={base === branch.name}
+                      onPress={() => setBase(branch.name)}
+                    />
+                  ))}
+              </OptionGroup>
+            )}
             {FAST_CAPABLE_HARNESSES.has(harness) && (
               <OptionGroup label="priority">
                 <Chip
@@ -178,11 +199,13 @@ function HarnessRow({
 /** The harness rows for one project — drop inside a Panel. */
 export function StartSessionRows({
   pending,
+  projectId,
   onStart,
   first = true,
 }: {
   readonly pending: boolean;
-  readonly onStart: (harness: string, options: LaunchOptions) => void;
+  readonly projectId: string;
+  readonly onStart: (harness: string, options: LaunchOptions, base: string | null) => void;
   /** Whether the first harness row is the panel's first row. */
   readonly first?: boolean;
 }) {
@@ -194,6 +217,7 @@ export function StartSessionRows({
           harness={harness}
           first={first && index === 0}
           pending={pending}
+          projectId={projectId}
           onStart={onStart}
         />
       ))}

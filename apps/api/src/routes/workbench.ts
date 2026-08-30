@@ -113,13 +113,11 @@ import {
   AgentBridge,
   DeploymentConfig,
   MendKeys,
-  NO_SIGNER_MESSAGE,
   SecretCipher,
   Store,
   DotfilesStore,
   describeGitRemoteFailure,
-  remoteGitEnv,
-  sshCommandFor,
+  resolveRemoteEnv,
   worktreePathOf,
   type DiffFileFact,
   type GitError,
@@ -212,33 +210,19 @@ const readableGitFailure = (error: GitError, mode: GitAuthMode): StoreFailure =>
 };
 
 /**
- * The resolved env for a remote git op under `mode` — the host-side half of
- * the credential seam. Generates the machine key on first mend-key use;
- * bridge mode requires a connected signer and fails fast with the readable
- * line when there is none (a hung clone would be worse than an honest no).
+ * The resolved env for a remote git op under `mode`, as the HTTP surface
+ * reports refusals: the shared seam's typed errors become one StoreFailure
+ * with the same readable lines as before (a hung clone would be worse than
+ * an honest no).
  */
 const remoteEnvFor = (mode: GitAuthMode) =>
-  Effect.gen(function* () {
-    const keys = yield* MendKeys;
-    if (mode === "ambient") return remoteGitEnv(sshCommandFor("ambient", null));
-    if (mode === "bridge") {
-      const bridge = yield* AgentBridge;
-      const bridgeStatus = yield* bridge.status();
-      if (!bridgeStatus.connected) {
-        return yield* new StoreFailure({ message: NO_SIGNER_MESSAGE });
-      }
-      return remoteGitEnv(sshCommandFor("bridge", null), bridge.socketPath());
-    }
-    const key = yield* keys
-      .ensure()
-      .pipe(
-        Effect.mapError(
-          (error) =>
-            new StoreFailure({ message: `Could not create the Mend key: ${error.stderr}` }),
-        ),
-      );
-    return remoteGitEnv(sshCommandFor("mend-key", key.privateKeyPath));
-  });
+  resolveRemoteEnv(mode).pipe(
+    Effect.catchTag("NoSignerError", (error) => new StoreFailure({ message: error.message })),
+    Effect.catchTag(
+      "KeygenError",
+      (error) => new StoreFailure({ message: `Could not create the Mend key: ${error.stderr}` }),
+    ),
+  );
 
 /**
  * Attribute a bridge-signed op while it runs, so the share CLI can print
@@ -525,6 +509,38 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         yield* engine.reconcileHotSessions(params.id);
         return project;
+      }),
+    )
+    .handle("branches", ({ params }) =>
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        const store = yield* Store;
+        const project = yield* projects
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        return yield* store
+          .listBranches(project.storePath)
+          .pipe(Effect.mapError((error) => readableGitFailure(error, project.gitAuthMode)));
+      }),
+    )
+    .handle("refresh", ({ params }) =>
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        const store = yield* Store;
+        const project = yield* projects
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        const remoteEnv = yield* remoteEnvFor(project.gitAuthMode);
+        yield* withSignerContext(
+          project.gitAuthMode,
+          `refresh ${project.name} → origin`,
+          store
+            .refreshFromOrigin(project.storePath, remoteEnv)
+            .pipe(Effect.mapError((error) => readableGitFailure(error, project.gitAuthMode))),
+        );
+        return yield* store
+          .listBranches(project.storePath)
+          .pipe(Effect.mapError((error) => readableGitFailure(error, project.gitAuthMode)));
       }),
     )
     .handle("files", ({ params, query }) =>

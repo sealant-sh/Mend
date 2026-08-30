@@ -66,6 +66,12 @@ export class Session extends Schema.Class<Session>("Session")({
   branch: Schema.String,
   /** Where the worktree branched from — the change's comparison base. */
   baseSha: Sha,
+  /**
+   * The base as the user named it — a branch, tag, or sha; the project's default branch when
+   * nothing was chosen. Recorded at provision and never rewritten (`baseSha` pins the commit).
+   * Null only for sessions provisioned before the column existed.
+   */
+  baseRef: Schema.NullOr(Schema.String),
   contextSnapshotId: Schema.NullOr(ContextSnapshotId),
   /** References mounted read-only beside the worktree at launch, SHAs as observed then. */
   referenceMounts: Schema.Array(SessionReferenceMount),

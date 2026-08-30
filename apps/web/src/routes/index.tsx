@@ -445,7 +445,8 @@ function SessionCard({
         <SessionStatusDot status={session.status} recorded={session.sealantRunId !== null} />
       </div>
       <p className="mt-3 truncate font-mono text-xs text-faint">
-        {progressLine ?? `${session.branch} · worktree ${session.worktree}`}
+        {progressLine ??
+          `${session.branch}${session.baseRef === null ? "" : ` · base ${session.baseRef}`} · worktree ${session.worktree}`}
         <AnnotationSuffix annotation={annotation} />
       </p>
     </Link>

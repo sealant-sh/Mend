@@ -190,7 +190,10 @@ function SessionPage() {
           <SessionStatusDot status={session.status} recorded={session.sealantRunId !== null} />
         </div>
         <p className="mt-2 font-mono text-xs text-faint">
-          {session.branch} · worktree {session.worktree} · base {session.baseSha.slice(0, 12)}
+          {session.branch} · worktree {session.worktree} · base{" "}
+          {session.baseRef === null
+            ? session.baseSha.slice(0, 12)
+            : `${session.baseRef} @ ${session.baseSha.slice(0, 7)}`}
           {session.startedAt === null
             ? ""
             : ` · started ${new Date(session.startedAt).toLocaleTimeString()}`}

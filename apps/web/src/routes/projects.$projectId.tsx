@@ -125,7 +125,7 @@ function ProjectPage() {
                           {session.label === null ? "" : ` — ${session.label}`}
                         </p>
                         <p className="mt-1 truncate font-mono text-xs text-faint">
-                          {session.branch} · base {session.baseSha.slice(0, 12)}
+                          {session.branch} · base {session.baseRef ?? session.baseSha.slice(0, 12)}
                           {annotation !== undefined && annotation.openComments > 0 && (
                             <span className="text-ink-2">
                               {" "}
