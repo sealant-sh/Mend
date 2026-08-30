@@ -24,6 +24,12 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
   fixed non-root uid matching the store consumers (1000), or export the store share with
   `all_squash`+`anonuid` so every writer maps to one owner. Either retires the chmod loop and makes
   crash harvests of tightened state dirs reliable.
+- **2026-08-30, it bites the other direction too:** the workspace mounts the project's bare repo (a
+  linked worktree's real gitdir), and a ROOT-side `git gc --auto` from ordinary agent activity left
+  `packed-refs` and `refs/heads/mend/` root-owned — the engine (uid 1000) could no longer create
+  session refs and every provision on the project failed until a root chown. Mend now sets
+  `core.sharedRepository=group` + setgid trees on its stores as a countermeasure (docs/BUGS.md
+  2026-08-30), but that protects only git-created files; the one-uid story retires the whole class.
 
 ## ✅ 2026-08-28 · 0.24.1 · Workspace SSH is invisible to the SDK: no gateway discovery, no key registration
 

@@ -11,6 +11,12 @@ import { Store, StoreConfig } from "../src/store.ts";
 
 const sessionId = SessionId.make("01TEST");
 
+/** True when the mode carries the shared-group contract: setgid + group rwx. */
+const setgidGroupWrite = (target: string) => {
+  const mode = fs.statSync(target).mode & 0o7777;
+  return (mode & 0o2070) === 0o2070;
+};
+
 /** A throwaway origin repo with one commit — what a user would adopt. */
 const makeOrigin = (dir: string) => {
   const run = (...args: ReadonlyArray<string>) =>
@@ -142,6 +148,41 @@ describe("Store", () => {
         yield* store.removeWorktree(adopted.storePath, wt.name);
         const survivingDiff = yield* store.diffRange(adopted.storePath, cp1.sha, cp2.sha);
         expect(survivingDiff).toContain("extra.ts");
+      }),
+    );
+  });
+
+  it("keeps the store group-writable so a root-side git cannot lock uid 1000 out", async () => {
+    await withStore((tmp) =>
+      Effect.gen(function* () {
+        const store = yield* Store;
+        const origin = path.join(tmp, "origin");
+        makeOrigin(origin);
+        const adopted = yield* store.adopt("fixture", origin, { GIT_TERMINAL_PROMPT: "0" });
+
+        const shared = () =>
+          execFileSync("git", ["config", "--get", "core.sharedRepository"], {
+            cwd: adopted.storePath,
+          })
+            .toString()
+            .trim();
+
+        // Adoption applies the policy: config + setgid group-writable directories, so files a
+        // root-side `git gc` creates stay writable by this uid through the shared group.
+        expect(shared()).toBe("group");
+        expect(setgidGroupWrite(path.join(adopted.storePath, "refs"))).toBe(true);
+        expect(setgidGroupWrite(path.join(adopted.storePath, "refs", "heads"))).toBe(true);
+
+        // A store from before the policy heals on the next worktree create.
+        execFileSync("git", ["config", "--unset", "core.sharedRepository"], {
+          cwd: adopted.storePath,
+        });
+        fs.chmodSync(path.join(adopted.storePath, "refs"), 0o755);
+        const wt = yield* store.createWorktree(adopted.storePath, sessionId, null, null);
+        expect(shared()).toBe("group");
+        expect(setgidGroupWrite(path.join(adopted.storePath, "refs"))).toBe(true);
+        // The worktree's own gitdir metadata (where checkpoints write) is covered too.
+        expect(setgidGroupWrite(path.join(adopted.storePath, "worktrees", wt.name))).toBe(true);
       }),
     );
   });
