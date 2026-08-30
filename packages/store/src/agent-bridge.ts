@@ -190,6 +190,22 @@ export const AgentBridgeLive: Layer.Layer<AgentBridge, never, MendKeysConfig> = 
       connection.on("error", () => {});
     };
 
+    /**
+     * Remove whatever occupies the socket path, surviving what `rmSync` cannot: a dead pod's
+     * socket file on an NFS-backed shared mount answers `lstat` with EINVAL, and `rmSync`
+     * (which stats first) threw that at every reconnect — the bridge could never re-attach
+     * after a pod swap until someone `rm`ed the file by hand (observed live, k8s PoC,
+     * 2026-08-30). `unlink` needs no stat, so it succeeds there; any residue is left for
+     * `listen` to report loudly rather than being guessed at here.
+     */
+    const removeSocketFile = (): void => {
+      try {
+        fs.unlinkSync(socketPath);
+      } catch {
+        // ENOENT (nothing there) or an unlink the filesystem refuses — bind decides next.
+      }
+    };
+
     const teardown = (): void => {
       client = null;
       since = null;
@@ -197,7 +213,7 @@ export const AgentBridgeLive: Layer.Layer<AgentBridge, never, MendKeysConfig> = 
       queue = [];
       server?.close();
       server = null;
-      fs.rmSync(socketPath, { force: true });
+      removeSocketFile();
     };
 
     const attach = Effect.fn("AgentBridge.attach")(function* (incoming: AgentBridgeClient) {
@@ -206,7 +222,7 @@ export const AgentBridgeLive: Layer.Layer<AgentBridge, never, MendKeysConfig> = 
       yield* Effect.sync(() => teardown());
       yield* Effect.promise(async () => {
         fs.mkdirSync(bridgeDir, { recursive: true, mode: 0o700 });
-        fs.rmSync(socketPath, { force: true });
+        removeSocketFile();
         const bridgeServer = net.createServer(handleConnection);
         await new Promise<void>((resolve, reject) => {
           bridgeServer.once("error", reject);
