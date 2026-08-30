@@ -372,6 +372,14 @@ else
       sed 's#.*/cli-v##; s#.*/v##' | sort -V | tail -n 1)"
   [ -n "$MEND_VERSION" ] || die "Could not resolve the latest release tag of $MEND_REPO."
 fi
+# Releases before 0.8.0 predate the server entry this installer starts (scripts/serve.mjs, #122)
+# and can never boot. A pin that old is usually debris from an install that failed before this
+# check existed — refuse it here, before any Mend work, with the exact way out.
+MEND_MIN_VERSION=0.8.0
+if [ "$MEND_VERSION" != main ] && [ "$HAVE_SORT_V" = 1 ] &&
+  [ "$(printf '%s\n%s\n' "$MEND_MIN_VERSION" "$MEND_VERSION" | sort -V | head -n 1)" != "$MEND_MIN_VERSION" ]; then
+  die "Mend $MEND_VERSION predates the server entry point this installer starts (needs >= $MEND_MIN_VERSION). Re-run with MEND_VERSION=latest."
+fi
 # Releases were tagged cli-v<X> until the one-version scheme (#125) made the tag v<X>: prefer the
 # modern tag, keep older pinned versions reachable under the historical spelling.
 if [ "$MEND_VERSION" = main ]; then
