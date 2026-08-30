@@ -17,7 +17,7 @@
 # share by default, so Darwin needs MEND_ALLOW_MACOS=1 to proceed.
 #
 # Knobs (set on the sh side of the pipe: `curl … | MEND_VERSION=0.5.0 sh`):
-#   MEND_VERSION        cli-v<X> release, "latest", or "main" (default: pinned version, else latest)
+#   MEND_VERSION        release version, "latest", or "main" (default: pinned version, else latest)
 #   SEALANT_VERSION     Sealant release or "latest" (default: pinned version, else latest)
 #   MEND_PORT           Mend server port (3105)      MEND_DB_PORT  Mend Postgres, loopback (5436)
 #   SEALANT_API_PORT / SEALANT_SSH_PORT / SEALANT_REGISTRY_PORT / SEALANT_BIND_HOST
@@ -366,13 +366,21 @@ elif [ "$requested" != "latest" ] && [ -n "$mend_pinned" ]; then
 else
   info "Resolving the latest Mend release…"
   MEND_VERSION="$(curl -fsSL "https://api.github.com/repos/$MEND_REPO/tags?per_page=100" 2>/dev/null |
-    sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"cli-v\([^"]*\)".*/\1/p' | sort -V | tail -n 1)"
+    sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\(cli-\)\{0,1\}v\([0-9][^"]*\)".*/\2/p' | sort -V | tail -n 1)"
   [ -n "$MEND_VERSION" ] ||
-    MEND_VERSION="$(git ls-remote --tags --refs "https://github.com/$MEND_REPO" 'cli-v*' 2>/dev/null |
-      sed 's#.*/cli-v##' | sort -V | tail -n 1)"
-  [ -n "$MEND_VERSION" ] || die "Could not resolve the latest cli-v* tag of $MEND_REPO."
+    MEND_VERSION="$(git ls-remote --tags --refs "https://github.com/$MEND_REPO" 'v*' 'cli-v*' 2>/dev/null |
+      sed 's#.*/cli-v##; s#.*/v##' | sort -V | tail -n 1)"
+  [ -n "$MEND_VERSION" ] || die "Could not resolve the latest release tag of $MEND_REPO."
 fi
-if [ "$MEND_VERSION" = main ]; then MEND_REF=main; else MEND_REF="cli-v$MEND_VERSION"; fi
+# Releases were tagged cli-v<X> until the one-version scheme (#125) made the tag v<X>: prefer the
+# modern tag, keep older pinned versions reachable under the historical spelling.
+if [ "$MEND_VERSION" = main ]; then
+  MEND_REF=main
+elif git ls-remote --exit-code --tags "https://github.com/$MEND_REPO" "v$MEND_VERSION" >/dev/null 2>&1; then
+  MEND_REF="v$MEND_VERSION"
+else
+  MEND_REF="cli-v$MEND_VERSION"
+fi
 ok "Mend $MEND_VERSION ($MEND_REF)"
 
 if [ -d "$MEND_SRC/.git" ]; then
