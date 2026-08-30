@@ -32,6 +32,8 @@
 #
 # Re-running repairs rather than reinstalls: secrets are never regenerated, pinned versions kept,
 # containers recreated only when their config changed. Upgrade: MEND_VERSION=latest / SEALANT_VERSION=latest.
+# Brace any expansion a multibyte char follows directly (`${VAR}…`, never `$VAR…`): macOS /bin/sh
+# is bash 3.2, which parses the UTF-8 bytes into the variable name — set -u then aborts on it.
 set -eu
 
 MEND_REPO="sealant-sh/Mend"
@@ -213,14 +215,14 @@ if command -v node >/dev/null 2>&1 && [ "$(node_major node)" -ge 22 ] 2>/dev/nul
 elif [ -x "$NODE_DIR/bin/node" ] && [ "$(node_major "$NODE_DIR/bin/node")" -ge 22 ] 2>/dev/null; then
   NODE_BIN="$NODE_DIR/bin/node" NPM_BIN="$NODE_DIR/bin/npm"
 else
-  info "No Node 22+ on PATH — resolving the latest Node $NODE_MAJOR…"
+  info "No Node 22+ on PATH — resolving the latest Node ${NODE_MAJOR}…"
   node_version="$(curl -fsSL https://nodejs.org/dist/index.json |
     tr '}' '\n' | grep "\"version\":\"v$NODE_MAJOR\." |
     sed -n 's/.*"version":"\(v[^"]*\)".*/\1/p' | head -n 1)"
   [ -n "$node_version" ] || die "Could not resolve a Node $NODE_MAJOR release from nodejs.org."
   tarball="node-$node_version-$OS-$ARCH.tar.gz"
   tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/mend-node.XXXXXX")"
-  info "Downloading $tarball…"
+  info "Downloading ${tarball}…"
   run curl -fsSL "https://nodejs.org/dist/$node_version/$tarball" -o "$tmpdir/$tarball"
   run curl -fsSL "https://nodejs.org/dist/$node_version/SHASUMS256.txt" -o "$tmpdir/SHASUMS256.txt"
   if [ "$DRY_RUN" != 1 ]; then
@@ -427,7 +429,7 @@ services:
 volumes:
   mend-pgdata:
 EOF
-info "Starting Mend's Postgres on 127.0.0.1:$MEND_DB_PORT…"
+info "Starting Mend's Postgres on 127.0.0.1:${MEND_DB_PORT}…"
 mend_compose up -d --wait || die "Mend's Postgres failed to start. Inspect with: docker compose --project-directory $MEND_DIR logs"
 
 # --- CLI (before the server starts: if the service fails, `mend doctor` is still there) ----------------------------------------------------------------------------------------------
