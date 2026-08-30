@@ -24,10 +24,9 @@ const REVIEW_ROUTES: ReadonlyArray<readonly [method: string, path: string]> = [
 ];
 
 const contractRoutes = new Set(
-  [
-    ...Object.values(sessionChangesGroup.endpoints),
-    ...Object.values(sessionsGroup.endpoints),
-  ].map((endpoint) => `${endpoint.method} ${endpoint.path}`),
+  [...Object.values(sessionChangesGroup.endpoints), ...Object.values(sessionsGroup.endpoints)].map(
+    (endpoint) => `${endpoint.method} ${endpoint.path}`,
+  ),
 );
 
 describe("mobile review routes", () => {
