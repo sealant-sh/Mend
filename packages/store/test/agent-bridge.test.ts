@@ -136,4 +136,22 @@ describe("AgentBridge", () => {
       }),
     );
   });
+
+  it("attaches over a dead pod's leftover socket file", async () => {
+    // A previous process's socket file survives on a shared mount (kubernetes: the RWX claim).
+    // Attach must clear it and bind — a stale file must never require a manual rm.
+    await withBridge(
+      Effect.gen(function* () {
+        const bridge = yield* AgentBridge;
+        yield* Effect.sync(() => {
+          fs.mkdirSync(path.dirname(bridge.socketPath()), { recursive: true, mode: 0o700 });
+          fs.writeFileSync(bridge.socketPath(), "");
+        });
+        const handle = yield* bridge.attach({ name: "after-restart", send: () => {} });
+        expect((yield* bridge.status()).connected).toBe(true);
+        expect(fs.statSync(bridge.socketPath()).isSocket()).toBe(true);
+        handle.detach();
+      }),
+    );
+  });
 });
