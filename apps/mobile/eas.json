@@ -1,7 +1,7 @@
 {
   "cli": {
     "version": ">= 23.0.0",
-    "appVersionSource": "remote"
+    "appVersionSource": "local"
   },
   "build": {
     "development": {
@@ -9,8 +9,11 @@
       "distribution": "internal",
       "channel": "development"
     },
+    "adhoc": {
+      "distribution": "internal",
+      "channel": "production"
+    },
     "production": {
-      "autoIncrement": true,
       "channel": "production"
     }
   },
