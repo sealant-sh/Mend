@@ -3,7 +3,7 @@ import { Schema } from "effect";
 import { HttpApi } from "effect/unstable/httpapi";
 import { describe, expect, it } from "vitest";
 
-import { MendApi, ProcessLogPage } from "./index.ts";
+import { MendApi, ProcessLogPage, ProjectBranch } from "./index.ts";
 
 const conversationEndpointNames = new Set(["submitTurn", "interruptTurn", "respondAgentRequest"]);
 
@@ -76,5 +76,22 @@ describe("typed HTTP error contracts", () => {
       nextFrom: "2",
       telemetryLoss: "unknown",
     });
+  });
+
+  it("ProjectBranch encodes instances but refuses shape-alike plain objects", () => {
+    // Class schemas encode INSTANCES only. A handler returning `{ name, sha, … }` compiles
+    // (structural typing) and then 400s every response at runtime — observed live on
+    // /projects/:id/refresh (v0.12.0); handlers must construct `new ProjectBranch(...)`.
+    const codec = Schema.toCodecJson(Schema.Array(ProjectBranch));
+    const fields = {
+      name: "main",
+      sha: "5654c8215770c29d395300a0d358739c767973b5",
+      committedAt: "2026-08-30T02:21:51+03:00",
+      isDefault: true,
+    };
+    expect(Schema.encodeUnknownSync(codec)([new ProjectBranch(fields)])).toMatchObject([
+      { name: "main", isDefault: true },
+    ]);
+    expect(() => Schema.encodeUnknownSync(codec)([fields])).toThrow();
   });
 });
