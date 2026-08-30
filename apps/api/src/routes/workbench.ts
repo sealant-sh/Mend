@@ -14,6 +14,7 @@ import {
   EnvironmentStaleWrite,
   MendApi,
   NotFound,
+  ProjectBranch,
   ProjectDetail,
   ProjectEnvironmentMutationResult,
   ProjectFileListing,
@@ -518,9 +519,11 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         const project = yield* projects
           .byId(params.id)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-        return yield* store
+        const branches = yield* store
           .listBranches(project.storePath)
           .pipe(Effect.mapError((error) => readableGitFailure(error, project.gitAuthMode)));
+        // The success schema is a Schema.Class: encoding demands instances, not shape-alikes.
+        return branches.map((branch) => new ProjectBranch(branch));
       }),
     )
     .handle("refresh", ({ params }) =>
@@ -538,9 +541,10 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
             .refreshFromOrigin(project.storePath, remoteEnv)
             .pipe(Effect.mapError((error) => readableGitFailure(error, project.gitAuthMode))),
         );
-        return yield* store
+        const branches = yield* store
           .listBranches(project.storePath)
           .pipe(Effect.mapError((error) => readableGitFailure(error, project.gitAuthMode)));
+        return branches.map((branch) => new ProjectBranch(branch));
       }),
     )
     .handle("files", ({ params, query }) =>
