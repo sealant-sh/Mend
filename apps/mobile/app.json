@@ -2,11 +2,17 @@
   "expo": {
     "name": "Mend",
     "slug": "mend",
-    "version": "0.0.0",
+    "version": "0.1.0",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "mend",
     "userInterfaceStyle": "automatic",
+    "runtimeVersion": {
+      "policy": "fingerprint"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/b63192dc-2cf7-4d37-a14b-7341df1feef9"
+    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.yiannisp.sealant.mend",
