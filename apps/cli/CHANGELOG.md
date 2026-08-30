@@ -1,5 +1,34 @@
 # @sealant/mend
 
+## 0.12.0
+
+### Minor Changes
+
+- 7652f22: Sessions carry their base branch, visibly and currently. A session records the base as
+  you named it (`baseRef`) beside the pinned commit, and every surface shows it: the sessions table
+  and dashboard, the web lists, session page and review header, and the mobile session screen. The
+  web composer and the mobile start rows pick a base from the project's real branches instead of a
+  blind text field. Bases are current, not adoption-day stale: provisioning freshens the base ref
+  from origin through the project's git auth (best-effort — offline or signer-less still provisions
+  on what the store has), and `mend refresh [project]` (`POST /projects/:id/refresh`) fetches every
+  origin branch into the store on demand. Nothing is ever pruned; session branches are untouched.
+
+### Patch Changes
+
+- 482be61: External agents stay visible whatever their harness does to file modes. Workspaces run as
+  root and codex tightens its state to 0700, which blinded the store-side observer (uid 1000) — a
+  codex run in a workspace terminal never appeared. The relocate boot script now keeps the harness
+  home group/other-readable (a detached root mode-keeper loop), the observer warns instead of going
+  silently blind, and a conversation that went quiet before mend could see it is late-observed: the
+  row appears already-ended and the conversation is captured into the record.
+- b764702: Project stores defend themselves against root-side git. Workspace containers run git as
+  root against the store's shared gitdir, and a root `git gc --auto` could leave the ref database
+  root-owned — locking the server (uid 1000) out of creating session refs, failing every new session
+  on the project. Stores now run `core.sharedRepository=group` with setgid group-writable trees:
+  applied at adoption, healed into existing stores on the next worktree create, and applied to each
+  session's worktree gitdir (where checkpoints write). A store already poisoned by an earlier root
+  write still needs a one-off root `chown -R 1000:1000` — only root can reclaim root's files.
+
 ## 0.11.0
 
 ### Minor Changes
