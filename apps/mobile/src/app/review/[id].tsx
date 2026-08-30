@@ -29,21 +29,26 @@ import { BodyText, MonoText, UiText, useTextScale } from "@/components/typograph
 import {
   agentIsActive,
   canDeliverFollowUp,
-  useChangeDiff,
   usePendingFollowUp,
   useSession,
   useSessionActions,
   type SessionChangeDto,
 } from "@/data/live";
 import {
+  CHANGE_LEVEL_TARGET,
+  resetOpenReview,
   useChangeComments,
   useChangePasses,
   useChangeTour,
+  useOpenReview,
   useReviewActions,
+  useReviewDiff,
   useSendReview,
   type ChangePassDto,
   type ChangeTourDto,
   type ReviewCommentDto,
+  type ReviewSliceDto,
+  type SliceCommentTarget,
 } from "@/data/review";
 import { sha256Hex } from "@/lib/sha256";
 import { radius, spacing, useEvidenceTheme } from "@/theme/evidence";
@@ -303,15 +308,15 @@ function TourDock({
 /** One composer for both anchors: a tapped line, or the change as a whole. */
 function CommentComposer({
   changeId,
-  file,
-  line,
+  sliceId,
+  target,
   placeholder,
   autoFocus = false,
   onDone,
 }: {
   readonly changeId: string;
-  readonly file: string | null;
-  readonly line: number | null;
+  readonly sliceId: string;
+  readonly target: SliceCommentTarget;
   readonly placeholder: string;
   readonly autoFocus?: boolean;
   readonly onDone?: () => void;
@@ -319,11 +324,12 @@ function CommentComposer({
   const { colors } = useEvidenceTheme();
   const { comment } = useReviewActions(changeId);
   const [body, setBody] = useState("");
+  const anchorPath = target.side === "old" ? target.oldPath : (target.newPath ?? target.oldPath);
   const submit = () => {
     const text = body.trim();
     if (text === "") return;
     comment.mutate(
-      { file, line, body: text },
+      { sliceId, target, body: text },
       {
         onSuccess: () => {
           setBody("");
@@ -334,9 +340,9 @@ function CommentComposer({
   };
   return (
     <View style={{ gap: 8 }}>
-      {file !== null && line !== null && (
+      {anchorPath !== null && target.startLine !== null && (
         <MonoText size={10.5} tone="label" numberOfLines={1}>
-          {file}:{line}
+          {anchorPath}:{target.startLine}
         </MonoText>
       )}
       <TextInput
@@ -383,12 +389,12 @@ function CommentComposer({
 function SendReviewModal({
   change,
   comments,
-  diffDigest,
+  slice,
   onClose,
 }: {
   readonly change: SessionChangeDto;
   readonly comments: ReadonlyArray<ReviewCommentDto>;
-  readonly diffDigest: string;
+  readonly slice: ReviewSliceDto;
   readonly onClose: () => void;
 }) {
   const { colors } = useEvidenceTheme();
@@ -397,7 +403,7 @@ function SendReviewModal({
     change.id,
     change.sessionId,
     comments.map((comment) => comment.id),
-    diffDigest,
+    slice,
   );
   const [instruction, setInstruction] = useState(() => assembleInstruction(change, comments));
   const [sentStatus, setSentStatus] = useState<string | null>(null);
@@ -500,10 +506,21 @@ export default function ReviewScreen() {
   const queryClient = useQueryClient();
   const lineH = Math.round(BASE_LINE_H * textScale);
 
-  const diffQuery = useChangeDiff(changeId);
-  const change = diffQuery.data?.change ?? null;
-  const stats = diffQuery.data?.files ?? [];
-  const diffText = diffQuery.data?.diff ?? "";
+  // The review renders a pinned slice (plan §7.3), the same way the web
+  // review does: comments and the follow-up anchor to the slice's patch and
+  // digest, never to the worktree that keeps moving underneath.
+  const openQuery = useOpenReview(changeId);
+  const slice = openQuery.data?.slice ?? null;
+  const reviewQuery = useReviewDiff(changeId, slice?.id ?? null);
+  const review = reviewQuery.data ?? null;
+  const change = review?.change ?? null;
+  const stats = (review?.files ?? []).map((file) => ({
+    path: file.newPath ?? file.oldPath ?? "unknown path",
+    additions: file.additions,
+    deletions: file.deletions,
+  }));
+  const diffText = review?.patch ?? "";
+  const reviewLoading = openQuery.isLoading || reviewQuery.isLoading;
   const comments = useChangeComments(changeId).data ?? [];
   const tour = useChangeTour(changeId).data ?? null;
   const passes = useChangePasses(changeId).data ?? [];
@@ -531,10 +548,31 @@ export default function ReviewScreen() {
   const [collapsedOverride, setCollapsedOverride] = useState<Record<string, boolean>>({});
   const isCollapsed = (path: string) => collapsedOverride[path] ?? defaultCollapsed.has(path);
 
-  const [composerAnchor, setComposerAnchor] = useState<{
-    readonly file: string;
-    readonly line: number;
-  } | null>(null);
+  const [composerAnchor, setComposerAnchor] = useState<SliceCommentTarget | null>(null);
+
+  // The comment anchor the server verifies: the slice file's hunk that covers
+  // the tapped new-file line, carrying that hunk's context hash (web parity).
+  const anchorFor = (path: string, line: number): SliceCommentTarget | null => {
+    const reviewFile = (review?.files ?? []).find(
+      (candidate) => (candidate.newPath ?? candidate.oldPath) === path,
+    );
+    if (reviewFile === undefined) return null;
+    const hunk = reviewFile.hunks.find(
+      (candidate) =>
+        candidate.newLines > 0 &&
+        line >= candidate.newStart &&
+        line <= candidate.newStart + candidate.newLines - 1,
+    );
+    if (hunk === undefined) return null;
+    return {
+      oldPath: reviewFile.oldPath,
+      newPath: reviewFile.newPath,
+      side: "new",
+      startLine: line,
+      endLine: line,
+      hunkContextHash: hunk.contextHash,
+    };
+  };
   const [tourIndex, setTourIndex] = useState<number | null>(null);
   const [sendOpen, setSendOpen] = useState(false);
 
@@ -608,10 +646,13 @@ export default function ReviewScreen() {
           automaticallyAdjustKeyboardInsets
           refreshControl={
             <RefreshControl
-              refreshing={diffQuery.isRefetching}
-              onRefresh={() =>
-                void queryClient.invalidateQueries({ queryKey: ["change", changeId] })
-              }
+              refreshing={openQuery.isRefetching || reviewQuery.isRefetching}
+              onRefresh={() => {
+                // Reopen the review at the current worktree — the pinned
+                // slice never changes underneath the reviewer on its own.
+                resetOpenReview(changeId);
+                void queryClient.invalidateQueries({ queryKey: ["change", changeId] });
+              }}
             />
           }
           contentContainerStyle={{
@@ -662,6 +703,20 @@ export default function ReviewScreen() {
               onPress={() => setSendOpen(true)}
             />
           </View>
+
+          {queuePass.isError && (
+            <MonoText size={10.5} tone="danger">
+              {queuePass.error instanceof Error
+                ? queuePass.error.message
+                : "the pass could not be queued"}
+            </MonoText>
+          )}
+
+          {review?.worktreeChangedSinceSnapshot === true && (
+            <MonoText size={10.5} tone="warning">
+              the worktree moved since this review opened — pull to refresh
+            </MonoText>
+          )}
 
           {outcomeLines.length > 0 && (
             <View style={{ gap: 2 }}>
@@ -733,9 +788,7 @@ export default function ReviewScreen() {
             <Panel>
               <PanelRow first>
                 <MonoText>
-                  {diffQuery.isLoading
-                    ? "loading…"
-                    : "the worktree matches its base — nothing to review"}
+                  {reviewLoading ? "loading…" : "the worktree matches its base — nothing to review"}
                 </MonoText>
               </PanelRow>
             </Panel>
@@ -775,7 +828,7 @@ export default function ReviewScreen() {
                     rows={chunk}
                     lineH={lineH}
                     highlight={highlight}
-                    onPressLine={(line) => setComposerAnchor({ file: file.path, line })}
+                    onPressLine={(line) => setComposerAnchor(anchorFor(file.path, line))}
                   />,
                 );
                 key += 1;
@@ -787,8 +840,8 @@ export default function ReviewScreen() {
                 const lineComments = byLine.get(row.newLine);
                 const composerHere =
                   composerAnchor !== null &&
-                  composerAnchor.file === file.path &&
-                  composerAnchor.line === row.newLine;
+                  (composerAnchor.newPath ?? composerAnchor.oldPath) === file.path &&
+                  composerAnchor.startLine === row.newLine;
                 if (lineComments === undefined && !composerHere) continue;
                 flush();
                 for (const comment of lineComments ?? []) {
@@ -798,13 +851,13 @@ export default function ReviewScreen() {
                     </PanelRow>,
                   );
                 }
-                if (composerHere) {
+                if (composerHere && slice !== null && composerAnchor !== null) {
                   blocks.push(
                     <PanelRow key={`composer-${row.newLine}`}>
                       <CommentComposer
                         changeId={changeId}
-                        file={file.path}
-                        line={row.newLine}
+                        sliceId={slice.id}
+                        target={composerAnchor}
                         placeholder="Comment on this line…"
                         autoFocus
                         onDone={() => setComposerAnchor(null)}
@@ -878,14 +931,16 @@ export default function ReviewScreen() {
                 <CommentCard comment={comment} />
               </PanelRow>
             ))}
-            <PanelRow first={changeLevel.length === 0}>
-              <CommentComposer
-                changeId={changeId}
-                file={null}
-                line={null}
-                placeholder="Comment on the change as a whole…"
-              />
-            </PanelRow>
+            {slice !== null && (
+              <PanelRow first={changeLevel.length === 0}>
+                <CommentComposer
+                  changeId={changeId}
+                  sliceId={slice.id}
+                  target={CHANGE_LEVEL_TARGET}
+                  placeholder="Comment on the change as a whole…"
+                />
+              </PanelRow>
+            )}
           </Panel>
         </ScrollView>
 
@@ -899,11 +954,11 @@ export default function ReviewScreen() {
         )}
       </View>
 
-      {sendOpen && change !== null && (
+      {sendOpen && change !== null && slice !== null && (
         <SendReviewModal
           change={change}
           comments={openUnsent}
-          diffDigest={sha256Hex(diffText)}
+          slice={slice}
           onClose={() => setSendOpen(false)}
         />
       )}
