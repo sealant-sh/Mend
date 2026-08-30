@@ -2,6 +2,29 @@
 
 Observed, reproducible, not yet fixed. Newest first; delete entries when they ship.
 
+## 2026-08-30 · root-side git in workspaces can poison a store's ref database
+
+Observed live (project scribe, k8s PoC): workspace containers run as root and mount the project's
+bare repo (a linked worktree's real gitdir), so any git the agent runs writes there as uid 0. A
+root-side `git gc --auto` repacked refs and left `packed-refs`, `logs/`, and `refs/heads/mend/`
+root-owned — after which the API (uid 1000) could not create a session ref: every provision on the
+project failed 422 in ~90ms ("cannot lock ref … Permission denied"). Same class as the known
+container-uid worktree leftovers (`removeWorktreeForce`), but the blast radius is the whole project,
+not one session's cleanup. Mitigated: stores now run `core.sharedRepository=group` with setgid
+group-writable trees (applied at adopt, healed at worktree create), so future root-side writes stay
+group-writable for uid 1000. An ALREADY-poisoned store still needs a one-off root
+`chown -R 1000:1000` (only root may re-group root's files). The real fix is platform-side — see
+PLATFORM-FEEDBACK.md: workspace containers should write the store as uid 1000.
+
+## 2026-08-30 · repeat bridge-mode adopts skip the connected signer
+
+First `mend adopt --auth bridge` works end-to-end; later adopts fail "Permission denied (publickey)"
+in ~800ms with NO identities request reaching the share client — while `/api/keys/bridge` reports
+connected and the identical git command with the same `SSH_AUTH_SOCK` succeeds when run manually in
+the API pod. Something between `remoteEnvFor("bridge")` and the spawned git stops consulting the
+socket on the non-first adopt. Not yet root-caused; reproduced three times against mend 0.11.1 on
+the k8s PoC.
+
 ## 2026-08-13 · shell state restore references sessions the CLIs cannot open
 
 Inside a shell session, the agent CLIs list past conversations that fail to open ("imagined"

@@ -192,6 +192,36 @@ const parseNameStatus = (
 
 const sha = (value: string) => Sha.make(value);
 
+/**
+ * Make one tree group-writable with setgid directories — the filesystem half of
+ * `core.sharedRepository=group`. Entries another uid owns are skipped silently: chmod is the
+ * owner's privilege, and the policy exists precisely so future writes stop needing this.
+ */
+const shareTree = (root: string): void => {
+  const stack: Array<string> = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop();
+    if (dir === undefined) break;
+    try {
+      fs.chmodSync(dir, (fs.statSync(dir).mode & 0o7777) | 0o2070);
+    } catch {
+      continue;
+    }
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const target = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(target);
+      } else if (entry.isFile()) {
+        try {
+          fs.chmodSync(target, (fs.statSync(target).mode & 0o7777) | 0o060);
+        } catch {
+          // Another uid's file — covered by the policy from here on.
+        }
+      }
+    }
+  }
+};
+
 /** Untracked paths — invisible to `git diff <base>` but part of the change. */
 const untrackedIn = (worktreePath: string) =>
   git(["ls-files", "--others", "--exclude-standard"], worktreePath).pipe(
@@ -426,6 +456,27 @@ export class Store extends Context.Service<
           }
         });
 
+      /**
+       * Root-uid defense (docs/BUGS.md 2026-08-30): workspace containers run git as ROOT
+       * against this very gitdir (the worktree's real state lives here, so the pod mounts it),
+       * and a root-side `git gc --auto` used to leave `packed-refs` and `refs/heads/mend/`
+       * root-owned — after which this process (uid 1000) could not create a session ref and
+       * every provision failed. `core.sharedRepository=group` makes every git — root's
+       * included — create group-writable files and setgid directories, so whatever uid wrote
+       * last, the group keeps write. The one-time walk repairs what THIS uid already owns;
+       * files another uid left behind need the out-of-band chown (only root may re-group them).
+       * Skipped entirely once the config records the policy — the walk must not tax every
+       * worktree create.
+       */
+      const ensureSharedGroup = Effect.fn("Store.ensureSharedGroup")(function* (storePath: string) {
+        const current = yield* git(["config", "--get", "core.sharedRepository"], storePath).pipe(
+          Effect.catch(() => Effect.succeed("")),
+        );
+        if (current === "group") return;
+        yield* git(["config", "core.sharedRepository", "group"], storePath);
+        yield* Effect.sync(() => shareTree(storePath));
+      });
+
       const adopt = Effect.fn("Store.adopt")(function* (
         name: string,
         source: string,
@@ -442,6 +493,7 @@ export class Store extends Context.Service<
             storePath,
           );
           yield* ensureExcludes(storePath);
+          yield* ensureSharedGroup(storePath);
           const defaultBranch = yield* git(["symbolic-ref", "--short", "HEAD"], storePath);
           const head = yield* git(["rev-parse", "HEAD"], storePath);
           return { storePath, defaultBranch, headSha: sha(head) };
@@ -516,8 +568,9 @@ export class Store extends Context.Service<
         base: string | null,
         remoteEnv: Record<string, string> | null,
       ) {
-        // Idempotent: stores adopted before the exclude policy get it here.
+        // Idempotent: stores adopted before the exclude or shared-group policies get them here.
         yield* ensureExcludes(storePath);
+        yield* ensureSharedGroup(storePath);
         const baseRef = base ?? (yield* git(["symbolic-ref", "--short", "HEAD"], storePath));
         yield* freshenBase(storePath, baseRef, remoteEnv);
         const baseSha = yield* resolveBaseSha(storePath, baseRef, remoteEnv);
@@ -525,6 +578,9 @@ export class Store extends Context.Service<
         const branch = `mend/session/${sessionId}`;
         const worktreePath = path.join(path.dirname(storePath), "worktrees", name);
         yield* git(["worktree", "add", "-b", branch, worktreePath, baseSha], storePath);
+        // `git worktree add` does not shared-perm its admin dir the way ref writes are; the
+        // checkpoint index and HEAD for this session live there, so share it explicitly.
+        yield* Effect.sync(() => shareTree(path.join(storePath, "worktrees", name)));
         return { path: worktreePath, name, branch, baseSha: sha(baseSha), baseRef };
       });
 
