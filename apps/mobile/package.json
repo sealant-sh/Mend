@@ -55,6 +55,7 @@
     "react-native-worklets": "0.10.0"
   },
   "devDependencies": {
+    "@mend/api-contracts": "workspace:*",
     "@types/react": "catalog:",
     "typescript": "~6.0.3",
     "vitest": "catalog:"
