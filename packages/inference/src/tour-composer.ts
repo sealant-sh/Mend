@@ -100,7 +100,9 @@ export class TourComposer extends Context.Service<
         // (the change's session mirror); multi-session evidence union is
         // named follow-up work. Null = no session ever inhabited the worktree.
         if (change.sessionId === null) {
-          return yield* failed("the change has no contributing session — nothing to ground findings in");
+          return yield* failed(
+            "the change has no contributing session — nothing to ground findings in",
+          );
         }
         const session = yield* sessions
           .byId(change.sessionId)

@@ -1,8 +1,7 @@
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { CheckpointId, SealantRunId, SessionId,
-  WorktreeId, Sha } from "./ids.ts";
+import { CheckpointId, SealantRunId, SessionId, WorktreeId, Sha } from "./ids.ts";
 import { SequenceNumber, Timestamp } from "./timestamp.ts";
 import { Checkpoint } from "./workbench/checkpoint.ts";
 

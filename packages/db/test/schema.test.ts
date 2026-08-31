@@ -187,9 +187,9 @@ describe("Mend Drizzle schema", () => {
       "created_at",
       "updated_at",
     ]);
-    expect(worktreeConfig.uniqueConstraints.map((constraint) => constraint.name).toSorted()).toEqual(
-      ["worktrees_project_directory_key", "worktrees_project_name_key"],
-    );
+    expect(
+      worktreeConfig.uniqueConstraints.map((constraint) => constraint.name).toSorted(),
+    ).toEqual(["worktrees_project_directory_key", "worktrees_project_name_key"]);
 
     // Sessions belong to a worktree; deleting the worktree takes its conversations.
     const sessionForeignKeys = getTableConfig(agentSessions).foreignKeys;

@@ -132,7 +132,9 @@ export const ChangeSuggesterLive: Layer.Layer<
       // Phase-A record evidence reads the LAST CONTRIBUTING conversation (the
       // change's session mirror); multi-session union is named follow-up work.
       if (change.sessionId === null) {
-        return yield* failed("the change has no contributing session — nothing to ground findings in");
+        return yield* failed(
+          "the change has no contributing session — nothing to ground findings in",
+        );
       }
       const session = yield* sessions
         .byId(change.sessionId)

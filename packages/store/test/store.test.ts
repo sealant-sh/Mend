@@ -66,7 +66,12 @@ describe("Store", () => {
         expect(fs.existsSync(adopted.storePath)).toBe(true);
 
         // Session worktree on its own branch from the default branch.
-        const wt = yield* store.createWorktree(adopted.storePath, wtIdentity(sessionId), null, null);
+        const wt = yield* store.createWorktree(
+          adopted.storePath,
+          wtIdentity(sessionId),
+          null,
+          null,
+        );
         expect(wt.branch).toBe(`mend/wt/${sessionId}`);
         expect(wt.baseSha).toBe(adopted.headSha);
         expect(wt.baseRef).toBe("main");
@@ -180,7 +185,12 @@ describe("Store", () => {
           cwd: adopted.storePath,
         });
         fs.chmodSync(path.join(adopted.storePath, "refs"), 0o755);
-        const wt = yield* store.createWorktree(adopted.storePath, wtIdentity(sessionId), null, null);
+        const wt = yield* store.createWorktree(
+          adopted.storePath,
+          wtIdentity(sessionId),
+          null,
+          null,
+        );
         expect(shared()).toBe("group");
         expect(setgidGroupWrite(path.join(adopted.storePath, "refs"))).toBe(true);
         // The worktree's own gitdir metadata (where checkpoints write) is covered too.
@@ -254,7 +264,9 @@ describe("Store", () => {
         const names = branches.map((b) => b.name);
         expect(names).toContain("main");
         expect(names).toContain("feature/x");
-        expect(names.some((n) => n.startsWith("mend/session/") || n.startsWith("mend/wt/"))).toBe(false);
+        expect(names.some((n) => n.startsWith("mend/session/") || n.startsWith("mend/wt/"))).toBe(
+          false,
+        );
         expect(branches.find((b) => b.name === "main")?.isDefault).toBe(true);
         expect(branches.find((b) => b.name === "main")?.sha).toBe(newMainSha);
         expect(branches.find((b) => b.name === "feature/x")?.sha).toBe(featureSha);

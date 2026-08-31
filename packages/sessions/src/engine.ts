@@ -5659,7 +5659,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       return {
         provision,
         ensureWorktree: (projectId, input) =>
-          projects.byId(projectId).pipe(Effect.flatMap((project) => ensureWorktreeIn(project, input))),
+          projects
+            .byId(projectId)
+            .pipe(Effect.flatMap((project) => ensureWorktreeIn(project, input))),
         provisionSessionIn: (worktreeId, input) =>
           Effect.gen(function* () {
             const worktree = yield* worktreesRepo.byId(worktreeId);
