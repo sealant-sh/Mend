@@ -44,6 +44,10 @@ export interface LaunchArgs {
   readonly ask: boolean;
   /** Priority processing — codex `service_tier=priority`. */
   readonly fast: boolean;
+  /** Launch and return immediately — no attach; the session runs in the background. */
+  readonly detach: boolean;
+  /** Foreground semantics for this launch — the session stops when this CLI exits. */
+  readonly foreground: boolean;
   /** Everything after `--` (mend run's command). */
   readonly custom: ReadonlyArray<string>;
   readonly error: string | null;
@@ -57,12 +61,15 @@ const LAUNCH_ERROR: Omit<LaunchArgs, "error"> = {
   base: null,
   ask: false,
   fast: false,
+  detach: false,
+  foreground: false,
   custom: [],
 };
 
 /**
  * `mend claude|codex|opencode ["prompt"] [--model <id>] [--effort <level>]
- * [--base <ref>] [--ask] [--project <p>]`, plus `mend run … -- <command...>`.
+ * [--base <ref>] [--ask] [--detach|-d] [--foreground] [--project <p>]`, plus
+ * `mend run … -- <command...>`.
  * The first non-flag positional is the prompt; a second one is an error so a
  * forgotten quote fails loudly instead of launching with half a sentence.
  */
@@ -77,6 +84,8 @@ export const parseLaunchArgs = (args: ReadonlyArray<string>): LaunchArgs => {
   let base: string | null = null;
   let ask = false;
   let fast = false;
+  let detach = false;
+  let foreground = false;
   for (let index = 0; index < flagArgs.length; index += 1) {
     const arg = flagArgs[index] ?? "";
     if (arg === "--ask") {
@@ -85,6 +94,14 @@ export const parseLaunchArgs = (args: ReadonlyArray<string>): LaunchArgs => {
     }
     if (arg === "--fast") {
       fast = true;
+      continue;
+    }
+    if (arg === "--detach" || arg === "-d") {
+      detach = true;
+      continue;
+    }
+    if (arg === "--foreground") {
+      foreground = true;
       continue;
     }
     if (arg === "--project" || arg === "--model" || arg === "--effort" || arg === "--base") {
@@ -116,7 +133,22 @@ export const parseLaunchArgs = (args: ReadonlyArray<string>): LaunchArgs => {
   if (effort !== null && !EFFORT_LEVELS.includes(effort)) {
     return { ...LAUNCH_ERROR, error: `--effort must be one of ${EFFORT_LEVELS.join(", ")}` };
   }
-  return { project, prompt, model, effort, base, ask, fast, custom, error: null };
+  if (detach && foreground) {
+    return { ...LAUNCH_ERROR, error: "--detach and --foreground contradict — pick one" };
+  }
+  return {
+    project,
+    prompt,
+    model,
+    effort,
+    base,
+    ask,
+    fast,
+    detach,
+    foreground,
+    custom,
+    error: null,
+  };
 };
 
 export const LIVE_STATUSES: ReadonlySet<string> = new Set([

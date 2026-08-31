@@ -1269,6 +1269,7 @@ const setup = (tmp: string, world: World) => {
       autoTour: "inherit",
       autoName: "inherit",
       autoSuggest: "inherit",
+      backgroundSessions: "inherit",
       gitAuthMode: "ambient",
       workspaceImage: null,
       applyDotfiles: true,

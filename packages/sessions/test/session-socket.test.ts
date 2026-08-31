@@ -71,6 +71,11 @@ describe("SessionSocketHost", () => {
             addService: () => Effect.succeed({}),
             stopService: () => Effect.succeed({}),
             restartService: () => Effect.die("unused"),
+            stopSession: () =>
+              Effect.sync(() => {
+                seen.push({ stopSession: true });
+                return {};
+              }),
             gitTransport: () => Effect.die("unused"),
             gitTransportDone: () => Effect.void,
           };
@@ -159,6 +164,7 @@ describe("SessionSocketHost", () => {
             addService: () => Effect.die("unused"),
             stopService: () => Effect.die("unused"),
             restartService: () => Effect.die("unused"),
+            stopSession: () => Effect.die("unused"),
             gitTransport: (request) =>
               Effect.sync(() => {
                 requests.push(request);

@@ -258,6 +258,7 @@ export const projects = pgTable("projects", {
   autoTour: text().$type<AutomationChoice>().notNull().default("inherit"),
   autoSuggest: text().$type<AutomationChoice>().notNull().default("inherit"),
   autoName: text().$type<AutomationChoice>().notNull().default("inherit"),
+  backgroundSessions: text().$type<AutomationChoice>().notNull().default("inherit"),
   gitAuthMode: text().$type<GitAuthMode>().notNull().default("ambient"),
   // NULL inherits the global settings.workspaceImage default.
   workspaceImage: jsonbOf(WorkspaceImage),

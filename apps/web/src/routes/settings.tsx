@@ -77,6 +77,7 @@ function SettingsPage() {
         <ThemePanel />
         <WorkspaceEnvironmentPanel />
         <DotfilesPanel />
+        <SessionLifecyclePanel />
         <ReviewAutomationPanel />
         <ConnectedAccountsPanel />
         <DevicesPanel />
@@ -859,6 +860,69 @@ const AUTOMATION_ROWS: ReadonlyArray<{
       "Runs after the first prompt. The session gets a short label in lists while it still runs; a typed label always wins.",
   },
 ];
+
+/**
+ * Session lifecycle default — the cascade's root; a project can override it
+ * (inherit · on · off), and a launch can override both (--detach/--foreground).
+ * Only the launching CLI can enforce Off — a closing browser tab cannot
+ * promise a stop — so the switch governs CLI launches.
+ */
+function SessionLifecyclePanel() {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const settings = useSuspenseQuery(trpc.settings.get.queryOptions()).data;
+  const [pending, setPending] = useState(false);
+
+  const toggle = (value: boolean) => {
+    if (settings.backgroundSessions === value) return;
+    setPending(true);
+    const next: SettingsDto = { ...settings, backgroundSessions: value };
+    void putSettings(next)
+      .then(() => queryClient.invalidateQueries(trpc.settings.pathFilter()))
+      .finally(() => setPending(false));
+  };
+
+  return (
+    <section className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
+      <h2 className="font-sans text-sm font-semibold">Sessions</h2>
+      <p className="mt-1 text-sm text-muted-foreground">
+        How long a session outlives the terminal that launched it.
+      </p>
+      <div className="mt-5 space-y-5 border-t border-[var(--sw-faint-rule)] pt-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="font-sans text-sm font-medium text-foreground">
+              Run sessions in the background
+            </p>
+            <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+              A session keeps running when every terminal and browser disconnects; stops are
+              explicit (Stop here, mend stop anywhere). Off gives CLI launches foreground semantics
+              — the session stops when the launching mend exits; Ctrl+] still detaches. Applies to
+              CLI launches: a closing browser tab cannot promise a stop.
+            </p>
+          </div>
+          <div className="flex shrink-0 gap-2">
+            {[true, false].map((value) => (
+              <button
+                key={String(value)}
+                type="button"
+                disabled={pending}
+                onClick={() => toggle(value)}
+                className={`rounded-xl border px-3.5 py-1.5 font-sans text-xs font-medium shadow-xs transition-colors disabled:opacity-60 ${
+                  settings.backgroundSessions === value
+                    ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
+                    : "border-border bg-card text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {value ? "On" : "Off"}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
 
 /**
  * Review automation defaults — the cascade's root. Every project follows

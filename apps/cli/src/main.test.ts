@@ -56,21 +56,41 @@ const acceptWebSocket = (request: IncomingMessage, socket: Duplex): void => {
 
 type HttpHandler = (request: IncomingMessage, response: ServerResponse) => void;
 
-const startFakeMend = async (handleHttp: HttpHandler) => {
+/**
+ * What the fake terminal does when a client attaches: `end` sends the end
+ * control frame (the session settled); `drop` severs the transport without
+ * one (a server restart, a network cut); `hold` keeps the socket open silent
+ * (a live session — signals decide the exit).
+ */
+const startFakeMend = async (
+  handleHttp: HttpHandler,
+  behavior: "end" | "drop" | "hold" = "end",
+) => {
   let notifyEndFrame: (() => void) | undefined;
   const endFrameSent = new Promise<void>((resolve) => {
     notifyEndFrame = resolve;
   });
+  let notifyUpgraded: (() => void) | undefined;
+  const upgraded = new Promise<void>((resolve) => {
+    notifyUpgraded = resolve;
+  });
+  let upgrades = 0;
   const upgradedSockets = new Set<Duplex>();
   const server = createServer(handleHttp);
   server.on("upgrade", (request, socket) => {
+    upgrades += 1;
     upgradedSockets.add(socket);
     socket.once("close", () => upgradedSockets.delete(socket));
     acceptWebSocket(request, socket);
-    socket.write(websocketTextFrame(JSON.stringify({ t: "end" })));
-    notifyEndFrame?.();
-    // Deliberately keep the transport open. Session lifecycle ended already;
-    // transport teardown must not remain on the user's exit path.
+    notifyUpgraded?.();
+    if (behavior === "end") {
+      socket.write(websocketTextFrame(JSON.stringify({ t: "end" })));
+      notifyEndFrame?.();
+      // Deliberately keep the transport open. Session lifecycle ended already;
+      // transport teardown must not remain on the user's exit path.
+    } else if (behavior === "drop") {
+      setTimeout(() => socket.destroy(), 50);
+    }
   });
 
   server.listen(0, "127.0.0.1");
@@ -80,6 +100,8 @@ const startFakeMend = async (handleHttp: HttpHandler) => {
 
   return {
     endFrameSent,
+    upgraded,
+    upgradeCount: () => upgrades,
     url: `http://127.0.0.1:${address.port}`,
     close: async () => {
       for (const socket of upgradedSockets) socket.destroy();
@@ -167,6 +189,98 @@ describe("Mend CLI session exit", () => {
   });
 });
 
+describe("Mend CLI session lifecycle", () => {
+  const launchRoutes = (routes: Array<string>): HttpHandler => {
+    return (request, response) => {
+      const route = `${request.method ?? "GET"} ${request.url ?? ""}`;
+      routes.push(route);
+      if (route === "GET /api/projects") json(response, [project]);
+      else if (route === "GET /api/settings") json(response, { backgroundSessions: false });
+      else if (route === `POST /api/projects/${project.id}/sessions`) json(response, session);
+      else if (route === `POST /api/sessions/${session.id}/launch`) json(response, session);
+      else if (route === `POST /api/sessions/${session.id}/stop`) json(response, session);
+      else response.writeHead(404).end();
+    };
+  };
+
+  it("--detach launches without attaching and prints the reattach hint", async () => {
+    const routes: Array<string> = [];
+    const fake = await startFakeMend(launchRoutes(routes), "hold");
+    const cli = startCli(fake.url, ["codex", "--project", project.name, "--detach"]);
+
+    try {
+      await expectFastExit(cli.exited, cli.stderr);
+      expect(fake.upgradeCount()).toBe(0);
+      expect(routes).not.toContain("GET /api/settings"); // the flag decides — no read
+      expect(cli.stdout()).toContain(`mend attach ${session.id.slice(0, 8)}`);
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  });
+
+  it("foreground: a SIGTERM mid-attach stops the session before exiting", async () => {
+    const routes: Array<string> = [];
+    const fake = await startFakeMend(launchRoutes(routes), "hold");
+    const cli = startCli(fake.url, ["codex", "--project", project.name]);
+
+    try {
+      await fake.upgraded;
+      cli.child.kill("SIGTERM");
+      const outcome = await Promise.race([
+        cli.exited,
+        new Promise<{ readonly kind: "timeout" }>((resolve) =>
+          setTimeout(() => resolve({ kind: "timeout" }), 4000),
+        ),
+      ]);
+      expect(outcome, cli.stderr()).toEqual({ kind: "exit", code: 0 });
+      expect(routes).toContain(`POST /api/sessions/${session.id}/stop`);
+      expect(cli.stdout()).toContain("stopped");
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  });
+
+  it("foreground: the harness ending naturally sends no stop", async () => {
+    const routes: Array<string> = [];
+    const fake = await startFakeMend(launchRoutes(routes), "end");
+    const cli = startCli(fake.url, ["codex", "--project", project.name]);
+
+    try {
+      await fake.endFrameSent;
+      await expectFastExit(cli.exited, cli.stderr);
+      expect(routes).not.toContain(`POST /api/sessions/${session.id}/stop`);
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  });
+
+  it("background: a dropped socket says the session keeps running, not that it ended", async () => {
+    const fake = await startFakeMend((request, response) => {
+      if (request.url === "/api/sessions") json(response, [session]);
+      else response.writeHead(404).end();
+    }, "drop");
+    const cli = startCli(fake.url, ["attach", "session-"]);
+
+    try {
+      const outcome = await Promise.race([
+        cli.exited,
+        new Promise<{ readonly kind: "timeout" }>((resolve) =>
+          setTimeout(() => resolve({ kind: "timeout" }), 4000),
+        ),
+      ]);
+      expect(outcome, cli.stderr()).toEqual({ kind: "exit", code: 0 });
+      expect(cli.stdout()).toContain("keeps running");
+      expect(cli.stdout()).not.toContain("session ended");
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  });
+});
+
 describe("mend help", () => {
   it("sequences the start block first and still lists every command", async () => {
     const cli = startCli("http://127.0.0.1:1", ["help"]);
@@ -201,6 +315,7 @@ describe("mend help", () => {
       "mend dotfiles sync",
       "mend run --",
       "mend attach",
+      "mend stop",
       "mend shell",
       "mend service run",
       "mend service add",

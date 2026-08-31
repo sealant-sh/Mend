@@ -102,6 +102,17 @@ Ctrl+]
 The CLI closes its attachment and leaves the agent running. A browser or desktop client can attach
 to the same session while the terminal is detached.
 
+Sessions run in the background by default: closing the terminal window or losing the connection also
+leaves the session running. Launch with `--detach` to skip attaching entirely, and stop explicitly
+with:
+
+```sh
+mend stop 01MEND
+```
+
+The record and review remain. The `Sessions` switch in Settings flips the default to foreground
+semantics — the session stops when the launching `mend` exits.
+
 ## Reattach
 
 List active sessions:

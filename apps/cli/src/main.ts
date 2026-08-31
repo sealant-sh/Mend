@@ -73,6 +73,8 @@ interface ProjectDto {
   readonly storePath: string;
   readonly defaultBranch: string;
   readonly gitAuthMode: "ambient" | "mend-key" | "bridge";
+  /** Optional: an older server predates the background-sessions cascade. */
+  readonly backgroundSessions?: "inherit" | "on" | "off";
 }
 
 /** The account's dotfiles: repository knob + store snapshot (see `mend dotfiles`). */
@@ -382,6 +384,29 @@ const findProject = async (config: CliConfig, explicit: string | null, adoptCwd 
   return adopted;
 };
 
+/**
+ * Cascade for the launch lifecycle: per-launch flag → project stance → global
+ * setting. Any read failure (an older server, a blip) stays background — a
+ * network hiccup must never flip launch semantics to foreground.
+ */
+const resolvedBackgroundSessions = async (
+  config: CliConfig,
+  project: ProjectDto,
+): Promise<boolean> => {
+  if (project.backgroundSessions === "on") return true;
+  if (project.backgroundSessions === "off") return false;
+  try {
+    const settings = await request<{ readonly backgroundSessions?: boolean }>(
+      config,
+      "GET",
+      "/settings",
+    );
+    return settings.backgroundSessions !== false;
+  } catch {
+    return true;
+  }
+};
+
 const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<string>) => {
   const parsed = parseLaunchArgs(args);
   if (parsed.error !== null) return fail(parsed.error);
@@ -394,6 +419,11 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
   if (harness === "run" && structured) {
     return fail(
       "mend run takes no prompt or harness flags — usage: mend run [--project p] -- <command...>",
+    );
+  }
+  if (harness === "run" && (parsed.detach || parsed.foreground)) {
+    return fail(
+      "mend run takes no lifecycle flags — it tails the record; Ctrl+C stops watching, not the command",
     );
   }
   const argv = harness === "run" ? parsed.custom : (HARNESS_COMMANDS[harness] ?? []);
@@ -409,11 +439,37 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
   say(
     `${green("✓")} project ${project.name} ${dim(`· ${project.defaultBranch}${parsed.project === null ? " · from cwd" : ""}`)}`,
   );
+  const lifecycle: "detach" | LifecycleMode =
+    harness === "run"
+      ? "background"
+      : parsed.detach
+        ? "detach"
+        : parsed.foreground
+          ? "foreground"
+          : (await resolvedBackgroundSessions(config, project))
+            ? "background"
+            : "foreground";
+  // Foreground holds from the moment the session exists: a signal between
+  // create and attach stops it too. attachTty owns signals while attached.
+  let createdSessionId: string | null = null;
+  let attachOwnsSignals = false;
+  const onLaunchSignal = () => {
+    if (attachOwnsSignals) return;
+    const id = createdSessionId;
+    if (id === null) process.exit(1);
+    void stopSessionQuickly(config, id).then((stopped) => process.exit(stopped ? 0 : 1));
+  };
+  if (lifecycle === "foreground") {
+    for (const signal of ["SIGHUP", "SIGINT", "SIGTERM"] as const) {
+      process.on(signal, onLaunchSignal);
+    }
+  }
   const session = await api<SessionDto>(config, "POST", `/projects/${project.id}/sessions`, {
     harness,
     label: null,
     base: parsed.base,
   });
+  createdSessionId = session.id;
   say(`${green("✓")} worktree ${session.worktree} ${dim(`· branch ${session.branch}`)}`);
   const baseWord = session.baseRef === null ? "" : `${session.baseRef} `;
   say(
@@ -442,13 +498,27 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
     "provisioning workspace — a first launch builds the harness image (can take minutes)…",
     api<SessionDto>(config, "POST", `/sessions/${session.id}/launch`, launchBody),
   );
+  if (lifecycle === "detach") {
+    say(`${green("✓ recording")} · running detached`);
+    say(`${cobalt("  attach")} · mend attach ${session.id.slice(0, 8)}`);
+    return;
+  }
   say(`${green("✓ recording")} · workspace mounts the worktree${detachHint()}`);
   say("");
-  await attachOrExit(config, session.id, session.harness);
+  attachOwnsSignals = true;
+  await attachOrExit(config, session.id, session.harness, lifecycle);
   exitAfterSessionEnd(config, session.id);
 };
 
 // ─── the terminal bridge: raw stdin/stdout against the platform PTY ─────────
+
+/**
+ * Every way an attach can come back, told apart because the caller's answer
+ * differs: `ended` is the server's end frame (the session settled); `dropped`
+ * is a close without one (network, server restart — the session may still
+ * run); `interrupted` is this CLI being told to die (SIGHUP/SIGINT/SIGTERM).
+ */
+type AttachOutcome = "detached" | "ended" | "dropped" | "interrupted" | "unavailable";
 
 /**
  * Attach this terminal to the session's PTY through the Mend server over ONE
@@ -458,7 +528,9 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
  * Ctrl+] detaches — the session keeps running and can be reattached from
  * anywhere. Resolves when the session settles or the user detaches; the
  * caller decides what each outcome means (commands exit, the dashboard
- * resumes).
+ * resumes). With `handleSignals`, a terminal-window close (SIGHUP) or kill
+ * resolves `interrupted` through the same restore path instead of leaving
+ * raw mode pushed — the handler never exits the process itself.
  */
 const attachTty = async (
   config: CliConfig,
@@ -466,8 +538,8 @@ const attachTty = async (
   harness: string,
   from: bigint,
   processId?: string,
-  options?: { readonly readOnly?: boolean },
-): Promise<"detached" | "ended" | "unavailable"> => {
+  options?: { readonly readOnly?: boolean; readonly handleSignals?: boolean },
+): Promise<AttachOutcome> => {
   const url = parseMendUrl(`${config.url}/api/tty`);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   // Process addressing reaches any PTY in the workspace (a shell); the
@@ -509,6 +581,16 @@ const attachTty = async (
   const rawTty = process.stdin.isTTY === true;
   let rawModeEnabled = false;
   let detached = false;
+  let sawEnd = false;
+  let interrupted = false;
+  const onSignal = () => {
+    // Resolve the attach instead of exiting: the shared `finally` restores raw
+    // mode and closes the socket, then the caller decides what the signal means.
+    interrupted = true;
+    ws.close();
+    finishAttachment?.();
+  };
+  const signals = ["SIGHUP", "SIGINT", "SIGTERM"] as const;
   const onTtyFrame = (event: MessageEvent) => {
     if (typeof event.data !== "string") {
       process.stdout.write(Buffer.from(event.data));
@@ -522,6 +604,7 @@ const attachTty = async (
       // Session lifecycle is authoritative. Start detaching immediately instead
       // of holding the user's terminal for the later close handshake and Mend's
       // settle/checkpoint/harvest work.
+      sawEnd = true;
       ws.close();
       finishAttachment?.();
     } catch {
@@ -542,6 +625,7 @@ const attachTty = async (
   try {
     sendResize();
     process.stdout.on("resize", onWinch);
+    if (options?.handleSignals === true) for (const signal of signals) process.on(signal, onSignal);
     // Read-only (logs): never forward stdin — Ctrl+C exits the CLI, the
     // socket drops, and the process inside keeps running untouched.
     if (options?.readOnly !== true) {
@@ -554,8 +638,9 @@ const attachTty = async (
     }
     ws.addEventListener("message", onTtyFrame);
     await finished;
-    return detached ? "detached" : "ended";
+    return detached ? "detached" : interrupted ? "interrupted" : sawEnd ? "ended" : "dropped";
   } finally {
+    for (const signal of signals) process.off(signal, onSignal);
     process.stdin.off("data", onKeys);
     process.stdout.off("resize", onWinch);
     ws.removeEventListener("message", onTtyFrame);
@@ -567,26 +652,102 @@ const attachTty = async (
   }
 };
 
-/** How every one-shot command handles an attach outcome: detach says so, settle returns. */
-const finishAttach = (
+/**
+ * Which lifecycle the launching CLI enforces. Background (the default): every
+ * way this CLI goes away leaves the session running. Foreground: the session
+ * stops when this CLI exits for any reason other than the explicit detach key.
+ */
+type LifecycleMode = "background" | "foreground";
+
+/**
+ * Best-effort stop under a signal's short grace window — a SIGHUP handler
+ * cannot afford the ordinary retry path. True when the server accepted.
+ */
+const stopSessionQuickly = async (config: CliConfig, sessionId: string): Promise<boolean> => {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (config.token !== null) headers["authorization"] = `Bearer ${config.token}`;
+  try {
+    const response = await fetch(`${config.url}/api/sessions/${sessionId}/stop`, {
+      method: "POST",
+      headers,
+      signal: AbortSignal.timeout(2500),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+};
+
+/** Foreground exit: stop the session, or say honestly that it may still run. */
+const stopAndExit = async (config: CliConfig, sessionId: string): Promise<never> => {
+  const id8 = sessionId.slice(0, 8);
+  if (await stopSessionQuickly(config, sessionId)) {
+    say(`${green("✓")} stopped · ${id8}`);
+    say(`${cobalt("  review")} · ${config.url}/sessions/${sessionId}`);
+    process.exit(0);
+  }
+  say(`${amber("could not stop")} — the session may still run · mend stop ${id8}`);
+  process.exit(1);
+};
+
+/**
+ * How every one-shot command handles an attach outcome: detach says so and
+ * always leaves the session running; a signal or a dropped socket answers to
+ * the lifecycle mode; a settled session returns so the caller prints its facts.
+ */
+const finishAttach = async (
   config: CliConfig,
   sessionId: string,
-  outcome: "detached" | "ended" | "unavailable",
-) => {
+  outcome: AttachOutcome,
+  mode: LifecycleMode = "background",
+): Promise<void> => {
+  const id8 = sessionId.slice(0, 8);
   if (outcome === "unavailable") {
     return fail(`tty attach unavailable: could not connect to ${config.url}`);
   }
   if (outcome === "detached") {
     say("");
-    say(
-      `${amber("detached")} — the session keeps running; reattach: mend attach ${sessionId.slice(0, 8)}`,
-    );
+    say(`${amber("detached")} — the session keeps running; reattach: mend attach ${id8}`);
+    process.exit(0);
+  }
+  if (outcome === "interrupted") {
+    say("");
+    if (mode === "foreground") return stopAndExit(config, sessionId);
+    say(`${amber("detached")} — the session keeps running; reattach: mend attach ${id8}`);
+    process.exit(0);
+  }
+  if (outcome === "dropped") {
+    say("");
+    if (mode === "foreground") {
+      // The drop may be the server settling the session — verify before stopping.
+      let live: boolean;
+      try {
+        const detail = await request<SessionDetailLiteDto>(config, "GET", `/sessions/${sessionId}`);
+        live = agentIsLive(detail.session, detail.currentAgent);
+      } catch {
+        say(`${amber("could not stop")} — the session may still run · mend stop ${id8}`);
+        process.exit(1);
+      }
+      if (!live) return; // settled as the socket closed — the caller prints the end facts
+      return stopAndExit(config, sessionId);
+    }
+    say(`${amber("disconnected")} — the session keeps running; reattach: mend attach ${id8}`);
     process.exit(0);
   }
 };
 
-const attachOrExit = async (config: CliConfig, sessionId: string, harness: string) =>
-  finishAttach(config, sessionId, await attachTty(config, sessionId, harness, 0n));
+const attachOrExit = async (
+  config: CliConfig,
+  sessionId: string,
+  harness: string,
+  mode: LifecycleMode = "background",
+) =>
+  finishAttach(
+    config,
+    sessionId,
+    await attachTty(config, sessionId, harness, 0n, undefined, { handleSignals: true }),
+    mode,
+  );
 
 /** Return terminal control as soon as the terminal reports the observed end. */
 const exitAfterSessionEnd = (config: CliConfig, sessionId: string): never => {
@@ -607,6 +768,56 @@ const attach = async (config: CliConfig, args: ReadonlyArray<string>) => {
   say("");
   await attachOrExit(config, match.id, match.harness);
   exitAfterSessionEnd(config, match.id);
+};
+
+/**
+ * Explicit stop — the one intent detaching never carries. Ends the agent; the
+ * workspace harvests and closes; the record and review remain.
+ */
+const stopCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const all = args.includes("--all");
+  const projectFlag = args.indexOf("--project");
+  const projectName =
+    projectFlag !== -1 && args[projectFlag + 1] !== undefined
+      ? String(args[projectFlag + 1])
+      : null;
+  const prefix = args.find((arg, index) => !arg.startsWith("--") && index !== projectFlag + 1);
+  if (!all && prefix === undefined) {
+    return fail("usage: mend stop <session-id-prefix> | --all [--project <p>]");
+  }
+  const [sessions, projects] = await Promise.all([
+    api<ReadonlyArray<SessionDto>>(config, "GET", "/sessions"),
+    api<ReadonlyArray<ProjectDto>>(config, "GET", "/projects"),
+  ]);
+  let scoped = sessions;
+  if (projectName !== null) {
+    const project = projects.find((p) => p.name === projectName);
+    if (project === undefined) return fail(`no project named "${projectName}"`);
+    scoped = sessions.filter((s) => s.projectId === project.id);
+  }
+  let targets: ReadonlyArray<SessionDto>;
+  if (all) {
+    targets = scoped;
+    if (targets.length === 0) {
+      say("no active sessions");
+      return;
+    }
+  } else {
+    const matches = scoped.filter((s) => s.id.startsWith(prefix ?? ""));
+    if (matches.length === 0) return fail(`no active session matches "${prefix}"`);
+    if (matches.length > 1) {
+      return fail(`session prefix "${prefix}" is ambiguous — use more of the id`);
+    }
+    targets = matches;
+  }
+  for (const session of targets) {
+    await api<SessionDto>(config, "POST", `/sessions/${session.id}/stop`);
+    say(
+      `${green("✓")} stopped · ${session.harness} · ${dim(session.id.slice(0, 8))} · ${session.branch}`,
+    );
+    say(`${cobalt("  review")} · ${config.url}/sessions/${session.id}`);
+  }
+  if (all) say(`${green("✓")} stopped ${targets.length} session${targets.length === 1 ? "" : "s"}`);
 };
 
 // ─── shell: the second pane — a real shell in the session's workspace ───────
@@ -695,12 +906,14 @@ const shellCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
     api<SessionProcessDto>(config, "POST", `/sessions/${session.id}/shell`),
   );
   say("");
-  const outcome = await attachTty(config, session.id, "shell", 0n, shellProcess.id);
+  const outcome = await attachTty(config, session.id, "shell", 0n, shellProcess.id, {
+    handleSignals: true,
+  });
   if (outcome === "unavailable") {
     return fail(`tty attach unavailable: could not connect to ${config.url}`);
   }
   say("");
-  if (outcome === "detached") {
+  if (outcome === "detached" || outcome === "interrupted" || outcome === "dropped") {
     say(`${amber("detached")} — the shell keeps running and holds the workspace open`);
     process.exit(0);
   }
@@ -2113,7 +2326,8 @@ _mend() {
     'adopt:adopt a repository into the store'
     'codex:new session + codex' 'claude:new session + claude' 'opencode:new session + opencode'
     'run:new session + arbitrary command'
-    'attach:reattach to a running session' 'shell:open a shell in a live session workspace'
+    'attach:reattach to a running session' 'stop:stop the agent — record and review remain'
+    'shell:open a shell in a live session workspace'
     'service:reachable ports — add, list, stop'
     'keys:the machine Mend deploy key — init, show, share'
     'accounts:your connected accounts on the platform'
@@ -2129,7 +2343,7 @@ _mend() {
     return
   fi
   case $words[2] in
-    shell|attach|continue|resume|rejoin)
+    shell|attach|stop|continue|resume|rejoin)
       local -a sessions
       sessions=(\${(f)"$(command mend __complete session 2>/dev/null | tr '\\t' ':')"})
       (( \${#sessions} )) && _describe 'session' sessions
@@ -2142,11 +2356,11 @@ _mend "$@"
 const BASH_COMPLETIONS = `_mend() {
   local cur=\${COMP_WORDS[COMP_CWORD]}
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "adopt codex claude opencode run attach shell service keys pair doctor continue resume rejoin refresh projects sessions status ui help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "adopt codex claude opencode run attach stop shell service keys pair doctor continue resume rejoin refresh projects sessions status ui help" -- "$cur") )
     return
   fi
   case \${COMP_WORDS[1]} in
-    shell|attach|continue|resume|rejoin)
+    shell|attach|stop|continue|resume|rejoin)
       COMPREPLY=( $(compgen -W "$(command mend __complete session 2>/dev/null | cut -f1)" -- "$cur") )
       ;;
   esac
@@ -2474,7 +2688,9 @@ const rejoinCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
       : `${green("✓ recording")} · attached to the live session${detachHint()}`,
   );
   say("");
-  let outcome = await attachTty(config, session.id, session.harness, 0n);
+  let outcome = await attachTty(config, session.id, session.harness, 0n, undefined, {
+    handleSignals: true,
+  });
   if (outcome === "unavailable") {
     const refreshed = await api<SessionDetailLiteDto>(config, "GET", `/sessions/${session.id}`);
     if (!agentIsLive(refreshed.session, refreshed.currentAgent)) {
@@ -2484,9 +2700,11 @@ const rejoinCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
         "session settled while attaching — restoring it once…",
       );
     }
-    outcome = await attachTty(config, session.id, session.harness, 0n);
+    outcome = await attachTty(config, session.id, session.harness, 0n, undefined, {
+      handleSignals: true,
+    });
   }
-  finishAttach(config, session.id, outcome);
+  await finishAttach(config, session.id, outcome);
   exitAfterSessionEnd(config, session.id);
 };
 
@@ -2752,11 +2970,13 @@ start
                                         adopt a repository into the store (default: cwd; any git
                                         URL — GitHub, GitLab, self-hosted, ssh://, a local path)
   mend codex|claude|opencode ["prompt"] [--model <id>] [--effort low|medium|high|xhigh|max]
-                             [--base <ref>] [--ask] [--fast]
+                             [--base <ref>] [--ask] [--fast] [--detach|-d] [--foreground]
                                         new session worktree + launch the harness in it; a quoted
                                         prompt becomes its first message (and names the session),
                                         --ask restores the harness's permission prompts, --fast
-                                        requests priority processing (codex service tier)
+                                        requests priority processing (codex service tier),
+                                        --detach launches without attaching (reattach anywhere),
+                                        --foreground stops the session when this CLI exits
   mend pair [--url <base url>]          pair a phone or a second machine: prints a QR, the code, and
                                         the URL to reach this server (one device, once, 10 minutes)
   mend doctor                           read-only checklist of this machine's setup — one line per
@@ -2778,6 +2998,9 @@ everything else
                                         hardware keys sign here; Ctrl-C stops sharing)
   mend run -- <command...>              same, with an arbitrary command
   mend attach <session-id-prefix>       reattach this terminal to a running session
+  mend stop <session-id-prefix> | --all [--project <p>]
+                                        stop the agent — the workspace harvests and closes; the
+                                        record and review remain
   mend shell [session-id-prefix]        open a shell in a live session's workspace
   mend service run [session] --port <p> [--name <n>] [--udp] -- <command...>
                                         start + supervise a server in the session workspace
@@ -2825,6 +3048,8 @@ const main = async () => {
       return launch(config, command, rest);
     case "attach":
       return attach(config, rest);
+    case "stop":
+      return stopCommand(config, rest);
     case "shell":
       return shellCommand(config, rest);
     case "service":

@@ -54,7 +54,7 @@ export interface DashboardContext {
     sessionId: string,
     harness: string,
     processId?: string,
-  ) => Promise<"detached" | "ended" | "unavailable">;
+  ) => Promise<"detached" | "ended" | "dropped" | "interrupted" | "unavailable">;
 }
 
 interface ProjectDto {
@@ -607,7 +607,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     lockRef.current = true;
     renderer.suspend();
     process.stdout.write(`\nattached · ${session.harness} · ${short} · detach: Ctrl+]\n\n`);
-    let outcome: "detached" | "ended" | "unavailable";
+    let outcome: "detached" | "ended" | "dropped" | "interrupted" | "unavailable";
     try {
       outcome = await ctx.attachTty(session.id, session.harness);
       if (outcome === "unavailable") {
@@ -631,9 +631,11 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     say(
       outcome === "unavailable"
         ? "attach unavailable — could not connect"
-        : outcome === "detached"
+        : outcome === "detached" || outcome === "interrupted"
           ? `detached — ${short} keeps running`
-          : `session settled · ${short}`,
+          : outcome === "dropped"
+            ? `disconnected — ${short} keeps running`
+            : `session settled · ${short}`,
     );
     refetch();
   };

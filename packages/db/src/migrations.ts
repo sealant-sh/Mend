@@ -1239,6 +1239,11 @@ const sessionBaseRef = Effect.gen(function* () {
   yield* sql`ALTER TABLE agent_sessions ADD COLUMN base_ref text`;
 });
 
+const backgroundSessionsChoice = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE projects ADD COLUMN background_sessions text NOT NULL DEFAULT 'inherit'`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -1283,4 +1288,5 @@ export const migrations = {
   "0040_project_cluster_bindings": projectClusterBindingsMigration,
   "0041_cli_auth_requests": cliAuthRequestsMigration,
   "0042_session_base_ref": sessionBaseRef,
+  "0043_background_sessions": backgroundSessionsChoice,
 };

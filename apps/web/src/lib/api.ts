@@ -172,6 +172,7 @@ export const setProjectAutomation = (
     readonly autoTour: AutomationChoiceDto;
     readonly autoSuggest: AutomationChoiceDto;
     readonly autoName: AutomationChoiceDto;
+    readonly backgroundSessions: AutomationChoiceDto;
   },
 ) => orLogin(trpcClient.projects.setAutomation.mutate({ id: projectId, choices }));
 export const setProjectWorkspaceImage = (

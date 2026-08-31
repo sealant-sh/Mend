@@ -12,6 +12,7 @@ import {
   RemoveProjectSection,
   ReviewAutomationSection,
   ServicesSection,
+  SessionLifecycleSection,
 } from "#/components/project-setup";
 import { AppShell } from "#/components/shell";
 import {
@@ -142,6 +143,7 @@ function ProjectSetupPage() {
           <DotfilesSection project={project} />
           <HotSessionsSection project={project} />
           <GitAccessSection project={project} />
+          <SessionLifecycleSection project={project} />
           <ReviewAutomationSection project={project} />
           <RemoveProjectSection projectId={projectId} />
         </div>
