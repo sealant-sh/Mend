@@ -131,6 +131,15 @@ const startCli = (url: string, args: ReadonlyArray<string>) => {
   return { child, exited, stdout: () => stdout, stderr: () => stderr };
 };
 
+/** Poll until the fake observed something — CI cold starts must not count against a race. */
+const waitFor = async (predicate: () => boolean, timeoutMs = 15_000): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error("waitFor: condition never became true");
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  }
+};
+
 const expectFastExit = async (
   exited: Promise<{ readonly kind: "exit"; readonly code: number | null }>,
   stderr: () => string,
@@ -209,6 +218,9 @@ describe("Mend CLI session lifecycle", () => {
     const cli = startCli(fake.url, ["codex", "--project", project.name, "--detach"]);
 
     try {
+      // The fast-exit race starts once the fake saw the launch land: the CLI's
+      // cold start (node boot + type stripping) is CI-speed, not under test.
+      await waitFor(() => routes.includes(`POST /api/sessions/${session.id}/launch`));
       await expectFastExit(cli.exited, cli.stderr);
       expect(fake.upgradeCount()).toBe(0);
       expect(routes).not.toContain("GET /api/settings"); // the flag decides — no read
