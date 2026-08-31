@@ -32,10 +32,11 @@ import {
   serviceForwards,
   serviceObservations,
   services,
-  sessionChanges,
   sessionProcesses,
   sessionRuns,
   settings,
+  worktreeChanges,
+  worktrees,
 } from "../src/schema/workbench.ts";
 
 describe("Mend Drizzle schema", () => {
@@ -118,21 +119,29 @@ describe("Mend Drizzle schema", () => {
 
   it("maps the session graph to the existing PostgreSQL table and column names", () => {
     expect(
-      [projects, contextSnapshots, agentSessions, sessionRuns, sessionChanges, checkpoints].map(
-        (table) => getTableConfig(table).name,
-      ),
+      [
+        projects,
+        worktrees,
+        contextSnapshots,
+        agentSessions,
+        sessionRuns,
+        worktreeChanges,
+        checkpoints,
+      ].map((table) => getTableConfig(table).name),
     ).toEqual([
       "projects",
+      "worktrees",
       "context_snapshots",
       "agent_sessions",
       "session_runs",
-      "session_changes",
+      "worktree_changes",
       "checkpoints",
     ]);
 
     expect(getTableConfig(agentSessions).columns.map((column) => column.name)).toEqual([
       "id",
       "project_id",
+      "worktree_id",
       "harness",
       "provider_session_id",
       "label",
@@ -163,6 +172,60 @@ describe("Mend Drizzle schema", () => {
       "created_at",
       "updated_at",
     ]);
+  });
+
+  it("maps the worktree container: identity split, one change each, a dense chain", () => {
+    const worktreeConfig = getTableConfig(worktrees);
+    expect(worktreeConfig.columns.map((column) => column.name)).toEqual([
+      "id",
+      "project_id",
+      "name",
+      "directory",
+      "branch",
+      "base_sha",
+      "base_ref",
+      "created_at",
+      "updated_at",
+    ]);
+    expect(worktreeConfig.uniqueConstraints.map((constraint) => constraint.name).toSorted()).toEqual(
+      ["worktrees_project_directory_key", "worktrees_project_name_key"],
+    );
+
+    // Sessions belong to a worktree; deleting the worktree takes its conversations.
+    const sessionForeignKeys = getTableConfig(agentSessions).foreignKeys;
+    const worktreeFk = sessionForeignKeys.find((fk) =>
+      fk.reference().columns.some((column) => column.name === "worktree_id"),
+    );
+    expect(worktreeFk?.onDelete).toBe("cascade");
+
+    // One change per worktree; the session pointer is a nullable mirror that
+    // survives conversation deletion.
+    const changeConfig = getTableConfig(worktreeChanges);
+    const changeWorktreeColumn = changeConfig.columns.find(
+      (column) => column.name === "worktree_id",
+    );
+    expect(changeWorktreeColumn?.isUnique).toBe(true);
+    expect(changeConfig.columns.find((column) => column.name === "session_id")?.notNull).toBe(
+      false,
+    );
+    const changeSessionFk = changeConfig.foreignKeys.find((fk) =>
+      fk.reference().columns.some((column) => column.name === "session_id"),
+    );
+    expect(changeSessionFk?.onDelete).toBe("set null");
+
+    // The checkpoint chain: dense per-worktree ordinals, session as provenance only.
+    const checkpointConfig = getTableConfig(checkpoints);
+    const ordinalIndex = checkpointConfig.indexes.find(
+      (index) => index.config.name === "checkpoints_worktree_ordinal_idx",
+    );
+    expect(ordinalIndex?.config.unique).toBe(true);
+    expect(checkpointConfig.columns.find((column) => column.name === "session_id")?.notNull).toBe(
+      false,
+    );
+    const checkpointSessionFk = checkpointConfig.foreignKeys.find((fk) =>
+      fk.reference().columns.some((column) => column.name === "session_id"),
+    );
+    expect(checkpointSessionFk?.onDelete).toBe("set null");
   });
 
   it("maps replay-stable protocol conversations and resumable item cursors", () => {
@@ -505,9 +568,10 @@ describe("Mend Drizzle schema", () => {
     ]);
     expect(config.columns[5]?.getSQLType()).toBe("jsonb");
     expect(config.columns[1]?.isUnique).toBe(true);
+    // Tour attribution survives the composing session's deletion (worktree pivot).
     expect(config.foreignKeys.map((foreignKey) => foreignKey.onDelete)).toEqual([
       "cascade",
-      "cascade",
+      "set null",
     ]);
   });
 

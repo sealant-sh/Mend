@@ -7,7 +7,7 @@ import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
-import { changePasses, sessionChanges } from "../schema/workbench.ts";
+import { changePasses, worktreeChanges } from "../schema/workbench.ts";
 
 const decodePass = Schema.decodeUnknownEffect(Schema.Struct(ChangePass.fields));
 
@@ -51,15 +51,21 @@ export const ChangePassesRepoLive: Layer.Layer<
 
     const notify = Effect.fn("ChangePassesRepo.notify")(function* (changeId: ChangeId) {
       const [row] = yield* db
-        .select({ sessionId: sessionChanges.sessionId, projectId: sessionChanges.projectId })
-        .from(sessionChanges)
-        .where(eq(sessionChanges.id, changeId))
+        .select({
+          sessionId: worktreeChanges.sessionId,
+          worktreeId: worktreeChanges.worktreeId,
+          projectId: worktreeChanges.projectId,
+        })
+        .from(worktreeChanges)
+        .where(eq(worktreeChanges.id, changeId))
         .limit(1)
         .pipe(Effect.orDie);
-      if (row === undefined) return;
+      // A change no session ever inhabited has no one listening on the legacy key.
+      if (row === undefined || row.sessionId === null) return;
       yield* notifyEvent(sql, {
         type: "session-change",
         changeId,
+        worktreeId: row.worktreeId,
         sessionId: row.sessionId,
         projectId: row.projectId,
       });

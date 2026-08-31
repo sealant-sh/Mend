@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 
-import { ProjectId, SealantWorkspaceId, SessionId, Sha } from "../ids.ts";
+import { ProjectId, SealantWorkspaceId, SessionId, Sha, WorktreeId } from "../ids.ts";
 import { WorkspaceImage } from "../settings.ts";
 import { Timestamp } from "../timestamp.ts";
 import { SessionExtraMount } from "./mount.ts";
@@ -46,6 +46,11 @@ export type HotWorkspaceEnvironment = typeof HotWorkspaceEnvironment.Type;
 export class HotWorkspace extends Schema.Class<HotWorkspace>("HotWorkspace")({
   id: SessionId,
   projectId: ProjectId,
+  /**
+   * The skeleton's pre-created worktree row (a legal zero-session worktree the
+   * claim adopts). Null only for pre-pivot entries, which read as stale.
+   */
+  worktreeId: Schema.NullOr(WorktreeId),
   /** Whose dotfiles were resolved at prewarm. Null when no user has dotfiles configured. */
   ownerUserId: Schema.NullOr(Schema.String),
   status: HotWorkspaceStatus,

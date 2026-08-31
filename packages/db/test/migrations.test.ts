@@ -374,3 +374,155 @@ describe.skipIf(!reachable)("0035 process kinds and 0036 agent conversation", ()
     expect(result.after).toEqual([]);
   });
 });
+
+describe.skipIf(!reachable)("0046 worktree containers", () => {
+  const WORKTREE_DB = `${SCRATCH_DB}_wt`;
+  const worktreeUrl = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${WORKTREE_DB}`;
+    return url.toString();
+  })();
+  const worktreeLayer = PgClient.layer({ url: Redacted.make(worktreeUrl) });
+  const withWorktreeDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(worktreeLayer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${WORKTREE_DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${WORKTREE_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("mints one worktree per session, re-keys the change and chain, and flips the destructive FKs", async () => {
+    const result = await withWorktreeDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0045_native_ingest_cursor");
+        yield* sql`
+          INSERT INTO projects (id, name, origin_url, store_path, default_branch)
+          VALUES ('proj-1', 'fixture', NULL, '/store/fixture/repo.git', 'main')`;
+        // sess-a and sess-b own distinct worktrees; sess-c defensively SHARES
+        // sess-a's directory (the collapse path).
+        yield* sql`
+          INSERT INTO agent_sessions
+            (id, project_id, harness, worktree, branch, base_sha, base_ref, status, created_at)
+          VALUES
+            ('sess-a', 'proj-1', 'claude', 'fix-auth', 'mend/fix-auth', 'base-a', 'main', 'completed', '2026-08-01T00:00:00Z'),
+            ('sess-b', 'proj-1', 'codex', 'session-b', 'mend/session/b', 'base-b', NULL, 'completed', '2026-08-02T00:00:00Z'),
+            ('sess-c', 'proj-1', 'claude', 'fix-auth', 'mend/fix-auth', 'base-a', 'main', 'completed', '2026-08-03T00:00:00Z')`;
+        yield* sql`
+          INSERT INTO session_changes (id, project_id, session_id, branch, base_sha, created_at)
+          VALUES
+            ('chg-a', 'proj-1', 'sess-a', 'mend/fix-auth', 'base-a', '2026-08-01T00:00:00Z'),
+            ('chg-b', 'proj-1', 'sess-b', 'mend/session/b', 'base-b', '2026-08-02T00:00:00Z'),
+            ('chg-c', 'proj-1', 'sess-c', 'mend/fix-auth', 'base-a', '2026-08-03T00:00:00Z')`;
+        yield* sql`
+          INSERT INTO checkpoints (id, session_id, ref, sha, seq, trigger, created_at)
+          VALUES
+            ('cp-a0', 'sess-a', 'refs/mend/checkpoints/sess-a/0', 'sha-a0', 0, 'session-start', '2026-08-01T00:00:00Z'),
+            ('cp-a1', 'sess-a', 'refs/mend/checkpoints/sess-a/1', 'sha-a1', 5, 'command-settle', '2026-08-01T01:00:00Z'),
+            ('cp-b0', 'sess-b', 'refs/mend/checkpoints/sess-b/0', 'sha-b0', 0, 'session-start', '2026-08-02T00:00:00Z'),
+            ('cp-c0', 'sess-c', 'refs/mend/checkpoints/sess-c/0', 'sha-c0', 0, 'session-start', '2026-08-03T00:00:00Z')`;
+        // A follow-up and a comment hang off the DUPLICATE change (chg-c) so the
+        // dedupe re-point is observable.
+        yield* sql`
+          INSERT INTO follow_ups (id, session_id, change_id, instruction)
+          VALUES ('fu-1', 'sess-c', 'chg-c', 'address the review')`;
+        yield* sql`
+          INSERT INTO review_comments (id, change_id, author_kind, author_name, file, body)
+          VALUES ('rc-1', 'chg-c', 'human', 'yiannis', 'src/auth.ts', 'tighten this')`;
+        yield* sql`
+          INSERT INTO hot_workspaces (id, project_id, fingerprint, worktree, branch, base_sha)
+          VALUES ('hot-1', 'proj-1', 'fp', 'session-hot', 'mend/session/hot', 'base-h')`;
+
+        yield* migrations["0046_worktrees"];
+
+        const worktrees = yield* sql<{
+          readonly name: string;
+          readonly directory: string;
+          readonly base_ref: string | null;
+        }>`SELECT name, directory, base_ref FROM worktrees ORDER BY name`;
+        const sessions = yield* sql<{
+          readonly id: string;
+          readonly worktree_id: string;
+        }>`SELECT id, worktree_id FROM agent_sessions ORDER BY id`;
+        const changes = yield* sql<{
+          readonly id: string;
+          readonly session_id: string | null;
+          readonly worktree_id: string;
+        }>`SELECT id, session_id, worktree_id FROM worktree_changes ORDER BY id`;
+        const ordinals = yield* sql<{
+          readonly id: string;
+          readonly worktree_id: string;
+          readonly ordinal: number;
+        }>`SELECT id, worktree_id, ordinal FROM checkpoints ORDER BY worktree_id, ordinal`;
+        const followUp = yield* sql<{
+          readonly change_id: string;
+        }>`SELECT change_id FROM follow_ups WHERE id = 'fu-1'`;
+        const comment = yield* sql<{
+          readonly change_id: string;
+        }>`SELECT change_id FROM review_comments WHERE id = 'rc-1'`;
+        const hot = yield* sql<{
+          readonly worktree_id: string | null;
+        }>`SELECT worktree_id FROM hot_workspaces WHERE id = 'hot-1'`;
+
+        // The destructive-FK flip: deleting a conversation leaves the worktree's
+        // change and chain standing, session pointers nulled.
+        yield* sql`DELETE FROM agent_sessions WHERE id = 'sess-a'`;
+        const afterDelete = yield* sql<{
+          readonly change_session: string | null;
+          readonly checkpoints: string;
+        }>`
+          SELECT
+            (SELECT session_id FROM worktree_changes WHERE id = 'chg-a') AS change_session,
+            (SELECT count(*)::text FROM checkpoints
+              WHERE worktree_id = (SELECT worktree_id FROM worktree_changes WHERE id = 'chg-a')) AS checkpoints`;
+
+        return { worktrees, sessions, changes, ordinals, followUp, comment, hot, afterDelete };
+      }),
+    );
+
+    // Shared directory collapsed: two worktrees, not three; earliest metadata won.
+    expect(result.worktrees).toEqual([
+      { name: "fix-auth", directory: "fix-auth", base_ref: "main" },
+      { name: "session-b", directory: "session-b", base_ref: null },
+    ]);
+    const byId = new Map(result.sessions.map((row) => [row.id, row.worktree_id]));
+    expect(byId.get("sess-a")).toBe(byId.get("sess-c"));
+    expect(byId.get("sess-a")).not.toBe(byId.get("sess-b"));
+
+    // One change per worktree: chg-c (the duplicate) went, its dependents re-pointed.
+    expect(result.changes.map((row) => row.id)).toEqual(["chg-a", "chg-b"]);
+    expect(result.followUp[0]?.change_id).toBe("chg-a");
+    expect(result.comment[0]?.change_id).toBe("chg-a");
+
+    // Dense per-worktree ordinals ordered by creation time across sessions.
+    const sharedWorktree = byId.get("sess-a");
+    expect(
+      result.ordinals
+        .filter((row) => row.worktree_id === sharedWorktree)
+        .map((row) => [row.id, row.ordinal]),
+    ).toEqual([
+      ["cp-a0", 0],
+      ["cp-a1", 1],
+      ["cp-c0", 2],
+    ]);
+
+    // Legacy pool entries read as stale.
+    expect(result.hot[0]?.worktree_id).toBeNull();
+
+    // The chain and the change outlive the conversation.
+    expect(result.afterDelete[0]?.change_session).toBeNull();
+    expect(result.afterDelete[0]?.checkpoints).toBe("3");
+  });
+});

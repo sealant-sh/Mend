@@ -6,6 +6,7 @@ import {
   type SealantWorkspaceId,
   SessionId,
   type Sha,
+  type WorktreeId,
   WorkspaceImage,
 } from "@mend/domain";
 import {
@@ -32,15 +33,20 @@ export class SessionNotFoundError extends Schema.TaggedErrorClass<SessionNotFoun
 ) {}
 
 export interface NewSession {
-  /** Caller-supplied: the engine names the worktree after the id before the row exists. */
+  /** Caller-supplied: the engine mints the id before the row exists (socket dirs use it). */
   readonly id: SessionId;
   readonly projectId: ProjectId;
+  /** The container this conversation runs in. */
+  readonly worktreeId: WorktreeId;
   readonly harness: string;
   readonly label: string | null;
+  /** Mirror of the worktree row's `directory` (pre-worktree readers). */
   readonly worktree: string;
+  /** Mirror of the worktree row's `branch`. */
   readonly branch: string;
+  /** Mirror of the worktree row's `baseSha`. */
   readonly baseSha: Sha;
-  /** The base as the user named it (default branch when nothing was chosen). */
+  /** Mirror of the worktree row's `baseRef` (default branch when nothing was chosen). */
   readonly baseRef: string;
   readonly contextSnapshotId: ContextSnapshotId | null;
   /** Who provisioned the session — whose dotfiles apply at launch. */
@@ -62,6 +68,8 @@ export class SessionsRepo extends Context.Service<
     readonly create: (session: NewSession) => Effect.Effect<Session>;
     readonly byId: (id: SessionId) => Effect.Effect<Session, SessionNotFoundError>;
     readonly listForProject: (projectId: ProjectId) => Effect.Effect<ReadonlyArray<Session>>;
+    /** Every conversation in one worktree, newest first. */
+    readonly listForWorktree: (worktreeId: WorktreeId) => Effect.Effect<ReadonlyArray<Session>>;
     /** Sessions in a live state, across projects — the Now inbox reads this. */
     readonly listActive: () => Effect.Effect<ReadonlyArray<Session>>;
     /** Sessions to re-attach to after a crash/restart. */
@@ -217,6 +225,18 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .select()
           .from(agentSessions)
           .where(eq(agentSessions.projectId, projectId))
+          .orderBy(desc(agentSessions.createdAt))
+          .pipe(Effect.orDie);
+        return rows.map(toSession);
+      });
+
+      const listForWorktree = Effect.fn("SessionsRepo.listForWorktree")(function* (
+        worktreeId: WorktreeId,
+      ) {
+        const rows = yield* db
+          .select()
+          .from(agentSessions)
+          .where(eq(agentSessions.worktreeId, worktreeId))
           .orderBy(desc(agentSessions.createdAt))
           .pipe(Effect.orDie);
         return rows.map(toSession);
@@ -542,6 +562,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         create,
         byId,
         listForProject,
+        listForWorktree,
         listActive,
         listUnsettled,
         listRecentlySettled,
