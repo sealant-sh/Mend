@@ -57,6 +57,8 @@ export type AutomationChoiceDto = ProjectDto["autoTour"];
 export type GitAuthModeDto = ProjectDto["gitAuthMode"];
 export type ProjectDetailDto = Outputs["projects"]["detail"];
 export type SessionDto = Outputs["sessions"]["listActive"][number];
+export type WorktreeDto = Outputs["projects"]["detail"]["worktrees"][number];
+export type WorktreeAnnotationDto = Outputs["projects"]["detail"]["worktreeAnnotations"][number];
 export type SessionStatusDto = SessionDto["status"];
 export type SessionAnnotationDto = ProjectDetailDto["annotations"][number];
 export type ChangeStatsDto = Outputs["changes"]["stats"];
@@ -254,6 +256,13 @@ export const stopSession = (id: string) => orLogin(trpcClient.sessions.stop.muta
 export const resumeSession = (id: string, harness: string | null) =>
   orLogin(trpcClient.sessions.resume.mutate({ id, request: { harness } }));
 export const removeSession = (id: string) => orLogin(trpcClient.sessions.remove.mutate({ id }));
+
+/** The container's own verbs — the one explicit destructive act, and a new conversation inside. */
+export const removeWorktree = (id: string, force?: boolean) =>
+  orLogin(trpcClient.worktrees.remove.mutate(force === true ? { id, force: true } : { id }));
+
+export const createSessionInWorktree = (id: string, harness: string) =>
+  orLogin(trpcClient.worktrees.createSession.mutate({ id, session: { harness, label: null } }));
 export const setSessionLabel = (id: string, label: string | null) =>
   orLogin(trpcClient.sessions.setLabel.mutate({ id, label }));
 export const checkpointSession = (id: string, trigger: "review-open" | "user-mark") =>
