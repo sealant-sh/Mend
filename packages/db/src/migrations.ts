@@ -1378,6 +1378,40 @@ const worktreesMigration = Effect.gen(function* () {
   yield* sql`ALTER TABLE hot_workspaces ADD COLUMN worktree_id text REFERENCES worktrees(id) ON DELETE SET NULL`;
 });
 
+/**
+ * Skill libraries (plan §17: skills materialize through the mounted harness
+ * home). One table, two scopes: a user's library (identity, like dotfiles)
+ * and a project's (travels with the repository). The bundle's files ride the
+ * row as jsonb — skills are small text by contract, and the launch path
+ * reads whole bundles anyway. Name is unique per owner within its scope.
+ */
+const skillsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS skills (
+      id text PRIMARY KEY,
+      scope text NOT NULL,
+      owner_user_id text,
+      project_id text REFERENCES projects (id) ON DELETE CASCADE,
+      name text NOT NULL,
+      description text NOT NULL DEFAULT '',
+      files jsonb NOT NULL DEFAULT '[]'::jsonb,
+      revision integer NOT NULL DEFAULT 1,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT skills_scope_owner_check CHECK (
+        (scope = 'user' AND owner_user_id IS NOT NULL AND project_id IS NULL)
+        OR (scope = 'project' AND project_id IS NOT NULL AND owner_user_id IS NULL)
+      )
+    )`;
+  yield* sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS skills_user_name_key
+      ON skills (owner_user_id, name) WHERE scope = 'user'`;
+  yield* sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS skills_project_name_key
+      ON skills (project_id, name) WHERE scope = 'project'`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -1426,4 +1460,5 @@ export const migrations = {
   "0044_protocol_options": protocolOptionsColumn,
   "0045_native_ingest_cursor": nativeIngestCursorColumn,
   "0046_worktrees": worktreesMigration,
+  "0047_skills": skillsMigration,
 };

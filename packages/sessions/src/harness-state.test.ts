@@ -157,6 +157,9 @@ describe("harness home", () => {
     expect(await Effect.runPromise(hasLiveHarnessState(home, "claude"))).toBe(false);
     fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
     expect(await Effect.runPromise(hasLiveHarnessState(home, "claude"))).toBe(false);
+    // Mend-materialized skills are configuration, not harness-written state.
+    fs.mkdirSync(path.join(home, ".claude", "skills", "review"), { recursive: true });
+    expect(await Effect.runPromise(hasLiveHarnessState(home, "claude"))).toBe(false);
     fs.writeFileSync(path.join(home, ".claude", "settings.json"), "{}");
     expect(await Effect.runPromise(hasLiveHarnessState(home, "claude"))).toBe(true);
     expect(await Effect.runPromise(hasLiveHarnessState(home, "codex"))).toBe(false);

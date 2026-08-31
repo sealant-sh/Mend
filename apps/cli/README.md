@@ -83,6 +83,10 @@ mend sessions [--all] [--project p] [--json]
 mend status                           active sessions (alias of mend sessions)
 mend pair [--url <base url>]          pair a phone or a second machine: QR + code + URL
 mend doctor                           read-only checklist of this machine's setup
+mend skills [--project [p]]           your skill library on the server (or a project's)
+mend skills push [--project [p]] [--prune] [--dir <path>]
+                                      upload ~/.agents/skills bundles; sessions receive
+                                      them at launch (--prune removes what's gone)
 ```
 
 ## Signing in

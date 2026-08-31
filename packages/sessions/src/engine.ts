@@ -29,6 +29,7 @@ import {
   SessionRunsRepo,
   SessionsRepo,
   SettingsRepo,
+  SkillsRepo,
   UserDotfilesRepo,
   SessionChannelTokensRepo,
 } from "@mend/db";
@@ -140,6 +141,7 @@ import {
   SessionSocketHost,
   type SessionSocketApi,
 } from "./session-socket.ts";
+import { materializeSkills, mergeSkillLibraries } from "./skills.ts";
 
 /**
  * How a harness takes an opening prompt (the cross-harness handoff). The public SDK rejects argv
@@ -734,6 +736,7 @@ type SessionEngineRequirements =
   | HotWorkspacesRepo
   | UserDotfilesRepo
   | DotfilesStore
+  | SkillsRepo
   | SessionRunsRepo
   | SessionProcessesRepo
   | ServicesRepo
@@ -845,6 +848,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const hotWorkspaces = yield* HotWorkspacesRepo;
       const userDotfilesRepo = yield* UserDotfilesRepo;
       const dotfilesStore = yield* DotfilesStore;
+      const skillsRepo = yield* SkillsRepo;
       const sessionRuns = yield* SessionRunsRepo;
       const processes = yield* SessionProcessesRepo;
       const services = yield* ServicesRepo;
@@ -2411,6 +2415,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (!harnessHomeReady) {
           yield* Effect.logWarning("session engine: harness home could not be created").pipe(
             Effect.annotateLogs({ sessionId, harnessHome }),
+          );
+        }
+        // Skills ride the harness home: the merged libraries (owner's + the
+        // project's, project wins by name) are written server-side before the
+        // workspace boots; the boot relocation keeps mount-side files, so the
+        // harness discovers them natively. Best-effort by design — a launch
+        // never fails over its skills.
+        if (harnessHomeReady) {
+          const skillLibraries = yield* skillsRepo.forLaunch(ownerUserId, project.id);
+          yield* materializeSkills(harnessHome, mergeSkillLibraries(skillLibraries)).pipe(
+            Effect.catchTag("SkillMaterializeError", (error) =>
+              Effect.logWarning("session engine: skills were not materialized").pipe(
+                Effect.annotateLogs({ sessionId, harnessHome, message: error.message }),
+              ),
+            ),
           );
         }
         const workspaceMounts = [

@@ -8,6 +8,7 @@ import { queueRouter } from "./queue.ts";
 import { servicesRouter } from "./services.ts";
 import { sessionsRouter } from "./sessions.ts";
 import { settingsRouter } from "./settings.ts";
+import { skillsRouter } from "./skills.ts";
 import { router } from "./trpc.ts";
 import { worktreesRouter } from "./worktrees.ts";
 
@@ -34,6 +35,7 @@ export const appRouter = router({
   sessions: sessionsRouter,
   worktrees: worktreesRouter,
   settings: settingsRouter,
+  skills: skillsRouter,
 });
 
 export type AppRouter = typeof appRouter;

@@ -48,6 +48,7 @@ import type {
   SessionId,
   SessionProcessId,
   Sha,
+  SkillId,
   WorktreeId,
 } from "@mend/domain";
 import {
@@ -55,6 +56,7 @@ import {
   RecordLink,
   ReviewCommentAnchor,
   SessionDotfiles,
+  SkillFile,
   TourStop,
 } from "@mend/domain/workbench";
 import type {
@@ -370,6 +372,27 @@ export const userSealantIdentities = pgTable("user_sealant_identities", {
 export const userDotfiles = pgTable("user_dotfiles", {
   userId: text().primaryKey(),
   repository: jsonbOf(DotfilesRepository),
+  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Skill libraries — user-scoped (identity, like dotfiles) and project-scoped
+ * bundles of agent instruction files. The files ride the row as jsonb; the
+ * launch path materializes them into the session's harness home. Per-scope
+ * name uniqueness is enforced by partial unique indexes in the migration.
+ */
+export const skills = pgTable("skills", {
+  id: text().$type<SkillId>().primaryKey(),
+  scope: text().$type<"user" | "project">().notNull(),
+  ownerUserId: text(),
+  projectId: text()
+    .$type<ProjectId>()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  name: text().notNull(),
+  description: text().notNull().default(""),
+  files: jsonbArrayOf(SkillFile).notNull().default([]),
+  revision: integer().notNull().default(1),
+  createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
 
