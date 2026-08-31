@@ -1,5 +1,26 @@
 # @sealant/mend
 
+## 0.15.0
+
+### Minor Changes
+
+- be4ece9: The worktree becomes the durable container: sessions are conversations inside it — many
+  per worktree, several live at once — with one change and one checkpoint chain per worktree.
+  Launching with an existing worktree name joins it (`--worktree` joins only); `s` in the dashboard
+  starts a session inside the selected worktree, Shift+D is the one explicit removal (refused while
+  anything is live), and deleting a session leaves the worktree, its change, and its checkpoints
+  standing. `mend worktrees` lists containers with their sessions; `mend sessions --json` stays
+  byte-stable v1, `--json=v2` emits the worktree envelope. Migration 0046 re-keys existing data
+  one-worktree-per-session; review slices may now span checkpoints from different conversations of
+  one worktree.
+
+### Patch Changes
+
+- fc9ea8e: The dashboard shows what actually lives in each worktree: live agent and shell processes
+  hang under their worktree row beside the Services, and unnamed worktrees are called by their
+  auto-name label (or short session id) instead of the `session/<uuid>` branch noise. The attach and
+  rejoin banners use the same name.
+
 ## 0.14.0
 
 ### Minor Changes
