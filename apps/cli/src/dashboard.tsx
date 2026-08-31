@@ -20,7 +20,10 @@ import {
   worktreeDisplayName,
   fetchWorkbench,
   type HarnessItem,
+  liveShellOf,
   mapWorkbenchSessions,
+  markSessionStopped,
+  removeWorktreeGroup,
   prependSession,
   removeSession,
   replaceSession,
@@ -582,14 +585,26 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       outcome = await ctx.attachTty(session.id, session.harness);
       if (outcome === "unavailable") {
         // A live session whose terminal ended (idle: a workspace held open,
-        // no PTY behind it). Enter still means "get me in" — open a fresh
-        // shell in the same workspace and attach to that.
-        const shell = await ctx.api<{ readonly id: string }>(
-          "POST",
-          `/sessions/${session.id}/shell`,
+        // no PTY behind it). Enter still means "get me in" — REJOIN the shell
+        // already holding the workspace when one is live; only open a fresh
+        // one when nothing is attachable (stacking a new bash per attempt is
+        // how a session ends up held open by orphan shells).
+        const detail = await ctx.api<{ readonly processes: ReadonlyArray<SessionProcessDto> }>(
+          "GET",
+          `/sessions/${session.id}`,
         );
-        process.stdout.write(`no live terminal — opened a shell in the workspace\n\n`);
-        outcome = await ctx.attachTty(session.id, "shell", shell.id);
+        const existing = liveShellOf(detail.processes);
+        if (existing !== null) {
+          process.stdout.write(`no live terminal — rejoining the open shell\n\n`);
+          outcome = await ctx.attachTty(session.id, "shell", existing.id);
+        } else {
+          const shell = await ctx.api<{ readonly id: string }>(
+            "POST",
+            `/sessions/${session.id}/shell`,
+          );
+          process.stdout.write(`no live terminal — opened a shell in the workspace\n\n`);
+          outcome = await ctx.attachTty(session.id, "shell", shell.id);
+        }
       }
     } catch (error) {
       say(error instanceof Error ? error.message : String(error));
@@ -755,11 +770,8 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       ctx.api<SessionDto>("POST", `/sessions/${session.id}/stop`),
     onMutate: async (session) => {
       await queryClient.cancelQueries({ queryKey: WORKBENCH_KEY });
-      patchWorkbench((current) =>
-        mapWorkbenchSessions(current, (row) =>
-          row.id === session.id ? { ...row, status: "stopped" } : row,
-        ),
-      );
+      // The row settles and its live process/service facts drop in one paint.
+      patchWorkbench((current) => markSessionStopped(current, session.id));
       say(`stopped · ${worktreeDisplayName(session)} — the record and review remain`);
     },
     onError: (error) => {
@@ -829,7 +841,13 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       group.id !== null
         ? ctx.api("DELETE", `/worktrees/${group.id}`)
         : ctx.api("DELETE", `/sessions/${group.sessions[0]?.session.id ?? ""}`),
-    onMutate: (group) => {
+    onMutate: async (group) => {
+      await queryClient.cancelQueries({ queryKey: WORKBENCH_KEY });
+      const projectId = selectedProject?.project.id;
+      // The group leaves the list before the server answers; an error refetches truth.
+      if (projectId !== undefined) {
+        patchWorkbench((current) => removeWorktreeGroup(current, projectId, group));
+      }
       say(`removing worktree · ${group.name}`);
     },
     onError: (error) => {

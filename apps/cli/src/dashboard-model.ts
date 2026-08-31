@@ -405,3 +405,54 @@ export const foldGroupStatus = (group: WorktreeGroup): string => {
   if (statuses.includes("idle")) return "idle";
   return statuses[0] ?? "idle";
 };
+
+// ─── attach + verb helpers ──────────────────────────────────────────────────
+
+/**
+ * Where "get me in" should land when the session has no live agent terminal:
+ * the newest LIVE shell, so repeated attaches rejoin the same one instead of
+ * stacking a fresh bash per attempt (the five-orphan-shells failure mode).
+ * Null = nothing attachable; opening a new shell is then honest.
+ */
+export const liveShellOf = (
+  processes: ReadonlyArray<SessionProcessDto>,
+): SessionProcessDto | null =>
+  processes.findLast((process) => process.kind === "shell" && process.exitedAt === null) ?? null;
+
+/**
+ * The optimistic stop: the row settles AND its live process/service fact
+ * lines drop in the same paint — the server's refetch only confirms.
+ */
+export const markSessionStopped = (data: Workbench, sessionId: string): Workbench => {
+  const processesBySession = new Map(data.processesBySession);
+  processesBySession.delete(sessionId);
+  const servicesBySession = new Map(data.servicesBySession);
+  servicesBySession.delete(sessionId);
+  return {
+    ...mapWorkbenchSessions(data, (session) =>
+      session.id === sessionId ? { ...session, status: "stopped" } : session,
+    ),
+    processesBySession,
+    servicesBySession,
+  };
+};
+
+/** The optimistic removal: the whole group leaves the list before the server answers. */
+export const removeWorktreeGroup = (
+  data: Workbench,
+  projectId: string,
+  group: WorktreeGroup,
+): Workbench => {
+  const memberIds = new Set(group.sessions.map((item) => item.session.id));
+  const detail = data.details.get(projectId);
+  if (detail === undefined) return data;
+  const details = new Map(data.details);
+  details.set(projectId, {
+    ...detail,
+    sessions: detail.sessions.filter((session) => !memberIds.has(session.id)),
+    ...(detail.worktrees === undefined
+      ? {}
+      : { worktrees: detail.worktrees.filter((worktree) => worktree.id !== group.id) }),
+  });
+  return { ...data, details };
+};
