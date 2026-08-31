@@ -581,6 +581,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     renderer.suspend();
     process.stdout.write(`\nattached · ${session.harness} · ${short} · detach: Ctrl+]\n\n`);
     let outcome: "detached" | "ended" | "dropped" | "interrupted" | "unavailable";
+    let attachedShell = false;
     try {
       outcome = await ctx.attachTty(session.id, session.harness);
       if (outcome === "unavailable") {
@@ -594,6 +595,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           `/sessions/${session.id}`,
         );
         const existing = liveShellOf(detail.processes);
+        attachedShell = true;
         if (existing !== null) {
           process.stdout.write(`no live terminal — rejoining the open shell\n\n`);
           outcome = await ctx.attachTty(session.id, "shell", existing.id);
@@ -620,7 +622,11 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           ? `detached — ${short} keeps running`
           : outcome === "dropped"
             ? `disconnected — ${short} keeps running`
-            : `session settled · ${short}`,
+            : attachedShell
+              ? // A shell ending is only the shell's fact — the refetched row
+                // says whether anything else still holds the session.
+                `shell ended · ${short}`
+              : `session settled · ${short}`,
     );
     refetch();
   };
