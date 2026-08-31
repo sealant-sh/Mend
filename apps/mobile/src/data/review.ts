@@ -7,7 +7,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef } from "react";
 
-import { api, requireFollowUpDelivery, type FollowUpDto, type SessionChangeDto } from "@/data/live";
+import {
+  api,
+  ApiError,
+  requireFollowUpDelivery,
+  type FollowUpDto,
+  type SessionChangeDto,
+} from "@/data/live";
 
 // ─── wire types (the server's DTOs, minimally) ──────────────────────────────
 
@@ -254,7 +260,8 @@ const nextReviewDeliveryKey = (changeId: string): string => {
  */
 export const useSendReview = (
   changeId: string,
-  sessionId: string,
+  /** The change's last contributing conversation; null = nowhere to deliver. */
+  sessionId: string | null,
   commentIds: ReadonlyArray<string>,
   slice: ReviewSliceDto,
 ) => {
@@ -263,6 +270,9 @@ export const useSendReview = (
   const idempotencyKey = useRef(nextReviewDeliveryKey(changeId));
   return useMutation({
     mutationFn: async (instruction: string) => {
+      if (sessionId === null) {
+        throw new ApiError("No conversation has inhabited this worktree yet.", 0);
+      }
       const followUp = await api<FollowUpDto>("POST", `/sessions/${sessionId}/follow-up/deliver`, {
         reviewSliceId: slice.id,
         checkpointAId: slice.checkpointAId,

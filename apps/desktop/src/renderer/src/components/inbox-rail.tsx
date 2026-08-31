@@ -189,7 +189,8 @@ export function InboxRail({
         row.section === "settled"
           ? {
               label: "Delete",
-              confirm: "Really delete session and worktree?",
+              confirm:
+                "Really delete this session? The worktree, its change, and checkpoints remain.",
               danger: true,
               onSelect: () => void deleteRow(row),
             }
@@ -527,7 +528,7 @@ function Row({
           }
         : onDelete !== null
           ? {
-              title: "Delete session and worktree",
+              title: "Delete session",
               icon: <span className="font-sans text-[11px]">delete</span>,
               onClick: (event: React.MouseEvent<HTMLButtonElement>) => {
                 event.stopPropagation();

@@ -465,8 +465,9 @@ export default function SessionScreen() {
           </View>
           {session !== undefined && (
             <MonoText tone="faint" size={10.5} numberOfLines={1}>
-              {session.branch.replace(/^mend\/session\//, "session ")} · base{" "}
-              {session.baseRef ?? session.baseSha.slice(0, 12)}
+              worktree{" "}
+              {session.branch.replace(/^mend\/session\//, "session ").replace(/^mend\/(wt\/)?/, "")}{" "}
+              · base {session.baseRef ?? session.baseSha.slice(0, 12)}
             </MonoText>
           )}
           {session !== undefined && (

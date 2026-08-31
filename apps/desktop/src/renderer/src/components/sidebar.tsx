@@ -214,7 +214,7 @@ function SessionRow({
           variant="ghost"
           size="xs"
           onClick={onDelete}
-          title="Delete session and worktree"
+          title="Delete session — the worktree remains"
           className="absolute top-[3px] right-2 hidden h-5 rounded-md bg-[var(--sw-sunken)] px-1.5 text-[11px] font-normal text-label group-hover:inline-flex hover:text-danger focus-visible:inline-flex"
         >
           delete
@@ -362,7 +362,8 @@ export function Sidebar({
           }
         : {
             label: "Delete",
-            confirm: "Really delete session and worktree?",
+            confirm:
+              "Really delete this session? The worktree, its change, and checkpoints remain.",
             danger: true,
             onSelect: () => void deleteRows([row]),
           },

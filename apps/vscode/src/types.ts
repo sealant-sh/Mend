@@ -18,9 +18,21 @@ export interface Project {
   readonly defaultBranch: string;
 }
 
+export interface Worktree {
+  readonly id: string;
+  readonly name: string;
+  readonly directory: string;
+  readonly branch: string;
+  readonly baseSha: string;
+  readonly baseRef: string | null;
+  readonly createdAt: string;
+}
+
 export interface Session {
   readonly id: string;
   readonly projectId: string;
+  /** Present once the server is worktree-aware. */
+  readonly worktreeId?: string;
   readonly harness: string;
   readonly label: string | null;
   readonly worktree: string;
@@ -34,6 +46,8 @@ export interface Session {
 export interface ProjectDetail {
   readonly project: Project;
   readonly sessions: ReadonlyArray<Session>;
+  /** Present when the server is worktree-aware — the capability signal. */
+  readonly worktrees?: ReadonlyArray<Worktree>;
 }
 
 export interface RepositoryFacts {
