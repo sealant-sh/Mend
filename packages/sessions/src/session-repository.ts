@@ -46,6 +46,8 @@ export class SessionRepository extends Context.Service<
       sessionId: SessionId,
       base: string | null,
       remoteEnv: Record<string, string> | null,
+      /** Names the worktree dir and its branch `mend/<name>`; null derives `session-<id>`. */
+      requestedName?: string | null,
     ) => Effect.Effect<SessionWorktreeSummary, SessionRepositoryError>;
     /** Freshen an existing worktree to `base` without recreating it (hot-pool claims). */
     readonly resetWorktree: (
@@ -95,10 +97,10 @@ export const SessionRepositoryLocalLive: Layer.Layer<
     const projects = yield* ProjectsRepo;
 
     return {
-      createWorktree: (projectId, sessionId, base, remoteEnv) =>
+      createWorktree: (projectId, sessionId, base, remoteEnv, requestedName = null) =>
         projects.byId(projectId).pipe(
           Effect.flatMap((project) =>
-            store.createWorktree(project.storePath, sessionId, base, remoteEnv),
+            store.createWorktree(project.storePath, sessionId, base, remoteEnv, requestedName),
           ),
           Effect.map(({ name, branch, baseSha, baseRef }) => ({ name, branch, baseSha, baseRef })),
         ),

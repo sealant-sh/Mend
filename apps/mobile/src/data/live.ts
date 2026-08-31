@@ -507,12 +507,15 @@ export const useSessionActions = () => {
       readonly projectId: string;
       readonly harness: string;
       readonly base?: string | null;
+      /** Names the worktree (branch `mend/<name>`); null derives from the session id. */
+      readonly name?: string | null;
       readonly options?: LaunchOptions;
     }) => {
       const session = await api<SessionDto>("POST", `/projects/${input.projectId}/sessions`, {
         harness: input.harness,
         mode: "protocol",
         label: null,
+        name: input.name ?? null,
         base: input.base ?? null,
       });
       // Fire-and-forget: the server settles the session if provisioning fails.

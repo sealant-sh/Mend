@@ -5,7 +5,7 @@
 
 import { ChevronDown, ChevronRight } from "lucide-react-native";
 import { useState, type ReactNode } from "react";
-import { Pressable, View } from "react-native";
+import { Pressable, TextInput, View } from "react-native";
 
 import { EvButton } from "@/components/button";
 import { PanelRow } from "@/components/panel";
@@ -19,7 +19,7 @@ import {
   type LaunchOptions,
 } from "@/data/harness-options";
 import { PROTOCOL_HARNESSES, useProjectBranches } from "@/data/live";
-import { radius, useEvidenceTheme } from "@/theme/evidence";
+import { fontFamilies, radius, useEvidenceTheme } from "@/theme/evidence";
 
 function Chip({
   label,
@@ -205,20 +205,50 @@ export function StartSessionRows({
 }: {
   readonly pending: boolean;
   readonly projectId: string;
-  readonly onStart: (harness: string, options: LaunchOptions, base: string | null) => void;
+  readonly onStart: (
+    harness: string,
+    options: LaunchOptions,
+    base: string | null,
+    name: string | null,
+  ) => void;
   /** Whether the first harness row is the panel's first row. */
   readonly first?: boolean;
 }) {
+  const { colors } = useEvidenceTheme();
+  // The worktree's name comes first — it is the identity being created.
+  const [name, setName] = useState("");
+  const cleaned = name
+    .trim()
+    .replace(/^[^a-z0-9]+/, "")
+    .slice(0, 64);
   return (
     <>
-      {PROTOCOL_HARNESSES.map((harness, index) => (
+      <PanelRow first={first}>
+        <TextInput
+          value={name}
+          onChangeText={(value) => setName(value.toLowerCase().replace(/[^a-z0-9._-]+/g, "-"))}
+          placeholder="worktree name — e.g. fix-auth (empty = auto)"
+          placeholderTextColor={colors.faint}
+          autoCapitalize="none"
+          autoCorrect={false}
+          style={{
+            fontFamily: fontFamilies.mono.regular,
+            fontSize: 12,
+            color: colors.ink,
+            paddingVertical: 2,
+          }}
+        />
+      </PanelRow>
+      {PROTOCOL_HARNESSES.map((harness) => (
         <HarnessRow
           key={harness}
           harness={harness}
-          first={first && index === 0}
+          first={false}
           pending={pending}
           projectId={projectId}
-          onStart={onStart}
+          onStart={(chosenHarness, options, base) =>
+            onStart(chosenHarness, options, base, cleaned === "" ? null : cleaned)
+          }
         />
       ))}
     </>

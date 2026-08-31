@@ -302,6 +302,8 @@ export class Store extends Context.Service<
       sessionId: SessionId,
       base: string | null,
       remoteEnv: Record<string, string> | null,
+      /** Names the worktree dir and its branch `mend/<name>`; null derives `session-<id>`. */
+      requestedName?: string | null,
     ) => Effect.Effect<SessionWorktree, GitError>;
     /**
      * Freshen an existing worktree to `base` (default branch when null) without recreating it:
@@ -567,6 +569,7 @@ export class Store extends Context.Service<
         sessionId: SessionId,
         base: string | null,
         remoteEnv: Record<string, string> | null,
+        requestedName: string | null = null,
       ) {
         // Idempotent: stores adopted before the exclude or shared-group policies get them here.
         yield* ensureExcludes(storePath);
@@ -574,8 +577,27 @@ export class Store extends Context.Service<
         const baseRef = base ?? (yield* git(["symbolic-ref", "--short", "HEAD"], storePath));
         yield* freshenBase(storePath, baseRef, remoteEnv);
         const baseSha = yield* resolveBaseSha(storePath, baseRef, remoteEnv);
-        const name = `session-${sessionId}`;
-        const branch = `mend/session/${sessionId}`;
+        // A requested name is the worktree's identity: directory `<name>`,
+        // branch `mend/<name>`. The default stays id-derived (and the default
+        // branch namespace `mend/session/*` distinct, so names cannot collide
+        // with generated sessions).
+        const name = requestedName ?? `session-${sessionId}`;
+        const branch =
+          requestedName === null ? `mend/session/${sessionId}` : `mend/${requestedName}`;
+        if (requestedName !== null) {
+          const taken = yield* git(
+            ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
+            storePath,
+          ).pipe(Effect.result);
+          if (taken._tag === "Success") {
+            return yield* new GitError({
+              args: ["worktree", "add"],
+              cwd: storePath,
+              exitCode: null,
+              stderr: `worktree name "${requestedName}" is already used in this project — pick another`,
+            });
+          }
+        }
         const worktreePath = path.join(path.dirname(storePath), "worktrees", name);
         yield* git(["worktree", "add", "-b", branch, worktreePath, baseSha], storePath);
         // `git worktree add` does not shared-perm its admin dir the way ref writes are; the

@@ -17,6 +17,7 @@ import {
   isPendingId,
   LIVE_STATUSES,
   matchProjectByCwd,
+  normalizeProjectName,
   pendingId,
 } from "./shared.ts";
 import { openUrl } from "./terminal.ts";
@@ -354,6 +355,19 @@ const ProjectRow = ({
   </box>
 );
 
+/**
+ * The worktree IS the session's identity (one worktree per session): its
+ * branch, with the noisy default prefix receded. What you are working on
+ * leads every row; the harness is a fact about it, not its name.
+ */
+const worktreeName = (branch: string): string =>
+  branch.startsWith("mend/") ? branch.slice("mend/".length) : branch;
+
+/**
+ * One worktree, grouped: the session line leads with the worktree name, and
+ * everything live inside it — its Services — hangs underneath. The child
+ * rows are facts, not targets: selection stays on the worktree line.
+ */
 const SessionRow = ({
   item,
   selected,
@@ -361,22 +375,36 @@ const SessionRow = ({
   readonly item: SessionItem;
   readonly selected: boolean;
 }) => {
-  const { session, annotation } = item;
+  const { session, annotation, services } = item;
   const color = STATUS_COLOR[session.status] ?? MUTED;
   const age = timeAgo(session.createdAt).replace(" ago", "");
+  const worktree = worktreeName(session.branch);
   return (
-    <box height={1} flexShrink={0} backgroundColor={selected ? WASH : "transparent"}>
-      <text height={1} bg="transparent">
-        <Gutter selected={selected} />
-        <span fg={INK}>{session.harness.padEnd(9)}</span>
-        <span fg={FAINT}>{session.id.slice(0, 8)}</span>
-        <span fg={color}>{`  ${session.status.padEnd(10)}`}</span>
-        <span fg={FAINT}>{age.padEnd(9)}</span>
-        {annotation !== undefined && annotation.openComments > 0 ? (
-          <span fg={MUTED}>{`${annotation.openComments} open  `}</span>
-        ) : null}
-        <span fg={MUTED}>{(session.label ?? "").slice(0, 40)}</span>
-      </text>
+    <box flexShrink={0} flexDirection="column" backgroundColor="transparent">
+      <box height={1} flexShrink={0} backgroundColor={selected ? WASH : "transparent"}>
+        <text height={1} bg="transparent">
+          <Gutter selected={selected} />
+          <span fg={INK}>{worktree.slice(0, 30).padEnd(31)}</span>
+          <span fg={color}>{session.status.padEnd(10)}</span>
+          <span fg={FAINT}>{age.padEnd(9)}</span>
+          <span fg={MUTED}>{session.harness.padEnd(10)}</span>
+          {annotation !== undefined && annotation.openComments > 0 ? (
+            <span fg={MUTED}>{`${annotation.openComments} open  `}</span>
+          ) : null}
+          <span fg={FAINT}>{(session.label ?? "").slice(0, 40)}</span>
+        </text>
+      </box>
+      {services.map((service) => (
+        <box key={service.id} height={1} flexShrink={0} backgroundColor="transparent">
+          <text height={1} bg="transparent">
+            <span fg={FAINT}>{"     └ "}</span>
+            <span fg={service.status === "reachable" ? INK_2 : MUTED}>
+              {`${service.label ?? service.id.slice(0, 6)} :${service.workspacePort ?? "?"}${service.protocol === "udp" ? "u" : ""}→${service.hostPort ?? "?"}`}
+            </span>
+            <span fg={FAINT}>{` ${service.status}`}</span>
+          </text>
+        </box>
+      ))}
     </box>
   );
 };
@@ -517,12 +545,15 @@ const errorText = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
 /** Keep a 1-line-per-row selection inside its scrollbox's real viewport. */
-const keepRowVisible = (scroll: ScrollBoxRenderable | null, index: number): void => {
+const keepSpanVisible = (scroll: ScrollBoxRenderable | null, top: number, height: number): void => {
   if (scroll === null) return;
   const viewH = Math.max(1, scroll.viewport.height);
-  if (index < scroll.scrollTop) scroll.scrollTo(index);
-  else if (index + 1 > scroll.scrollTop + viewH) scroll.scrollTo(index + 1 - viewH);
+  if (top < scroll.scrollTop) scroll.scrollTo(top);
+  else if (top + height > scroll.scrollTop + viewH) scroll.scrollTo(top + height - viewH);
 };
+
+const keepRowVisible = (scroll: ScrollBoxRenderable | null, index: number): void =>
+  keepSpanVisible(scroll, index, 1);
 
 // ─── the app ────────────────────────────────────────────────────────────────
 
@@ -550,6 +581,11 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   const [busyStarted, setBusyStarted] = useState(0);
   const [status, setStatus] = useState<StatusMessage | null>(null);
   const [editing, setEditing] = useState<SessionDto | null>(null);
+  /** Session id a stop is armed against; the second press fires it. */
+  const [stopArmed, setStopArmed] = useState<string | null>(null);
+  /** The new-session flow asks the worktree's name FIRST, then the harness. */
+  const [naming, setNaming] = useState<{ readonly projectId: string } | null>(null);
+  const [pendingName, setPendingName] = useState<string | null>(null);
   const [reviewing, setReviewing] = useState<{
     readonly session: SessionDto;
     readonly changeId: string;
@@ -599,8 +635,16 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     keepRowVisible(projectScrollRef.current, projectIndex);
   }, [projectIndex]);
   useEffect(() => {
-    keepRowVisible(sessionScrollRef.current, sessionIndex);
-  }, [sessionIndex]);
+    // Rows are worktree groups (a session line plus its service children), so
+    // the scroll target is the group's y offset, not its index.
+    let top = 0;
+    for (const [index, item] of sessionItems.entries()) {
+      if (index === sessionIndex) break;
+      top += 1 + item.services.length;
+    }
+    const selectedHeight = 1 + (sessionItems[sessionIndex]?.services.length ?? 0);
+    keepSpanVisible(sessionScrollRef.current, top, selectedHeight);
+  }, [sessionIndex, sessionItems]);
 
   const attachFlow = async (session: SessionDto): Promise<void> => {
     const short = session.id.slice(0, 8);
@@ -666,6 +710,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     mutationFn: async (vars: {
       readonly projectId: string;
       readonly harness: string;
+      readonly name: string | null;
       readonly pendingKey: string;
     }) => {
       const argv = HARNESS_COMMANDS[vars.harness];
@@ -673,6 +718,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       const session = await ctx.api<SessionDto>("POST", `/projects/${vars.projectId}/sessions`, {
         harness: vars.harness,
         label: null,
+        name: vars.name,
         base: null,
       });
       await ctx.api<SessionDto>("POST", `/sessions/${session.id}/launch`, { argv });
@@ -685,7 +731,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           id: vars.pendingKey,
           harness: vars.harness,
           label: null,
-          branch: "provisioning…",
+          branch: vars.name === null ? "provisioning…" : `mend/${vars.name}`,
           baseSha: "",
           baseRef: null,
           status: "starting",
@@ -776,9 +822,55 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     onSettled: settleRefetch,
   });
 
+  // Stops are explicit — and armed: the first press names what a second press
+  // will stop; moving the selection re-arms against the newly selected row.
+  const stopMutation = useMutation({
+    mutationFn: (session: SessionDto) =>
+      ctx.api<SessionDto>("POST", `/sessions/${session.id}/stop`),
+    onMutate: async (session) => {
+      await queryClient.cancelQueries({ queryKey: WORKBENCH_KEY });
+      patchWorkbench((current) =>
+        mapWorkbenchSessions(current, (row) =>
+          row.id === session.id ? { ...row, status: "stopped" } : row,
+        ),
+      );
+      say(`stopped · ${worktreeName(session.branch)} — the record and review remain`);
+    },
+    onError: (error) => {
+      say(errorText(error));
+      refetch();
+    },
+    onSettled: settleRefetch,
+  });
+
+  const armStop = (): void => {
+    const item = selectedSession;
+    if (item === null || isPendingId(item.session.id)) return;
+    if (!LIVE_STATUSES.has(item.session.status)) {
+      say("nothing to stop — the session is settled");
+      return;
+    }
+    if (stopArmed === item.session.id) {
+      setStopArmed(null);
+      stopMutation.mutate(item.session);
+      return;
+    }
+    setStopArmed(item.session.id);
+    say(`press again to stop · ${worktreeName(item.session.branch)}`);
+  };
+
   const startSession = (projectId: string, harness: string): void => {
     setFocus("sessions");
-    launchMutation.mutate({ projectId, harness, pendingKey: pendingId() });
+    launchMutation.mutate({ projectId, harness, name: pendingName, pendingKey: pendingId() });
+    setPendingName(null);
+  };
+
+  /** Name first, then the harness: the worktree is the identity being created. */
+  const submitWorktreeName = (value: string): void => {
+    setNaming(null);
+    const slug = normalizeProjectName(value.trim());
+    setPendingName(value.trim() === "" ? null : slug);
+    openPicker(null);
   };
 
   const resumeSession = (projectId: string, session: SessionDto, harness: string | null): void => {
@@ -855,6 +947,10 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       if (key.name === "escape") setEditing(null);
       return;
     }
+    if (naming !== null) {
+      if (key.name === "escape") setNaming(null);
+      return;
+    }
     if (picker !== null) {
       switch (key.name) {
         case "down":
@@ -875,6 +971,9 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           return;
       }
     }
+    // Shift+K (and x below): stop the selected session. Lowercase k stays
+    // vim-up; the shift is the deliberateness the arm-confirm then doubles.
+    if (key.shift === true && key.name === "k") return armStop();
     switch (key.name) {
       case "q":
         return onQuit();
@@ -884,6 +983,8 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       case "up":
       case "k":
         return moveSelection(-1);
+      case "x":
+        return armStop();
       case "return":
       case "linefeed":
         return activate();
@@ -901,7 +1002,8 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         if (showProjectsPane) setFocus(focus === "projects" ? "sessions" : "projects");
         return;
       case "n":
-        if (selectedProject !== null) openPicker(null);
+        // The worktree's name comes first; the harness picker follows.
+        if (selectedProject !== null) setNaming({ projectId: selectedProject.project.id });
         return;
       case "e": {
         const item = selectedSession;
@@ -956,7 +1058,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   const detailTitle =
     selectedSession === null
       ? "session"
-      : `session — ${selectedSession.session.harness} ${selectedSession.session.id.slice(0, 8)}`;
+      : `worktree — ${worktreeName(selectedSession.session.branch)} · ${selectedSession.session.harness} ${selectedSession.session.id.slice(0, 8)}`;
   const pickerTitle =
     picker === null
       ? ""
@@ -966,11 +1068,13 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   const footerText =
     editing !== null
       ? " enter save · esc cancel"
-      : picker !== null
-        ? " ↑↓ move · enter start · esc cancel"
-        : focus === "projects"
-          ? " ↑↓ move · enter/l sessions · ⇥ panes · r refresh · q quit"
-          : " ↑↓ move · enter attach/resume · n new · v review · e rename · o web · h/⇥ projects · q quit";
+      : naming !== null
+        ? " enter continue — the harness picker follows · esc cancel"
+        : picker !== null
+          ? " ↑↓ move · enter start · esc cancel"
+          : focus === "projects"
+            ? " ↑↓ move · enter/l sessions · ⇥ panes · r refresh · q quit"
+            : " ↑↓ move · enter attach/resume · n new · x stop · v review · e rename · o web · h/⇥ projects · q quit";
 
   const loadFailure =
     data === undefined && failureReason !== null
@@ -1068,6 +1172,33 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
             <HarnessRow key={String(item.harness)} item={item} selected={index === pickerIndex} />
           ))}
         </Pane>
+      ) : naming !== null ? (
+        <box
+          border
+          borderStyle="rounded"
+          borderColor={COBALT}
+          title=" new worktree — name "
+          titleAlignment="left"
+          backgroundColor="transparent"
+          height={3}
+          flexShrink={0}
+        >
+          <input
+            focused
+            value=""
+            placeholder="name the worktree, e.g. fix-auth (empty = auto)"
+            backgroundColor="transparent"
+            focusedBackgroundColor="transparent"
+            textColor={INK}
+            focusedTextColor={INK}
+            placeholderColor={FAINT}
+            cursorColor={INK}
+            flexGrow={1}
+            onSubmit={(value: unknown) => {
+              if (typeof value === "string") submitWorktreeName(value);
+            }}
+          />
+        </box>
       ) : editing !== null ? (
         <box
           border

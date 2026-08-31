@@ -1395,6 +1395,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -1435,6 +1436,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -1509,6 +1511,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -1562,6 +1565,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -1610,6 +1614,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "claude",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -1694,6 +1699,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -1740,6 +1746,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -1782,6 +1789,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "claude",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -1834,6 +1842,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -1867,6 +1876,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "shell",
             label: "bench",
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -1891,6 +1901,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "shell",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -1925,6 +1936,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -1957,6 +1969,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "shell",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -1995,6 +2008,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -2090,6 +2104,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -2139,6 +2154,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -2189,6 +2205,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -2254,6 +2271,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -2293,6 +2311,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -2324,6 +2343,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -2358,6 +2378,7 @@ describe("SessionEngine", () => {
         const project = yield* setup(tmp, world);
         const engine = yield* SessionEngine;
         const session = yield* engine.provision({
+          name: null,
           ownerUserId: null,
           projectId: project.id,
           harness: "codex",
@@ -2384,6 +2405,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -2427,6 +2449,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -2588,6 +2611,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -2646,6 +2670,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -2690,6 +2715,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -2749,6 +2775,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -2780,6 +2807,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -2812,6 +2840,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -2850,6 +2879,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "claude",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -2875,6 +2905,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -2908,6 +2939,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -2953,6 +2985,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -2997,6 +3030,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -3054,6 +3088,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -3089,6 +3124,7 @@ describe("SessionEngine", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: null,
             base: null,
           });
@@ -3139,6 +3175,7 @@ describe("SessionEngine", () => {
           const project = yield* setup(tmp, world);
           const engine = yield* SessionEngine;
           const session = yield* engine.provision({
+            name: null,
             ownerUserId: null,
             projectId: project.id,
             harness: "codex",
@@ -3176,6 +3213,7 @@ describe("SessionEngine", () => {
         const engine = yield* SessionEngine;
 
         const session = yield* engine.provision({
+          name: null,
           ownerUserId: null,
           projectId: project.id,
           harness: "codex",
@@ -3208,6 +3246,7 @@ describe("SessionEngine", () => {
         const project = yield* setup(tmp, world);
         const engine = yield* SessionEngine;
         const session = yield* engine.provision({
+          name: null,
           ownerUserId: null,
           projectId: project.id,
           harness: "codex",
@@ -3271,6 +3310,7 @@ describe("SessionEngine", () => {
         const project = yield* setup(tmp, world);
         const engine = yield* SessionEngine;
         const session = yield* engine.provision({
+          name: null,
           ownerUserId: null,
           projectId: project.id,
           harness: "codex",
@@ -3303,6 +3343,7 @@ describe("SessionEngine", () => {
         const project = yield* setup(tmp, world);
         const engine = yield* SessionEngine;
         const session = yield* engine.provision({
+          name: null,
           ownerUserId: null,
           projectId: project.id,
           harness: "custom",
@@ -3329,6 +3370,7 @@ describe("SessionEngine", () => {
         const project = yield* setup(tmp, world);
         const engine = yield* SessionEngine;
         const session = yield* engine.provision({
+          name: null,
           ownerUserId: null,
           projectId: project.id,
           harness: "codex",
@@ -3361,6 +3403,7 @@ describe("SessionEngine", () => {
           const project = yield* setup(tmp, world);
           const engine = yield* SessionEngine;
           const session = yield* engine.provision({
+            name: null,
             ownerUserId: null,
             projectId: project.id,
             harness: "codex",
@@ -3456,6 +3499,7 @@ describe("SessionEngine", () => {
           const project = yield* setup(tmp, world);
           const engine = yield* SessionEngine;
           const session = yield* engine.provision({
+            name: null,
             ownerUserId: null,
             projectId: project.id,
             harness: "claude",
@@ -3525,6 +3569,7 @@ describe("SessionEngine", () => {
           const project = yield* setup(tmp, world);
           const engine = yield* SessionEngine;
           const session = yield* engine.provision({
+            name: null,
             ownerUserId: null,
             projectId: project.id,
             harness: "claude",
@@ -3584,6 +3629,7 @@ describe("SessionEngine", () => {
           const project = yield* setup(tmp, world);
           const engine = yield* SessionEngine;
           const session = yield* engine.provision({
+            name: null,
             ownerUserId: null,
             projectId: project.id,
             harness: "claude",
@@ -3790,6 +3836,7 @@ describe("SessionEngine hot sessions", () => {
             projectId: project.id,
             harness: "codex",
             label: null,
+            name: null,
             ownerUserId: "user-fixture",
             base: null,
           });

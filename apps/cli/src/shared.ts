@@ -41,6 +41,8 @@ export interface LaunchArgs {
   readonly model: string | null;
   readonly effort: string | null;
   readonly base: string | null;
+  /** Names the worktree (branch `mend/<name>`); null derives from the session id. */
+  readonly name: string | null;
   readonly ask: boolean;
   /** Priority processing — codex `service_tier=priority`. */
   readonly fast: boolean;
@@ -59,6 +61,7 @@ const LAUNCH_ERROR: Omit<LaunchArgs, "error"> = {
   model: null,
   effort: null,
   base: null,
+  name: null,
   ask: false,
   fast: false,
   detach: false,
@@ -82,6 +85,7 @@ export const parseLaunchArgs = (args: ReadonlyArray<string>): LaunchArgs => {
   let model: string | null = null;
   let effort: string | null = null;
   let base: string | null = null;
+  let workName: string | null = null;
   let ask = false;
   let fast = false;
   let detach = false;
@@ -104,12 +108,19 @@ export const parseLaunchArgs = (args: ReadonlyArray<string>): LaunchArgs => {
       foreground = true;
       continue;
     }
-    if (arg === "--project" || arg === "--model" || arg === "--effort" || arg === "--base") {
+    if (
+      arg === "--project" ||
+      arg === "--model" ||
+      arg === "--effort" ||
+      arg === "--base" ||
+      arg === "--name"
+    ) {
       const value = flagArgs[index + 1];
       if (value === undefined) return { ...LAUNCH_ERROR, error: `${arg} needs a value` };
       if (arg === "--project") project = value;
       else if (arg === "--model") model = value;
       else if (arg === "--effort") effort = value;
+      else if (arg === "--name") workName = normalizeProjectName(value);
       else base = value;
       index += 1;
       continue;
@@ -142,6 +153,7 @@ export const parseLaunchArgs = (args: ReadonlyArray<string>): LaunchArgs => {
     model,
     effort,
     base,
+    name: workName,
     ask,
     fast,
     detach,

@@ -643,7 +643,8 @@ export const createSession = (
   harness: string,
   label: string | null,
   base: string | null = null,
-) => post<SessionDto>(`/api/projects/${projectId}/sessions`, { harness, label, base });
+  name: string | null = null,
+) => post<SessionDto>(`/api/projects/${projectId}/sessions`, { harness, label, name, base });
 
 export const runServiceRecipe = (sessionId: string, name: string) =>
   post<ServiceViewDto>(`/api/sessions/${sessionId}/services/recipe`, { name });

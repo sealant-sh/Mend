@@ -50,9 +50,14 @@ export default function ProjectScreen() {
     );
   }
 
-  const fire = (harness: string, options: LaunchOptions, base: string | null) => {
+  const fire = (
+    harness: string,
+    options: LaunchOptions,
+    base: string | null,
+    name: string | null,
+  ) => {
     start.mutate(
-      { projectId: project.id, harness, base, options },
+      { projectId: project.id, harness, base, name, options },
       {
         onSuccess: (session) =>
           router.push({

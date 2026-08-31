@@ -408,6 +408,19 @@ const resolvedBackgroundSessions = async (
   }
 };
 
+/** One-line TTY ask: the worktree's name comes first — it is the identity being created. */
+const askWorktreeName = async (): Promise<string | null> => {
+  if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) return null;
+  const readline = await import("node:readline/promises");
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = (await rl.question(`  worktree name ${dim("(enter for auto)")}: `)).trim();
+    return answer === "" ? null : normalizeProjectName(answer);
+  } finally {
+    rl.close();
+  }
+};
+
 const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<string>) => {
   const parsed = parseLaunchArgs(args);
   if (parsed.error !== null) return fail(parsed.error);
@@ -440,6 +453,9 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
   say(
     `${green("✓")} project ${project.name} ${dim(`· ${project.defaultBranch}${parsed.project === null ? " · from cwd" : ""}`)}`,
   );
+  // The worktree's name comes first, then the session details — it is the
+  // identity every list leads with. `mend run` stays scriptable: flag only.
+  const worktreeName = harness === "run" ? parsed.name : (parsed.name ?? (await askWorktreeName()));
   const lifecycle: "detach" | LifecycleMode =
     harness === "run"
       ? "background"
@@ -468,6 +484,7 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
   const session = await api<SessionDto>(config, "POST", `/projects/${project.id}/sessions`, {
     harness,
     label: null,
+    name: worktreeName,
     base: parsed.base,
   });
   createdSessionId = session.id;
@@ -782,7 +799,9 @@ const attach = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const sessions = await api<ReadonlyArray<SessionDto>>(config, "GET", "/sessions");
   const match = sessions.find((s) => s.id.startsWith(prefix));
   if (match === undefined) return fail(`no active session matches "${prefix}"`);
-  say(`${green("✓")} attaching to ${match.harness} · ${dim(match.id.slice(0, 8))}${detachHint()}`);
+  say(
+    `${green("✓")} attaching to ${match.branch} · ${match.harness} ${dim(match.id.slice(0, 8))}${detachHint()}`,
+  );
   say("");
   await attachOrExit(config, match.id, match.harness);
   exitAfterSessionEnd(config, match.id);
@@ -2699,7 +2718,7 @@ const rejoinCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
   if (session === undefined) return fail("session selection failed");
   const alreadyLive = agentLiveIn(detail, session);
   say(
-    `${green("✓")} rejoining ${session.harness} · ${dim(session.id.slice(0, 8))} · ${alreadyLive ? "already live" : "restoring"}`,
+    `${green("✓")} rejoining ${session.branch} · ${session.harness} ${dim(session.id.slice(0, 8))} · ${alreadyLive ? "already live" : "restoring"}`,
   );
   say(`${cobalt("  watch")} · ${config.url}/sessions/${session.id}`);
 
@@ -3012,10 +3031,12 @@ start
   mend adopt [source] [--name <name>] [--auth ambient|mend-key|bridge]
                                         adopt a repository into the store (default: cwd; any git
                                         URL — GitHub, GitLab, self-hosted, ssh://, a local path)
-  mend codex|claude|opencode ["prompt"] [--model <id>] [--effort low|medium|high|xhigh|max]
+  mend codex|claude|opencode ["prompt"] [--name <worktree>] [--model <id>]
+                             [--effort low|medium|high|xhigh|max]
                              [--base <ref>] [--ask] [--fast] [--detach|-d] [--foreground]
-                                        new session worktree + launch the harness in it; a quoted
-                                        prompt becomes its first message (and names the session),
+                                        new session worktree + launch the harness in it; the
+                                        worktree's name is asked first (--name skips the ask), a
+                                        quoted prompt becomes its first message,
                                         --ask restores the harness's permission prompts, --fast
                                         requests priority processing (codex service tier),
                                         --detach launches without attaching (reattach anywhere),

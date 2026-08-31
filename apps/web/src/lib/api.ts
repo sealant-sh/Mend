@@ -233,9 +233,14 @@ export const initGitKey = () => orLogin(trpcClient.git.initKey.mutate());
 
 // ─── Sessions · services ────────────────────────────────────────────────────
 
-export const createSession = (projectId: string, harness: string, base: string | null = null) =>
+export const createSession = (
+  projectId: string,
+  harness: string,
+  base: string | null = null,
+  name: string | null = null,
+) =>
   orLogin(
-    trpcClient.sessions.create.mutate({ projectId, session: { harness, label: null, base } }),
+    trpcClient.sessions.create.mutate({ projectId, session: { harness, label: null, name, base } }),
   );
 export const launchSession = (id: string, argv: ReadonlyArray<string>) =>
   orLogin(trpcClient.sessions.launch.mutate({ id, request: { argv } }));

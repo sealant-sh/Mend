@@ -1552,6 +1552,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             projectId: params.id,
             harness: payload.harness,
             label: payload.label,
+            name: payload.name,
             base: payload.base,
             ownerUserId: caller.user.id,
           })

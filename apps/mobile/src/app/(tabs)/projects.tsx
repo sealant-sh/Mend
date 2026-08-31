@@ -35,9 +35,10 @@ export default function ProjectsScreen() {
     harness: string,
     options: LaunchOptions,
     base: string | null,
+    name: string | null,
   ) => {
     start.mutate(
-      { projectId, harness, base, options },
+      { projectId, harness, base, name, options },
       {
         onSuccess: (session) =>
           router.push({
@@ -86,7 +87,9 @@ export default function ProjectsScreen() {
               first={false}
               pending={start.isPending}
               projectId={project.id}
-              onStart={(harness, options, base) => fire(project.id, harness, options, base)}
+              onStart={(harness, options, base, name) =>
+                fire(project.id, harness, options, base, name)
+              }
             />
             {sessions.map(({ session, annotation }) => (
               <SessionRow
