@@ -41,6 +41,7 @@ import {
   ReviewDiffView,
   SessionActive,
   SessionAnnotation,
+  WorktreeAnnotation,
   SessionDetail,
   SessionNotLive,
   SettingsFailure,
@@ -177,7 +178,7 @@ const reviewDiffViews = (patch: string, facts: ReadonlyArray<DiffFileFact>) =>
   );
 
 /** Live session states — removal refuses these; project removal stops them. */
-const LIVE_STATES = new Set(["starting", "running", "waiting", "idle"]);
+export const LIVE_STATES = new Set(["starting", "running", "waiting", "idle"]);
 
 /**
  * Fingerprint-mutating handlers rewarm the project's hot pool: workspaces are created from these
@@ -347,10 +348,12 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         const projects = yield* ProjectsRepo;
         const sessions = yield* SessionsRepo;
         const changes = yield* WorktreeChangesRepo;
+        const worktrees = yield* WorktreesRepo;
         const project = yield* projects
           .byId(params.id)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         const projectSessions = yield* sessions.listForProject(params.id);
+        const worktreeRows = yield* worktrees.listForProject(params.id);
         const annotations = yield* changes.annotationsForProject(params.id);
         // One read for every session's processes; `currentAgent` is derived per session.
         const processes = yield* SessionProcessesRepo;
@@ -371,6 +374,28 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
                 currentAgent: currentAgentProcess(bySession.get(row.sessionId) ?? []),
               }),
           ),
+          // Embedded so worktree-aware lists never need a second fetch; the
+          // key's presence is how clients detect a worktree-aware server.
+          worktrees: worktreeRows,
+          worktreeAnnotations: worktreeRows.map((row) => {
+            const members = projectSessions.filter((session) => session.worktreeId === row.id);
+            const memberIds = new Set<string>(members.map((session) => session.id));
+            const facts = annotations.find((annotation) => memberIds.has(annotation.sessionId));
+            return new WorktreeAnnotation({
+              worktreeId: row.id,
+              changeId: facts?.changeId ?? null,
+              sessions: members.length,
+              liveSessions: members.filter((session) => LIVE_STATES.has(session.status)).length,
+              openComments: facts?.openComments ?? 0,
+              totalComments: facts?.totalComments ?? 0,
+              pendingFollowUp: annotations.some(
+                (annotation) => memberIds.has(annotation.sessionId) && annotation.pendingFollowUp,
+              ),
+              currentAgent: currentAgentProcess(
+                rows.filter((process) => memberIds.has(process.sessionId)),
+              ),
+            });
+          }),
         });
       }),
     )
@@ -558,6 +583,26 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         const project = yield* projects
           .byId(params.id)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        if (query.worktree !== undefined) {
+          const worktrees = yield* WorktreesRepo;
+          const worktreeRow = yield* worktrees
+            .byId(query.worktree)
+            .pipe(Effect.mapError(() => new NotFound({ id: query.worktree ?? params.id })));
+          if (worktreeRow.projectId !== project.id) {
+            return yield* new NotFound({ id: query.worktree });
+          }
+          const rootPath = worktreePathOf(project.storePath, worktreeRow.directory);
+          const listing = yield* store
+            .listWorktreeFiles(rootPath, FILE_LISTING_LIMIT)
+            .pipe(Effect.mapError(fileListingFailure));
+          return new ProjectFileListing({
+            source: "worktree",
+            label: worktreeRow.name,
+            rootPath,
+            files: listing.files,
+            truncated: listing.truncated,
+          });
+        }
         if (query.session !== undefined) {
           const session = yield* sessions
             .byId(query.session)

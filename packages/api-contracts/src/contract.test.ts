@@ -3,7 +3,9 @@ import { Schema } from "effect";
 import { HttpApi } from "effect/unstable/httpapi";
 import { describe, expect, it } from "vitest";
 
-import { MendApi, ProcessLogPage, ProjectBranch } from "./index.ts";
+import { Change as SessionChange } from "@mend/domain/workbench";
+
+import { MendApi, NewWorktree, ProcessLogPage, ProjectBranch } from "./index.ts";
 
 const conversationEndpointNames = new Set(["submitTurn", "interruptTurn", "respondAgentRequest"]);
 
@@ -54,6 +56,68 @@ describe("typed HTTP error contracts", () => {
       expect(statuses.get(name)?.has(409), `${name} should preserve conflict`).toBe(true);
       expect(statuses.get(name)?.has(500), `${name} should not collapse errors`).toBe(false);
     }
+  });
+
+  it("keeps worktree endpoint statuses typed: 404/409/422 never collapse to 500", () => {
+    const statuses = new Map<string, ReadonlySet<number>>();
+    HttpApi.reflect(MendApi, {
+      onGroup: () => {},
+      onEndpoint: ({ group, endpoint, errors }) => {
+        if (group.identifier === "worktrees") {
+          statuses.set(endpoint.name, new Set(errors.keys()));
+        }
+      },
+    });
+    expect([...statuses.keys()].toSorted()).toEqual([
+      "checkpoint",
+      "create",
+      "createSession",
+      "detail",
+      "list",
+      "remove",
+    ]);
+    for (const [name, codes] of statuses) {
+      expect(codes.has(404), `${name} should preserve not-found`).toBe(true);
+      expect(codes.has(500), `${name} should not collapse its typed errors`).toBe(false);
+    }
+    expect(statuses.get("create")?.has(409), "create should preserve WorktreeNameTaken").toBe(true);
+    expect(statuses.get("remove")?.has(409), "remove should preserve WorktreeActive").toBe(true);
+    expect(statuses.get("remove")?.has(422), "remove should preserve StoreFailure").toBe(true);
+  });
+
+  it("decodes worktree payloads: old-client omissions and the legacy change shape", () => {
+    // `{}` — an old client that knows neither key — still provisions.
+    const bare = Schema.decodeUnknownSync(NewWorktree)({});
+    expect(bare.name).toBeNull();
+    expect(bare.base).toBeNull();
+
+    // The mobile-in-the-field guarantee: a change row decodes with the session
+    // mirror present AND null, and encodes it back untouched.
+    const wireCodec = Schema.toCodecJson(SessionChange);
+    const withMirror = Schema.decodeUnknownSync(wireCodec)({
+      id: "chg-1",
+      projectId: "proj-1",
+      worktreeId: "wt-1",
+      sessionId: "sess-1",
+      branch: "mend/fix-auth",
+      baseSha: "abc",
+      headSha: null,
+      createdAt: "2026-08-31T00:00:00.000Z",
+      updatedAt: "2026-08-31T00:00:00.000Z",
+    });
+    expect(withMirror.sessionId).toBe("sess-1");
+    const orphaned = Schema.decodeUnknownSync(wireCodec)({
+      id: "chg-2",
+      projectId: "proj-1",
+      worktreeId: "wt-1",
+      sessionId: null,
+      branch: "mend/fix-auth",
+      baseSha: "abc",
+      headSha: null,
+      createdAt: "2026-08-31T00:00:00.000Z",
+      updatedAt: "2026-08-31T00:00:00.000Z",
+    });
+    expect(orphaned.sessionId).toBeNull();
   });
 
   it("encodes a process-log response as the endpoint's class schema", () => {

@@ -48,6 +48,12 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEvent) => void) =>
               });
             }
             break;
+          case "worktree":
+            void queryClient.invalidateQueries({ queryKey: ["projects"] });
+            if (event.projectId !== undefined) {
+              void queryClient.invalidateQueries({ queryKey: ["project", event.projectId] });
+            }
+            break;
           case "review-comment":
             if (event.changeId !== undefined) {
               void queryClient.invalidateQueries({

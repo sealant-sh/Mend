@@ -260,8 +260,9 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     }),
   )
   .add(
-    // Settled sessions only — a live one answers 409; stop it first. Takes
-    // the worktree with it; checkpoints' refs survive in the bare repo.
+    // Settled sessions only — a live one answers 409; stop it first. Removes
+    // the conversation record and its workspace ONLY: the worktree — with its
+    // change, chain, and review — stands, removed by DELETE /worktrees/:id.
     HttpApiEndpoint.delete("remove", "/sessions/:id", {
       params: { id: SessionId },
       success: RemovalReport,

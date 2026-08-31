@@ -263,10 +263,19 @@ Authentication service
 Packs are editable, but every session receives an immutable snapshot. The review can later show the
 exact snapshot used by that session.
 
-### 5.5 Session
+### 5.5 Worktree and session
 
-A session is one logical supervised coding-agent conversation associated with a project and one
-worktree. At the Sealant layer, it is backed by one or more coding-agent runs and their durable
+**The worktree is the durable container** (decided 2026-08-31): a first-class named place in the
+project's central store — display name split from its immutable directory — that owns the change,
+the checkpoint chain, and their review. Sessions are conversations inside it: many over its life,
+several concurrently live, each in its own workspace mounting the same worktree. A worktree with
+zero sessions is a legal durable place. Removal is the worktree's own explicit verb, refused
+while any conversation is live; deleting a session deletes the conversation record only.
+Launching with an existing worktree name JOINS that worktree (a conflicting base is refused,
+never silently re-based).
+
+A session is one logical supervised coding-agent conversation inside a worktree. At the Sealant
+layer, it is backed by one or more coding-agent runs and their durable
 execution records, exactly one active at a time. Resuming a settled coding-agent run starts a new
 run whose sequence space begins at one; Mend preserves the ordered run membership instead of
 pretending their sequences are global.
@@ -279,8 +288,9 @@ the workspace retained by a shell or Service. A protocol-mode agent runs as a pi
 live conversation is projected into authored turns, ordered items, and agent-to-human requests. PTY
 remains the desktop and CLI default.
 
-Concretely (decided 2026-08-21, `docs/SESSION-SERVICES.md` "The model"): the session is the worktree
-plus its record, and everything that interacts with it is a process of one kind — `shell`,
+Concretely (decided 2026-08-21, amended 2026-08-31, `docs/SESSION-SERVICES.md` "The model"): the
+worktree is the place, the session is a conversation against it plus its record, and everything
+that interacts is a process of one kind — `shell`,
 `agent-pty`, `agent-protocol`, `service` — with one lifecycle. A session holds several agent
 processes over its life; harness native state is harvested per agent process. Session status is a
 fold over live processes: a pending request on a live protocol agent → `waiting`; any other live
@@ -317,19 +327,22 @@ Supported comparison shapes should include:
 - commit versus commit;
 - a selected set of files or hunks.
 
-A change can be associated with one or more contributing session spans. For the MVP, each session
-exposes one change: its worktree against its base. Because every write in a worktree happens through
-a supervised workspace, evidence attribution is structural rather than inferred. Landing a change —
-merging the session branch into the project's default branch — belongs to publication.
+A change can be associated with one or more contributing session spans. Each worktree exposes one
+change — the worktree against its base (amended 2026-08-31: was one per session while sessions and
+worktrees were 1:1) — and every conversation inside the worktree contributes to it. Because every
+write in a worktree happens through a supervised workspace, evidence attribution is structural
+rather than inferred. Landing a change — merging the worktree branch into the project's default
+branch — belongs to publication.
 
-#### Checkpoints and slices (decided 2026-07-25, amended 2026-08-20)
+#### Checkpoints and slices (decided 2026-07-25, amended 2026-08-20 and 2026-08-31)
 
-A checkpoint is a cheap snapshot of the session worktree: a commit to a hidden ref that never
+A checkpoint is a cheap snapshot of the worktree: a commit to a hidden ref that never
 touches the visible branch. Git carries what changed; run-aware record positions carry what Mend had
-observed when the checkpoint was taken. The session-start checkpoint has no run position because it
-predates the first process. Checkpoints are taken at session start, after each settled command the
-record observes, at turn boundaries where the adapter can mark them, whenever review opens, and on
-an explicit user mark.
+observed when the checkpoint was taken. The chain belongs to the worktree — one dense ordinal
+sequence across every conversation in it, anchored at ordinal 0 by the worktree-start snapshot
+(no session attached) — and any two checkpoints define a reviewable slice. Checkpoints are taken
+at worktree and session start, after each settled command the record observes, at turn boundaries
+where the adapter can mark them, whenever review opens, and on an explicit user mark.
 
 A session with only a coding-agent run can use the existing `(ref, Sealant run ID, seq)` shape. Once
 supporting processes contribute records, the target shape is the hidden ref plus the latest Mend

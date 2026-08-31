@@ -53,8 +53,10 @@ operator policy explicitly allows them.
 
 ## The model
 
-**A session is a worktree plus its record; everything that interacts with it is a process** (decided
-2026-08-21). A session has one current workspace. Every process in it — the coding agent included —
+**A worktree is a durable named place; a session is one conversation inside it plus its record;
+everything that interacts is a process** (decided 2026-08-21, amended 2026-08-31 — the worktree
+became the container: many sessions per worktree, several live at once). A session has one
+current workspace. Every process in it — the coding agent included —
 is a `session_processes` row with the same lifecycle, one of four kinds:
 
 | kind             | what runs                               | transport today         |
@@ -65,7 +67,9 @@ is a `session_processes` row with the same lifecycle, one of four kinds:
 | `service`        | a recipe command (dev server, db…)      | logs + port             |
 
 A session holds several agent processes over its life — relaunch, follow-up, resume, and protocol
-turns from another device. "One change per session" is unaffected: the change is worktree vs base.
+turns from another device. The change is **one per worktree** (worktree vs base); every
+conversation in the worktree contributes to the same change, and the checkpoint chain is the
+worktree's — one dense ordinal sequence across its sessions.
 Harness native state (the transcript, the provider session id a native resume addresses) is
 harvested **per agent process**; "the session's provider id" means the latest agent's.
 

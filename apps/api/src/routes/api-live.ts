@@ -46,6 +46,7 @@ import { HttpServerRequest } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { DevicePairingLive } from "./devices.ts";
+import { WorktreesGroupLive } from "./worktrees.ts";
 import { GithubGroupLive } from "./github.ts";
 import { MachineGroupLive } from "./machine.ts";
 import {
@@ -555,6 +556,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
   Layer.provide(ProjectRecipesGroupLive),
   Layer.provide(ReferencesGroupLive),
   Layer.provide(SessionsGroupLive),
+  Layer.provide(WorktreesGroupLive),
   Layer.provide(SessionChangesGroupLive),
   Layer.provide(GithubGroupLive),
   Layer.provide(DevicesGroupLive),

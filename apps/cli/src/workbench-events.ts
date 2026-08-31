@@ -56,6 +56,7 @@ export const eventFamilies = (payload: string): ReadonlyArray<InvalidateFamily> 
   if (typeof parsed !== "object" || parsed === null || !("type" in parsed)) return [];
   switch (parsed.type) {
     case "project":
+    case "worktree":
     case "session-process":
       return ["workbench"];
     // Session facts feed both surfaces: rows and annotations on the

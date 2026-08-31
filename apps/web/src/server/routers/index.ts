@@ -7,6 +7,7 @@ import { projectsRouter } from "./projects.ts";
 import { queueRouter } from "./queue.ts";
 import { servicesRouter } from "./services.ts";
 import { sessionsRouter } from "./sessions.ts";
+import { worktreesRouter } from "./worktrees.ts";
 import { settingsRouter } from "./settings.ts";
 import { router } from "./trpc.ts";
 
@@ -31,6 +32,7 @@ export const appRouter = router({
   queue: queueRouter,
   services: servicesRouter,
   sessions: sessionsRouter,
+  worktrees: worktreesRouter,
   settings: settingsRouter,
 });
 

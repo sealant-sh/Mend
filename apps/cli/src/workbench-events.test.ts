@@ -32,6 +32,7 @@ describe("what an event stales", () => {
     expect(eventFamilies('{"type":"session"}')).toEqual(["workbench", "review"]);
     expect(eventFamilies('{"type":"agent-conversation"}')).toEqual(["workbench", "review"]);
     expect(eventFamilies('{"type":"session-change"}')).toEqual(["workbench", "review"]);
+    expect(eventFamilies('{"type":"worktree"}')).toEqual(["workbench"]);
     expect(eventFamilies('{"type":"review-comment"}')).toEqual(["workbench", "review"]);
   });
 
