@@ -330,6 +330,8 @@ export interface ProvisionInput {
   readonly projectId: ProjectId;
   readonly harness: string;
   readonly label: string | null;
+  /** Names the worktree and its branch `mend/<name>`; null derives `session-<id>`. */
+  readonly name: string | null;
   /** Branch or sha to base the worktree on; null = the project's default branch. */
   readonly base: string | null;
   /** Who is provisioning — whose dotfiles apply at launch. Null when the caller is unknown. */
@@ -1084,7 +1086,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const project = yield* projects.byId(input.projectId);
         // Hot path: adopt a pre-provisioned skeleton when the project keeps them ready. Any
         // failure here falls back to the cold path — a claim must never cost a session.
-        if (project.hotSessions > 0) {
+        // A NAMED worktree always provisions cold: skeletons carry pre-created
+        // id-derived worktrees, and renaming a live checkout is not worth the
+        // seconds the pool saves.
+        if (project.hotSessions > 0 && input.name === null) {
           const claimed = yield* claimHotSession(project, input).pipe(
             Effect.catch((error) =>
               Effect.logWarning("session engine: hot claim failed — cold provision").pipe(
@@ -1102,6 +1107,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           sessionId,
           input.base,
           remoteEnv,
+          input.name,
         );
         const session = yield* sessions.create({
           id: sessionId,

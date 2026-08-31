@@ -25,7 +25,7 @@ import {
   SessionProcess,
 } from "@mend/domain/workbench";
 import { Change as SessionChange } from "@mend/domain/workbench";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 
 import { NotFound } from "./accounts.ts";
@@ -301,12 +301,34 @@ export const projectRecipesGroup = HttpApiGroup.make("projectRecipes")
   )
   .middleware(AuthMiddleware);
 
+/**
+ * A worktree's name: the session's identity in every list, and the tail of
+ * its branch (`mend/<name>`). Same charset as project names — it lands in a
+ * git branch ref and a directory name.
+ */
+export const WorktreeName = Schema.String.pipe(
+  Schema.check(
+    Schema.makeFilter((value: string) =>
+      /^[a-z0-9][a-z0-9._-]{0,63}$/.test(value)
+        ? undefined
+        : "a short lowercase name like `fix-auth` — letters, digits, `.`, `_`, `-`",
+    ),
+  ),
+);
+
 /** Provisioning a session: the worktree exists after this; launching is separate. */
 export class NewWorkbenchSession extends Schema.Class<NewWorkbenchSession>("NewWorkbenchSession")({
   harness: Schema.String,
   /** Intended agent launch shape; omitted keeps the PTY default. */
   mode: Schema.optional(AgentLaunchMode),
   label: Schema.NullOr(Schema.String),
+  /**
+   * Names the worktree and its branch (`mend/<name>`); must be unused in the
+   * project. Null (and older clients, which omit the key) derives
+   * `session-<id>`. A named session provisions cold — hot skeletons carry
+   * pre-created worktrees.
+   */
+  name: Schema.NullOr(WorktreeName).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   /** Branch or sha to base the worktree on; null = the project's default branch. */
   base: Schema.NullOr(Schema.String),
 }) {}

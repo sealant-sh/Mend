@@ -22,6 +22,8 @@ export interface LaunchSpec {
   readonly speed?: SpeedMode;
   /** Branch or sha for the worktree; null = the project's default branch. */
   readonly base?: string | null;
+  /** Names the worktree (branch `mend/<name>`); null derives from the session id. */
+  readonly name?: string | null;
 }
 
 /** What launching needs from the calling component — hooks own both instances now. */
@@ -45,7 +47,7 @@ export const startComposedSession = (
   projectId: string,
   spec: LaunchSpec,
 ) =>
-  createSession(projectId, spec.harness, spec.base ?? null).then((session) => {
+  createSession(projectId, spec.harness, spec.base ?? null, spec.name ?? null).then((session) => {
     const prompt = spec.prompt.trim();
     void launchSessionStart(session.id, {
       ...(prompt === "" ? {} : { prompt }),

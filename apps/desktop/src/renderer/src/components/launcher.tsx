@@ -108,6 +108,8 @@ export function SessionComposer({
   const { defaultHarness } = useAppSettings();
   const prefs = useComposerPrefs();
   const [prompt, setPrompt] = useState("");
+  /** The worktree's name comes first — it is the identity being created. */
+  const [worktreeName, setWorktreeName] = useState("");
   const [base, setBase] = useState("");
   const [busy, setBusyState] = useState<Pending>(null);
   const [error, setError] = useState<string | null>(null);
@@ -141,11 +143,16 @@ export function SessionComposer({
     setBusy(which);
     setError(null);
     try {
+      const cleanedName = worktreeName
+        .trim()
+        .replace(/^[^a-z0-9]+/, "")
+        .slice(0, 64);
       const created = await createSession(
         project.id,
         sessionHarness,
         null,
         base.trim() === "" ? null : base.trim(),
+        cleanedName === "" ? null : cleanedName,
       );
       void launchSessionStart(created.id, start)
         .catch(() => undefined)
@@ -204,9 +211,18 @@ export function SessionComposer({
           : undefined
       }
     >
+      <input
+        value={worktreeName}
+        autoFocus
+        disabled={busy !== null}
+        placeholder="worktree name — e.g. fix-auth (empty = auto)"
+        onChange={(event) =>
+          setWorktreeName(event.target.value.toLowerCase().replace(/[^a-z0-9._-]+/g, "-"))
+        }
+        className="block w-full border-b border-[var(--sw-faint-rule)] bg-transparent px-4 pb-2 pt-3 font-mono text-xs text-foreground outline-none placeholder:text-faint disabled:opacity-60"
+      />
       <textarea
         value={prompt}
-        autoFocus
         rows={1}
         disabled={busy !== null}
         placeholder="What should the session do?"

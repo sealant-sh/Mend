@@ -56,6 +56,8 @@ export function SessionComposer({
   const prefs = useComposerPrefs();
   const [pickedProjectId, setPickedProjectId] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
+  /** The worktree's name comes first — it is the identity being created. */
+  const [worktreeName, setWorktreeName] = useState("");
   const [base, setBase] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -118,9 +120,11 @@ export function SessionComposer({
     setBusy(true);
     setError(null);
     setComposerProject(projectId);
+    const cleanedName = worktreeName.trim().replace(/^[^a-z0-9]+/, "");
     void startComposedSession(navigate, { queryClient, trpc }, projectId, {
       harness,
       prompt: body,
+      ...(cleanedName === "" ? {} : { name: cleanedName.slice(0, 64) }),
       ...(harnessPrefs.model !== null ? { model: harnessPrefs.model } : {}),
       ...(harnessPrefs.effort !== null ? { effort: harnessPrefs.effort } : {}),
       ...(harnessPrefs.permission !== null ? { permissionMode: harnessPrefs.permission } : {}),
@@ -147,10 +151,24 @@ export function SessionComposer({
       }}
       className="rounded-2xl border border-rule bg-panel shadow-sm transition-[border-color,box-shadow] focus-within:border-[var(--sw-accent)] focus-within:shadow-md"
     >
+      <input
+        value={worktreeName}
+        autoFocus
+        placeholder="worktree name — e.g. fix-auth (empty = auto)"
+        onChange={(event) =>
+          setWorktreeName(event.target.value.toLowerCase().replace(/[^a-z0-9._-]+/g, "-"))
+        }
+        onKeyDown={(event) => {
+          if (event.key === "Escape") event.currentTarget.blur();
+          if (event.key !== "Enter") return;
+          event.preventDefault();
+          textareaRef.current?.focus();
+        }}
+        className="block w-full border-b border-[var(--sw-faint-rule)] bg-transparent px-4 pb-2 pt-3 font-mono text-xs text-foreground outline-none placeholder:text-faint"
+      />
       <textarea
         ref={textareaRef}
         value={prompt}
-        autoFocus
         rows={1}
         placeholder="What should the session do?"
         onChange={(event) => setPrompt(event.target.value)}

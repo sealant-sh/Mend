@@ -17,6 +17,7 @@ import {
   isPendingId,
   LIVE_STATUSES,
   matchProjectByCwd,
+  normalizeProjectName,
   pendingId,
 } from "./shared.ts";
 import { openUrl } from "./terminal.ts";
@@ -582,6 +583,9 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   const [editing, setEditing] = useState<SessionDto | null>(null);
   /** Session id a stop is armed against; the second press fires it. */
   const [stopArmed, setStopArmed] = useState<string | null>(null);
+  /** The new-session flow asks the worktree's name FIRST, then the harness. */
+  const [naming, setNaming] = useState<{ readonly projectId: string } | null>(null);
+  const [pendingName, setPendingName] = useState<string | null>(null);
   const [reviewing, setReviewing] = useState<{
     readonly session: SessionDto;
     readonly changeId: string;
@@ -706,6 +710,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     mutationFn: async (vars: {
       readonly projectId: string;
       readonly harness: string;
+      readonly name: string | null;
       readonly pendingKey: string;
     }) => {
       const argv = HARNESS_COMMANDS[vars.harness];
@@ -713,6 +718,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       const session = await ctx.api<SessionDto>("POST", `/projects/${vars.projectId}/sessions`, {
         harness: vars.harness,
         label: null,
+        name: vars.name,
         base: null,
       });
       await ctx.api<SessionDto>("POST", `/sessions/${session.id}/launch`, { argv });
@@ -725,7 +731,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           id: vars.pendingKey,
           harness: vars.harness,
           label: null,
-          branch: "provisioning…",
+          branch: vars.name === null ? "provisioning…" : `mend/${vars.name}`,
           baseSha: "",
           baseRef: null,
           status: "starting",
@@ -855,7 +861,16 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
 
   const startSession = (projectId: string, harness: string): void => {
     setFocus("sessions");
-    launchMutation.mutate({ projectId, harness, pendingKey: pendingId() });
+    launchMutation.mutate({ projectId, harness, name: pendingName, pendingKey: pendingId() });
+    setPendingName(null);
+  };
+
+  /** Name first, then the harness: the worktree is the identity being created. */
+  const submitWorktreeName = (value: string): void => {
+    setNaming(null);
+    const slug = normalizeProjectName(value.trim());
+    setPendingName(value.trim() === "" ? null : slug);
+    openPicker(null);
   };
 
   const resumeSession = (projectId: string, session: SessionDto, harness: string | null): void => {
@@ -932,6 +947,10 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       if (key.name === "escape") setEditing(null);
       return;
     }
+    if (naming !== null) {
+      if (key.name === "escape") setNaming(null);
+      return;
+    }
     if (picker !== null) {
       switch (key.name) {
         case "down":
@@ -983,7 +1002,8 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         if (showProjectsPane) setFocus(focus === "projects" ? "sessions" : "projects");
         return;
       case "n":
-        if (selectedProject !== null) openPicker(null);
+        // The worktree's name comes first; the harness picker follows.
+        if (selectedProject !== null) setNaming({ projectId: selectedProject.project.id });
         return;
       case "e": {
         const item = selectedSession;
@@ -1048,11 +1068,13 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   const footerText =
     editing !== null
       ? " enter save · esc cancel"
-      : picker !== null
-        ? " ↑↓ move · enter start · esc cancel"
-        : focus === "projects"
-          ? " ↑↓ move · enter/l sessions · ⇥ panes · r refresh · q quit"
-          : " ↑↓ move · enter attach/resume · n new · x stop · v review · e rename · o web · h/⇥ projects · q quit";
+      : naming !== null
+        ? " enter continue — the harness picker follows · esc cancel"
+        : picker !== null
+          ? " ↑↓ move · enter start · esc cancel"
+          : focus === "projects"
+            ? " ↑↓ move · enter/l sessions · ⇥ panes · r refresh · q quit"
+            : " ↑↓ move · enter attach/resume · n new · x stop · v review · e rename · o web · h/⇥ projects · q quit";
 
   const loadFailure =
     data === undefined && failureReason !== null
@@ -1150,6 +1172,33 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
             <HarnessRow key={String(item.harness)} item={item} selected={index === pickerIndex} />
           ))}
         </Pane>
+      ) : naming !== null ? (
+        <box
+          border
+          borderStyle="rounded"
+          borderColor={COBALT}
+          title=" new worktree — name "
+          titleAlignment="left"
+          backgroundColor="transparent"
+          height={3}
+          flexShrink={0}
+        >
+          <input
+            focused
+            value=""
+            placeholder="name the worktree, e.g. fix-auth (empty = auto)"
+            backgroundColor="transparent"
+            focusedBackgroundColor="transparent"
+            textColor={INK}
+            focusedTextColor={INK}
+            placeholderColor={FAINT}
+            cursorColor={INK}
+            flexGrow={1}
+            onSubmit={(value: unknown) => {
+              if (typeof value === "string") submitWorktreeName(value);
+            }}
+          />
+        </box>
       ) : editing !== null ? (
         <box
           border
