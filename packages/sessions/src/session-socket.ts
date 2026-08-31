@@ -67,6 +67,12 @@ export interface SessionSocketApi {
   readonly stopService: (processId: string) => Effect.Effect<unknown>;
   readonly restartService: (processId: string) => Effect.Effect<unknown>;
   /**
+   * End the agent from inside the workspace — same semantics as the session
+   * page's Stop. The caller's own shell may be in the blast radius, so the
+   * route answers before the engine acts.
+   */
+  readonly stopSession: () => Effect.Effect<unknown>;
+  /**
    * Resolve a workspace git transport request (docs/GIT-ACCESS.md): the
    * engine turns session → project → auth mode into the ssh argv the host
    * spawns, and records the op. Refusal (not a git command, unknown session)
@@ -167,8 +173,17 @@ const printService = (s) =>
 
 const main = async () => {
   const [group, verb, ...rest] = process.argv.slice(2);
+  if (group === "stop") {
+    try {
+      await request("POST", "/session/stop");
+    } catch (error) {
+      fail(error.message);
+    }
+    console.log("stopping — the record and review remain");
+    return;
+  }
   if (group !== "service") {
-    fail("this workspace helper only speaks: mend service <run|add|list|stop|restart|NAME>");
+    fail("this workspace helper speaks: mend service <run|add|list|stop|restart|NAME> · mend stop");
   }
   try {
     switch (verb) {

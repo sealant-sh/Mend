@@ -718,6 +718,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           owned(sessionId)(api.addService(port, name, protocol)),
         stopService: (reference) => owned(sessionId)(api.stopService(reference)),
         restartService: (reference) => owned(sessionId)(api.restartService(reference)),
+        stopSession: () => owned(sessionId)(api.stopSession()),
         gitTransport: (input) => owned(sessionId)(api.gitTransport(input)),
         gitTransportDone: (opId, exitCode, refUpdates) =>
           owned(sessionId)(api.gitTransportDone(opId, exitCode, refUpdates)),
@@ -4352,6 +4353,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               }
               return yield* restartService(service.id);
             }).pipe(
+              Effect.mapError((error) => new Error(String(error.message))),
+              Effect.orDie,
+            ),
+          stopSession: () =>
+            stop(sessionId).pipe(
               Effect.mapError((error) => new Error(String(error.message))),
               Effect.orDie,
             ),

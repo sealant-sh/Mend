@@ -54,6 +54,12 @@ export class Project extends Schema.Class<Project>("Project")({
   autoSuggest: AutomationChoice,
   /** Override of the Settings default: name the session from its first prompt. */
   autoName: AutomationChoice,
+  /**
+   * Override of the Settings default: sessions keep running when every client
+   * disconnects. Resolved by the launching CLI (flag → project → settings) —
+   * only the client that would stop the session can enforce foreground.
+   */
+  backgroundSessions: AutomationChoice,
   /** How host-side git authenticates to this project's remote. */
   gitAuthMode: GitAuthMode,
   /** Override of the Settings default workspace image; null inherits it. */

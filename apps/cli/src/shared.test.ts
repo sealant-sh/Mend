@@ -12,6 +12,8 @@ describe("parseLaunchArgs", () => {
       base: null,
       ask: false,
       fast: false,
+      detach: false,
+      foreground: false,
       custom: [],
       error: null,
     });
@@ -39,9 +41,18 @@ describe("parseLaunchArgs", () => {
       base: "release/1.2",
       ask: true,
       fast: true,
+      detach: false,
+      foreground: false,
       custom: [],
       error: null,
     });
+  });
+
+  it("takes --detach (and -d) and --foreground, refusing the contradiction", () => {
+    expect(parseLaunchArgs(["--detach"]).detach).toBe(true);
+    expect(parseLaunchArgs(["-d"]).detach).toBe(true);
+    expect(parseLaunchArgs(["--foreground"]).foreground).toBe(true);
+    expect(parseLaunchArgs(["-d", "--foreground"]).error).toContain("contradict");
   });
 
   it("rejects a second positional so a forgotten quote fails loudly", () => {

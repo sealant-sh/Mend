@@ -7,7 +7,7 @@ import {
   Session,
   SessionProcess,
 } from "@mend/domain/workbench";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 // ─── Workbench (MEND-AGENT-WORKBENCH-PLAN.md §5–§7) ─────────────────────────
 
@@ -82,13 +82,17 @@ export class SessionNotLive extends Schema.TaggedErrorClass<SessionNotLive>()(
   { httpApiStatus: 409 },
 ) {}
 
-/** The project's stance on the automation switches — all of them, replaced together. */
+/** The project's stance on the cascade switches — all of them, replaced together. */
 export class ProjectAutomationRequest extends Schema.Class<ProjectAutomationRequest>(
   "ProjectAutomationRequest",
 )({
   autoTour: AutomationChoice,
   autoSuggest: AutomationChoice,
   autoName: AutomationChoice,
+  /** Older clients omit the key — decode to `inherit` so they cannot clobber the stance. */
+  backgroundSessions: AutomationChoice.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed("inherit" as const)),
+  ),
 }) {}
 
 /** How host-side git reaches this project's remote (docs/GIT-ACCESS.md). */

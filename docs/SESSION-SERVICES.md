@@ -253,7 +253,9 @@ Leases persist and reconcile after a Mend restart. Mend reattaches to surviving 
 than inventing replacements. When the last lease ends, Mend stops the workspace promptly.
 
 **Disconnection is not intent.** A closed browser, desktop app, dropped network, or detached CLI
-stops nothing. Stops are explicit.
+stops nothing. Stops are explicit. The one exception is declared intent: with the background
+sessions switch off (or `--foreground`), the launching CLI enforces foreground semantics — it stops
+the session when it exits, best-effort on signals.
 
 **Resume.** When supporting processes retain the workspace, resuming the coding agent starts a new
 run in that workspace and leaves them intact. The user may instead choose Stop retained work and

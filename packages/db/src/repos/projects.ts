@@ -33,13 +33,14 @@ export class ProjectsRepo extends Context.Service<
     readonly byId: (id: ProjectId) => Effect.Effect<Project, ProjectNotFoundError>;
     readonly byName: (name: string) => Effect.Effect<Project | null>;
     readonly list: () => Effect.Effect<ReadonlyArray<Project>>;
-    /** The project's stance on the review-automation switches (cascade: settings → project). */
+    /** The project's stance on the cascade switches (settings → project), replaced together. */
     readonly setAutomation: (
       id: ProjectId,
       choices: {
         readonly autoTour: AutomationChoice;
         readonly autoSuggest: AutomationChoice;
         readonly autoName: AutomationChoice;
+        readonly backgroundSessions: AutomationChoice;
       },
     ) => Effect.Effect<Project, ProjectNotFoundError>;
     /** How host-side git authenticates to this project's remote (docs/GIT-ACCESS.md). */
@@ -130,6 +131,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
           readonly autoTour: AutomationChoice;
           readonly autoSuggest: AutomationChoice;
           readonly autoName: AutomationChoice;
+          readonly backgroundSessions: AutomationChoice;
         },
       ) {
         const [row] = yield* db

@@ -315,6 +315,7 @@ export function ReviewAutomationSection({ project }: { readonly project: Project
       autoTour: key === "autoTour" ? value : project.autoTour,
       autoSuggest: key === "autoSuggest" ? value : project.autoSuggest,
       autoName: key === "autoName" ? value : project.autoName,
+      backgroundSessions: project.backgroundSessions,
     })
       .then(() => queryClient.invalidateQueries(trpc.projects.pathFilter()))
       .finally(() => setBusy(null));
@@ -351,6 +352,63 @@ export function ReviewAutomationSection({ project }: { readonly project: Project
             </div>
           </div>
         ))}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * The project's stance on the session lifecycle: inherit follows Settings.
+ * Resolved by the launching CLI (flag → project → settings) — only the client
+ * that would stop the session can enforce foreground.
+ */
+export function SessionLifecycleSection({ project }: { readonly project: ProjectDto }) {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState(false);
+
+  const choose = (value: AutomationChoiceDto) => {
+    if (project.backgroundSessions === value || busy) return;
+    setBusy(true);
+    void setProjectAutomation(project.id, {
+      autoTour: project.autoTour,
+      autoSuggest: project.autoSuggest,
+      autoName: project.autoName,
+      backgroundSessions: value,
+    })
+      .then(() => queryClient.invalidateQueries(trpc.projects.pathFilter()))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <section id="sessions" className="scroll-mt-6">
+      <p className="border-b border-rule pb-2 text-xs font-medium text-label">Sessions</p>
+      <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
+        Whether sessions here keep running when every client disconnects. Off gives CLI launches
+        foreground semantics — the session stops when the launching mend exits. Inherit follows the
+        default in Settings.
+      </p>
+      <div className="mt-3 flex items-center justify-between gap-2">
+        <p className="min-w-0 truncate font-sans text-[13px] font-medium text-foreground">
+          Run sessions in the background
+        </p>
+        <div className="flex shrink-0 gap-1">
+          {AUTOMATION_CHOICES.map((choice) => (
+            <button
+              key={choice.value}
+              type="button"
+              disabled={busy}
+              onClick={() => choose(choice.value)}
+              className={`rounded-lg border px-2 py-1 font-mono text-[11px] transition-colors disabled:opacity-50 ${
+                project.backgroundSessions === choice.value
+                  ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
+                  : "border-border bg-card text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {choice.label}
+            </button>
+          ))}
+        </div>
       </div>
     </section>
   );

@@ -197,6 +197,13 @@ export class MendSettings extends Schema.Class<MendSettings>("MendSettings")({
   autoName: onByDefault,
   /** Base operating system and additional tools baked into every new session workspace. */
   workspaceImage: workspaceImageWithDefault,
+  /**
+   * Sessions keep running when every client disconnects; stops are explicit.
+   * Off gives CLI launches foreground semantics — the session stops when the
+   * launching `mend` exits. Only the launching CLI can enforce this (a closing
+   * browser tab cannot promise a stop), so the switch governs CLI launches.
+   */
+  backgroundSessions: onByDefault,
 }) {}
 
 export const defaultSettings = new MendSettings({
@@ -206,4 +213,5 @@ export const defaultSettings = new MendSettings({
   autoSuggest: true,
   autoName: true,
   workspaceImage: defaultWorkspaceImage,
+  backgroundSessions: true,
 });

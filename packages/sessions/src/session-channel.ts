@@ -143,6 +143,13 @@ export const handleSessionRequest = async (
         action[2] === "stop" ? api.stopService(action[1]) : api.restartService(action[1]);
       return respond(200, await Effect.runPromise(effect));
     }
+    if (route === "POST /session/stop") {
+      // Answer before acting: the stop closes this workspace's PTYs, so
+      // awaiting completion races the response against the caller's teardown.
+      respond(202, { status: "stopping" });
+      void Effect.runPromise(Effect.ignore(api.stopSession()));
+      return;
+    }
     return respond(404, { message: `unknown route: ${route}` });
   } catch (error) {
     return respond(422, { message: error instanceof Error ? error.message : String(error) });

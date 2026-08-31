@@ -76,6 +76,25 @@ describe("MendSettings workspace image profile", () => {
     expect(explicit.autoName).toBe(false);
   });
 
+  it("defaults backgroundSessions on when decoding settings written before it existed", () => {
+    const decoded = Schema.decodeUnknownSync(MendSettings)({
+      prMode: "draft-immediately",
+      concurrency: 1,
+      autoTour: true,
+      autoSuggest: true,
+    });
+    expect(decoded.backgroundSessions).toBe(true);
+
+    const explicit = Schema.decodeUnknownSync(MendSettings)({
+      prMode: "draft-immediately",
+      concurrency: 1,
+      autoTour: true,
+      autoSuggest: true,
+      backgroundSessions: false,
+    });
+    expect(explicit.backgroundSessions).toBe(false);
+  });
+
   it("decodes pre-shell family images to the platform's bash default", () => {
     const decoded = Schema.decodeUnknownSync(MendSettings)({
       prMode: "draft-immediately",

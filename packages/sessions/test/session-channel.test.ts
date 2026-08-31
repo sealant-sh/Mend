@@ -83,6 +83,11 @@ const api = (seen: unknown[]): SessionSocketApi => ({
       currentForward: null,
       latestObservation: null,
     }),
+  stopSession: () =>
+    Effect.sync(() => {
+      seen.push({ stopSession: true });
+      return {};
+    }),
   gitTransport: (request) =>
     Effect.sync(() => {
       seen.push({ git: request });
@@ -250,6 +255,13 @@ describe("SessionChannelNetworkHost", () => {
           );
           expect(ran.status).toBe(200);
           expect(seen).toContainEqual({ argv: ["pnpm", "dev"], port: 3000, name: "web" });
+
+          // Stop from inside the workspace: answers 202 before acting, then
+          // the engine closure runs (the caller's own shell is in the blast radius).
+          const stopped = yield* Effect.promise(() => call(address, "POST", "/session/stop", auth));
+          expect(stopped).toEqual({ status: 202, json: { status: "stopping" } });
+          yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+          expect(seen).toContainEqual({ stopSession: true });
 
           // A valid token whose session is no longer live: 409, never the other session's api.
           yield* sockets.stop(SESSION);

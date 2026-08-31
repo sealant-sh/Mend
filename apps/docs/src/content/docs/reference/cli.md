@@ -44,33 +44,50 @@ mend run -- <command...>
 
 Agent options:
 
-| Option                                   | Meaning                                                             |
-| ---------------------------------------- | ------------------------------------------------------------------- |
-| `--model <id>`                           | Pass a model selection to a supported harness                       |
-| `--effort low\|medium\|high\|xhigh\|max` | Pass the reasoning effort                                           |
-| `--base <ref>`                           | Create the session from another Git base                            |
-| `--ask`                                  | Restore the harness's permission prompts                            |
-| `--fast`                                 | Request the Codex priority service tier                             |
-| `--project <name>`                       | Select an adopted project instead of matching the current directory |
+| Option                                   | Meaning                                                              |
+| ---------------------------------------- | -------------------------------------------------------------------- |
+| `--model <id>`                           | Pass a model selection to a supported harness                        |
+| `--effort low\|medium\|high\|xhigh\|max` | Pass the reasoning effort                                            |
+| `--base <ref>`                           | Create the session from another Git base                             |
+| `--ask`                                  | Restore the harness's permission prompts                             |
+| `--fast`                                 | Request the Codex priority service tier                              |
+| `--detach`, `-d`                         | Launch without attaching; reattach anywhere with `mend attach`       |
+| `--foreground`                           | Stop the session when this CLI exits (the detach key still detaches) |
+| `--project <name>`                       | Select an adopted project instead of matching the current directory  |
 
 A quoted prompt becomes the first message and supplies the initial session name. The CLI creates the
 session worktree, waits for the workspace and process, then attaches the current terminal.
+
+### Background sessions
+
+Sessions run in the background: closing the terminal, losing the network, or the CLI dying leaves
+the session running, and stops are explicit. The `Sessions` switch in Settings (overridable per
+project, `inherit · on · off`) turns this off for interactive launches, giving them foreground
+semantics — the session stops when the launching `mend` exits. `--detach` and `--foreground`
+override both for one launch. Foreground stops are best-effort on signals: a `SIGKILL` or power loss
+cannot stop anything — `mend sessions` shows what still runs and `mend stop` ends it. The switch
+applies to interactive CLI launches (`mend codex|claude|opencode`); `mend run` tails the record
+without attaching, and browser or phone clients never stop a session by disconnecting.
+
+Inside a session workspace, the staged helper accepts `mend stop` too, so a workspace shell (or the
+agent itself) can end its own session.
 
 Codex uses model, effort, permission, and speed options. Claude uses model, effort, and permission
 options. OpenCode currently uses only the prompt; the other harness flags are accepted but ignored.
 
 ## Session commands
 
-| Command                                             | Purpose                                                        |
-| --------------------------------------------------- | -------------------------------------------------------------- |
-| `mend` or `mend ui`                                 | Open the terminal dashboard of projects and sessions           |
-| `mend sessions [--all] [--project <name>] [--json]` | List active sessions, or include settled sessions with `--all` |
-| `mend status`                                       | Alias for the active-session list                              |
-| `mend attach <session-id-prefix>`                   | Reattach to a running agent PTY                                |
-| `mend shell [session-id-prefix]`                    | Open a shell in a live session workspace                       |
-| `mend continue [session-id]`                        | Resume a session with its pending review follow-up             |
-| `mend resume [session-id] [--with <harness>]`       | Restore provider state and resume a settled session            |
-| `mend rejoin [session-id] [--harness <harness>]`    | Attach when live, otherwise resume                             |
+| Command                                                     | Purpose                                                        |
+| ----------------------------------------------------------- | -------------------------------------------------------------- |
+| `mend` or `mend ui`                                         | Open the terminal dashboard of projects and sessions           |
+| `mend sessions [--all] [--project <name>] [--json]`         | List active sessions, or include settled sessions with `--all` |
+| `mend status`                                               | Alias for the active-session list                              |
+| `mend attach <session-id-prefix>`                           | Reattach to a running agent PTY                                |
+| `mend stop <session-id-prefix> \| --all [--project <name>]` | Stop the agent — the record and review remain                  |
+| `mend shell [session-id-prefix]`                            | Open a shell in a live session workspace                       |
+| `mend continue [session-id]`                                | Resume a session with its pending review follow-up             |
+| `mend resume [session-id] [--with <harness>]`               | Restore provider state and resume a settled session            |
+| `mend rejoin [session-id] [--harness <harness>]`            | Attach when live, otherwise resume                             |
 
 When no session ID is given, commands narrow candidates by the current project and then use an
 interactive picker when needed.

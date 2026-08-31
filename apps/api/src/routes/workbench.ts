@@ -440,6 +440,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
             autoTour: payload.autoTour,
             autoSuggest: payload.autoSuggest,
             autoName: payload.autoName,
+            backgroundSessions: payload.backgroundSessions,
           })
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
       }),
