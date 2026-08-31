@@ -26,6 +26,7 @@ import {
   cwdFacts,
   gitTopLevel,
   HARNESS_COMMANDS,
+  isDetachChunk,
   LIVE_STATUSES,
   matchProjectByCwd,
   normalizeProjectName,
@@ -612,8 +613,10 @@ const attachTty = async (
     }
   };
   const onKeys = (data: Buffer) => {
-    if (detachKeyEnabled && data.includes(0x1d)) {
-      // Ctrl+] — detach, leave the session running.
+    if (detachKeyEnabled && isDetachChunk(data)) {
+      // Ctrl+] — detach, leave the session running. Matched in both its
+      // encodings: the inner TUI may have switched the user's terminal onto
+      // the kitty keyboard protocol, where the key arrives as CSI-u.
       detached = true;
       ws.close();
       return;
@@ -646,6 +649,21 @@ const attachTty = async (
     ws.removeEventListener("message", onTtyFrame);
     ws.removeEventListener("close", onClose);
     if (rawModeEnabled) process.stdin.setRawMode(false);
+    if (options?.readOnly !== true && process.stdout.isTTY === true) {
+      // The inner TUI's terminal modes leaked onto OUR terminal through the
+      // byte bridge — kitty keyboard protocol, bracketed paste, mouse
+      // reporting, alternate screen, hidden cursor. The TUI keeps running
+      // remotely; the local terminal must come back to shell sanity, or every
+      // keystroke after a detach arrives as CSI-u junk. A reattach replays
+      // the session from 0, which re-establishes whatever the TUI had set.
+      process.stdout.write(
+        "\x1b[<u\x1b[=0;1u" + // pop the kitty keyboard stack, then force flags 0
+          "\x1b[?2004l" + // bracketed paste off
+          "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l" + // mouse reporting off
+          "\x1b[?1049l" + // leave the alternate screen (no-op when already left)
+          "\x1b[?25h", // show the cursor
+      );
+    }
     process.stdin.pause();
     if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close();
     stopHerdrHint();

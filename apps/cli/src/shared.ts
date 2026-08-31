@@ -151,6 +151,28 @@ export const parseLaunchArgs = (args: ReadonlyArray<string>): LaunchArgs => {
   };
 };
 
+/**
+ * Whether a raw stdin chunk carries the detach key (Ctrl+]). Two encodings
+ * reach us: the legacy control byte 0x1d — and, once an inner TUI (claude)
+ * pushes the kitty keyboard protocol through the PTY and the user's own
+ * terminal honors it, the CSI-u escape `ESC [ 93 ; 5 u` (`]` is code 93,
+ * ctrl is modifier 5), optionally with a kitty event-type suffix. Only press
+ * (`:1`) and repeat (`:2`) are intent; a release (`:3`) is not.
+ */
+export const isDetachChunk = (data: Buffer): boolean => {
+  if (data.includes(0x1d)) return true;
+  // latin1 maps bytes 1:1, so the scan sees exactly the wire bytes. A string
+  // scan rather than a regex: an escape byte inside a pattern trips lint, and
+  // anchoring on the real ESC[ prefix keeps pasted text from ever matching.
+  const text = data.toString("latin1");
+  const prefix = "\u001b[93;5";
+  for (let start = text.indexOf(prefix); start !== -1; start = text.indexOf(prefix, start + 1)) {
+    const rest = text.slice(start + prefix.length);
+    if (rest.startsWith("u") || rest.startsWith(":1u") || rest.startsWith(":2u")) return true;
+  }
+  return false;
+};
+
 export const LIVE_STATUSES: ReadonlySet<string> = new Set([
   "starting",
   "running",

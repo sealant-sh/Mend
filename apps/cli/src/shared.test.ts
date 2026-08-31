@@ -1,6 +1,22 @@
 import { describe, expect, it } from "vitest";
 
-import { parseLaunchArgs, matchProjectByCwd, normalizeRemoteUrl } from "./shared.ts";
+import { isDetachChunk, parseLaunchArgs, matchProjectByCwd, normalizeRemoteUrl } from "./shared.ts";
+
+describe("isDetachChunk", () => {
+  it("matches Ctrl+] in both wire encodings", () => {
+    expect(isDetachChunk(Buffer.from([0x1d]))).toBe(true);
+    expect(isDetachChunk(Buffer.from("ab\x1dcd", "latin1"))).toBe(true);
+    // The kitty keyboard protocol (pushed by the claude TUI through the PTY)
+    // re-encodes Ctrl+] as CSI-u; press and repeat count, release does not.
+    expect(isDetachChunk(Buffer.from("\x1b[93;5u"))).toBe(true);
+    expect(isDetachChunk(Buffer.from("\x1b[93;5:1u"))).toBe(true);
+    expect(isDetachChunk(Buffer.from("\x1b[93;5:2u"))).toBe(true);
+    expect(isDetachChunk(Buffer.from("\x1b[93;5:3u"))).toBe(false);
+    expect(isDetachChunk(Buffer.from("]"))).toBe(false);
+    expect(isDetachChunk(Buffer.from("\x1b[93;1u"))).toBe(false);
+    expect(isDetachChunk(Buffer.from("hello"))).toBe(false);
+  });
+});
 
 describe("parseLaunchArgs", () => {
   it("parses a bare invocation to all-null", () => {
