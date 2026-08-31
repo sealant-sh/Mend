@@ -116,9 +116,21 @@ export interface ProjectDto {
 
 export const PROTOCOL_HARNESSES = ["claude", "codex"] as const;
 
+export interface WorktreeDto {
+  readonly id: string;
+  readonly name: string;
+  readonly directory: string;
+  readonly branch: string;
+  readonly baseSha: string;
+  readonly baseRef: string | null;
+  readonly createdAt: string;
+}
+
 export interface SessionDto {
   readonly id: string;
   readonly projectId: string;
+  /** Present once the server is worktree-aware. */
+  readonly worktreeId?: string;
   readonly harness: string;
   readonly label: string | null;
   readonly branch: string;
@@ -149,7 +161,14 @@ export interface ChangedFileDto {
 export interface SessionChangeDto {
   readonly id: string;
   readonly projectId: string;
-  readonly sessionId: string;
+  /** Present once the server is worktree-aware. */
+  readonly worktreeId?: string;
+  /**
+   * The change's last contributing conversation — where a review delivers.
+   * Null only for a worktree no session ever inhabited (worktree-aware
+   * servers); older servers always send it.
+   */
+  readonly sessionId: string | null;
   readonly branch: string;
   readonly baseSha: string;
   readonly headSha: string | null;
@@ -274,6 +293,8 @@ interface ProjectDetailDto {
   readonly project: ProjectDto;
   readonly sessions: ReadonlyArray<SessionDto>;
   readonly annotations: ReadonlyArray<SessionAnnotationDto>;
+  /** Present when the server is worktree-aware — the capability signal. */
+  readonly worktrees?: ReadonlyArray<WorktreeDto>;
 }
 
 /** The row's mono second line, from what the annotation can say cheaply. */
@@ -562,9 +583,15 @@ export const useSessionActions = () => {
       api<SessionDto>("POST", `/sessions/${input.sessionId}/label`, { label: input.label }),
     onSettled: invalidate,
   });
-  // Settled sessions only — the server answers 409 for a live one.
+  // Settled sessions only — the server answers 409 for a live one. Removes
+  // the conversation record only; the worktree stands (worktree-aware servers).
   const remove = useMutation({
     mutationFn: (sessionId: string) => api<RemovalReportDto>("DELETE", `/sessions/${sessionId}`),
+    onSettled: invalidate,
+  });
+  // The container's explicit removal — refused while any conversation is live.
+  const removeWorktree = useMutation({
+    mutationFn: (worktreeId: string) => api<RemovalReportDto>("DELETE", `/worktrees/${worktreeId}`),
     onSettled: invalidate,
   });
   // No bulk endpoint exists; mirror web's client-side sweep. Partial failure
@@ -620,6 +647,7 @@ export const useSessionActions = () => {
     handoff,
     setLabel,
     remove,
+    removeWorktree,
     removeSettled,
     openShell,
     stopShell,

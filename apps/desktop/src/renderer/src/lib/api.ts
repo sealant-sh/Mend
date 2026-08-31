@@ -38,9 +38,21 @@ export interface ProjectDto {
   readonly createdAt: string;
 }
 
+export interface WorktreeDto {
+  readonly id: string;
+  readonly name: string;
+  readonly directory: string;
+  readonly branch: string;
+  readonly baseSha: string;
+  readonly baseRef: string | null;
+  readonly createdAt: string;
+}
+
 export interface SessionDto {
   readonly id: string;
   readonly projectId: string;
+  /** Present once the server is worktree-aware. */
+  readonly worktreeId?: string;
   readonly harness: string;
   readonly label: string | null;
   readonly worktree: string;
@@ -70,6 +82,8 @@ export interface ProjectDetailDto {
   readonly project: ProjectDto;
   readonly sessions: ReadonlyArray<SessionDto>;
   readonly annotations: ReadonlyArray<SessionAnnotationDto>;
+  /** Present when the server is worktree-aware — the capability signal. */
+  readonly worktrees?: ReadonlyArray<WorktreeDto>;
 }
 
 export interface CheckpointDto {
@@ -737,6 +751,22 @@ export interface RemovalReportDto {
   readonly leftover: string | null;
 }
 
-/** Settled sessions only — a live one answers 409. Takes the worktree with it. */
+/**
+ * Settled sessions only — a live one answers 409. Removes the conversation
+ * record and its workspace ONLY; the worktree (change, checkpoints, review)
+ * stands, removed by `removeWorktree`.
+ */
 export const removeSession = (id: string) =>
   request<RemovalReportDto>("DELETE", `/api/sessions/${id}`);
+
+/**
+ * The one explicit destructive act: the worktree goes with its sessions,
+ * change, and review. Refused (409) while any conversation is live; a
+ * standing unreviewed diff refuses (422) unless forced.
+ */
+export const removeWorktree = (id: string, force?: boolean) =>
+  request<RemovalReportDto>("DELETE", `/api/worktrees/${id}${force === true ? "?force=true" : ""}`);
+
+/** A new conversation inside an existing worktree; launching is separate. */
+export const createSessionInWorktree = (id: string, harness: string) =>
+  request<SessionDto>("POST", `/api/worktrees/${id}/sessions`, { harness, label: null });

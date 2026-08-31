@@ -252,7 +252,7 @@ function SessionPage() {
               {deleting === "working"
                 ? "Deleting…"
                 : deleting === "armed"
-                  ? "Really delete session and worktree?"
+                  ? "Really delete this session? The worktree, its change, and checkpoints remain."
                   : "Delete…"}
             </button>
           )}

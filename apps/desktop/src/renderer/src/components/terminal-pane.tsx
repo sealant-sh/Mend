@@ -167,7 +167,12 @@ export function TerminalPane({
                 className="hover:text-danger"
                 disabled={remove.isPending}
                 onClick={() => {
-                  if (window.confirm("Really delete session and worktree?")) remove.mutate();
+                  if (
+                    window.confirm(
+                      "Really delete this session? The worktree, its change, and checkpoints remain.",
+                    )
+                  )
+                    remove.mutate();
                 }}
               >
                 {remove.isPending ? "deleting…" : "delete"}
