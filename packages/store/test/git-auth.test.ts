@@ -55,7 +55,8 @@ describe("MendKeys", () => {
 });
 
 describe("sshCommandFor", () => {
-  it("ambient adds BatchMode to the user's ssh", () => {
+  it("ambient adds accept-new and BatchMode to the user's ssh", () => {
+    expect(sshCommandFor("ambient", null)).toContain("-o StrictHostKeyChecking=accept-new");
     expect(sshCommandFor("ambient", null)).toContain("-o BatchMode=yes");
   });
 
@@ -81,9 +82,9 @@ describe("describeGitRemoteFailure", () => {
     expect(describeGitRemoteFailure(stderr, "mend-key")).toContain("Permission denied (publickey)");
   });
 
-  it("names untrusted host keys", () => {
+  it("names a changed host key — first contact is accept-new in every mode", () => {
     const described = describeGitRemoteFailure("Host key verification failed.", "ambient");
-    expect(described).toContain("host key is not trusted");
+    expect(described).toContain("host key changed");
   });
 
   it("names unresolvable hosts", () => {
