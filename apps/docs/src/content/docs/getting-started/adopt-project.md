@@ -76,11 +76,11 @@ agent. Press `Ctrl+C` to stop sharing.
 
 ## Store layout
 
-Each project has a bare repository and session worktrees:
+Each project has a bare repository and its worktrees:
 
 ```text
 <store>/<project>/repo.git
-<store>/<project>/worktrees/<session>/
+<store>/<project>/worktrees/<worktree>/
 ```
 
 The store copy is canonical for Mend. Your previous checkout remains separate. Use normal Git

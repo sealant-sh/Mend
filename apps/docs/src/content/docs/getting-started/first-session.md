@@ -5,8 +5,10 @@ sidebar:
   order: 5
 ---
 
-A session is one supervised coding-agent conversation, its Git worktree, and its durable record. It
-can contain several agent processes over time plus supporting shells and Services.
+A session is one supervised coding-agent conversation and its durable record, running inside a
+worktree — a durable named checkout in the project store. A worktree holds many sessions over its
+life, several live at once, and owns the one reviewable change they all contribute to. A session can
+contain several agent processes over time plus supporting shells and Services.
 
 ## Before you start
 
@@ -58,7 +60,8 @@ Pass one quoted argument:
 mend codex "Trace the session startup path and explain it before changing code"
 ```
 
-The prompt becomes the first message and supplies the initial session name.
+The prompt becomes the first message and supplies the initial session name. Interactive launches ask
+for the worktree's name first (enter accepts an automatic one); `--name` answers it up front.
 
 Common options:
 
@@ -71,12 +74,37 @@ Mend normally disables the harness's approval prompts because the workspace is t
 boundary. `--ask` restores provider prompts. `--fast` requests Codex priority processing. OpenCode
 currently ignores model, effort, permission, and speed options.
 
+## Join an existing worktree
+
+Naming a worktree that already exists joins it — the launch becomes a second conversation in the
+same checkout, alongside anything already running there:
+
+```sh
+mend claude "Review the auth changes so far" --name fix-auth
+```
+
+`--worktree` joins only, and fails with the candidate names when nothing matches — use it in scripts
+where creating a new worktree by typo would be worse than failing:
+
+```sh
+mend codex "Run the test suite and fix what breaks" --worktree fix-auth
+```
+
+Requesting a different `--base` for an existing worktree is refused rather than silently re-basing
+it. In the dashboard, `s` starts a session inside the selected worktree.
+
+List worktrees and the sessions inside them:
+
+```sh
+mend worktrees
+```
+
 ## What Mend creates
 
 ```mermaid
 flowchart LR
   project[Adopted project]
-  worktree[Session worktree]
+  worktree[Worktree]
   workspace[Sealant workspace]
   agent[Agent process]
   record[Durable record]
@@ -172,8 +200,10 @@ left them. Nothing is committed, stashed, or cleaned automatically, and the revi
 worktree against its base, committed or not.
 
 What does not survive a workspace replacement is everything outside the worktree: packages installed
-into the container, the workspace home directory, `/tmp`. Removing the session is the only operation
-that deletes the worktree, and it deletes uncommitted changes with it.
+into the container, the workspace home directory, `/tmp`. Deleting a session removes only the
+conversation record — the worktree, its change, and its checkpoints remain. Removing the worktree is
+its own explicit act: it is refused while any session is live, refuses again while an unreviewed
+change stands, and deletes uncommitted changes with it.
 
 Read [How Mend works](/concepts/how-mend-works/#where-uncommitted-files-live) for the full boundary.
 

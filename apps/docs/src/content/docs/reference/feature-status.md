@@ -13,7 +13,7 @@ published release. Run `mend doctor` and check your installed versions before fo
 | Area                | Current behavior                                                                  |
 | ------------------- | --------------------------------------------------------------------------------- |
 | Project store       | Adopt local paths and Git URLs into a bare repository owned by Mend               |
-| Session worktrees   | Create one branch and worktree per session                                        |
+| Worktrees           | Durable named checkouts; sessions join by name, several live at once              |
 | Agents              | Launch Codex, Claude Code, OpenCode, and arbitrary commands                       |
 | Session processes   | Run PTY agents, protocol agents, shells, and Services in one session workspace    |
 | Reattachment        | Detach and replay terminal output from CLI, web, desktop, and mobile clients      |

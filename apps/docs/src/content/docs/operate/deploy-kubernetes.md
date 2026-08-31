@@ -9,7 +9,7 @@ Kubernetes is the third deployment tier, after [your own machine](/getting-start
 [a VPS](/operate/deploy-vps/). The product behaves the same; what changes is where things run: Mend
 is a Deployment, session workspaces are Pods that Sealant creates on any node, and the central store
 is a shared volume they all mount. Nothing is cloned into a workspace and nothing syncs back — a
-workspace Pod mounts the session worktree from the same claim Mend writes, at the same absolute
+workspace Pod mounts the session's worktree from the same claim Mend writes, at the same absolute
 path.
 
 The maintainer record behind this page is

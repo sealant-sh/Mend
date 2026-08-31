@@ -11,10 +11,11 @@ Use these terms in the interface, documentation, and support material.
 | -------------------- | ------------ | ------------------------------------------------------------------------- |
 | **Machine**          | Current      | A developer-controlled computer or devbox running Mend and Sealant        |
 | **Project**          | Current      | A repository adopted into Mend's central store                            |
-| **Session**          | Current      | One supervised coding-agent conversation, worktree, and durable record    |
+| **Worktree**         | Current      | A durable named checkout in the store; owns its change, chain, and review |
+| **Session**          | Current      | One supervised coding-agent conversation inside a worktree                |
 | **Process**          | Current      | One agent, shell, or Service execution that belongs to a session          |
-| **Change**           | Current      | A repository comparison, usually the session worktree against its base    |
-| **Checkpoint**       | Current      | A hidden Git snapshot paired with observed process-record positions       |
+| **Change**           | Current      | A repository comparison — one per worktree, against its base              |
+| **Checkpoint**       | Current      | A hidden Git snapshot in the worktree's chain, with record positions      |
 | **Service**          | Current      | An explicitly declared development process or forwarded port in a session |
 | **Context item**     | Planned      | A file, document, note, URL, external reference, or previous handoff      |
 | **Context pack**     | Planned      | An editable selection of context items for recurring work                 |
@@ -26,6 +27,10 @@ Use these terms in the interface, documentation, and support material.
 
 Do not call a process a session. A session can contain several agent processes over time plus
 supporting shells and Services.
+
+Do not call a session a worktree. A worktree holds many sessions over its life — several can be live
+at once — and it survives every one of them. Deleting a session leaves the worktree, its change, and
+its checkpoints standing; removing a worktree is its own explicit act.
 
 ## Describe status as observation
 
