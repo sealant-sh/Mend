@@ -782,7 +782,9 @@ const attach = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const sessions = await api<ReadonlyArray<SessionDto>>(config, "GET", "/sessions");
   const match = sessions.find((s) => s.id.startsWith(prefix));
   if (match === undefined) return fail(`no active session matches "${prefix}"`);
-  say(`${green("✓")} attaching to ${match.harness} · ${dim(match.id.slice(0, 8))}${detachHint()}`);
+  say(
+    `${green("✓")} attaching to ${match.branch} · ${match.harness} ${dim(match.id.slice(0, 8))}${detachHint()}`,
+  );
   say("");
   await attachOrExit(config, match.id, match.harness);
   exitAfterSessionEnd(config, match.id);
@@ -2699,7 +2701,7 @@ const rejoinCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
   if (session === undefined) return fail("session selection failed");
   const alreadyLive = agentLiveIn(detail, session);
   say(
-    `${green("✓")} rejoining ${session.harness} · ${dim(session.id.slice(0, 8))} · ${alreadyLive ? "already live" : "restoring"}`,
+    `${green("✓")} rejoining ${session.branch} · ${session.harness} ${dim(session.id.slice(0, 8))} · ${alreadyLive ? "already live" : "restoring"}`,
   );
   say(`${cobalt("  watch")} · ${config.url}/sessions/${session.id}`);
 
