@@ -108,10 +108,21 @@ function PtyConversation({
   sessionId,
   active,
   summary,
+  pickUp,
 }: {
   readonly sessionId: string;
   readonly active: boolean;
   readonly summary: string | null;
+  /**
+   * Cross-mode pickup (claude and codex): the composer IS the pickup — the
+   * first send hands the session off to structured mode with the typed
+   * message as its opening turn. Reading stays instant either way.
+   */
+  readonly pickUp?: {
+    readonly start: (prompt: string) => void;
+    readonly pending: boolean;
+    readonly error: string | null;
+  };
 }) {
   const { colors } = useEvidenceTheme();
   const insets = useSafeAreaInsets();
@@ -160,7 +171,20 @@ function PtyConversation({
   });
   const send = () => {
     const text = draft.trim();
-    if (text === "" || !tty.send(text)) {
+    if (text === "") {
+      return;
+    }
+    if (pickUp !== undefined) {
+      if (pickUp.pending) {
+        return;
+      }
+      pickUp.start(text);
+      pendingSeq.current += 1;
+      setPendingSends((current) => [...current, { id: pendingSeq.current, text }]);
+      setDraft("");
+      return;
+    }
+    if (!tty.send(text)) {
       return;
     }
     setTimeout(() => void tty.send("\r"), 100);
@@ -248,12 +272,30 @@ function PtyConversation({
         }
         ListEmptyComponent={<MonoText tone="faint">{emptyMessage}</MonoText>}
       />
-      {active && (
+      {(active || pickUp !== undefined) && (
         <KeyboardStickyView
           style={{ position: "absolute", bottom: 0, left: 0, right: 0 }}
           offset={{ closed: 0, opened: 0 }}
         >
-          {!tty.canSend && (
+          {pickUp !== undefined && pickUp.pending && (
+            <View
+              style={{ alignItems: "center", paddingVertical: 4, backgroundColor: colors.sunken }}
+            >
+              <MonoText tone="faint" size={11}>
+                picking up the session…
+              </MonoText>
+            </View>
+          )}
+          {pickUp !== undefined && pickUp.error !== null && !pickUp.pending && (
+            <View
+              style={{ alignItems: "center", paddingVertical: 4, backgroundColor: colors.sunken }}
+            >
+              <MonoText tone="faint" size={11}>
+                {pickUp.error}
+              </MonoText>
+            </View>
+          )}
+          {pickUp === undefined && !tty.canSend && (
             <Pressable
               onPress={tty.retryNow}
               style={{
@@ -286,7 +328,11 @@ function PtyConversation({
             <TextInput
               value={draft}
               onChangeText={setDraft}
-              placeholder="Message the session…"
+              placeholder={
+                pickUp === undefined
+                  ? "Message the session…"
+                  : "Message the session — continues here in structured mode"
+              }
               placeholderTextColor={colors.faint}
               multiline
               style={{
@@ -303,7 +349,11 @@ function PtyConversation({
                 fontSize: 15,
               }}
             />
-            <EvButton label="Send" onPress={send} disabled={!tty.canSend} />
+            <EvButton
+              label="Send"
+              onPress={send}
+              disabled={pickUp === undefined ? !tty.canSend : pickUp.pending}
+            />
           </View>
         </KeyboardStickyView>
       )}
@@ -326,8 +376,11 @@ export default function SessionScreen() {
   const protocol =
     currentAgent === null ? mode === "protocol" : currentAgent.kind === "agent-protocol";
   const followUp = usePendingFollowUp(id).data ?? null;
-  const { resume, stop, openShell, deliverFollowUp } = useSessionActions();
+  const { resume, stop, openShell, deliverFollowUp, handoff } = useSessionActions();
   const [shellError, setShellError] = useState<string | null>(null);
+  // Cross-mode pickup: claude and codex sessions continue here in structured
+  // mode; other harnesses keep the raw terminal composer.
+  const canPickUp = session?.harness === "claude" || session?.harness === "codex";
 
   const openTerminal = () => {
     if (session === undefined) {
@@ -366,7 +419,26 @@ export default function SessionScreen() {
         summary={session.summary}
       />
     ) : (
-      <PtyConversation sessionId={session.id} active={agentActive} summary={session.summary} />
+      <PtyConversation
+        sessionId={session.id}
+        active={agentActive}
+        summary={session.summary}
+        {...(canPickUp
+          ? {
+              pickUp: {
+                start: (prompt: string) =>
+                  handoff.mutate({ sessionId: session.id, to: "protocol", prompt }),
+                pending: handoff.isPending,
+                error:
+                  handoff.error === null
+                    ? null
+                    : handoff.error instanceof Error
+                      ? handoff.error.message
+                      : String(handoff.error),
+              },
+            }
+          : {})}
+      />
     );
   }
 

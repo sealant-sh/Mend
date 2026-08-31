@@ -364,6 +364,7 @@ const agentConversationStubLayer = Layer.succeed(AgentConversationRepo, {
   resolveProviderRequest: () => Effect.void,
   cancelOpenForTurn: () => Effect.void,
   cancelOpenForProcess: () => Effect.void,
+  backfillConversation: () => Effect.succeed(0),
   resetSendingResponses: () => Effect.void,
   requeueQueuedTurns: () => Effect.void,
   protocolCursor: () => Effect.succeed({ nextSequence: 0n }),
@@ -1118,6 +1119,8 @@ const sessionsLayer = (world: World) => {
     setProviderSessionId: (id, providerSessionId) =>
       Effect.sync(() => update(id, { providerSessionId })),
     setStatus: (id, status) => Effect.sync(() => update(id, { status })),
+    nativeIngestCursor: () => Effect.succeed(null),
+    setNativeIngestCursor: () => Effect.void,
     saveLastSeenSequence: (id, sequence) =>
       Effect.sync(() => update(id, { lastSeenSequence: sequence })),
     notifyProgress: () => Effect.void,

@@ -47,6 +47,20 @@ export const SessionStatus = Schema.Literals([
 export type SessionStatus = typeof SessionStatus.Type;
 
 /**
+ * How far the session's native transcript has been ingested into the durable
+ * conversation (the mode-handoff backfill). Claude entries carry stable uuids
+ * and fork-on-resume preserves the copied prefix, so the last ingested uuid
+ * addresses the boundary; codex rollouts have no per-entry ids, so the count
+ * of ingested lines stands in. Persistence bookkeeping, not part of `Session`.
+ */
+export const NativeIngestCursor = Schema.Struct({
+  providerSessionId: Schema.String,
+  lastEntryUuid: Schema.NullOr(Schema.String),
+  lineCount: Schema.Int,
+});
+export type NativeIngestCursor = typeof NativeIngestCursor.Type;
+
+/**
  * One logical coding-agent conversation in its own store worktree (plan §5.5). A settled-session
  * resume starts another Sealant run; SessionRun owns the ordered membership and per-run cursors.
  * The recording stays in Sealant and evidence addresses it by `(sealantRunId, sequence)`.

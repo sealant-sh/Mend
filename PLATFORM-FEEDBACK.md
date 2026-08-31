@@ -43,6 +43,11 @@ short-lived certificates would retire registration entirely.
 keys + SDK surface), phase 2 replaces registration with short-lived SSH certificates, phase 3 makes
 gateway attachments visible as leases.
 
+**2026-08-31 addendum:** attachment visibility would also serve mode handoff — picking a session up
+from the phone ends a TUI another terminal may have open; live-attachment counts on the session
+would let clients confirm honestly ("a terminal is attached — take over?") instead of relying on the
+handed-off row's summary after the fact.
+
 - **Needed:** Mend's VS Code extension opens a session's workspace over the Sealant workspace SSH
   gateway (`ws-<workspaceId>@<gateway>`), which needs three things Mend cannot obtain through the
   SDK: the gateway address (host/port/username prefix — deployment config the platform already
@@ -254,6 +259,11 @@ platform release.
 Mend's session-Services design (docs/SESSION-SERVICES.md) needs to deliver signals to supervised
 processes that no client terminal owns — `mend service stop` is a SIGTERM/SIGINT to a process the
 user may never have attached to.
+
+**2026-08-31 addendum:** mode handoff (cross-mode session pickup) would also prefer
+SIGTERM-then-wait when taking over a TUI — a signal lets the harness flush its transcript before the
+replacement process resumes it; today the takeover closes the PTY and relies on the harness's
+incremental writes.
 
 Observed against the deployed platform (SDK 0.9.0 and 0.13.1 behave identically except where noted),
 with two concurrent `bash -i` PTYs in one mount-sourced workspace:

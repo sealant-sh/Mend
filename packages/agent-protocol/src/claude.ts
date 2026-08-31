@@ -9,6 +9,7 @@ import type {
 } from "@mend/domain/workbench";
 import { PubSub, Effect, Stream } from "effect";
 
+import { contentBlockKind } from "./claude-items.ts";
 import type {
   ClaudeControlRequest,
   ClaudeControlResponse,
@@ -58,14 +59,6 @@ const protocolError = (operation: string, message: string, cause: unknown): Agen
 
 const encodeLine = (value: unknown): Uint8Array =>
   new TextEncoder().encode(`${JSON.stringify(value)}\n`);
-
-const toolKind = (name: string): AgentItemKind => {
-  if (name === "Bash" || name === "Shell") return "command-execution";
-  if (name === "Write" || name === "Edit" || name === "MultiEdit") return "file-change";
-  if (name === "WebSearch" || name === "WebFetch") return "web-search";
-  if (name === "TodoWrite" || name.startsWith("Task")) return "plan";
-  return "tool-call";
-};
 
 const questionsFrom = (input: JsonObject): ReadonlyArray<AgentInputQuestion> | null => {
   const questions = input["questions"];
@@ -211,14 +204,7 @@ export const ClaudeAdapter: AgentAdapter = {
               (messageId === null
                 ? `${currentTurnId}:m${messageOrdinal}:block:${streamIndex}`
                 : `${messageId}:block:${streamIndex}`);
-            const kind: AgentItemKind =
-              type === "text"
-                ? "assistant-message"
-                : type === "thinking"
-                  ? "reasoning"
-                  : type === "tool_use"
-                    ? toolKind(stringField(block, "name") ?? "tool")
-                    : "other";
+            const kind: AgentItemKind = contentBlockKind(type, stringField(block, "name"));
             return updateItem({
               providerItemId: id,
               providerTurnId: currentTurnId ?? "",
@@ -252,14 +238,7 @@ export const ClaudeAdapter: AgentAdapter = {
           const type = stringField(block, "type");
           const providerItemId = stringField(block, "id") ?? fallbackId;
           blockIds.set(index, providerItemId);
-          const kind: AgentItemKind =
-            type === "text"
-              ? "assistant-message"
-              : type === "thinking"
-                ? "reasoning"
-                : type === "tool_use"
-                  ? toolKind(stringField(block, "name") ?? "tool")
-                  : "other";
+          const kind: AgentItemKind = contentBlockKind(type, stringField(block, "name"));
           return updateItem({
             providerItemId,
             providerTurnId: currentTurnId,

@@ -31,6 +31,7 @@ import {
   DotfilesSnapshotFileView,
   DotfilesSnapshotView,
   DotfilesView,
+  HandoffUnsupported,
   OpenReviewResult,
   ProtocolSessionNotLive,
   AgentRequestResolved,
@@ -2054,6 +2055,77 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
               }),
           ),
         });
+      }),
+    )
+    .handle("handoff", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const engine = yield* SessionEngine;
+        return yield* engine
+          .handoff(
+            params.id,
+            payload.to,
+            {
+              mode: payload.to === "protocol" ? "protocol" : "pty",
+              ...(payload.prompt === undefined ? {} : { prompt: payload.prompt }),
+              ...(payload.model === undefined ? {} : { model: payload.model }),
+              ...(payload.effort === undefined ? {} : { effort: payload.effort }),
+              ...(payload.permissionMode === undefined
+                ? {}
+                : { permissionMode: payload.permissionMode }),
+            },
+            null,
+          )
+          .pipe(
+            Effect.catchTag("SessionNotFoundError", () =>
+              Effect.fail(new NotFound({ id: params.id })),
+            ),
+            Effect.catchTag("ProjectNotFoundError", () =>
+              Effect.fail(new NotFound({ id: params.id })),
+            ),
+            Effect.catchTag("HandoffUnsupportedError", (error) =>
+              Effect.fail(
+                new HandoffUnsupported({
+                  sessionId: error.sessionId,
+                  harness: error.harness,
+                  to: error.to,
+                }),
+              ),
+            ),
+            Effect.catchTag("ProtocolHarnessUnsupportedError", (error) =>
+              Effect.fail(
+                new HandoffUnsupported({
+                  sessionId: params.id,
+                  harness: error.message,
+                  to: payload.to,
+                }),
+              ),
+            ),
+            Effect.catchTag("LegacyBenchReadOnlyError", () =>
+              Effect.fail(new StoreFailure({ message: "Legacy bench sessions are review-only." })),
+            ),
+            Effect.catchTag("SessionNotLiveError", () =>
+              Effect.fail(
+                new StoreFailure({ message: "The retained workspace is not reachable." }),
+              ),
+            ),
+            Effect.catchTag("SealantPlatformError", (error) =>
+              Effect.fail(new StoreFailure({ message: error.message })),
+            ),
+            Effect.catchTags({
+              HarnessStateNotFoundError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+              HarnessStateIOError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+              HarnessStateInvalidError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+              HarnessStateCommandError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+              SessionLaunchSetupError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+              DotfilesResolveError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+            }),
+          );
       }),
     )
     .handle("resume", ({ params, payload }) =>

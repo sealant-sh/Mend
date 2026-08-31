@@ -358,6 +358,26 @@ export class LaunchRequest extends Schema.Class<LaunchRequest>("LaunchRequest")(
   speed: Schema.optional(Schema.Literals(SPEED_MODES)),
 }) {}
 
+/**
+ * Cross-mode pickup (mode handoff): continue the same provider session in the
+ * requested mode. `prompt` rides as the opening turn of a protocol pickup —
+ * one round trip performs takeover, history backfill, launch, and first turn.
+ */
+export class HandoffRequest extends Schema.Class<HandoffRequest>("HandoffRequest")({
+  to: Schema.Literals(["protocol", "pty"]),
+  prompt: Schema.optional(Schema.String),
+  model: Schema.optional(Schema.String),
+  effort: Schema.optional(Schema.Literals(EFFORT_LEVELS)),
+  permissionMode: Schema.optional(Schema.Literals(PERMISSION_MODES)),
+}) {}
+
+/** The session's harness cannot continue in the requested mode (claude and codex only). */
+export class HandoffUnsupported extends Schema.TaggedErrorClass<HandoffUnsupported>()(
+  "HandoffUnsupported",
+  { sessionId: Schema.String, harness: Schema.String, to: Schema.String },
+  { httpApiStatus: 422 },
+) {}
+
 /** Submit one authored input to the live protocol process. */
 export class SubmitAgentTurnRequest extends Schema.Class<SubmitAgentTurnRequest>(
   "SubmitAgentTurnRequest",

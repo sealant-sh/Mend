@@ -27,7 +27,7 @@ import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware, ProcessLogPage } from "./common.ts";
-import { AgentRequestResolved } from "./project-environment.ts";
+import { AgentRequestResolved, HandoffRequest, HandoffUnsupported } from "./project-environment.ts";
 import {
   CheckpointRequest,
   DeliverFollowUpRequest,
@@ -318,6 +318,16 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       payload: ResumeRequest,
       success: Session,
       error: [NotFound, StoreFailure],
+    }),
+  )
+  .add(
+    // Cross-mode pickup (mode handoff): continue the same provider session in
+    // the requested mode — PTY ⇄ protocol, one live agent process at a time.
+    HttpApiEndpoint.post("handoff", "/sessions/:id/handoff", {
+      params: { id: SessionId },
+      payload: HandoffRequest,
+      success: Session,
+      error: [NotFound, StoreFailure, HandoffUnsupported],
     }),
   )
   .add(

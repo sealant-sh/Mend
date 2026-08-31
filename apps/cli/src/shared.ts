@@ -165,6 +165,8 @@ export interface AgentProcessLike {
   readonly exitedAt: string | null;
   readonly harness: string | null;
   readonly sealantSessionId: string | null;
+  /** `agent-pty` · `agent-protocol` · … — optional: an older server omits it. */
+  readonly kind?: string;
 }
 
 /**

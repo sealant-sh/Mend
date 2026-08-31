@@ -1249,6 +1249,11 @@ const protocolOptionsColumn = Effect.gen(function* () {
   yield* sql`ALTER TABLE session_processes ADD COLUMN protocol_options jsonb`;
 });
 
+const nativeIngestCursorColumn = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE agent_sessions ADD COLUMN native_ingest_cursor jsonb`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -1295,4 +1300,5 @@ export const migrations = {
   "0042_session_base_ref": sessionBaseRef,
   "0043_background_sessions": backgroundSessionsChoice,
   "0044_protocol_options": protocolOptionsColumn,
+  "0045_native_ingest_cursor": nativeIngestCursorColumn,
 };
