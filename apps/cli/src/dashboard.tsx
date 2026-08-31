@@ -12,8 +12,12 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   deriveHarnesses,
   deriveProjects,
+  advanceFromBase,
+  type BranchDto,
+  type CreatingState,
   deriveRows,
   deriveWorktrees,
+  filterBranches,
   foldGroupStatus,
   labelIsIdentity,
   rowKeyOf,
@@ -28,6 +32,7 @@ import {
   removeSession,
   replaceSession,
   WORKBENCH_KEY,
+  type ProjectDto,
   type ProjectItem,
   type SelectableRow,
   type ServiceDto,
@@ -49,7 +54,7 @@ import {
   pendingId,
 } from "./shared.ts";
 import { openUrl } from "./terminal.ts";
-import { COBALT, FAINT, INK, INK_2, MUTED, RED, RULE, WASH } from "./tui-theme.ts";
+import { COBALT, FAINT, INK, INK_2, MUTED, RED, RULE, SURFACE, WASH } from "./tui-theme.ts";
 
 // Near-mono on purpose: a status is a word, and only an observed failure
 // earns color. Live states read at full ink; settled ones recede.
@@ -100,6 +105,8 @@ export interface DashboardContext {
   readonly config: { readonly url: string; readonly token: string | null };
   /** Where the dashboard was opened — resolves the starting project. */
   readonly cwd: string;
+  /** The branch checked out there — prefills the base for that project. */
+  readonly cwdBranch: string | null;
   /** Server request that THROWS on failure (never exits) — the status line renders it. */
   readonly api: <T>(method: "GET" | "POST" | "DELETE", route: string, body?: unknown) => Promise<T>;
   /** The PTY bridge; resolves when the session settles or the user detaches. */
@@ -496,9 +503,29 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   const [editing, setEditing] = useState<SessionDto | null>(null);
   /** Session id a stop is armed against; the second press fires it. */
   const [stopArmed, setStopArmed] = useState<string | null>(null);
-  /** The new-session flow asks the worktree's name FIRST, then the harness. */
-  const [naming, setNaming] = useState<{ readonly projectId: string } | null>(null);
-  const [pendingName, setPendingName] = useState<string | null>(null);
+  /**
+   * The whole worktree creation is ONE modal: name, base (fuzzy over the
+   * project's branches), harness — every step visible, the active one
+   * expanded. Enter advances, esc steps back (cancels from the name).
+   */
+  const [creating, setCreating] = useState<CreatingState | null>(null);
+  /**
+   * The cwd is a git repo the store doesn't know: offer to adopt it, once
+   * per dashboard run. Enter adopts, esc declines and stays quiet.
+   */
+  const [adoptOffer, setAdoptOffer] = useState<{
+    readonly root: string;
+    /**
+     * What the server clones: the origin URL when the repo has one — the
+     * server may be a different machine, where only the origin resolves —
+     * else the local path (which only a same-machine server can reach).
+     */
+    readonly source: string;
+    readonly name: string;
+    /** ←→ toggles how the server authenticates to the remote. */
+    readonly modeIndex: number;
+  } | null>(null);
+  const adoptOfferDecided = useRef(false);
   const [reviewing, setReviewing] = useState<{
     readonly session: SessionDto;
     readonly changeId: string;
@@ -508,7 +535,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   const lockRef = useRef(false);
   /** Latest modal state for mutation callbacks — closures there go stale. */
   const modalRef = useRef(false);
-  modalRef.current = editing !== null || reviewing !== null || picker !== null;
+  modalRef.current = editing !== null || reviewing !== null || picker !== null || creating !== null;
 
   const { width: terminalCols, height: terminalRows } = useTerminalDimensions();
   const showProjectsPane = terminalCols >= 72;
@@ -553,6 +580,24 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
 
   const say = (text: string): void => setStatus({ text, at: Date.now() });
   const refetch = (): void => void queryClient.invalidateQueries({ queryKey: WORKBENCH_KEY });
+
+  // A repo underfoot that the store has never met: raise the adopt offer the
+  // first time the workbench answers and no project matches the cwd.
+  useEffect(() => {
+    if (data === undefined || adoptOfferDecided.current) return;
+    if (homeProject !== undefined) return;
+    const facts = cwdFacts(ctx.cwd);
+    if (facts.repoRoot === null) return;
+    adoptOfferDecided.current = true;
+    setAdoptOffer({
+      root: facts.repoRoot,
+      source: facts.originUrl ?? facts.repoRoot,
+      name: normalizeProjectName(facts.repoRoot.split("/").at(-1) ?? "project"),
+      modeIndex: 0,
+    });
+    // homeProject/data identity is enough; ctx.cwd never changes in a run.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, homeProject]);
 
   // Keep each pane's selection on screen — the one imperative escape hatch.
   const projectScrollRef = useRef<ScrollBoxRenderable | null>(null);
@@ -652,6 +697,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       readonly projectId: string;
       readonly harness: string;
       readonly name: string | null;
+      readonly base: string | null;
       readonly pendingKey: string;
     }) => {
       const argv = HARNESS_COMMANDS[vars.harness];
@@ -660,7 +706,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         harness: vars.harness,
         label: null,
         name: vars.name,
-        base: null,
+        base: vars.base,
       });
       await ctx.api<SessionDto>("POST", `/sessions/${session.id}/launch`, { argv });
       return session;
@@ -674,7 +720,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           label: null,
           branch: vars.name === null ? "provisioning…" : `mend/${vars.name}`,
           baseSha: "",
-          baseRef: null,
+          baseRef: vars.base,
           status: "starting",
           summary: null,
           createdAt: new Date().toISOString(),
@@ -734,6 +780,53 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       selectSession(resumed.id);
       setBusy(null);
       await attachIfIdle(resumed);
+    },
+    onSettled: settleRefetch,
+  });
+
+  const ADOPT_AUTH_MODES = [
+    {
+      mode: "ambient",
+      label: "ambient",
+      hint: "the server machine's own git/ssh setup",
+    },
+    {
+      mode: "mend-key",
+      label: "mend-key",
+      hint: "the machine's Mend deploy key — add its public half on the git host",
+    },
+    {
+      mode: "bridge",
+      label: "bridge",
+      hint: "your OWN ssh-agent, relayed while `mend keys share` runs here",
+    },
+  ] as const;
+
+  const adoptMutation = useMutation({
+    mutationFn: (offer: {
+      readonly source: string;
+      readonly name: string;
+      readonly modeIndex: number;
+    }) =>
+      ctx.api<ProjectDto>("POST", "/projects", {
+        name: offer.name,
+        source: offer.source,
+        gitAuthMode: ADOPT_AUTH_MODES[offer.modeIndex]?.mode ?? "ambient",
+      }),
+    onMutate: (offer) => {
+      setAdoptOffer(null);
+      setBusy(`adopting ${offer.name} — cloning into the store ·`);
+      setBusyStarted(Date.now());
+    },
+    onError: (error) => {
+      setBusy(null);
+      say(errorText(error));
+    },
+    onSuccess: (project) => {
+      setBusy(null);
+      say(`adopted · ${project.name} — n starts a worktree`);
+      setProjectKey(project.id);
+      setSessionKey(null);
     },
     onSettled: settleRefetch,
   });
@@ -920,18 +1013,92 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     say(`press again to stop · ${worktreeDisplayName(item.session)}`);
   };
 
-  const startSession = (projectId: string, harness: string): void => {
-    setFocus("sessions");
-    launchMutation.mutate({ projectId, harness, name: pendingName, pendingKey: pendingId() });
-    setPendingName(null);
+  /** Open the creation modal; the branch list starts loading immediately. */
+  const openCreateModal = (projectId: string): void => {
+    setCreating({
+      projectId,
+      step: "name",
+      name: "",
+      branches: null,
+      query: "",
+      baseIndex: 0,
+      base: null,
+      joins: false,
+      harnessIndex: 0,
+    });
+    // The checkout mend ran in names its branch; creating in THAT project
+    // prefills the base with it — the list highlights it once loaded.
+    const prefill = projectId === homeProject?.id ? ctx.cwdBranch : null;
+    void ctx.api<ReadonlyArray<BranchDto>>("GET", `/projects/${projectId}/branches`).then(
+      (branches) =>
+        setCreating((current) => {
+          if (current === null) return current;
+          const match =
+            prefill === null ? undefined : branches.find((candidate) => candidate.name === prefill);
+          const ordered = filterBranches(branches, "");
+          return {
+            ...current,
+            branches,
+            base: match === undefined || match.isDefault ? null : match.name,
+            baseIndex:
+              match === undefined
+                ? 0
+                : Math.max(
+                    0,
+                    ordered.findIndex((candidate) => candidate.name === match.name),
+                  ),
+          };
+        }),
+      () =>
+        // An unreadable list falls back to the default base; the base step
+        // then shows only the default and enter moves on.
+        setCreating((current) => (current === null ? current : { ...current, branches: [] })),
+    );
   };
 
-  /** Name first, then the harness: the worktree is the identity being created. */
-  const submitWorktreeName = (value: string): void => {
-    setNaming(null);
-    const slug = normalizeProjectName(value.trim());
-    setPendingName(value.trim() === "" ? null : slug);
-    openPicker(null);
+  /** Commit the name: an existing name JOINS its worktree — base is fixed. */
+  const advanceFromName = (current: CreatingState, raw: string): CreatingState => {
+    const slug = normalizeProjectName(raw.trim());
+    const name = raw.trim() === "" ? "" : slug;
+    const joins =
+      name !== "" &&
+      (workbench()?.details.get(current.projectId)?.worktrees ?? []).some(
+        (candidate) => candidate.name === name,
+      );
+    // A join fixes the base; otherwise whatever is chosen (the checkout
+    // prefill included) rides along untouched.
+    return {
+      ...current,
+      name,
+      joins,
+      ...(joins ? { base: null } : {}),
+      step: joins ? "harness" : "base",
+    };
+  };
+
+  const submitCreateName = (value: string): void => {
+    setCreating((current) => (current === null ? current : advanceFromName(current, value)));
+  };
+
+  const submitCreateBase = (): void => {
+    setCreating((current) => (current === null ? current : advanceFromBase(current)));
+  };
+
+  /** Enter on the harness: everything is chosen — launch. */
+  const submitCreateHarness = (): void => {
+    const current = creating;
+    if (current === null) return;
+    const choice = deriveHarnesses(null)[current.harnessIndex];
+    if (choice?.harness == null) return;
+    setCreating(null);
+    setFocus("sessions");
+    launchMutation.mutate({
+      projectId: current.projectId,
+      harness: choice.harness,
+      name: current.name === "" ? null : current.name,
+      base: current.base,
+      pendingKey: pendingId(),
+    });
   };
 
   const resumeSession = (projectId: string, session: SessionDto, harness: string | null): void => {
@@ -987,9 +1154,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
             pendingKey: pendingId(),
           });
         }
-      } else if (picker.session === null) {
-        if (choice.harness !== null) startSession(projectId, choice.harness);
-      } else {
+      } else if (picker.session !== null) {
         resumeSession(projectId, picker.session, choice.harness);
       }
       return;
@@ -1026,13 +1191,107 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     if (reviewing !== null) return;
     if (lockRef.current) return;
     if (key.ctrl && key.name === "c") return onQuit();
+    if (adoptOffer !== null) {
+      if (key.name === "return" || key.name === "linefeed" || key.name === "y") {
+        adoptMutation.mutate(adoptOffer);
+      } else if (key.name === "escape" || key.name === "q") {
+        setAdoptOffer(null);
+        say("not adopted — mend adopt does it any time");
+      } else if (
+        key.name === "right" ||
+        key.name === "l" ||
+        key.name === "tab" ||
+        key.name === "left" ||
+        key.name === "h"
+      ) {
+        const delta = key.name === "left" || key.name === "h" ? -1 : 1;
+        setAdoptOffer((current) =>
+          current === null
+            ? current
+            : {
+                ...current,
+                modeIndex:
+                  (current.modeIndex + delta + ADOPT_AUTH_MODES.length) % ADOPT_AUTH_MODES.length,
+              },
+        );
+      }
+      return;
+    }
     if (editing !== null) {
       // The input owns the keyboard; only escape leaves without saving.
       if (key.name === "escape") setEditing(null);
       return;
     }
-    if (naming !== null) {
-      if (key.name === "escape") setNaming(null);
+    if (creating !== null) {
+      // Inputs own the characters (name text, base filter); this handler owns
+      // the arrows, esc (a step back; cancel from the name), and the harness
+      // step's enter. The name and base enters land through their input's
+      // submit so typed-but-unflushed text never races.
+      if (key.name === "escape") {
+        setCreating((current) => {
+          if (current === null) return current;
+          if (current.step === "harness") {
+            return { ...current, step: current.joins ? "name" : "base" };
+          }
+          if (current.step === "base") return { ...current, step: "name" };
+          say("new worktree cancelled");
+          return null;
+        });
+        return;
+      }
+      // Tab walks the steps without the enter ceremony: forward commits the
+      // active field (the mirrored name, the highlighted branch), shift+tab
+      // steps back, and from the harness it wraps around to the name.
+      if (key.name === "tab" || key.name === "backtab") {
+        const backward = key.name === "backtab" || key.shift === true;
+        setCreating((current) => {
+          if (current === null) return current;
+          if (backward) {
+            if (current.step === "harness") {
+              return { ...current, step: current.joins ? "name" : "base" };
+            }
+            if (current.step === "base") return { ...current, step: "name" };
+            return current;
+          }
+          if (current.step === "name") return advanceFromName(current, current.name);
+          if (current.step === "base") return advanceFromBase(current);
+          return { ...current, step: "name" };
+        });
+        return;
+      }
+      const delta =
+        key.name === "down" || (key.ctrl === true && key.name === "n")
+          ? 1
+          : key.name === "up" || (key.ctrl === true && key.name === "p")
+            ? -1
+            : 0;
+      if (delta !== 0) {
+        setCreating((current) => {
+          if (current === null) return current;
+          if (current.step === "base") {
+            const matches = filterBranches(current.branches ?? [], current.query).length;
+            return {
+              ...current,
+              baseIndex: Math.max(0, Math.min(matches - 1, current.baseIndex + delta)),
+            };
+          }
+          if (current.step === "harness") {
+            const count = deriveHarnesses(null).length;
+            return {
+              ...current,
+              harnessIndex: Math.max(0, Math.min(count - 1, current.harnessIndex + delta)),
+            };
+          }
+          return current;
+        });
+        return;
+      }
+      if (
+        creating.step === "harness" &&
+        (key.name === "return" || key.name === "linefeed" || key.name === "l")
+      ) {
+        submitCreateHarness();
+      }
       return;
     }
     if (picker !== null) {
@@ -1088,8 +1347,8 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         if (showProjectsPane) setFocus(focus === "projects" ? "sessions" : "projects");
         return;
       case "n":
-        // The worktree's name comes first; the harness picker follows.
-        if (selectedProject !== null) setNaming({ projectId: selectedProject.project.id });
+        // The whole creation is one modal: name, base, harness.
+        if (selectedProject !== null) openCreateModal(selectedProject.project.id);
         return;
       case "s": {
         // A new conversation inside the selected worktree.
@@ -1164,16 +1423,25 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         : picker.session === null
           ? "new session — pick a harness"
           : `resume ${picker.session.id.slice(0, 8)} — pick a harness`;
+  // One big fixed-size modal: every step visible at once, nothing shifts as
+  // focus moves through name → base → harness.
+  const creatingHeight = 2 + 1 + 1 + 6 + 1 + deriveHarnesses(null).length;
   const footerText =
-    editing !== null
-      ? " enter save · esc cancel"
-      : naming !== null
-        ? " enter continue — the harness picker follows · esc cancel"
-        : picker !== null
-          ? " ↑↓ move · enter start · esc cancel"
-          : focus === "projects"
-            ? " ↑↓ move · enter/l sessions · ⇥ panes · r refresh · q quit"
-            : " ↑↓ move · enter attach/resume · n new worktree · s session here · x stop · ⇧D remove · v review · e rename · o web · q quit";
+    adoptOffer !== null
+      ? " enter adopt · ←→ auth mode · esc not now"
+      : editing !== null
+        ? " enter save · esc cancel"
+        : creating !== null
+          ? creating.step === "name"
+            ? " enter continue · esc cancel"
+            : creating.step === "base"
+              ? " type to filter · ↑↓ move · enter choose base · esc back"
+              : " ↑↓ move · enter launch · esc back"
+          : picker !== null
+            ? " ↑↓ move · enter start · esc cancel"
+            : focus === "projects"
+              ? " ↑↓ move · enter/l sessions · ⇥ panes · r refresh · q quit"
+              : " ↑↓ move · enter attach/resume · n new worktree · s session here · x stop · ⇧D remove · v review · e rename · o web · q quit";
 
   const loadFailure =
     data === undefined && failureReason !== null
@@ -1290,33 +1558,6 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
             <HarnessRow key={String(item.harness)} item={item} selected={index === pickerIndex} />
           ))}
         </Pane>
-      ) : naming !== null ? (
-        <box
-          border
-          borderStyle="rounded"
-          borderColor={COBALT}
-          title=" new worktree — name "
-          titleAlignment="left"
-          backgroundColor="transparent"
-          height={3}
-          flexShrink={0}
-        >
-          <input
-            focused
-            value=""
-            placeholder="name the worktree, e.g. fix-auth (empty = auto)"
-            backgroundColor="transparent"
-            focusedBackgroundColor="transparent"
-            textColor={INK}
-            focusedTextColor={INK}
-            placeholderColor={FAINT}
-            cursorColor={INK}
-            flexGrow={1}
-            onSubmit={(value: unknown) => {
-              if (typeof value === "string") submitWorktreeName(value);
-            }}
-          />
-        </box>
       ) : editing !== null ? (
         <box
           border
@@ -1348,6 +1589,202 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         <Pane title={detailTitle} focused={false} height={6}>
           <SessionDetail item={selectedSession} />
         </Pane>
+      ) : null}
+
+      {adoptOffer !== null ? (
+        <box
+          position="absolute"
+          zIndex={11}
+          left={Math.max(1, Math.floor((terminalCols - Math.min(70, terminalCols - 4)) / 2))}
+          top={Math.max(1, Math.floor((terminalRows - 7) / 2))}
+          width={Math.min(70, terminalCols - 4)}
+          height={7}
+          border
+          borderStyle="rounded"
+          borderColor={COBALT}
+          title=" adopt this repository? "
+          titleAlignment="left"
+          backgroundColor={SURFACE}
+          flexDirection="column"
+        >
+          <text height={1} bg={SURFACE}>
+            <span>{"  "}</span>
+            <span fg={INK}>{adoptOffer.name}</span>
+            <span fg={FAINT}>{" · not in the store yet"}</span>
+          </text>
+          <text height={1} bg={SURFACE} fg={MUTED}>
+            {`  ${adoptOffer.source}`}
+          </text>
+          <text height={1} bg={SURFACE}>
+            <span fg={FAINT}>{"  auth  "}</span>
+            {ADOPT_AUTH_MODES.map((candidate, index) => (
+              <span key={candidate.mode}>
+                {index > 0 ? <span fg={FAINT}>{" · "}</span> : null}
+                <span fg={index === adoptOffer.modeIndex ? COBALT : FAINT}>
+                  {index === adoptOffer.modeIndex ? `▸ ${candidate.label}` : candidate.label}
+                </span>
+              </span>
+            ))}
+          </text>
+          <text height={1} bg={SURFACE} fg={FAINT}>
+            {`        ${ADOPT_AUTH_MODES[adoptOffer.modeIndex]?.hint ?? ""}`}
+          </text>
+          <text height={1} bg={SURFACE} fg={FAINT}>
+            {adoptOffer.source === adoptOffer.root
+              ? "  enter adopt from this path — needs the server on THIS machine · esc not now"
+              : "  enter adopt · ←→ auth mode · esc not now"}
+          </text>
+        </box>
+      ) : null}
+      {creating !== null ? (
+        <box
+          position="absolute"
+          zIndex={10}
+          left={Math.max(1, Math.floor((terminalCols - Math.min(74, terminalCols - 4)) / 2))}
+          top={Math.max(1, Math.floor((terminalRows - creatingHeight) / 2))}
+          width={Math.min(74, terminalCols - 4)}
+          height={creatingHeight}
+          border
+          borderStyle="rounded"
+          borderColor={COBALT}
+          title={` new worktree — ${selectedProject?.project.name ?? "project"} `}
+          titleAlignment="left"
+          backgroundColor={SURFACE}
+          flexDirection="column"
+        >
+          <box height={1} flexShrink={0} flexDirection="row" backgroundColor={SURFACE}>
+            <text height={1} bg={SURFACE}>
+              <Gutter selected={creating.step === "name"} />
+              <span fg={FAINT}>{"name     "}</span>
+              {creating.step !== "name" ? (
+                <span fg={INK}>{creating.name === "" ? "auto" : creating.name}</span>
+              ) : null}
+              {creating.joins ? <span fg={FAINT}>{"  · joins the existing worktree"}</span> : null}
+            </text>
+            {creating.step === "name" ? (
+              <input
+                focused
+                value={creating.name}
+                placeholder="e.g. fix-auth (empty = auto · an existing name joins it)"
+                backgroundColor={SURFACE}
+                focusedBackgroundColor={SURFACE}
+                textColor={INK}
+                focusedTextColor={INK}
+                placeholderColor={FAINT}
+                cursorColor={INK}
+                flexGrow={1}
+                onInput={(value: string) => {
+                  const clean = value.replace(/\t/g, "");
+                  setCreating((current) =>
+                    current === null ? current : { ...current, name: clean },
+                  );
+                }}
+                onSubmit={(value: unknown) => {
+                  if (typeof value === "string") submitCreateName(value);
+                }}
+              />
+            ) : null}
+          </box>
+          <box height={1} flexShrink={0} flexDirection="row" backgroundColor={SURFACE}>
+            <text height={1} bg={SURFACE}>
+              <Gutter selected={creating.step === "base"} />
+              <span fg={FAINT}>{"base     "}</span>
+              {creating.step !== "base" ? (
+                <span fg={creating.step === "name" && !creating.joins ? FAINT : INK}>
+                  {creating.joins
+                    ? "fixed by the existing worktree"
+                    : (creating.base ?? "default branch")}
+                </span>
+              ) : null}
+            </text>
+            {creating.step === "base" ? (
+              creating.branches === null ? (
+                <text height={1} bg={SURFACE} fg={FAINT}>
+                  reading branches…
+                </text>
+              ) : (
+                <input
+                  focused
+                  value=""
+                  placeholder="type to filter (enter = highlighted; empty = default)"
+                  backgroundColor={SURFACE}
+                  focusedBackgroundColor={SURFACE}
+                  textColor={INK}
+                  focusedTextColor={INK}
+                  placeholderColor={FAINT}
+                  cursorColor={INK}
+                  flexGrow={1}
+                  onInput={(value: string) => {
+                    const clean = value.replace(/\t/g, "");
+                    setCreating((current) =>
+                      current === null ? current : { ...current, query: clean, baseIndex: 0 },
+                    );
+                  }}
+                  onSubmit={() => submitCreateBase()}
+                />
+              )
+            ) : null}
+          </box>
+          {Array.from({ length: 6 }, (_, index) => {
+            const branch =
+              creating.joins || creating.branches === null
+                ? undefined
+                : filterBranches(creating.branches, creating.query)[index];
+            const active = creating.step === "base";
+            if (branch === undefined) {
+              return (
+                <text key={`slot-${index}`} height={1} bg={SURFACE} fg={FAINT}>
+                  {index === 0 && active && creating.branches !== null
+                    ? "     no branch matches — enter uses the default"
+                    : " "}
+                </text>
+              );
+            }
+            const highlighted = active && index === creating.baseIndex;
+            return (
+              <box
+                key={branch.name}
+                height={1}
+                flexShrink={0}
+                backgroundColor={highlighted ? WASH : SURFACE}
+              >
+                <text height={1} bg={highlighted ? WASH : SURFACE}>
+                  <span fg={FAINT}>{"   "}</span>
+                  <Gutter selected={highlighted} />
+                  <span fg={active ? INK : FAINT}>{branch.name.slice(0, 40).padEnd(41)}</span>
+                  <span fg={FAINT}>{branch.sha.slice(0, 8).padEnd(10)}</span>
+                  <span fg={active ? MUTED : FAINT}>
+                    {timeAgo(branch.committedAt).replace(" ago", "").padEnd(6)}
+                  </span>
+                  {branch.isDefault ? <span fg={FAINT}>default</span> : null}
+                </text>
+              </box>
+            );
+          })}
+          <text height={1} bg={SURFACE}>
+            <Gutter selected={creating.step === "harness"} />
+            <span fg={FAINT}>{"harness"}</span>
+          </text>
+          {deriveHarnesses(null).map((item, index) => {
+            const active = creating.step === "harness";
+            const highlighted = active && index === creating.harnessIndex;
+            return (
+              <box
+                key={String(item.harness)}
+                height={1}
+                flexShrink={0}
+                backgroundColor={highlighted ? WASH : SURFACE}
+              >
+                <text height={1} bg={highlighted ? WASH : SURFACE}>
+                  <span fg={FAINT}>{"   "}</span>
+                  <Gutter selected={highlighted} />
+                  <span fg={active ? INK : FAINT}>{item.label.padEnd(12)}</span>
+                  <span fg={FAINT}>{active ? item.hint : ""}</span>
+                </text>
+              </box>
+            );
+          })}
+        </box>
       ) : null}
 
       <StatusLine busy={busy} busyStarted={busyStarted} status={status} />

@@ -456,3 +456,84 @@ export const removeWorktreeGroup = (
   });
   return { ...data, details };
 };
+
+// ─── the base picker ────────────────────────────────────────────────────────
+
+export interface BranchDto {
+  readonly name: string;
+  readonly sha: string;
+  readonly committedAt: string;
+  readonly isDefault: boolean;
+}
+
+/**
+ * Subsequence fuzzy score, fzf-flavored: every query character must appear in
+ * order; consecutive hits and segment starts (after `/`, `-`, `_`, `.`) score
+ * higher; earlier matches beat later ones. Null = no match. Case-insensitive.
+ */
+export const fuzzyScore = (query: string, candidate: string): number | null => {
+  if (query === "") return 0;
+  const q = query.toLowerCase();
+  const c = candidate.toLowerCase();
+  let score = 0;
+  let last = -1;
+  for (const char of q) {
+    const at = c.indexOf(char, last + 1);
+    if (at === -1) return null;
+    if (at === last + 1) score += 3;
+    else if (at === 0 || "/-_.".includes(c[at - 1] ?? "")) score += 2;
+    else score += 1;
+    score -= (at - last - 1) * 0.01;
+    last = at;
+  }
+  return score;
+};
+
+/**
+ * The picker's rows for one query: fuzzy-filtered, best score first, ties by
+ * most recent commit; an empty query lists everything, default branch on top.
+ */
+export const filterBranches = (
+  branches: ReadonlyArray<BranchDto>,
+  query: string,
+): ReadonlyArray<BranchDto> => {
+  const scored = branches.flatMap((branch) => {
+    const score = fuzzyScore(query, branch.name);
+    return score === null ? [] : [{ branch, score }];
+  });
+  return scored
+    .toSorted((a, b) => {
+      if (query === "" && a.branch.isDefault !== b.branch.isDefault) {
+        return a.branch.isDefault ? -1 : 1;
+      }
+      if (a.score !== b.score) return b.score - a.score;
+      return b.branch.committedAt.localeCompare(a.branch.committedAt);
+    })
+    .map((entry) => entry.branch);
+};
+
+/** The creation modal's state: one record, three visible steps. */
+export interface CreatingState {
+  readonly projectId: string;
+  readonly step: "name" | "base" | "harness";
+  readonly name: string;
+  /** Null while the fetch is in flight — it starts when the modal opens. */
+  readonly branches: ReadonlyArray<BranchDto> | null;
+  readonly query: string;
+  readonly baseIndex: number;
+  /** Chosen base (null = the default branch). */
+  readonly base: string | null;
+  /** The name joins an existing worktree — base is fixed, step skipped. */
+  readonly joins: boolean;
+  readonly harnessIndex: number;
+}
+
+/** Commit the base step: the highlighted branch (default branch = null base). */
+export const advanceFromBase = (current: CreatingState): CreatingState => {
+  const chosen = filterBranches(current.branches ?? [], current.query)[current.baseIndex];
+  return {
+    ...current,
+    base: chosen === undefined || chosen.isDefault ? null : chosen.name,
+    step: "harness",
+  };
+};

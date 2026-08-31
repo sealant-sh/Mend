@@ -131,10 +131,15 @@ export const sshCommandFor = (mode: GitAuthMode, privateKeyPath: string | null):
     // gets a chance to answer a host-key prompt on this machine.
     return "ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes";
   }
-  // Ambient: the login user's ssh setup unchanged — compose with an existing
+  // Ambient: the login user's ssh setup, composed with an existing
   // GIT_SSH_COMMAND rather than clobbering it (options-before-host is valid).
+  // accept-new matches the other modes for the same reason BatchMode does:
+  // a daemon has no terminal, so the owner can never answer a first-contact
+  // host-key prompt through Mend — a server with an empty known_hosts (a
+  // fresh pod) could otherwise never reach any remote. A CHANGED key still
+  // refuses.
   const base = process.env["GIT_SSH_COMMAND"] ?? "ssh";
-  return `${base} -o BatchMode=yes`;
+  return `${base} -o StrictHostKeyChecking=accept-new -o BatchMode=yes`;
 };
 
 /**
@@ -190,11 +195,9 @@ const FAILURE_PATTERNS: ReadonlyArray<FailurePattern> = [
   },
   {
     test: /Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED/i,
-    describe: (mode) =>
-      // mend-key and bridge run with accept-new, so only a CHANGED key fails.
-      mode === "ambient"
-        ? "The remote's SSH host key is not trusted (host key verification failed). Connect once from a shell to accept it, then retry."
-        : "The remote's SSH host key changed since it was first trusted. Verify the server, remove the old entry from known_hosts, then retry.",
+    // Every mode runs with accept-new, so only a CHANGED key can land here.
+    describe: () =>
+      "The remote's SSH host key changed since it was first trusted. Verify the server, remove the old entry from known_hosts, then retry.",
   },
   {
     test: /Could not resolve hostname ([^\s:]+)/i,

@@ -24,6 +24,11 @@ export const RULE = "#37374a";
 export const COBALT = "#6f96f5";
 /** The selection wash: a neutral lifted row — visible, not colorful. */
 export const WASH = "#2c2c35";
+/**
+ * The one exception to the no-painted-background rule: a floating modal
+ * must occlude the content beneath it, so it owns its ground.
+ */
+export const SURFACE = "#17171d";
 export const AMBER = "#e2ab42";
 export const GREEN = "#69c189";
 export const RED = "#e87f76";
