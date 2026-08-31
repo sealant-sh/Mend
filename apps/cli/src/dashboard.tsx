@@ -498,17 +498,25 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   const [editing, setEditing] = useState<SessionDto | null>(null);
   /** Session id a stop is armed against; the second press fires it. */
   const [stopArmed, setStopArmed] = useState<string | null>(null);
-  /** The new-session flow asks the worktree's name FIRST, then the base, then the harness. */
-  const [naming, setNaming] = useState<{ readonly projectId: string } | null>(null);
-  const [pendingName, setPendingName] = useState<string | null>(null);
-  /** The fuzzy base picker between naming and the harness; null when not open. */
-  const [basePicking, setBasePicking] = useState<{
+  /**
+   * The whole worktree creation is ONE modal: name, base (fuzzy over the
+   * project's branches), harness — every step visible, the active one
+   * expanded. Enter advances, esc steps back (cancels from the name).
+   */
+  const [creating, setCreating] = useState<{
     readonly projectId: string;
-    readonly branches: ReadonlyArray<BranchDto>;
+    readonly step: "name" | "base" | "harness";
+    readonly name: string;
+    /** Null while the fetch is in flight — it starts when the modal opens. */
+    readonly branches: ReadonlyArray<BranchDto> | null;
     readonly query: string;
-    readonly index: number;
+    readonly baseIndex: number;
+    /** Chosen base (null = the default branch). */
+    readonly base: string | null;
+    /** The name joins an existing worktree — base is fixed, step skipped. */
+    readonly joins: boolean;
+    readonly harnessIndex: number;
   } | null>(null);
-  const [pendingBase, setPendingBase] = useState<string | null>(null);
   const [reviewing, setReviewing] = useState<{
     readonly session: SessionDto;
     readonly changeId: string;
@@ -518,8 +526,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   const lockRef = useRef(false);
   /** Latest modal state for mutation callbacks — closures there go stale. */
   const modalRef = useRef(false);
-  modalRef.current =
-    editing !== null || reviewing !== null || picker !== null || basePicking !== null;
+  modalRef.current = editing !== null || reviewing !== null || picker !== null || creating !== null;
 
   const { width: terminalCols, height: terminalRows } = useTerminalDimensions();
   const showProjectsPane = terminalCols >= 72;
@@ -932,71 +939,72 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     say(`press again to stop · ${worktreeDisplayName(item.session)}`);
   };
 
-  const startSession = (projectId: string, harness: string): void => {
+  /** Open the creation modal; the branch list starts loading immediately. */
+  const openCreateModal = (projectId: string): void => {
+    setCreating({
+      projectId,
+      step: "name",
+      name: "",
+      branches: null,
+      query: "",
+      baseIndex: 0,
+      base: null,
+      joins: false,
+      harnessIndex: 0,
+    });
+    void ctx.api<ReadonlyArray<BranchDto>>("GET", `/projects/${projectId}/branches`).then(
+      (branches) =>
+        setCreating((current) => (current === null ? current : { ...current, branches })),
+      () =>
+        // An unreadable list falls back to the default base; the base step
+        // then shows only the default and enter moves on.
+        setCreating((current) => (current === null ? current : { ...current, branches: [] })),
+    );
+  };
+
+  /** Enter on the name: an existing name JOINS its worktree — base is fixed. */
+  const submitCreateName = (value: string): void => {
+    setCreating((current) => {
+      if (current === null) return current;
+      const slug = normalizeProjectName(value.trim());
+      const name = value.trim() === "" ? "" : slug;
+      const joins =
+        name !== "" &&
+        (workbench()?.details.get(current.projectId)?.worktrees ?? []).some(
+          (candidate) => candidate.name === name,
+        );
+      return { ...current, name, joins, base: null, step: joins ? "harness" : "base" };
+    });
+  };
+
+  /** Enter on the base: the highlighted branch (default branch = null base). */
+  const submitCreateBase = (): void => {
+    setCreating((current) => {
+      if (current === null) return current;
+      const chosen = filterBranches(current.branches ?? [], current.query)[current.baseIndex];
+      return {
+        ...current,
+        base: chosen === undefined || chosen.isDefault ? null : chosen.name,
+        step: "harness",
+      };
+    });
+  };
+
+  /** Enter on the harness: everything is chosen — launch. */
+  const submitCreateHarness = (): void => {
+    const current = creating;
+    if (current === null) return;
+    const choice = deriveHarnesses(null)[current.harnessIndex];
+    if (choice?.harness == null) return;
+    setCreating(null);
     setFocus("sessions");
     launchMutation.mutate({
-      projectId,
-      harness,
-      name: pendingName,
-      base: pendingBase,
+      projectId: current.projectId,
+      harness: choice.harness,
+      name: current.name === "" ? null : current.name,
+      base: current.base,
       pendingKey: pendingId(),
     });
-    setPendingName(null);
-    setPendingBase(null);
-  };
-
-  /** Name first, then the base, then the harness: the worktree is the identity being created. */
-  const submitWorktreeName = (value: string): void => {
-    setNaming(null);
-    const slug = normalizeProjectName(value.trim());
-    const name = value.trim() === "" ? null : slug;
-    setPendingName(name);
-    const projectId = selectedProject?.project.id;
-    // An existing name JOINS its worktree — the base is already fixed, so the
-    // picker would only offer a refusal. Straight to the harness.
-    const joins =
-      name !== null &&
-      projectId !== undefined &&
-      (workbench()?.details.get(projectId)?.worktrees ?? []).some(
-        (candidate) => candidate.name === name,
-      );
-    if (joins || projectId === undefined) {
-      setPendingBase(null);
-      openPicker(null);
-      return;
-    }
-    void openBasePicker(projectId);
-  };
-
-  const openBasePicker = async (projectId: string): Promise<void> => {
-    setBusy("reading branches ·");
-    setBusyStarted(Date.now());
-    try {
-      const branches = await ctx.api<ReadonlyArray<BranchDto>>(
-        "GET",
-        `/projects/${projectId}/branches`,
-      );
-      setBasePicking({ projectId, branches, query: "", index: 0 });
-    } catch (error) {
-      // The picker is a convenience; an unreadable branch list falls back to
-      // the default base rather than blocking the launch.
-      say(errorText(error));
-      setPendingBase(null);
-      openPicker(null);
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const submitBase = (): void => {
-    const current = basePicking;
-    if (current === null) return;
-    const chosen = filterBranches(current.branches, current.query)[current.index];
-    setBasePicking(null);
-    // The default branch is what a null base means server-side; sending the
-    // name would pin the same commit with extra words.
-    setPendingBase(chosen === undefined || chosen.isDefault ? null : chosen.name);
-    openPicker(null);
   };
 
   const resumeSession = (projectId: string, session: SessionDto, harness: string | null): void => {
@@ -1052,9 +1060,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
             pendingKey: pendingId(),
           });
         }
-      } else if (picker.session === null) {
-        if (choice.harness !== null) startSession(projectId, choice.harness);
-      } else {
+      } else if (picker.session !== null) {
         resumeSession(projectId, picker.session, choice.harness);
       }
       return;
@@ -1096,27 +1102,55 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       if (key.name === "escape") setEditing(null);
       return;
     }
-    if (naming !== null) {
-      if (key.name === "escape") setNaming(null);
-      return;
-    }
-    if (basePicking !== null) {
-      // The input owns the characters; the list owns the arrows. Enter lands
-      // through the input's submit so typed-but-unflushed text never races.
+    if (creating !== null) {
+      // Inputs own the characters (name text, base filter); this handler owns
+      // the arrows, esc (a step back; cancel from the name), and the harness
+      // step's enter. The name and base enters land through their input's
+      // submit so typed-but-unflushed text never races.
       if (key.name === "escape") {
-        setBasePicking(null);
-        setPendingName(null);
-        say("new worktree cancelled");
-      } else if (key.name === "down" || (key.ctrl === true && key.name === "n")) {
-        setBasePicking((current) => {
+        setCreating((current) => {
           if (current === null) return current;
-          const matches = filterBranches(current.branches, current.query).length;
-          return { ...current, index: Math.min(Math.max(0, matches - 1), current.index + 1) };
+          if (current.step === "harness") {
+            return { ...current, step: current.joins ? "name" : "base" };
+          }
+          if (current.step === "base") return { ...current, step: "name" };
+          say("new worktree cancelled");
+          return null;
         });
-      } else if (key.name === "up" || (key.ctrl === true && key.name === "p")) {
-        setBasePicking((current) =>
-          current === null ? current : { ...current, index: Math.max(0, current.index - 1) },
-        );
+        return;
+      }
+      const delta =
+        key.name === "down" || (key.ctrl === true && key.name === "n")
+          ? 1
+          : key.name === "up" || (key.ctrl === true && key.name === "p")
+            ? -1
+            : 0;
+      if (delta !== 0) {
+        setCreating((current) => {
+          if (current === null) return current;
+          if (current.step === "base") {
+            const matches = filterBranches(current.branches ?? [], current.query).length;
+            return {
+              ...current,
+              baseIndex: Math.max(0, Math.min(matches - 1, current.baseIndex + delta)),
+            };
+          }
+          if (current.step === "harness") {
+            const count = deriveHarnesses(null).length;
+            return {
+              ...current,
+              harnessIndex: Math.max(0, Math.min(count - 1, current.harnessIndex + delta)),
+            };
+          }
+          return current;
+        });
+        return;
+      }
+      if (
+        creating.step === "harness" &&
+        (key.name === "return" || key.name === "linefeed" || key.name === "l")
+      ) {
+        submitCreateHarness();
       }
       return;
     }
@@ -1173,8 +1207,8 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         if (showProjectsPane) setFocus(focus === "projects" ? "sessions" : "projects");
         return;
       case "n":
-        // The worktree's name comes first; the harness picker follows.
-        if (selectedProject !== null) setNaming({ projectId: selectedProject.project.id });
+        // The whole creation is one modal: name, base, harness.
+        if (selectedProject !== null) openCreateModal(selectedProject.project.id);
         return;
       case "s": {
         // A new conversation inside the selected worktree.
@@ -1252,15 +1286,17 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   const footerText =
     editing !== null
       ? " enter save · esc cancel"
-      : naming !== null
-        ? " enter continue — base and harness follow · esc cancel"
-        : basePicking !== null
-          ? " type to filter · ↑↓ move · enter choose base · esc cancel"
-          : picker !== null
-            ? " ↑↓ move · enter start · esc cancel"
-            : focus === "projects"
-              ? " ↑↓ move · enter/l sessions · ⇥ panes · r refresh · q quit"
-              : " ↑↓ move · enter attach/resume · n new worktree · s session here · x stop · ⇧D remove · v review · e rename · o web · q quit";
+      : creating !== null
+        ? creating.step === "name"
+          ? " enter continue · esc cancel"
+          : creating.step === "base"
+            ? " type to filter · ↑↓ move · enter choose base · esc back"
+            : " ↑↓ move · enter launch · esc back"
+        : picker !== null
+          ? " ↑↓ move · enter start · esc cancel"
+          : focus === "projects"
+            ? " ↑↓ move · enter/l sessions · ⇥ panes · r refresh · q quit"
+            : " ↑↓ move · enter attach/resume · n new worktree · s session here · x stop · ⇧D remove · v review · e rename · o web · q quit";
 
   const loadFailure =
     data === undefined && failureReason !== null
@@ -1377,86 +1413,134 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
             <HarnessRow key={String(item.harness)} item={item} selected={index === pickerIndex} />
           ))}
         </Pane>
-      ) : basePicking !== null ? (
+      ) : creating !== null ? (
         <Pane
-          title={` base — ${pendingName ?? "new worktree"} `}
+          title={` new worktree — ${selectedProject?.project.name ?? "project"} `}
           focused
           height={
             3 +
-            Math.min(8, Math.max(1, filterBranches(basePicking.branches, basePicking.query).length))
+            (creating.step === "base"
+              ? 1 +
+                Math.min(
+                  6,
+                  Math.max(1, filterBranches(creating.branches ?? [], creating.query).length),
+                )
+              : 1) +
+            (creating.step === "harness" ? deriveHarnesses(null).length : 1)
           }
         >
-          <input
-            focused
-            value=""
-            placeholder="type to filter branches (enter = highlighted, empty = default)"
-            backgroundColor="transparent"
-            focusedBackgroundColor="transparent"
-            textColor={INK}
-            focusedTextColor={INK}
-            placeholderColor={FAINT}
-            cursorColor={INK}
-            flexShrink={0}
-            onInput={(value: string) => {
-              setBasePicking((current) =>
-                current === null ? current : { ...current, query: value, index: 0 },
-              );
-            }}
-            onSubmit={() => submitBase()}
-          />
-          {filterBranches(basePicking.branches, basePicking.query)
-            .slice(0, 8)
-            .map((branch, index) => (
-              <box
-                key={branch.name}
-                height={1}
-                flexShrink={0}
-                backgroundColor={index === basePicking.index ? WASH : "transparent"}
-              >
-                <text height={1} bg="transparent">
-                  <Gutter selected={index === basePicking.index} />
-                  <span fg={INK}>{branch.name.slice(0, 44).padEnd(45)}</span>
-                  <span fg={FAINT}>{branch.sha.slice(0, 8).padEnd(10)}</span>
-                  <span fg={MUTED}>
-                    {timeAgo(branch.committedAt).replace(" ago", "").padEnd(6)}
-                  </span>
-                  {branch.isDefault ? <span fg={FAINT}>default</span> : null}
+          <box height={1} flexShrink={0} flexDirection="row" backgroundColor="transparent">
+            <text height={1} bg="transparent">
+              <Gutter selected={creating.step === "name"} />
+              <span fg={FAINT}>{"name     "}</span>
+              {creating.step !== "name" ? (
+                <span fg={INK}>{creating.name === "" ? "auto" : creating.name}</span>
+              ) : null}
+            </text>
+            {creating.step === "name" ? (
+              <input
+                focused
+                value={creating.name}
+                placeholder="e.g. fix-auth (empty = auto · an existing name joins it)"
+                backgroundColor="transparent"
+                focusedBackgroundColor="transparent"
+                textColor={INK}
+                focusedTextColor={INK}
+                placeholderColor={FAINT}
+                cursorColor={INK}
+                flexGrow={1}
+                onSubmit={(value: unknown) => {
+                  if (typeof value === "string") submitCreateName(value);
+                }}
+              />
+            ) : null}
+          </box>
+          <box height={1} flexShrink={0} flexDirection="row" backgroundColor="transparent">
+            <text height={1} bg="transparent">
+              <Gutter selected={creating.step === "base"} />
+              <span fg={FAINT}>{"base     "}</span>
+              {creating.step !== "base" ? (
+                <span fg={creating.step === "name" ? FAINT : INK}>
+                  {creating.joins
+                    ? "fixed by the existing worktree"
+                    : creating.step === "name"
+                      ? "—"
+                      : (creating.base ?? "default branch")}
+                </span>
+              ) : null}
+            </text>
+            {creating.step === "base" ? (
+              creating.branches === null ? (
+                <text height={1} bg="transparent" fg={FAINT}>
+                  reading branches…
                 </text>
-              </box>
-            ))}
-          {filterBranches(basePicking.branches, basePicking.query).length === 0 ? (
+              ) : (
+                <input
+                  focused
+                  value=""
+                  placeholder="type to filter (enter = highlighted; empty = default)"
+                  backgroundColor="transparent"
+                  focusedBackgroundColor="transparent"
+                  textColor={INK}
+                  focusedTextColor={INK}
+                  placeholderColor={FAINT}
+                  cursorColor={INK}
+                  flexGrow={1}
+                  onInput={(value: string) => {
+                    setCreating((current) =>
+                      current === null ? current : { ...current, query: value, baseIndex: 0 },
+                    );
+                  }}
+                  onSubmit={() => submitCreateBase()}
+                />
+              )
+            ) : null}
+          </box>
+          {creating.step === "base"
+            ? filterBranches(creating.branches ?? [], creating.query)
+                .slice(0, 6)
+                .map((branch, index) => (
+                  <box
+                    key={branch.name}
+                    height={1}
+                    flexShrink={0}
+                    backgroundColor={index === creating.baseIndex ? WASH : "transparent"}
+                  >
+                    <text height={1} bg="transparent">
+                      <span fg={FAINT}>{"   "}</span>
+                      <Gutter selected={index === creating.baseIndex} />
+                      <span fg={INK}>{branch.name.slice(0, 40).padEnd(41)}</span>
+                      <span fg={FAINT}>{branch.sha.slice(0, 8).padEnd(10)}</span>
+                      <span fg={MUTED}>
+                        {timeAgo(branch.committedAt).replace(" ago", "").padEnd(6)}
+                      </span>
+                      {branch.isDefault ? <span fg={FAINT}>default</span> : null}
+                    </text>
+                  </box>
+                ))
+            : null}
+          {creating.step === "base" &&
+          creating.branches !== null &&
+          filterBranches(creating.branches, creating.query).length === 0 ? (
             <text height={1} fg={FAINT} bg="transparent">
-              {"  no branch matches — esc cancels"}
+              {"     no branch matches — enter uses the default"}
             </text>
           ) : null}
+          {creating.step === "harness" ? (
+            deriveHarnesses(null).map((item, index) => (
+              <HarnessRow
+                key={String(item.harness)}
+                item={item}
+                selected={index === creating.harnessIndex}
+              />
+            ))
+          ) : (
+            <text height={1} bg="transparent">
+              <span>{"  "}</span>
+              <span fg={FAINT}>{"harness  —"}</span>
+            </text>
+          )}
         </Pane>
-      ) : naming !== null ? (
-        <box
-          border
-          borderStyle="rounded"
-          borderColor={COBALT}
-          title=" new worktree — name "
-          titleAlignment="left"
-          backgroundColor="transparent"
-          height={3}
-          flexShrink={0}
-        >
-          <input
-            focused
-            value=""
-            placeholder="name the worktree, e.g. fix-auth (empty = auto)"
-            backgroundColor="transparent"
-            focusedBackgroundColor="transparent"
-            textColor={INK}
-            focusedTextColor={INK}
-            placeholderColor={FAINT}
-            cursorColor={INK}
-            flexGrow={1}
-            onSubmit={(value: unknown) => {
-              if (typeof value === "string") submitWorktreeName(value);
-            }}
-          />
-        </box>
       ) : editing !== null ? (
         <box
           border
