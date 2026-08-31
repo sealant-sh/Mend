@@ -9,8 +9,6 @@ import {
 } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-import { reviewTargetForSession } from "./review-workflow.ts";
-import { ReviewScreen } from "./review.tsx";
 import {
   deriveHarnesses,
   deriveProjects,
@@ -36,6 +34,8 @@ import {
   type Workbench,
   type WorktreeGroup,
 } from "./dashboard-model.ts";
+import { reviewTargetForSession } from "./review-workflow.ts";
+import { ReviewScreen } from "./review.tsx";
 import {
   cwdFacts,
   HARNESS_COMMANDS,
@@ -46,7 +46,6 @@ import {
   pendingId,
 } from "./shared.ts";
 import { openUrl } from "./terminal.ts";
-
 import { COBALT, FAINT, INK, INK_2, MUTED, RED, RULE, WASH } from "./tui-theme.ts";
 
 // Near-mono on purpose: a status is a word, and only an observed failure
@@ -71,7 +70,6 @@ const timeAgo = (iso: string): string => {
   if (hours < 24) return `${hours}h ago`;
   return `${Math.floor(hours / 24)}d ago`;
 };
-
 
 import { createSseParser, eventFamilies, type InvalidateFamily } from "./workbench-events.ts";
 
@@ -108,8 +106,6 @@ export interface DashboardContext {
     processId?: string,
   ) => Promise<"detached" | "ended" | "dropped" | "interrupted" | "unavailable">;
 }
-
-
 
 // ─── panes and rows ─────────────────────────────────────────────────────────
 
@@ -178,8 +174,6 @@ const ProjectRow = ({
     </text>
   </box>
 );
-
-
 
 const ProcessLines = ({
   processes,
@@ -536,7 +530,8 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   const selectedProject = projectItems[projectIndex] ?? null;
   const worktreeGroups = deriveWorktrees(data, selectedProject?.project.id ?? null);
   const rows = deriveRows(worktreeGroups);
-  const rowIndexRaw = sessionKey === null ? -1 : rows.findIndex((row) => rowKeyOf(row) === sessionKey);
+  const rowIndexRaw =
+    sessionKey === null ? -1 : rows.findIndex((row) => rowKeyOf(row) === sessionKey);
   const rowIndex = rowIndexRaw === -1 ? 0 : rowIndexRaw;
   const selectedRow = rows[rowIndex] ?? null;
   const selectedGroup = selectedRow?.group ?? null;
@@ -817,7 +812,9 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       say(errorText(error));
     },
     onSuccess: async (session, vars) => {
-      patchWorkbench((current) => replaceSession(current, vars.projectId, vars.pendingKey, session));
+      patchWorkbench((current) =>
+        replaceSession(current, vars.projectId, vars.pendingKey, session),
+      );
       selectSession(session.id);
       setBusy(null);
       await attachIfIdle(session);
@@ -885,7 +882,9 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         return;
       }
       setStopArmed(`wt:${group.key}`);
-      say(`press again to stop ${live.length} live session${live.length === 1 ? "" : "s"} · ${group.name}`);
+      say(
+        `press again to stop ${live.length} live session${live.length === 1 ? "" : "s"} · ${group.name}`,
+      );
       return;
     }
     const item = selectedSession;
@@ -1246,7 +1245,11 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
                   selected={index === rowIndex}
                 />
               ) : (
-                <SessionChildRow key={rowKeyOf(row)} item={row.item} selected={index === rowIndex} />
+                <SessionChildRow
+                  key={rowKeyOf(row)}
+                  item={row.item}
+                  selected={index === rowIndex}
+                />
               ),
             )}
             {data !== undefined && rows.length === 0 ? (

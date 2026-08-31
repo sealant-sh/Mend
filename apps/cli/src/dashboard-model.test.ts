@@ -58,7 +58,10 @@ describe("deriveWorktrees", () => {
         session({ id: "c", worktreeId: "wt-2" }),
       ],
       annotations: [{ sessionId: "a", changeId: "chg-1", openComments: 2, pendingFollowUp: false }],
-      worktrees: [worktree({ id: "wt-1", name: "fix-auth" }), worktree({ id: "wt-2", name: "docs" })],
+      worktrees: [
+        worktree({ id: "wt-1", name: "fix-auth" }),
+        worktree({ id: "wt-2", name: "docs" }),
+      ],
     });
     const groups = deriveWorktrees(data, "proj-1");
     expect(groups.map((group) => [group.name, group.sessions.length, group.live])).toEqual([
@@ -120,7 +123,10 @@ describe("deriveRows", () => {
         session({ id: "c", worktreeId: "wt-2", status: "running" }),
       ],
       annotations: [],
-      worktrees: [worktree({ id: "wt-1", name: "fix-auth" }), worktree({ id: "wt-2", name: "docs" })],
+      worktrees: [
+        worktree({ id: "wt-1", name: "fix-auth" }),
+        worktree({ id: "wt-2", name: "docs" }),
+      ],
     });
     const rows = deriveRows(deriveWorktrees(data, "proj-1"));
     expect(rows.map(rowKeyOf)).toEqual(["wt:wt-1", "s:a", "s:b", "s:c"]);

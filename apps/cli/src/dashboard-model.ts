@@ -188,8 +188,11 @@ export const mapProjectSessions = (
   return { ...data, details };
 };
 
-export const prependSession = (data: Workbench, projectId: string, session: SessionDto): Workbench =>
-  mapProjectSessions(data, projectId, (sessions) => [session, ...sessions]);
+export const prependSession = (
+  data: Workbench,
+  projectId: string,
+  session: SessionDto,
+): Workbench => mapProjectSessions(data, projectId, (sessions) => [session, ...sessions]);
 
 export const replaceSession = (
   data: Workbench,
@@ -316,7 +319,7 @@ export const deriveWorktrees = (
     for (const session of sorted) groups.push(pseudoGroup(session, item));
   }
   return groups.toSorted((a, b) => {
-    if ((a.live > 0) !== (b.live > 0)) return a.live > 0 ? -1 : 1;
+    if (a.live > 0 !== b.live > 0) return a.live > 0 ? -1 : 1;
     const aNewest = a.sessions[0]?.session.createdAt ?? a.createdAt;
     const bNewest = b.sessions[0]?.session.createdAt ?? b.createdAt;
     return bNewest.localeCompare(aNewest);

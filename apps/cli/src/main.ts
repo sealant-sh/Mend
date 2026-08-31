@@ -3165,9 +3165,7 @@ const worktreesCommand = async (config: CliConfig, args: ReadonlyArray<string>) 
     return;
   }
   for (const worktree of payload.worktrees) {
-    const live = worktree.sessions.filter((session) =>
-      ACTIVE_STATUSES.has(session.status),
-    ).length;
+    const live = worktree.sessions.filter((session) => ACTIVE_STATUSES.has(session.status)).length;
     const facts: Array<string> = [
       `${worktree.sessions.length} session${worktree.sessions.length === 1 ? "" : "s"}`,
     ];

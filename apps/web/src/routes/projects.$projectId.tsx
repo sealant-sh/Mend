@@ -59,7 +59,7 @@ function ProjectPage() {
     };
   });
   const ordered = groups.toSorted((a, b) => {
-    if ((a.live > 0) !== (b.live > 0)) return a.live > 0 ? -1 : 1;
+    if (a.live > 0 !== b.live > 0) return a.live > 0 ? -1 : 1;
     const aAt = a.newest?.createdAt ?? a.worktree.createdAt;
     const bAt = b.newest?.createdAt ?? b.worktree.createdAt;
     return bAt.getTime() - aAt.getTime();
