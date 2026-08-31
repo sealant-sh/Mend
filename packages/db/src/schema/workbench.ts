@@ -80,6 +80,7 @@ import type {
   PassKind,
   PassStatus,
   DiffDigest,
+  ProtocolLaunchOptions,
   SessionExtraMount,
   ServiceBrowserScheme,
   ServiceDeclarationSource,
@@ -702,6 +703,8 @@ export const sessionProcesses = pgTable(
     kind: text().$type<SessionProcessKind>().notNull(),
     harness: text(),
     providerSessionId: text(),
+    /** agent-protocol rows: persisted adapter options a rehydrate or relaunch reopens with. */
+    protocolOptions: jsonb().$type<ProtocolLaunchOptions | null>(),
     /** Next pipe-output sequence after the last newline-boundary projection. */
     protocolOutputSeq: bigint({ mode: "bigint" }).notNull().default(0n),
     label: text(),

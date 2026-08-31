@@ -153,6 +153,7 @@ const recordAcceptedProcess = (
     kind: "agent-pty",
     harness: "codex",
     providerSessionId: null,
+    protocolOptions: null,
     label: "codex",
     argv: ["codex", instruction],
     status: "running",
@@ -405,6 +406,8 @@ const testLayer = (world: TestWorld) => {
     cancelOpenForTurn: () => Effect.void,
     cancelOpenForProcess: () => Effect.void,
     protocolCursor: () => Effect.succeed({ nextSequence: 0n }),
+    resetSendingResponses: () => Effect.void,
+    requeueQueuedTurns: () => Effect.void,
     saveProtocolCursor: () => Effect.void,
   });
 
@@ -527,6 +530,7 @@ const seedAcceptedProcess = (world: TestWorld, followUp: FollowUp) => {
     kind: "agent-pty",
     harness: "codex",
     providerSessionId: null,
+    protocolOptions: null,
     label: "codex",
     argv: ["codex", followUp.instruction],
     status: "running",
@@ -576,6 +580,7 @@ describe("FollowUpDelivery", () => {
       kind: "agent-protocol",
       harness: "codex",
       providerSessionId: "thread-1",
+      protocolOptions: null,
       label: "codex",
       argv: ["codex", "app-server"],
       status: "running",

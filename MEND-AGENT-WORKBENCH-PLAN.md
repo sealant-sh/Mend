@@ -1357,12 +1357,24 @@ understand the work.
   control plane later). Design: `docs/DEPLOYMENT-STRATEGIES.md`; the Sealant half is the cloudflare
   runtime adapter + bridge Worker series.
 
-- **2026-08-21: protocol process restart policy v1.** Protocol adapters own pending provider calls
-  in memory. On Mend boot, live `agent-protocol` rows are ended instead of reconstructing adapter
-  state from the Sealant journal. An explicit resume starts a fresh pipe process and uses the
-  harvested provider id (`thread/resume` or `claude --resume`). Provider-keyed item upserts preserve
-  item identity and sequence if native events replay. Adapter-state reconstruction remains later
-  work.
+- **2026-08-31: protocol process restart policy v2 — rehydrate in place.** The pipe process survives
+  a Mend restart (its stdio terminates at the platform daemon), so boot re-attaches a fresh adapter
+  to the surviving pipe on the SAME `session_processes` row and replays the recorded output from 0
+  to rebuild correlation state: claude's client-minted turn ids come back from the durable turn rows
+  as an ordered replay queue; codex skips the handshake, seeds the durable thread id, and
+  epoch-scopes new JSON-RPC ids so stale replayed responses can never resolve a new call. Requests
+  already resolved before the restart are skipped during replay; responses caught mid-delivery reset
+  `sending → failed`; a turn dispatched but never acknowledged fails honestly. Dispatch stays gated
+  until replay passes the probe-time high water. When the pipe is beyond reach the boot watcher
+  settles the row; when the adapter cannot rehydrate, the row ends and a fresh pipe relaunches by
+  provider id with queued turns following it. "Mend restarted" is no longer a session-failing
+  verdict.
+
+- **2026-08-21: protocol process restart policy v1 (superseded by v2 above).** Protocol adapters own
+  pending provider calls in memory. On Mend boot, live `agent-protocol` rows are ended instead of
+  reconstructing adapter state from the Sealant journal. An explicit resume starts a fresh pipe
+  process and uses the harvested provider id (`thread/resume` or `claude --resume`). Provider-keyed
+  item upserts preserve item identity and sequence if native events replay.
 
 - **2026-08-20: desktop shells belong to visible sessions; hidden benches are retired.** A writable
   supporting shell runs in the focused coding-agent session's current workspace and contributes to

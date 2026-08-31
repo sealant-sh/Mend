@@ -250,7 +250,10 @@ leases. Mend renews ordinary workspace expiry while a lease remains live; if ren
 shows the last successful renewal and known expiry.
 
 Leases persist and reconcile after a Mend restart. Mend reattaches to surviving processes rather
-than inventing replacements. When the last lease ends, Mend stops the workspace promptly.
+than inventing replacements — `agent-protocol` processes included since restart policy v2: the
+adapter rehydrates against the surviving pipe by replaying the recorded output, and only an
+unreachable pipe or a failed rehydrate ends the row (with a relaunch by provider id, not a failed
+session). When the last lease ends, Mend stops the workspace promptly.
 
 **Disconnection is not intent.** A closed browser, desktop app, dropped network, or detached CLI
 stops nothing. Stops are explicit. The one exception is declared intent: with the background

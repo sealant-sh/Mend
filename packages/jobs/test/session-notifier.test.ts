@@ -17,6 +17,7 @@ const agent = (patch: Partial<SessionProcess>) =>
     kind: "agent-pty",
     harness: "claude",
     providerSessionId: null,
+    protocolOptions: null,
     label: "claude",
     argv: ["claude"],
     status: "running",

@@ -152,7 +152,12 @@ export const ClaudeAdapter: AgentAdapter = {
       const pending = new Map<string, PendingControl>();
       const items = new Map<string, AgentEventItem>();
       const sessionId = options.providerSessionId ?? crypto.randomUUID();
-      let currentTurnId: string | null = null;
+      const rehydrate = options.rehydrate;
+      // Rehydrate correlation: claude turn ids are client-minted, so replayed
+      // output is attributed to the dispatched turns in order — each replayed
+      // `result` advances the queue exactly where sendTurn would have minted.
+      const replayQueue = rehydrate === undefined ? [] : [...rehydrate.replayProviderTurnIds];
+      let currentTurnId: string | null = replayQueue.shift() ?? null;
       // Anthropic streaming resets content-block indexes to 0 on every message_start, and one
       // turn holds many assistant messages (each tool round trip starts a new one). Item
       // identity therefore needs the message ordinal, and deltas need the id minted at
@@ -305,6 +310,11 @@ export const ClaudeAdapter: AgentAdapter = {
         const requestId = stringField(message, "request_id");
         const request = objectField(message, "request");
         if (requestId === null || request === null) return Effect.void;
+        // Replay of a request answered before the restart: the harness got its
+        // response long ago — re-opening (or re-answering it at close) is wrong.
+        if (rehydrate !== undefined && rehydrate.resolvedProviderRequestIds.has(requestId)) {
+          return Effect.void;
+        }
         const subtype = stringField(request, "subtype");
         if (subtype !== "can_use_tool") {
           return send(
@@ -352,7 +362,13 @@ export const ClaudeAdapter: AgentAdapter = {
             : subtype === "success"
               ? "completed"
               : "failed";
-        currentTurnId = null;
+        // Replay: advance to the next dispatched turn, replicating the resets
+        // sendTurn performed live so fallback item ids replay byte-identical.
+        currentTurnId = replayQueue.shift() ?? null;
+        if (currentTurnId !== null) {
+          messageOrdinal = 0;
+          blockIds.clear();
+        }
         return publish({
           _tag: "turn.completed",
           providerTurnId,

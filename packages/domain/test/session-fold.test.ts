@@ -17,6 +17,7 @@ const process = (kind: "agent-protocol" | "agent-pty" | "shell") =>
     kind,
     harness: kind === "shell" ? null : "codex",
     providerSessionId: null,
+    protocolOptions: null,
     label: kind,
     argv: ["command"],
     status: "running",

@@ -122,7 +122,11 @@ import {
   ingestNativeSession,
   type ConvertedNativeSession,
 } from "./native-convert.ts";
-import { ProtocolHost, type ProtocolHostNotLiveError } from "./protocol-host.ts";
+import {
+  ProtocolHost,
+  type ProtocolHostHooks,
+  type ProtocolHostNotLiveError,
+} from "./protocol-host.ts";
 import { mergeRecipes, readServiceRecipes } from "./recipes.ts";
 import { ServiceBindError, ServiceHost, validateServiceBindAddresses } from "./service-host.ts";
 import { SessionRepository } from "./session-repository.ts";
@@ -2978,6 +2982,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               (manifest !== null && manifest.harness === session.harness
                 ? manifest.providerSessionId
                 : (protocolProviderSessionId ?? protocolResumeId))),
+          protocolOptions:
+            protocolStart === null
+              ? null
+              : {
+                  model: protocolStart.model ?? null,
+                  effort: protocolStart.effort ?? null,
+                  permissionMode: protocolStart.permissionMode ?? "bypass",
+                },
           label: session.harness,
           argv: shapedArgv,
         });
@@ -2990,26 +3002,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               model: protocolStart.model,
               effort: protocolStart.effort,
               permissionMode: protocolStart.permissionMode ?? "bypass",
-              hooks: {
-                onRequestChanged: (changedSessionId) =>
-                  reconcileSession(changedSessionId, { sweep: false }).pipe(
-                    Effect.catchTag("SessionNotFoundError", () => Effect.void),
-                    Effect.asVoid,
-                  ),
-                onTurnCompleted: (turn) =>
-                  Effect.gen(function* () {
-                    const currentSession = yield* sessions.byId(turn.sessionId);
-                    const run =
-                      agentProcess.sealantRunId === null
-                        ? null
-                        : yield* sessionRuns.bySealantRunId(agentProcess.sealantRunId);
-                    yield* tryCheckpoint(currentSession, "turn-boundary", {
-                      sealantRunId: agentProcess.sealantRunId,
-                      sequence: run?.lastSeenSequence ?? 0n,
-                    });
-                    yield* refreshChangeHead(currentSession).pipe(Effect.ignore);
-                  }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void)),
-              },
+              hooks: protocolHooksFor(agentProcess),
             })
             .pipe(
               Effect.tapError((error) =>
@@ -3057,6 +3050,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
         }
         return yield* sessions.byId(sessionId);
+      });
+
+      /** The engine-side observations a protocol adapter reports back; both launch paths and rehydrate share them. */
+      const protocolHooksFor = (agentProcess: SessionProcess): ProtocolHostHooks => ({
+        onRequestChanged: (changedSessionId) =>
+          reconcileSession(changedSessionId, { sweep: false }).pipe(
+            Effect.catchTag("SessionNotFoundError", () => Effect.void),
+            Effect.asVoid,
+          ),
+        onTurnCompleted: (turn) =>
+          Effect.gen(function* () {
+            const currentSession = yield* sessions.byId(turn.sessionId);
+            const run =
+              agentProcess.sealantRunId === null
+                ? null
+                : yield* sessionRuns.bySealantRunId(agentProcess.sealantRunId);
+            yield* tryCheckpoint(currentSession, "turn-boundary", {
+              sealantRunId: agentProcess.sealantRunId,
+              sequence: run?.lastSeenSequence ?? 0n,
+            });
+            yield* refreshChangeHead(currentSession).pipe(Effect.ignore);
+          }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void)),
       });
 
       const launchProtocol = Effect.fn("SessionEngine.launchProtocol")(function* (
@@ -3305,6 +3320,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             providerSessionId: interactiveShell
               ? null
               : (nativeImport?.providerSessionId ?? protocolProviderSessionId ?? providerSessionId),
+            protocolOptions:
+              protocolStart === null
+                ? null
+                : {
+                    model: protocolStart.model ?? null,
+                    effort: protocolStart.effort ?? null,
+                    permissionMode: protocolStart.permissionMode ?? "bypass",
+                  },
             label: session.harness,
             argv: shapedArgv,
           });
@@ -3317,26 +3340,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 model: protocolStart.model,
                 effort: protocolStart.effort,
                 permissionMode: protocolStart.permissionMode ?? "bypass",
-                hooks: {
-                  onRequestChanged: (changedSessionId) =>
-                    reconcileSession(changedSessionId, { sweep: false }).pipe(
-                      Effect.catchTag("SessionNotFoundError", () => Effect.void),
-                      Effect.asVoid,
-                    ),
-                  onTurnCompleted: (turn) =>
-                    Effect.gen(function* () {
-                      const currentSession = yield* sessions.byId(turn.sessionId);
-                      const run =
-                        agentProcess.sealantRunId === null
-                          ? null
-                          : yield* sessionRuns.bySealantRunId(agentProcess.sealantRunId);
-                      yield* tryCheckpoint(currentSession, "turn-boundary", {
-                        sealantRunId: agentProcess.sealantRunId,
-                        sequence: run?.lastSeenSequence ?? 0n,
-                      });
-                      yield* refreshChangeHead(currentSession).pipe(Effect.ignore);
-                    }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void)),
-                },
+                hooks: protocolHooksFor(agentProcess),
               })
               .pipe(
                 Effect.tapError((error) =>
@@ -4828,28 +4832,146 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
       });
 
+      /**
+       * Restart policy v2: the pipe process survives a Mend restart (its stdio
+       * terminates at the platform daemon, not at us), so re-attach a fresh
+       * adapter to the surviving pipe and let it rebuild correlation state
+       * from the durable record plus a full replay. When the pipe is beyond
+       * reach or the adapter cannot start, end the row honestly and relaunch
+       * by provider id instead of failing the session for our own restart.
+       */
+      const rehydrateProtocolProcess = Effect.fn("SessionEngine.rehydrateProtocolProcess")(
+        function* (protocolProcess: SessionProcess) {
+          if (protocolProcess.sealantSessionId === null) return;
+          const probed = yield* sealant.getWorkspace(protocolProcess.sealantWorkspaceId).pipe(
+            Effect.flatMap((workspace) =>
+              sealant.getSession(workspace, protocolProcess.sealantSessionId ?? ""),
+            ),
+            Effect.flatMap((pipe) =>
+              Effect.tryPromise({
+                try: async () => ({ pipe, status: await pipe.status() }),
+                catch: (cause) =>
+                  new SealantPlatformError({
+                    code: "session_status_failed",
+                    status: null,
+                    message: `protocol pipe status failed: ${String(cause)}`,
+                    cause,
+                  }),
+              }),
+            ),
+            Effect.option,
+          );
+          if (probed._tag === "None") {
+            // Workspace or pipe beyond reach — the boot watcher records the
+            // end (and the sweep releases the lease); nothing to rehydrate.
+            return;
+          }
+          const { pipe, status } = probed.value;
+          const options = protocolProcess.protocolOptions;
+          yield* protocolHost
+            .rehydrate({
+              process: protocolProcess,
+              pipe,
+              cwd: "/workspace/repo",
+              model: options?.model ?? undefined,
+              effort: options?.effort ?? undefined,
+              permissionMode: options?.permissionMode ?? "bypass",
+              hooks: protocolHooksFor(protocolProcess),
+              highWater: status.outputHighWater,
+            })
+            .pipe(
+              Effect.tapError(() => relaunchProtocolProcess(protocolProcess).pipe(Effect.ignore)),
+            );
+          if (yield* protocolHost.has(protocolProcess.id)) {
+            yield* renewWorkspaceLease(
+              protocolProcess.sessionId,
+              protocolProcess.sealantWorkspaceId,
+            ).pipe(Effect.ignore);
+            yield* Effect.logInfo("session engine: protocol process rehydrated").pipe(
+              Effect.annotateLogs({
+                processId: protocolProcess.id,
+                sessionId: protocolProcess.sessionId,
+              }),
+            );
+          }
+        },
+      );
+
+      /**
+       * Rehydrate fallback: end the unrecoverable row (queued turns move to
+       * the replacement before the cancel sweep) and start a fresh pipe that
+       * resumes by provider id. Only a failed relaunch leaves the session
+       * settled — and then with the relaunch's own error, not ours.
+       */
+      const relaunchProtocolProcess = Effect.fn("SessionEngine.relaunchProtocolProcess")(function* (
+        protocolProcess: SessionProcess,
+      ) {
+        yield* protocolHost.detach(protocolProcess.id);
+        if (protocolProcess.sealantSessionId !== null) {
+          yield* closeProcessPty(
+            protocolProcess.sealantWorkspaceId,
+            protocolProcess.sealantSessionId,
+          ).pipe(Effect.ignore, owned(protocolProcess.sessionId));
+        }
+        const recorded = yield* endAgentProcess(protocolProcess, {
+          how: "exited",
+          exitCode: null,
+          outcome: "stopped",
+          summary: "Rehydrate failed after a Mend restart — relaunched by provider id.",
+        }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(false)));
+        const options = protocolProcess.protocolOptions;
+        const relaunched = yield* launchProtocol(
+          protocolProcess.sessionId,
+          {
+            mode: "protocol",
+            model: options?.model ?? undefined,
+            effort: options?.effort ?? undefined,
+            permissionMode: options?.permissionMode ?? "bypass",
+          },
+          null,
+        ).pipe(Effect.result);
+        if (relaunched._tag === "Success") {
+          // The replacement exists: still-queued turns follow it, then the
+          // cancel sweep closes what remains open on the dead row (the
+          // running turn, pending approvals).
+          const rows = yield* processes.listForSession(protocolProcess.sessionId);
+          const replacement = rows.findLast(
+            (row) => row.kind === "agent-protocol" && row.exitedAt === null,
+          );
+          if (replacement !== undefined) {
+            yield* conversations.requeueQueuedTurns(protocolProcess.id, replacement.id);
+          }
+        }
+        yield* conversations.cancelOpenForProcess(protocolProcess.id);
+        if (relaunched._tag === "Failure") {
+          yield* Effect.logError("session engine: protocol relaunch after rehydrate failed").pipe(
+            Effect.annotateLogs({
+              processId: protocolProcess.id,
+              sessionId: protocolProcess.sessionId,
+              error: String(relaunched.failure),
+            }),
+          );
+        }
+        if (recorded) yield* finishAgentProcess(protocolProcess, "turn-boundary");
+      });
+
       /** Re-attach to sessions that were live when the last process died. */
       const resume = Effect.fn("SessionEngine.resume")(function* () {
-        // Restart policy v1: adapter state is process-local. End live protocol rows on boot;
-        // an explicit session resume starts a fresh pipe process and resumes by provider id.
+        // Restart policy v2: surviving protocol pipes are rehydrated in place —
+        // a Mend restart is never, by itself, the end of a protocol session.
         for (const protocolProcess of (yield* processes.listLive()).filter(
           (process) => process.kind === "agent-protocol",
         )) {
-          yield* protocolHost.detach(protocolProcess.id);
-          yield* conversations.cancelOpenForProcess(protocolProcess.id);
-          if (protocolProcess.sealantSessionId !== null) {
-            yield* closeProcessPty(
-              protocolProcess.sealantWorkspaceId,
-              protocolProcess.sealantSessionId,
-            ).pipe(Effect.ignore, owned(protocolProcess.sessionId));
-          }
-          const recorded = yield* endAgentProcess(protocolProcess, {
-            how: "exited",
-            exitCode: null,
-            outcome: "failed",
-            summary: "Mend restarted before the protocol process settled.",
-          }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(false)));
-          if (recorded) yield* finishAgentProcess(protocolProcess, "turn-boundary");
+          yield* rehydrateProtocolProcess(protocolProcess).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logError("session engine: protocol rehydrate failed").pipe(
+                Effect.annotateLogs({
+                  processId: protocolProcess.id,
+                  cause: String(cause),
+                }),
+              ),
+            ),
+          );
         }
         const activeRuns = yield* sessionRuns.listActive();
         const reattached = new Set<string>();
@@ -4872,10 +4994,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // Processes that were live when the last process died: their PTYs
         // kept running (a detached client is not intent to stop), so watch
         // them again — the watcher itself records the end if the workspace is
-        // gone.
-        const liveProcesses = (yield* processes.listLive()).filter(
-          (process) => process.kind !== "agent-protocol",
-        );
+        // gone. Rehydrated protocol rows join the same watch; a relaunched-away
+        // row already reads exited and drops out of this list on its own.
+        const liveProcesses = yield* processes.listLive();
         const sessionsWithLiveProcesses = new Set(
           liveProcesses.map((liveProcess) => liveProcess.sessionId),
         );

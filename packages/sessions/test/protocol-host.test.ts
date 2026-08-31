@@ -23,6 +23,7 @@ const agentProcess = new SessionProcess({
   kind: "agent-protocol",
   harness: "codex",
   providerSessionId: null,
+  protocolOptions: null,
   label: "codex",
   argv: ["codex", "app-server"],
   status: "running",
@@ -112,6 +113,8 @@ const makeConversationWorld = () => {
       }),
     cancelOpenForProcess: () => Effect.void,
     protocolCursor: () => Effect.succeed({ nextSequence: 0n }),
+    resetSendingResponses: () => Effect.void,
+    requeueQueuedTurns: () => Effect.void,
     saveProtocolCursor: () => Effect.void,
   });
   return { layer, turns, seed };
@@ -228,6 +231,10 @@ const makePipe = (turnScript: Array<{ error: string } | string>) => {
           }
           await new Promise<void>((resolve) => {
             notify = resolve;
+            // A push that landed between the empty shift and this arm must not
+            // sleep forever — with one exchange in flight there is no later
+            // push to recover the lost wakeup.
+            if (pending.length > 0) resolve();
             signal?.addEventListener("abort", () => resolve(), { once: true });
           });
           notify = null;
@@ -285,6 +292,57 @@ describe("ProtocolHost", () => {
       expect(completed).toEqual([first.id]);
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });
+
+  // Live clock: the rehydrate gate watcher sleeps between catch-up polls.
+  it.live(
+    "rehydrates a surviving pipe: orphans fail, the gate opens, queued turns dispatch",
+    () => {
+      const world = makeConversationWorld();
+      const done = world.seed("earlier");
+      world.turns.set(
+        done.id,
+        new AgentTurn({ ...done, status: "completed", providerTurnId: "turn-a" }),
+      );
+      const orphan = world.seed("orphan");
+      world.turns.set(orphan.id, new AgentTurn({ ...orphan, status: "running" }));
+      const queued = world.seed("queued");
+      const { pipe } = makePipe(["turn-b"]);
+      const completed: string[] = [];
+      return Effect.gen(function* () {
+        const host = yield* ProtocolHost;
+        const input = {
+          // Rehydrate addresses the surviving thread by its durable id.
+          process: new SessionProcess({ ...agentProcess, providerSessionId: "thread-1" }),
+          pipe,
+          cwd: "/workspace/repo",
+          permissionMode: "bypass" as const,
+          hooks: {
+            onRequestChanged: () => Effect.void,
+            onTurnCompleted: (turn: AgentTurn) => Effect.sync(() => void completed.push(turn.id)),
+          },
+          highWater: 0n,
+        };
+        yield* host.rehydrate(input);
+        // A turn dispatched but never acknowledged cannot be correlated with the
+        // replay — failed honestly, and the completion hook heard about it.
+        expect(world.turns.get(orphan.id)?.status).toBe("failed");
+        expect(world.turns.get(orphan.id)?.error).toContain(
+          "restarted before the turn was acknowledged",
+        );
+        expect(completed).toEqual([orphan.id]);
+        // Replay is already at the high water (nothing recorded): the gate opens
+        // and the queued turn reaches the surviving harness.
+        yield* waitUntil(() => world.turns.get(queued.id)?.providerTurnId === "turn-b");
+        expect(world.turns.get(queued.id)?.status).toBe("running");
+        // A second rehydrate of a hosted process is a no-op.
+        yield* host.rehydrate(input);
+        expect(yield* host.has(processId)).toBe(true);
+        // Release the pipe generator before scope close: the live-clock teardown
+        // otherwise waits on its never-resolving next().
+        yield* host.detach(processId);
+      }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+    },
+  );
 
   it.effect("interrupts only the turn it was asked to interrupt", () => {
     const world = makeConversationWorld();

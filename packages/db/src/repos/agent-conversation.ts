@@ -160,6 +160,13 @@ export class AgentConversationRepo extends Context.Service<
     ) => Effect.Effect<void>;
     readonly cancelOpenForTurn: (turnId: AgentTurnId) => Effect.Effect<void>;
     readonly cancelOpenForProcess: (processId: SessionProcessId) => Effect.Effect<void>;
+    /** Crash recovery: a response caught mid-delivery reads `sending` forever; make it answerable again. */
+    readonly resetSendingResponses: (processId: SessionProcessId) => Effect.Effect<void>;
+    /** Relaunch fallback: move still-queued turns onto the replacement process so dispatch finds them. */
+    readonly requeueQueuedTurns: (
+      from: SessionProcessId,
+      to: SessionProcessId,
+    ) => Effect.Effect<void>;
     readonly protocolCursor: (processId: SessionProcessId) => Effect.Effect<AgentProtocolCursor>;
     readonly saveProtocolCursor: (
       processId: SessionProcessId,
@@ -792,6 +799,39 @@ export const AgentConversationRepoLive: Layer.Layer<
       if (first !== undefined) yield* notify(first.sessionId);
     });
 
+    const resetSendingResponses = Effect.fn("AgentConversationRepo.resetSendingResponses")(
+      function* (processId: SessionProcessId) {
+        const rows = yield* db
+          .update(agentRequests)
+          .set({ responseDelivery: "failed" })
+          .where(
+            and(
+              eq(agentRequests.processId, processId),
+              eq(agentRequests.status, "pending"),
+              eq(agentRequests.responseDelivery, "sending"),
+            ),
+          )
+          .returning({ sessionId: agentRequests.sessionId })
+          .pipe(Effect.orDie);
+        const first = rows[0];
+        if (first !== undefined) yield* notify(first.sessionId);
+      },
+    );
+
+    const requeueQueuedTurns = Effect.fn("AgentConversationRepo.requeueQueuedTurns")(function* (
+      from: SessionProcessId,
+      to: SessionProcessId,
+    ) {
+      const rows = yield* db
+        .update(agentTurns)
+        .set({ processId: to })
+        .where(and(eq(agentTurns.processId, from), eq(agentTurns.status, "queued")))
+        .returning({ sessionId: agentTurns.sessionId })
+        .pipe(Effect.orDie);
+      const first = rows[0];
+      if (first !== undefined) yield* notify(first.sessionId);
+    });
+
     const protocolCursor = Effect.fn("AgentConversationRepo.protocolCursor")(function* (
       processId: SessionProcessId,
     ) {
@@ -851,6 +891,8 @@ export const AgentConversationRepoLive: Layer.Layer<
       resolveProviderRequest,
       cancelOpenForTurn,
       cancelOpenForProcess,
+      resetSendingResponses,
+      requeueQueuedTurns,
       protocolCursor,
       saveProtocolCursor,
     };

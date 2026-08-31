@@ -1244,6 +1244,11 @@ const backgroundSessionsChoice = Effect.gen(function* () {
   yield* sql`ALTER TABLE projects ADD COLUMN background_sessions text NOT NULL DEFAULT 'inherit'`;
 });
 
+const protocolOptionsColumn = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE session_processes ADD COLUMN protocol_options jsonb`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -1289,4 +1294,5 @@ export const migrations = {
   "0041_cli_auth_requests": cliAuthRequestsMigration,
   "0042_session_base_ref": sessionBaseRef,
   "0043_background_sessions": backgroundSessionsChoice,
+  "0044_protocol_options": protocolOptionsColumn,
 };
