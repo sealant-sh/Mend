@@ -1,8 +1,8 @@
 ---
 title: Mend documentation
 description:
-  Run coding-agent sessions in per-session git worktrees on a machine you host, and work with them
-  from any of your devices.
+  Run coding-agent sessions in durable git worktrees on a machine you host, and work with them from
+  any of your devices.
 ---
 
 ## Introduction
@@ -12,10 +12,11 @@ devices. It co-locates the agents, their git worktrees, and the project context 
 machine you control, and keeps working there feeling like local development from whichever device
 you pick up: the terminal on your laptop, a browser, the desktop app, your phone.
 
-Mend adopts repositories into one central store, gives every session its own git worktree, and runs
-your existing agent inside a managed workspace over that worktree. Every workspace boots `sealantd`,
-the Sealant supervisor that runs as PID 1 in the container: it starts the agent and any shells or
-Services, records what they do, and serves the control channel Mend drives through the Sealant SDK.
+Mend adopts repositories into one central store, gives work a durable named worktree — several agent
+conversations can share one — and runs your existing agent inside a managed workspace over that
+worktree. Every workspace boots `sealantd`, the Sealant supervisor that runs as PID 1 in the
+container: it starts the agent and any shells or Services, records what they do, and serves the
+control channel Mend drives through the Sealant SDK.
 
 Sessions live on the Mend machine, not in your terminal, so a terminal is just one client. Start
 Codex or Claude Code from the CLI and close the laptop. The agent keeps running next to its
@@ -46,13 +47,14 @@ flowchart TB
   mend --> store
   mend --> workspace
   setup --> workspace
-  store -->|mount session worktree| workspace
+  store -->|mount worktree| workspace
   workspace --> records
 ```
 
 ## What Mend puts in one place
 
-- Repositories adopted into a Mend-owned store, with a separate Git worktree for every session.
+- Repositories adopted into a Mend-owned store, with durable named Git worktrees — one change and
+  review each, shared by every session inside.
 - Codex, Claude Code, OpenCode, and arbitrary interactive commands launched through one session
   model.
 - Workspace images, packages, setup commands, environment variables, secrets, mounts, references,
@@ -87,7 +89,7 @@ sequenceDiagram
   participant Agent
 
   You->>Mend: mend codex
-  Mend->>Store: create a session worktree
+  Mend->>Store: create or join the named worktree
   Mend->>Workspace: apply image, env, mounts, accounts, and dotfiles
   Workspace->>Agent: start Codex in the worktree
   Agent-->>You: live PTY
@@ -150,7 +152,7 @@ mend adopt
 mend codex
 ```
 
-Adoption creates the central bare repository. Starting the session creates its worktree and
+Adoption creates the central bare repository. Starting the session creates or joins a worktree and
 workspace, then attaches your terminal to the agent. Read
 [Adopt a project](/getting-started/adopt-project/) and
 [Start a session](/getting-started/first-session/) for the complete path.

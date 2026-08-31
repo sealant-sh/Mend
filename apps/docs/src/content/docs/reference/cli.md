@@ -48,15 +48,20 @@ Agent options:
 | ---------------------------------------- | -------------------------------------------------------------------- |
 | `--model <id>`                           | Pass a model selection to a supported harness                        |
 | `--effort low\|medium\|high\|xhigh\|max` | Pass the reasoning effort                                            |
-| `--base <ref>`                           | Create the session from another Git base                             |
+| `--base <ref>`                           | Create the worktree from another Git base                            |
+| `--name <worktree>`                      | Name the worktree; an existing name joins it as a new session        |
+| `--worktree <name>`                      | Join an existing worktree only — fails naming candidates when absent |
 | `--ask`                                  | Restore the harness's permission prompts                             |
 | `--fast`                                 | Request the Codex priority service tier                              |
 | `--detach`, `-d`                         | Launch without attaching; reattach anywhere with `mend attach`       |
 | `--foreground`                           | Stop the session when this CLI exits (the detach key still detaches) |
 | `--project <name>`                       | Select an adopted project instead of matching the current directory  |
 
-A quoted prompt becomes the first message and supplies the initial session name. The CLI creates the
-session worktree, waits for the workspace and process, then attaches the current terminal.
+A quoted prompt becomes the first message and supplies the initial session name. Interactive
+launches ask for the worktree's name first (enter accepts an automatic one); `--name` answers it up
+front. The CLI creates or joins the worktree, says so when a name joins an existing one, waits for
+the workspace and process, then attaches the current terminal. Requesting a `--base` that differs
+from an existing worktree's base is refused rather than silently re-basing it.
 
 ### Background sessions
 
@@ -79,7 +84,8 @@ options. OpenCode currently uses only the prompt; the other harness flags are ac
 
 | Command                                                     | Purpose                                                        |
 | ----------------------------------------------------------- | -------------------------------------------------------------- |
-| `mend` or `mend ui`                                         | Open the terminal dashboard of projects and sessions           |
+| `mend` or `mend ui`                                         | Open the terminal dashboard of projects and worktrees          |
+| `mend worktrees [--project <name>] [--json]`                | List worktrees and the sessions inside them                    |
 | `mend sessions [--all] [--project <name>] [--json]`         | List active sessions, or include settled sessions with `--all` |
 | `mend status`                                               | Alias for the active-session list                              |
 | `mend attach <session-id-prefix>`                           | Reattach to a running agent PTY                                |
@@ -92,8 +98,32 @@ options. OpenCode currently uses only the prompt; the other harness flags are ac
 When no session ID is given, commands narrow candidates by the current project and then use an
 interactive picker when needed.
 
-`mend sessions --json` is the stable automation output. Human-readable rows may change as the
-interface improves.
+`mend sessions --json` is the stable automation output (`"version": 1`, flat sessions) and does not
+change shape. `mend sessions --json=v2` and `mend worktrees --json` emit the worktree-grouped
+envelope (`"version": 2`); against an older server every session appears as its own worktree with
+`"id": null`, so the shape is stable either way. Human-readable rows may change as the interface
+improves.
+
+Deleting a session removes only the conversation record; the worktree — with its change and
+checkpoints — remains. Removing a worktree is its own explicit act (dashboard `Shift+D`, or the
+API): refused while any session is live, and refused while an unreviewed change stands unless
+forced.
+
+## Dashboard keys
+
+The dashboard groups sessions by worktree: a worktree with one session stays a single row, and a
+shared worktree shows a header with its conversations underneath.
+
+| Key             | On a session row                                      | On a worktree header                       |
+| --------------- | ----------------------------------------------------- | ------------------------------------------ |
+| `Enter`         | Attach, or resume when settled                        | Attach the newest live session, else start |
+| `n`             | New worktree (name asked first)                       | Same                                       |
+| `s`             | New session in this worktree                          | Same                                       |
+| `x` / `Shift+K` | Stop the session (press twice)                        | Stop every live session (press twice)      |
+| `Shift+D`       | Remove the worktree (press twice; refused while live) | Same                                       |
+| `v`             | Review the worktree's change                          | Same                                       |
+| `e`             | Rename the session label                              | —                                          |
+| `o`             | Open in the browser                                   | —                                          |
 
 ## Terminal attachment
 

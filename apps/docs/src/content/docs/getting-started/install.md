@@ -42,7 +42,7 @@ You need:
 - Docker with a running daemon;
 - Docker Compose 2.23.1 or newer;
 - Git and `curl`;
-- enough disk for adopted repositories, session worktrees, workspace images, and databases;
+- enough disk for adopted repositories, worktrees, workspace images, and databases;
 - a private network you trust if another device will reach the server.
 
 macOS support is not tested. The installer stops on macOS unless you set `MEND_ALLOW_MACOS=1`.

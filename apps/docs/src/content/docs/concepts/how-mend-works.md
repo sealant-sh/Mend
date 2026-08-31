@@ -56,14 +56,16 @@ Adopting a repository creates a Mend-owned copy in the central store:
 
 ```text
 <store>/<project>/repo.git       bare repository
-<store>/<project>/worktrees/...  one worktree per session
+<store>/<project>/worktrees/...  one directory per worktree
 ```
 
 Mend never runs an agent against an existing checkout that it does not own. Your previous checkout
 remains a peer. Exchange commits through Git when you want work to move between them.
 
-The bare repository is shared by the project's session worktrees. Each session writes to its own
-worktree, so two agents can work at the same time without sharing a working directory.
+The bare repository is shared by the project's worktrees. A worktree is a durable named place — its
+own checkout on its own branch — and sessions are conversations inside it. Two worktrees never share
+a working directory, so unrelated work runs side by side; two sessions in the same worktree
+deliberately do share one, which is how a second agent joins work already in progress.
 
 ## Starting a session
 
@@ -79,7 +81,7 @@ sequenceDiagram
   participant Agent as Agent process
 
   You->>Mend: start session
-  Mend->>Store: create session worktree
+  Mend->>Store: create or join the named worktree
   Mend->>Mend: resolve image, env, secrets, mounts, accounts, and dotfiles
   Mend->>Sealant: create workspace over the worktree
   Sealant->>WS: mount worktree and selected folders
@@ -100,24 +102,26 @@ lifetime.
 
 ```mermaid
 flowchart TD
-  session[Session]
-  worktree[Git worktree]
+  worktree[Worktree]
+  session[Sessions]
   processes[Agent, shell, and Service processes]
   record[Durable process records]
   change[Worktree compared with base]
   clients[CLI, web, desktop, and phone attachments]
 
-  session --> worktree
+  worktree --> session
+  worktree --> change
   session --> processes
   processes --> record
-  worktree --> change
   clients -. attach and detach .-> processes
   clients -. read .-> record
 ```
 
-The session is the worktree plus its record. Agent processes can stop and resume over the life of a
-session. Supporting shells and Services use the same workspace and can keep it alive after an agent
-settles.
+The worktree is the durable place; a session is one conversation against it plus its record. A
+worktree holds many sessions over its life — several can be live at once — and it survives every one
+of them: deleting a session leaves the worktree, its change, and its checkpoints standing. Agent
+processes can stop and resume over the life of a session. Supporting shells and Services use the
+same workspace and can keep it alive after an agent settles.
 
 ## Where uncommitted files live
 
