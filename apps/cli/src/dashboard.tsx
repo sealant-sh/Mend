@@ -12,8 +12,10 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   deriveHarnesses,
   deriveProjects,
+  type BranchDto,
   deriveRows,
   deriveWorktrees,
+  filterBranches,
   foldGroupStatus,
   labelIsIdentity,
   rowKeyOf,
@@ -496,9 +498,17 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   const [editing, setEditing] = useState<SessionDto | null>(null);
   /** Session id a stop is armed against; the second press fires it. */
   const [stopArmed, setStopArmed] = useState<string | null>(null);
-  /** The new-session flow asks the worktree's name FIRST, then the harness. */
+  /** The new-session flow asks the worktree's name FIRST, then the base, then the harness. */
   const [naming, setNaming] = useState<{ readonly projectId: string } | null>(null);
   const [pendingName, setPendingName] = useState<string | null>(null);
+  /** The fuzzy base picker between naming and the harness; null when not open. */
+  const [basePicking, setBasePicking] = useState<{
+    readonly projectId: string;
+    readonly branches: ReadonlyArray<BranchDto>;
+    readonly query: string;
+    readonly index: number;
+  } | null>(null);
+  const [pendingBase, setPendingBase] = useState<string | null>(null);
   const [reviewing, setReviewing] = useState<{
     readonly session: SessionDto;
     readonly changeId: string;
@@ -508,7 +518,8 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   const lockRef = useRef(false);
   /** Latest modal state for mutation callbacks — closures there go stale. */
   const modalRef = useRef(false);
-  modalRef.current = editing !== null || reviewing !== null || picker !== null;
+  modalRef.current =
+    editing !== null || reviewing !== null || picker !== null || basePicking !== null;
 
   const { width: terminalCols, height: terminalRows } = useTerminalDimensions();
   const showProjectsPane = terminalCols >= 72;
@@ -652,6 +663,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       readonly projectId: string;
       readonly harness: string;
       readonly name: string | null;
+      readonly base: string | null;
       readonly pendingKey: string;
     }) => {
       const argv = HARNESS_COMMANDS[vars.harness];
@@ -660,7 +672,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         harness: vars.harness,
         label: null,
         name: vars.name,
-        base: null,
+        base: vars.base,
       });
       await ctx.api<SessionDto>("POST", `/sessions/${session.id}/launch`, { argv });
       return session;
@@ -674,7 +686,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           label: null,
           branch: vars.name === null ? "provisioning…" : `mend/${vars.name}`,
           baseSha: "",
-          baseRef: null,
+          baseRef: vars.base,
           status: "starting",
           summary: null,
           createdAt: new Date().toISOString(),
@@ -922,15 +934,68 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
 
   const startSession = (projectId: string, harness: string): void => {
     setFocus("sessions");
-    launchMutation.mutate({ projectId, harness, name: pendingName, pendingKey: pendingId() });
+    launchMutation.mutate({
+      projectId,
+      harness,
+      name: pendingName,
+      base: pendingBase,
+      pendingKey: pendingId(),
+    });
     setPendingName(null);
+    setPendingBase(null);
   };
 
-  /** Name first, then the harness: the worktree is the identity being created. */
+  /** Name first, then the base, then the harness: the worktree is the identity being created. */
   const submitWorktreeName = (value: string): void => {
     setNaming(null);
     const slug = normalizeProjectName(value.trim());
-    setPendingName(value.trim() === "" ? null : slug);
+    const name = value.trim() === "" ? null : slug;
+    setPendingName(name);
+    const projectId = selectedProject?.project.id;
+    // An existing name JOINS its worktree — the base is already fixed, so the
+    // picker would only offer a refusal. Straight to the harness.
+    const joins =
+      name !== null &&
+      projectId !== undefined &&
+      (workbench()?.details.get(projectId)?.worktrees ?? []).some(
+        (candidate) => candidate.name === name,
+      );
+    if (joins || projectId === undefined) {
+      setPendingBase(null);
+      openPicker(null);
+      return;
+    }
+    void openBasePicker(projectId);
+  };
+
+  const openBasePicker = async (projectId: string): Promise<void> => {
+    setBusy("reading branches ·");
+    setBusyStarted(Date.now());
+    try {
+      const branches = await ctx.api<ReadonlyArray<BranchDto>>(
+        "GET",
+        `/projects/${projectId}/branches`,
+      );
+      setBasePicking({ projectId, branches, query: "", index: 0 });
+    } catch (error) {
+      // The picker is a convenience; an unreadable branch list falls back to
+      // the default base rather than blocking the launch.
+      say(errorText(error));
+      setPendingBase(null);
+      openPicker(null);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const submitBase = (): void => {
+    const current = basePicking;
+    if (current === null) return;
+    const chosen = filterBranches(current.branches, current.query)[current.index];
+    setBasePicking(null);
+    // The default branch is what a null base means server-side; sending the
+    // name would pin the same commit with extra words.
+    setPendingBase(chosen === undefined || chosen.isDefault ? null : chosen.name);
     openPicker(null);
   };
 
@@ -1033,6 +1098,26 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     }
     if (naming !== null) {
       if (key.name === "escape") setNaming(null);
+      return;
+    }
+    if (basePicking !== null) {
+      // The input owns the characters; the list owns the arrows. Enter lands
+      // through the input's submit so typed-but-unflushed text never races.
+      if (key.name === "escape") {
+        setBasePicking(null);
+        setPendingName(null);
+        say("new worktree cancelled");
+      } else if (key.name === "down" || (key.ctrl === true && key.name === "n")) {
+        setBasePicking((current) => {
+          if (current === null) return current;
+          const matches = filterBranches(current.branches, current.query).length;
+          return { ...current, index: Math.min(Math.max(0, matches - 1), current.index + 1) };
+        });
+      } else if (key.name === "up" || (key.ctrl === true && key.name === "p")) {
+        setBasePicking((current) =>
+          current === null ? current : { ...current, index: Math.max(0, current.index - 1) },
+        );
+      }
       return;
     }
     if (picker !== null) {
@@ -1168,12 +1253,14 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     editing !== null
       ? " enter save · esc cancel"
       : naming !== null
-        ? " enter continue — the harness picker follows · esc cancel"
-        : picker !== null
-          ? " ↑↓ move · enter start · esc cancel"
-          : focus === "projects"
-            ? " ↑↓ move · enter/l sessions · ⇥ panes · r refresh · q quit"
-            : " ↑↓ move · enter attach/resume · n new worktree · s session here · x stop · ⇧D remove · v review · e rename · o web · q quit";
+        ? " enter continue — base and harness follow · esc cancel"
+        : basePicking !== null
+          ? " type to filter · ↑↓ move · enter choose base · esc cancel"
+          : picker !== null
+            ? " ↑↓ move · enter start · esc cancel"
+            : focus === "projects"
+              ? " ↑↓ move · enter/l sessions · ⇥ panes · r refresh · q quit"
+              : " ↑↓ move · enter attach/resume · n new worktree · s session here · x stop · ⇧D remove · v review · e rename · o web · q quit";
 
   const loadFailure =
     data === undefined && failureReason !== null
@@ -1289,6 +1376,59 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           {pickerItems.map((item, index) => (
             <HarnessRow key={String(item.harness)} item={item} selected={index === pickerIndex} />
           ))}
+        </Pane>
+      ) : basePicking !== null ? (
+        <Pane
+          title={` base — ${pendingName ?? "new worktree"} `}
+          focused
+          height={
+            3 +
+            Math.min(8, Math.max(1, filterBranches(basePicking.branches, basePicking.query).length))
+          }
+        >
+          <input
+            focused
+            value=""
+            placeholder="type to filter branches (enter = highlighted, empty = default)"
+            backgroundColor="transparent"
+            focusedBackgroundColor="transparent"
+            textColor={INK}
+            focusedTextColor={INK}
+            placeholderColor={FAINT}
+            cursorColor={INK}
+            flexShrink={0}
+            onInput={(value: string) => {
+              setBasePicking((current) =>
+                current === null ? current : { ...current, query: value, index: 0 },
+              );
+            }}
+            onSubmit={() => submitBase()}
+          />
+          {filterBranches(basePicking.branches, basePicking.query)
+            .slice(0, 8)
+            .map((branch, index) => (
+              <box
+                key={branch.name}
+                height={1}
+                flexShrink={0}
+                backgroundColor={index === basePicking.index ? WASH : "transparent"}
+              >
+                <text height={1} bg="transparent">
+                  <Gutter selected={index === basePicking.index} />
+                  <span fg={INK}>{branch.name.slice(0, 44).padEnd(45)}</span>
+                  <span fg={FAINT}>{branch.sha.slice(0, 8).padEnd(10)}</span>
+                  <span fg={MUTED}>
+                    {timeAgo(branch.committedAt).replace(" ago", "").padEnd(6)}
+                  </span>
+                  {branch.isDefault ? <span fg={FAINT}>default</span> : null}
+                </text>
+              </box>
+            ))}
+          {filterBranches(basePicking.branches, basePicking.query).length === 0 ? (
+            <text height={1} fg={FAINT} bg="transparent">
+              {"  no branch matches — esc cancels"}
+            </text>
+          ) : null}
         </Pane>
       ) : naming !== null ? (
         <box

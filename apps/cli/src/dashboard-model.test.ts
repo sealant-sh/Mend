@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  type BranchDto,
   deriveRows,
   deriveWorktrees,
+  filterBranches,
   foldGroupStatus,
   liveShellOf,
   markSessionStopped,
@@ -243,5 +245,50 @@ describe("optimistic verbs", () => {
     const patched = removeWorktreeGroup(data, "proj-1", target!);
     const names = deriveWorktrees(patched, "proj-1").map((group) => group.name);
     expect(names).toEqual(["fix-auth"]);
+  });
+});
+
+const branch = (over: Partial<BranchDto> & { readonly name: string }): BranchDto => ({
+  sha: "abc",
+  committedAt: "2026-08-31T10:00:00.000Z",
+  isDefault: false,
+  ...over,
+});
+
+describe("the base picker", () => {
+  it("matches subsequences, preferring consecutive and segment-start hits", () => {
+    const branches = [
+      branch({ name: "main", isDefault: true }),
+      branch({ name: "feat/worktree-api" }),
+      branch({ name: "fix/attach-shell-stacking" }),
+      branch({ name: "yiannisp/wta-probe" }),
+    ];
+    expect(filterBranches(branches, "wta").map((b) => b.name)).toEqual([
+      "yiannisp/wta-probe",
+      "feat/worktree-api",
+    ]);
+    expect(filterBranches(branches, "fix").map((b) => b.name)).toEqual([
+      "fix/attach-shell-stacking",
+    ]);
+    expect(filterBranches(branches, "zzz")).toEqual([]);
+  });
+
+  it("lists everything on an empty query with the default branch on top", () => {
+    const branches = [
+      branch({ name: "feat/newer", committedAt: "2026-08-31T12:00:00.000Z" }),
+      branch({ name: "main", isDefault: true, committedAt: "2026-08-01T00:00:00.000Z" }),
+      branch({ name: "feat/older", committedAt: "2026-08-30T00:00:00.000Z" }),
+    ];
+    expect(filterBranches(branches, "").map((b) => b.name)).toEqual([
+      "main",
+      "feat/newer",
+      "feat/older",
+    ]);
+  });
+
+  it("is case-insensitive and ranks earlier matches above later ones", () => {
+    const branches = [branch({ name: "Feature/AUTH" }), branch({ name: "docs/auth-notes" })];
+    expect(filterBranches(branches, "auth")[0]?.name).toBe("docs/auth-notes");
+    expect(filterBranches(branches, "FEATURE")[0]?.name).toBe("Feature/AUTH");
   });
 });
