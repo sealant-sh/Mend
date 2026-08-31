@@ -91,6 +91,20 @@ interface ProjectDetailDto {
   readonly annotations: ReadonlyArray<SessionAnnotationDto>;
 }
 
+interface SessionProcessDto {
+  readonly id: string;
+  readonly kind: string;
+  readonly harness: string | null;
+  readonly label: string | null;
+  readonly status: string;
+  readonly exitedAt: string | null;
+}
+
+interface SessionDetailDto {
+  readonly session: SessionDto;
+  readonly processes: ReadonlyArray<SessionProcessDto>;
+}
+
 interface ServiceDto {
   readonly id: string;
   readonly sessionId: string;
@@ -131,6 +145,8 @@ interface Workbench {
   readonly details: ReadonlyMap<string, ProjectDetailDto>;
   /** Live Services grouped by session — what is running right now. */
   readonly servicesBySession: ReadonlyMap<string, ReadonlyArray<ServiceDto>>;
+  /** Live agent + shell processes per LIVE session — what lives in each worktree. */
+  readonly processesBySession: ReadonlyMap<string, ReadonlyArray<SessionProcessDto>>;
 }
 
 const WORKBENCH_KEY = ["workbench"];
@@ -149,10 +165,33 @@ const fetchWorkbench = async (ctx: DashboardContext): Promise<Workbench> => {
     bucket.push(service);
     servicesBySession.set(service.sessionId, bucket);
   }
+  // What lives in each LIVE worktree: the agent and shells come from the
+  // session detail (settled sessions have nothing live — no fetch for them).
+  const liveSessions = fetched.flatMap((detail) =>
+    detail.sessions.filter((session) => LIVE_STATUSES.has(session.status)),
+  );
+  const detailed = await Promise.all(
+    liveSessions.map(async (session) => {
+      try {
+        return await ctx.api<SessionDetailDto>("GET", `/sessions/${session.id}`);
+      } catch {
+        return null;
+      }
+    }),
+  );
+  const processesBySession = new Map<string, ReadonlyArray<SessionProcessDto>>();
+  for (const detail of detailed) {
+    if (detail === null) continue;
+    processesBySession.set(
+      detail.session.id,
+      detail.processes.filter((process) => process.exitedAt === null && process.kind !== "service"),
+    );
+  }
   return {
     projects,
     details: new Map(fetched.map((detail) => [detail.project.id, detail])),
     servicesBySession,
+    processesBySession,
   };
 };
 
@@ -212,6 +251,8 @@ interface SessionItem {
   readonly session: SessionDto;
   readonly annotation: SessionAnnotationDto | undefined;
   readonly services: ReadonlyArray<ServiceDto>;
+  /** Live agent + shell processes — what lives in this worktree right now. */
+  readonly processes: ReadonlyArray<SessionProcessDto>;
 }
 
 interface HarnessItem {
@@ -249,6 +290,7 @@ const deriveSessions = (
         session,
         annotation: detail.annotations.find((a) => a.sessionId === session.id),
         services: data.servicesBySession.get(session.id) ?? [],
+        processes: data.processesBySession.get(session.id) ?? [],
       }),
     );
 };
@@ -364,6 +406,21 @@ const worktreeName = (branch: string): string =>
   branch.startsWith("mend/") ? branch.slice("mend/".length) : branch;
 
 /**
+ * What to call an UNNAMED worktree: its branch is `mend/session/<uuid>` —
+ * noise nobody recognizes — so the auto-name label stands in, and before one
+ * lands, the short session id. A named worktree is always its own name.
+ */
+const worktreeDisplayName = (session: SessionDto): string => {
+  const name = worktreeName(session.branch);
+  if (!name.startsWith("session/")) return name;
+  return session.label ?? `session ${session.id.slice(0, 8)}`;
+};
+
+/** True when the label already IS the row's identity — don't repeat it. */
+const labelIsIdentity = (session: SessionDto): boolean =>
+  worktreeName(session.branch).startsWith("session/") && session.label !== null;
+
+/**
  * One worktree, grouped: the session line leads with the worktree name, and
  * everything live inside it — its Services — hangs underneath. The child
  * rows are facts, not targets: selection stays on the worktree line.
@@ -375,10 +432,11 @@ const SessionRow = ({
   readonly item: SessionItem;
   readonly selected: boolean;
 }) => {
-  const { session, annotation, services } = item;
+  const { session, annotation, services, processes } = item;
   const color = STATUS_COLOR[session.status] ?? MUTED;
   const age = timeAgo(session.createdAt).replace(" ago", "");
-  const worktree = worktreeName(session.branch);
+  const worktree = worktreeDisplayName(session);
+  const trailingLabel = labelIsIdentity(session) ? "" : (session.label ?? "");
   return (
     <box flexShrink={0} flexDirection="column" backgroundColor="transparent">
       <box height={1} flexShrink={0} backgroundColor={selected ? WASH : "transparent"}>
@@ -391,9 +449,29 @@ const SessionRow = ({
           {annotation !== undefined && annotation.openComments > 0 ? (
             <span fg={MUTED}>{`${annotation.openComments} open  `}</span>
           ) : null}
-          <span fg={FAINT}>{(session.label ?? "").slice(0, 40)}</span>
+          <span fg={FAINT}>{trailingLabel.slice(0, 40)}</span>
         </text>
       </box>
+      {processes.map((process) => (
+        <box key={process.id} height={1} flexShrink={0} backgroundColor="transparent">
+          <text height={1} bg="transparent">
+            <span fg={FAINT}>{"     └ "}</span>
+            <span fg={INK_2}>
+              {process.kind === "shell"
+                ? (process.label ?? "shell")
+                : (process.harness ?? process.kind)}
+            </span>
+            <span fg={FAINT}>
+              {process.kind === "agent-protocol"
+                ? " · protocol"
+                : process.kind === "agent-external"
+                  ? " · external"
+                  : ""}
+              {` ${process.status}`}
+            </span>
+          </text>
+        </box>
+      ))}
       {services.map((service) => (
         <box key={service.id} height={1} flexShrink={0} backgroundColor="transparent">
           <text height={1} bg="transparent">
@@ -637,12 +715,14 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   useEffect(() => {
     // Rows are worktree groups (a session line plus its service children), so
     // the scroll target is the group's y offset, not its index.
+    const childCount = (item: SessionItem | undefined): number =>
+      item === undefined ? 0 : item.processes.length + item.services.length;
     let top = 0;
     for (const [index, item] of sessionItems.entries()) {
       if (index === sessionIndex) break;
-      top += 1 + item.services.length;
+      top += 1 + childCount(item);
     }
-    const selectedHeight = 1 + (sessionItems[sessionIndex]?.services.length ?? 0);
+    const selectedHeight = 1 + childCount(sessionItems[sessionIndex]);
     keepSpanVisible(sessionScrollRef.current, top, selectedHeight);
   }, [sessionIndex, sessionItems]);
 
@@ -834,7 +914,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           row.id === session.id ? { ...row, status: "stopped" } : row,
         ),
       );
-      say(`stopped · ${worktreeName(session.branch)} — the record and review remain`);
+      say(`stopped · ${worktreeDisplayName(session)} — the record and review remain`);
     },
     onError: (error) => {
       say(errorText(error));
@@ -856,7 +936,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       return;
     }
     setStopArmed(item.session.id);
-    say(`press again to stop · ${worktreeName(item.session.branch)}`);
+    say(`press again to stop · ${worktreeDisplayName(item.session)}`);
   };
 
   const startSession = (projectId: string, harness: string): void => {
@@ -1058,7 +1138,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   const detailTitle =
     selectedSession === null
       ? "session"
-      : `worktree — ${worktreeName(selectedSession.session.branch)} · ${selectedSession.session.harness} ${selectedSession.session.id.slice(0, 8)}`;
+      : `worktree — ${worktreeDisplayName(selectedSession.session)} · ${selectedSession.session.harness} ${selectedSession.session.id.slice(0, 8)}`;
   const pickerTitle =
     picker === null
       ? ""

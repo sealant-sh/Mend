@@ -185,6 +185,23 @@ export const isDetachChunk = (data: Buffer): boolean => {
   return false;
 };
 
+/**
+ * What to call a session's worktree in banners and rows: a NAMED worktree is
+ * its branch minus the `mend/` prefix; an unnamed one (`mend/session/<uuid>`)
+ * is called by its auto-name label, or its short id before one lands.
+ */
+export const sessionDisplayName = (session: {
+  readonly id: string;
+  readonly branch: string;
+  readonly label: string | null;
+}): string => {
+  if (session.branch.startsWith("mend/") && !session.branch.startsWith("mend/session/")) {
+    return session.branch.slice("mend/".length);
+  }
+  if (!session.branch.startsWith("mend/session/")) return session.branch;
+  return session.label ?? `session ${session.id.slice(0, 8)}`;
+};
+
 export const LIVE_STATUSES: ReadonlySet<string> = new Set([
   "starting",
   "running",
