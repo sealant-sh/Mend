@@ -2,6 +2,7 @@ import {
   AgentProtocolError,
   ClaudeAdapter,
   CodexAdapter,
+  type AgentRehydrateOptions,
   type AgentSession,
 } from "@mend/agent-protocol";
 import {
@@ -22,7 +23,7 @@ import type {
 } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
 import type { InteractiveSession } from "@sealant/sdk";
-import { Effect, Layer, Schema, Scope, Stream } from "effect";
+import { Deferred, Effect, Layer, Schema, Scope, Stream } from "effect";
 import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
 
@@ -49,6 +50,16 @@ export interface AttachProtocolProcessInput {
   readonly hooks: ProtocolHostHooks;
 }
 
+/**
+ * Re-attach to a pipe that survived a Mend restart (restart policy v2). The
+ * harness never observed the disconnect; the adapter rebuilds its correlation
+ * state from the durable record plus a full replay of the recorded output.
+ */
+export interface RehydrateProtocolProcessInput extends AttachProtocolProcessInput {
+  /** Recorded output high water at probe time; dispatch stays gated until replay passes it. */
+  readonly highWater: bigint;
+}
+
 interface ProviderEventPosition {
   readonly outputSequence: bigint;
   readonly eventIndex: number;
@@ -61,6 +72,8 @@ interface HostedProcess {
   readonly hooks: ProtocolHostHooks;
   readonly dispatchPermit: Semaphore.Semaphore;
   readonly abort: AbortController;
+  /** Non-null while a rehydrate replay is still behind its high water — dispatch waits on it. */
+  readonly gate: Deferred.Deferred<void> | null;
 }
 
 /**
@@ -72,6 +85,10 @@ export class ProtocolHost extends Context.Service<
   {
     readonly attach: (
       input: AttachProtocolProcessInput,
+    ) => Effect.Effect<void, SealantPlatformError>;
+    /** Boot-time re-attachment to a surviving pipe; a no-op when the process is already hosted. */
+    readonly rehydrate: (
+      input: RehydrateProtocolProcessInput,
     ) => Effect.Effect<void, SealantPlatformError>;
     readonly submitTurn: (
       sessionId: SessionId,
@@ -134,6 +151,11 @@ export const ProtocolHostLive: Layer.Layer<
     const dispatchNext = (entry: HostedProcess): Effect.Effect<void> =>
       entry.dispatchPermit.withPermit(
         Effect.gen(function* () {
+          // A rehydrate replay still behind its high water must finish before
+          // any queued turn reaches the harness: the adapter's present is not
+          // yet the harness's present. Waiting inside the permit is safe — the
+          // gate resolves from an independent watcher fiber.
+          if (entry.gate !== null) yield* Deferred.await(entry.gate);
           // Drain until one turn is accepted or the queue is empty. A rejected turn (bad model,
           // transient send failure) must not strand the turns queued behind it: nothing else
           // re-enters dispatch until the NEXT accepted turn completes.
@@ -251,7 +273,10 @@ export const ProtocolHostLive: Layer.Layer<
       }
     });
 
-    const attach = Effect.fn("ProtocolHost.attach")(function* (input: AttachProtocolProcessInput) {
+    const attachInternal = Effect.fn("ProtocolHost.attachInternal")(function* (
+      input: AttachProtocolProcessInput,
+      rehydrateInput: (AgentRehydrateOptions & { readonly highWater: bigint }) | null,
+    ) {
       const abort = new AbortController();
       // Always replay from 0: delta text accumulates in the adapter's in-memory items, so a
       // partial replay would rebuild an item from its tail alone. Replaying everything is
@@ -325,11 +350,19 @@ export const ProtocolHostLive: Layer.Layer<
           effort: input.effort,
           permissionMode: input.permissionMode,
           onEvent,
+          rehydrate:
+            rehydrateInput === null
+              ? undefined
+              : {
+                  replayProviderTurnIds: rehydrateInput.replayProviderTurnIds,
+                  resolvedProviderRequestIds: rehydrateInput.resolvedProviderRequestIds,
+                },
         })
         .pipe(
           Effect.provideService(Scope.Scope, scope),
           Effect.mapError((cause) => toPlatformError("start", cause)),
         );
+      const gate = rehydrateInput === null ? null : yield* Deferred.make<void>();
       const entry: HostedProcess = {
         process: input.process,
         adapter,
@@ -337,6 +370,7 @@ export const ProtocolHostLive: Layer.Layer<
         hooks: input.hooks,
         dispatchPermit: Semaphore.makeUnsafe(1),
         abort,
+        gate,
       };
       activeEntry = entry;
       hosted.set(input.process.id, entry);
@@ -350,7 +384,69 @@ export const ProtocolHostLive: Layer.Layer<
       }
       // Synchronous with the emptiness check above: nothing can enqueue between it and this.
       flushed = true;
-      yield* dispatchNext(entry);
+      if (rehydrateInput === null || gate === null) {
+        yield* dispatchNext(entry);
+        return;
+      }
+      // Rehydrate returns immediately; a watcher opens the gate once replay
+      // passes the probe-time high water (or the stream ends and the entry is
+      // gone), then runs the dispatch every blocked caller queued behind.
+      // `currentOutputSequence` advances in the stream's map — another fiber.
+      const replayCaughtUp = () => currentOutputSequence >= rehydrateInput.highWater;
+      yield* Effect.forkIn(
+        Effect.gen(function* () {
+          while (hosted.get(input.process.id) === entry && !replayCaughtUp()) {
+            yield* Effect.sleep("100 millis");
+          }
+          // The last chunk's projection may still be in flight when the
+          // sequence catches up; a short settle keeps dispatch behind it.
+          yield* Effect.sleep("50 millis");
+          yield* Deferred.succeed(gate, undefined);
+          if (hosted.get(input.process.id) === entry) yield* dispatchNext(entry);
+        }),
+        scope,
+      );
+    });
+
+    const attach = Effect.fn("ProtocolHost.attach")(function* (input: AttachProtocolProcessInput) {
+      yield* attachInternal(input, null);
+    });
+
+    const rehydrate = Effect.fn("ProtocolHost.rehydrate")(function* (
+      input: RehydrateProtocolProcessInput,
+    ) {
+      if (hosted.has(input.process.id)) return;
+      const turns = yield* conversations.listTurns(input.process.sessionId);
+      const processTurns = turns.filter((turn) => turn.processId === input.process.id);
+      // A turn dispatched but never acknowledged (the restart landed between the
+      // adapter send and setProviderTurnId) cannot be correlated with the
+      // replay — fail it honestly rather than guess.
+      for (const orphan of processTurns) {
+        if (orphan.status !== "running" || orphan.providerTurnId !== null) continue;
+        yield* conversations
+          .failTurn(orphan.id, "Mend restarted before the turn was acknowledged.")
+          .pipe(Effect.orDie);
+        const failed = yield* conversations.byTurnId(orphan.id);
+        if (failed !== null) yield* input.hooks.onTurnCompleted(failed);
+      }
+      const replayProviderTurnIds = processTurns.flatMap((turn) =>
+        turn.providerTurnId === null ? [] : [turn.providerTurnId],
+      );
+      const requests = yield* conversations.listRequests(input.process.sessionId, false);
+      const resolvedProviderRequestIds = new Set(
+        requests
+          .filter(
+            (request) => request.processId === input.process.id && request.status !== "pending",
+          )
+          .map((request) => request.providerRequestId),
+      );
+      // A response caught mid-delivery reads `sending` forever; make it answerable again.
+      yield* conversations.resetSendingResponses(input.process.id);
+      yield* attachInternal(input, {
+        replayProviderTurnIds,
+        resolvedProviderRequestIds,
+        highWater: input.highWater,
+      });
     });
 
     const submitTurn = Effect.fn("ProtocolHost.submitTurn")(function* (
@@ -450,6 +546,7 @@ export const ProtocolHostLive: Layer.Layer<
 
     return ProtocolHost.of({
       attach,
+      rehydrate,
       submitTurn,
       interruptTurn,
       respondRequest,

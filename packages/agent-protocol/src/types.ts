@@ -21,6 +21,28 @@ export interface AgentTransport {
   readonly close: () => Effect.Effect<void>;
 }
 
+/**
+ * Boot-time rehydration of a still-running pipe: the harness never observed a
+ * disconnect (its stdio terminates at the platform daemon), so the adapter
+ * skips any handshake and reconstructs its correlation state by replaying the
+ * recorded output from 0 instead.
+ */
+export interface AgentRehydrateOptions {
+  /**
+   * Provider turn ids of already-dispatched turns, in dispatch order. Claude
+   * turn ids are client-minted and never appear on the wire, so replay
+   * correlates results back to turns through this queue; codex carries turn
+   * ids in its notifications and ignores it.
+   */
+  readonly replayProviderTurnIds: ReadonlyArray<string>;
+  /**
+   * Provider request ids whose durable rows are already resolved. Replay
+   * re-encounters their opening lines; the adapter must not re-open or
+   * re-answer them.
+   */
+  readonly resolvedProviderRequestIds: ReadonlySet<string>;
+}
+
 /** Shared options used when a provider conversation starts or resumes. */
 export interface AgentStartOptions {
   readonly cwd: string;
@@ -30,6 +52,8 @@ export interface AgentStartOptions {
   readonly permissionMode: "bypass" | "ask";
   /** Synchronous event projection hook; completion means the event is durable. */
   readonly onEvent?: ((event: AgentEvent) => Effect.Effect<void>) | undefined;
+  /** Present only when re-attaching to a surviving pipe after a Mend restart. */
+  readonly rehydrate?: AgentRehydrateOptions | undefined;
 }
 
 /** One live provider conversation over a byte transport. */

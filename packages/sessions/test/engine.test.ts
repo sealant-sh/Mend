@@ -364,12 +364,15 @@ const agentConversationStubLayer = Layer.succeed(AgentConversationRepo, {
   resolveProviderRequest: () => Effect.void,
   cancelOpenForTurn: () => Effect.void,
   cancelOpenForProcess: () => Effect.void,
+  resetSendingResponses: () => Effect.void,
+  requeueQueuedTurns: () => Effect.void,
   protocolCursor: () => Effect.succeed({ nextSequence: 0n }),
   saveProtocolCursor: () => Effect.void,
 });
 
 const protocolHostStubLayer = Layer.succeed(ProtocolHost, {
   attach: () => Effect.die("not in test"),
+  rehydrate: () => Effect.die("not in test"),
   submitTurn: () => Effect.die("not in test"),
   interruptTurn: () => Effect.die("not in test"),
   respondRequest: () => Effect.die("not in test"),
@@ -383,6 +386,10 @@ const recordingProtocolHostLayer = (
 ) =>
   Layer.succeed(ProtocolHost, {
     attach: (input) =>
+      Effect.sync(() => {
+        attached.push({ process: input.process, mode: input.pipe.mode });
+      }),
+    rehydrate: (input) =>
       Effect.sync(() => {
         attached.push({ process: input.process, mode: input.pipe.mode });
       }),
@@ -530,6 +537,7 @@ const sessionProcessesLayer = (world: World) => {
           launchCorrelationId: input.launchCorrelationId ?? null,
           serviceId: input.serviceId ?? null,
           attemptOrdinal: input.attemptOrdinal ?? null,
+          protocolOptions: input.protocolOptions ?? null,
           workspacePort: input.workspacePort ?? null,
           protocol: input.protocol ?? "tcp",
           hostPort: input.hostPort ?? null,
@@ -1798,6 +1806,7 @@ describe("SessionEngine", () => {
   it("settles and reaps a protocol process when adapter initialization fails", async () => {
     const created: CreateOptions[] = [];
     const failingHost = Layer.succeed(ProtocolHost, {
+      rehydrate: () => Effect.die("not in test"),
       attach: () =>
         Effect.fail(
           new SealantPlatformError({
@@ -2001,6 +2010,7 @@ describe("SessionEngine", () => {
             kind: "shell",
             harness: null,
             providerSessionId: null,
+            protocolOptions: null,
             label: "shell",
             argv: ["bash", "-i"],
             status: "running",
@@ -2533,6 +2543,7 @@ describe("SessionEngine", () => {
               kind: "shell",
               harness: null,
               providerSessionId: null,
+              protocolOptions: null,
               label: "shell 1",
               argv: ["sh"],
               status: "running",
@@ -3369,6 +3380,7 @@ describe("SessionEngine", () => {
               kind: "agent-pty",
               harness: "codex",
               providerSessionId: null,
+              protocolOptions: null,
               label: "codex",
               argv: ["codex"],
               status: "exited",

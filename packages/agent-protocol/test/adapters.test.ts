@@ -314,6 +314,196 @@ describe("ClaudeAdapter", () => {
   );
 });
 
+const collectItems = () => {
+  const items: Array<{ id: string; turn: string; text: string | null }> = [];
+  const onEvent = (event: AgentEvent) =>
+    Effect.sync(() => {
+      if (event._tag === "item.updated") {
+        items.push({
+          id: event.item.providerItemId,
+          turn: event.item.providerTurnId,
+          text: event.item.text,
+        });
+      }
+    });
+  return { items, onEvent };
+};
+
+const claudeControlRequest = (requestId: string) => ({
+  type: "control_request",
+  request_id: requestId,
+  request: { subtype: "can_use_tool", tool_name: "Edit", input: {} },
+});
+
+describe("rehydrate (restart policy v2)", () => {
+  const SESS = "22222222-2222-4222-8222-222222222222";
+
+  /** One finished claude turn whose text block has no wire id — identity comes from fallback ids. */
+  const claudeTurnWire = [
+    {
+      type: "stream_event",
+      session_id: SESS,
+      event: { type: "message_start", message: { id: "msg_1" } },
+    },
+    {
+      type: "stream_event",
+      session_id: SESS,
+      event: { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+    },
+    {
+      type: "stream_event",
+      session_id: SESS,
+      event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hel" } },
+    },
+    {
+      type: "stream_event",
+      session_id: SESS,
+      event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "lo" } },
+    },
+    { type: "stream_event", session_id: SESS, event: { type: "content_block_stop", index: 0 } },
+    {
+      type: "assistant",
+      session_id: SESS,
+      message: { id: "msg_1", content: [{ type: "text", text: "hello" }] },
+    },
+    { type: "result", subtype: "success", session_id: SESS },
+  ];
+
+  it.effect("claude replays a finished turn with the same item identity as the live run", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // Live run: the turn id is minted by sendTurn, the item ids fall back
+        // to turn-scoped ordinals because the wire carries no block ids.
+        const live = yield* makeTransport(() => undefined);
+        const liveItems = collectItems();
+        const liveSession = yield* ClaudeAdapter.start(live.transport, {
+          cwd: "/workspace/repo",
+          providerSessionId: SESS,
+          permissionMode: "bypass",
+          onEvent: liveItems.onEvent,
+        });
+        const turnId = yield* liveSession.sendTurn("go");
+        for (const wire of claudeTurnWire) live.push(wire);
+        yield* firstEvent(liveSession.events, "turn.completed");
+
+        // Rehydrated run: same wire replayed from 0, the dispatched turn id
+        // supplied from the durable record instead of a fresh mint.
+        const replay = yield* makeTransport(() => undefined);
+        const replayItems = collectItems();
+        const replaySession = yield* ClaudeAdapter.start(replay.transport, {
+          cwd: "/workspace/repo",
+          providerSessionId: SESS,
+          permissionMode: "bypass",
+          onEvent: replayItems.onEvent,
+          rehydrate: { replayProviderTurnIds: [turnId], resolvedProviderRequestIds: new Set() },
+        });
+        for (const wire of claudeTurnWire) replay.push(wire);
+        const completed = yield* firstEvent(replaySession.events, "turn.completed");
+        expect(Option.getOrThrow(completed).providerTurnId).toBe(turnId);
+        expect(replayItems.items).toEqual(liveItems.items);
+        // No user message re-sent: replay is read-only until a new turn arrives.
+        expect(replay.sent).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect("claude skips control requests already resolved before the restart", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* makeTransport(() => undefined);
+        const session = yield* ClaudeAdapter.start(fake.transport, {
+          cwd: "/workspace/repo",
+          providerSessionId: SESS,
+          permissionMode: "ask",
+          rehydrate: {
+            replayProviderTurnIds: ["turn-a"],
+            resolvedProviderRequestIds: new Set(["perm-answered"]),
+          },
+        });
+        const openedFiber = yield* firstEvent(session.events, "request.opened").pipe(
+          Effect.forkChild,
+        );
+        fake.push(claudeControlRequest("perm-answered"));
+        fake.push(claudeControlRequest("perm-open"));
+        const opened = yield* Fiber.join(openedFiber);
+        expect(Option.getOrThrow(opened).request.providerRequestId).toBe("perm-open");
+        // Close answers only the genuinely-pending request, never the replayed one.
+        yield* session.close();
+        const answered = fake.sent.flatMap((message) => {
+          const response = message["response"];
+          return isObject(response) ? [response["request_id"]] : [];
+        });
+        expect(answered).toEqual(["perm-open"]);
+      }),
+    ),
+  );
+
+  it.effect("codex rehydrates without a handshake and epoch-scopes new rpc ids", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* makeTransport((message, push) => {
+          const id = message["id"];
+          // Only epoch-scoped string ids get answers — a numeric id would be
+          // the previous Mend process's numbering.
+          if (typeof id !== "string") return;
+          if (message["method"] === "turn/start") push({ id, result: { turn: { id: "turn-9" } } });
+        });
+        const session = yield* CodexAdapter.start(fake.transport, {
+          cwd: "/workspace/repo",
+          permissionMode: "ask",
+          providerSessionId: "thread-1",
+          rehydrate: { replayProviderTurnIds: [], resolvedProviderRequestIds: new Set() },
+        });
+        const ready = yield* firstEvent(session.events, "session.ready");
+        expect(Option.getOrThrow(ready).providerSessionId).toBe("thread-1");
+        // The peer never observed a disconnect: no initialize, no thread/resume.
+        expect(fake.sent).toEqual([]);
+        // A stale replayed response to the old process's id 0 resolves nothing.
+        fake.push({ id: 0, result: { turn: { id: "stale" } } });
+        const turnId = yield* session.sendTurn("continue");
+        expect(turnId).toBe("turn-9");
+        expect(fake.sent.map((message) => message["method"])).toEqual(["turn/start"]);
+        expect(typeof fake.sent[0]?.["id"]).toBe("string");
+      }),
+    ),
+  );
+
+  it.effect("codex replay skips server requests already resolved before the restart", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* makeTransport(() => undefined);
+        const session = yield* CodexAdapter.start(fake.transport, {
+          cwd: "/workspace/repo",
+          permissionMode: "ask",
+          providerSessionId: "thread-1",
+          rehydrate: { replayProviderTurnIds: [], resolvedProviderRequestIds: new Set(["n:7"]) },
+        });
+        const openedFiber = yield* firstEvent(session.events, "request.opened").pipe(
+          Effect.forkChild,
+        );
+        fake.push({
+          id: 7,
+          method: "item/commandExecution/requestApproval",
+          params: { turnId: "turn-a", command: "ls" },
+        });
+        fake.push({
+          id: 8,
+          method: "item/commandExecution/requestApproval",
+          params: { turnId: "turn-a", command: "rm -rf /" },
+        });
+        const opened = yield* Fiber.join(openedFiber);
+        expect(Option.getOrThrow(opened).request.providerRequestId).toBe("n:8");
+        // Close cancels only the genuinely-pending request.
+        yield* session.close();
+        const answeredIds = fake.sent.flatMap((message) =>
+          "result" in message ? [message["id"]] : [],
+        );
+        expect(answeredIds).toEqual([8]);
+      }),
+    ),
+  );
+});
+
 describe("regression: reviewer findings", () => {
   it.effect("claude keeps items distinct across assistant messages in one turn", () =>
     Effect.scoped(

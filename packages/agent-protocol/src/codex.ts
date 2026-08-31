@@ -225,7 +225,14 @@ export const CodexAdapter: AgentAdapter = {
       const pendingServer = new Map<string, PendingServerRequest>();
       const items = new Map<string, AgentEventItem>();
       const decoder = createNdjsonDecoder();
+      const rehydrate = options.rehydrate;
+      // Replay includes responses to the PREVIOUS Mend process's requests, and
+      // its ids also started at 0 — epoch-prefixed string ids keep a stale
+      // response from ever resolving a new call (requestKey namespaces by type).
+      const rpcIdPrefix = rehydrate === undefined ? null : `m${crypto.randomUUID().slice(0, 8)}`;
       let nextId = 0;
+      const mintRpcId = (): JsonRpcId =>
+        rpcIdPrefix === null ? nextId++ : `${rpcIdPrefix}:${nextId++}`;
       let threadId: string | null = null;
       let currentTurnId: string | null = null;
       let latestUsage: AgentTurnUsage | null = null;
@@ -255,7 +262,7 @@ export const CodexAdapter: AgentAdapter = {
         params: JsonObject,
       ) {
         if (transportFailure !== null) return yield* transportFailure;
-        const id = nextId++;
+        const id = mintRpcId();
         const deferred = yield* Deferred.make<unknown, AgentProtocolError>();
         pendingRpc.set(requestKey(id), { method, deferred });
         // Re-check after registering: a transport failure that swept pendingRpc between the
@@ -353,6 +360,14 @@ export const CodexAdapter: AgentAdapter = {
           }).pipe(Effect.catch(() => Effect.void));
         }
         const providerRequestId = requestKey(id);
+        // Replay of a request answered before the restart: the harness got its
+        // response long ago — re-opening (or re-answering it at close) is wrong.
+        if (
+          rehydrate !== undefined &&
+          rehydrate.resolvedProviderRequestIds.has(providerRequestId)
+        ) {
+          return Effect.void;
+        }
         pendingServer.set(providerRequestId, {
           id,
           kind: kind === "user-input" ? "input" : "approval",
@@ -514,35 +529,49 @@ export const CodexAdapter: AgentAdapter = {
         Effect.forkScoped,
       );
 
-      yield* request("initialize", { clientInfo: { name: "mend", version: "0.0.0" } });
-      yield* send({ method: "initialized" });
+      if (rehydrate === undefined) {
+        yield* request("initialize", { clientInfo: { name: "mend", version: "0.0.0" } });
+        yield* send({ method: "initialized" });
 
-      const threadParams = {
-        cwd: options.cwd,
-        approvalPolicy: options.permissionMode === "ask" ? "on-request" : "never",
-        sandbox: options.permissionMode === "ask" ? "workspace-write" : "danger-full-access",
-      };
-      const startThread = request("thread/start", threadParams);
-      const threadResult =
-        options.providerSessionId === undefined
-          ? yield* startThread
-          : yield* request("thread/resume", {
-              ...threadParams,
-              threadId: options.providerSessionId,
-            }).pipe(
-              Effect.catch((error) =>
-                /unknown|not found/i.test(error.message) ? startThread : Effect.fail(error),
-              ),
-            );
-      threadId = stringField(objectField(threadResult, "thread"), "id");
-      if (threadId === null) {
-        return yield* protocolError(
-          "thread/start",
-          "Codex did not return a thread id.",
-          threadResult,
-        );
+        const threadParams = {
+          cwd: options.cwd,
+          approvalPolicy: options.permissionMode === "ask" ? "on-request" : "never",
+          sandbox: options.permissionMode === "ask" ? "workspace-write" : "danger-full-access",
+        };
+        const startThread = request("thread/start", threadParams);
+        const threadResult =
+          options.providerSessionId === undefined
+            ? yield* startThread
+            : yield* request("thread/resume", {
+                ...threadParams,
+                threadId: options.providerSessionId,
+              }).pipe(
+                Effect.catch((error) =>
+                  /unknown|not found/i.test(error.message) ? startThread : Effect.fail(error),
+                ),
+              );
+        threadId = stringField(objectField(threadResult, "thread"), "id");
+        if (threadId === null) {
+          return yield* protocolError(
+            "thread/start",
+            "Codex did not return a thread id.",
+            threadResult,
+          );
+        }
+        yield* publish({ _tag: "session.ready", providerSessionId: threadId });
+      } else {
+        // The app-server never observed a disconnect — it is initialized and its
+        // thread is open. Re-handshaking would double-initialize; seed instead.
+        if (options.providerSessionId === undefined) {
+          return yield* protocolError(
+            "rehydrate",
+            "Codex rehydrate needs the durable thread id.",
+            null,
+          );
+        }
+        threadId = options.providerSessionId;
+        yield* publish({ _tag: "session.ready", providerSessionId: threadId });
       }
-      yield* publish({ _tag: "session.ready", providerSessionId: threadId });
 
       const sendTurn = Effect.fn("CodexAdapter.sendTurn")(function* (input: string) {
         if (threadId === null) {

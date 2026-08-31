@@ -8,6 +8,7 @@ import {
 } from "@mend/domain";
 import {
   SessionProcess,
+  type ProtocolLaunchOptions,
   type SessionProcessKind,
   type SessionProcessStatus,
 } from "@mend/domain/workbench";
@@ -37,6 +38,8 @@ export interface NewSessionProcess {
   readonly harness?: string | null;
   /** Agent processes: known up front only for a native resume; the harvest fills it at exit. */
   readonly providerSessionId?: string | null;
+  /** agent-protocol rows: the adapter options this launch applies (rehydrate/relaunch read them). */
+  readonly protocolOptions?: ProtocolLaunchOptions | null;
   readonly label: string | null;
   readonly argv: ReadonlyArray<string>;
   /** Initial observed state; defaults to "running" (the PTY paths). */
@@ -141,6 +144,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
           launchCorrelationId: input.launchCorrelationId ?? null,
           serviceId: input.serviceId ?? null,
           attemptOrdinal: input.attemptOrdinal ?? null,
+          protocolOptions: input.protocolOptions ?? null,
           status: input.status ?? "running",
         })
         .returning()

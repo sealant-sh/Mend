@@ -8,6 +8,7 @@ import {
   SessionProcessId,
 } from "../ids.ts";
 import { Timestamp } from "../timestamp.ts";
+import { EFFORT_LEVELS, PERMISSION_MODES } from "./harness-launch.ts";
 
 /**
  * What kind of work a workspace process is doing. A session is the worktree
@@ -67,6 +68,19 @@ export const LIVE_PROCESS_STATUSES: ReadonlySet<SessionProcessStatus> =
   new Set<SessionProcessStatus>(["starting", "running", "reachable", "unreachable"]);
 
 /**
+ * agent-protocol rows: the adapter options this launch applied. Claude carries
+ * them on argv, codex only in adapter memory — persisting them is what lets a
+ * boot-time rehydrate (or a graceful relaunch) reopen the pipe with the same
+ * model, effort, and permission stance.
+ */
+export const ProtocolLaunchOptions = Schema.Struct({
+  model: Schema.NullOr(Schema.String),
+  effort: Schema.NullOr(Schema.Literals(EFFORT_LEVELS)),
+  permissionMode: Schema.Literals(PERMISSION_MODES),
+});
+export type ProtocolLaunchOptions = typeof ProtocolLaunchOptions.Type;
+
+/**
  * One platform PTY (or supervised process, or adopted Service port) in a
  * session's current workspace. A session has many of these over its life —
  * the agent, shells, Services — each independently attachable and
@@ -99,6 +113,8 @@ export class SessionProcess extends Schema.Class<SessionProcess>("SessionProcess
    * up front for a native resume). Resume addresses the latest agent process's id.
    */
   providerSessionId: Schema.NullOr(Schema.String),
+  /** agent-protocol rows: the persisted adapter options; null for every other kind and legacy rows. */
+  protocolOptions: Schema.NullOr(ProtocolLaunchOptions),
   /** Human name for pickers and lists ("claude", "shell", "web"). */
   label: Schema.NullOr(Schema.String),
   argv: Schema.Array(Schema.String),
