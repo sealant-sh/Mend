@@ -1,4 +1,10 @@
-import { ChangeId, MendSettings, DotfilesRepository, WorkspaceImage, WorktreeId } from "@mend/domain";
+import {
+  ChangeId,
+  MendSettings,
+  DotfilesRepository,
+  WorkspaceImage,
+  WorktreeId,
+} from "@mend/domain";
 import { Timestamp } from "@mend/domain";
 import {
   AutomationChoice,

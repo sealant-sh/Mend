@@ -13,9 +13,9 @@ import {
 import { projectsGroup, gitKeysGroup, referencesGroup, projectMountsGroup } from "./projects.ts";
 import { issuesGroup, briefsGroup, runsGroup } from "./queue.ts";
 import { sessionsGroup } from "./sessions.ts";
-import { worktreesGroup } from "./worktrees.ts";
 import { settingsGroup, dotfilesGroup } from "./settings.ts";
 import { healthGroup, machineGroup, sealantGroup, workspaceSshGroup } from "./system.ts";
+import { worktreesGroup } from "./worktrees.ts";
 
 export const MendApi = HttpApi.make("mend")
   .add(healthGroup)

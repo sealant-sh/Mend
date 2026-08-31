@@ -16,7 +16,9 @@ export const worktreesRouter = router({
     ),
   detail: procedure
     .input(byId)
-    .query(({ ctx, input: i }) => run(ctx, (api) => api.worktrees.detail({ params: { id: i.id } }))),
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) => api.worktrees.detail({ params: { id: i.id } })),
+    ),
   create: procedure
     .input(input(Schema.Struct({ projectId: ProjectId, worktree: NewWorktree })))
     .mutation(({ ctx, input: i }) =>
@@ -35,9 +37,7 @@ export const worktreesRouter = router({
   createSession: procedure
     .input(input(Schema.Struct({ id: WorktreeId, session: NewWorktreeSession })))
     .mutation(({ ctx, input: i }) =>
-      run(ctx, (api) =>
-        api.worktrees.createSession({ params: { id: i.id }, payload: i.session }),
-      ),
+      run(ctx, (api) => api.worktrees.createSession({ params: { id: i.id }, payload: i.session })),
     ),
   checkpoint: procedure
     .input(input(Schema.Struct({ id: WorktreeId, request: CheckpointRequest })))

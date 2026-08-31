@@ -1,9 +1,8 @@
 import { SealantRunId, SessionProcessId } from "@mend/domain";
+import { Change as SessionChange } from "@mend/domain/workbench";
 import { Schema } from "effect";
 import { HttpApi } from "effect/unstable/httpapi";
 import { describe, expect, it } from "vitest";
-
-import { Change as SessionChange } from "@mend/domain/workbench";
 
 import { MendApi, NewWorktree, ProcessLogPage, ProjectBranch } from "./index.ts";
 

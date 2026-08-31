@@ -1,17 +1,4 @@
 import {
-  ProjectsRepo,
-  SessionsRepo,
-  ServiceForwardsRepo,
-  ServicesRepo,
-  SessionProcessesRepo,
-  CheckpointsRepo,
-  WorktreeChangesRepo,
-  WorktreesRepo,
-} from "@mend/db";
-import { currentAgentProcess } from "@mend/domain/workbench";
-import { SessionEngine } from "@mend/sessions";
-import { Store, worktreePathOf } from "@mend/store";
-import {
   CurrentUser,
   MendApi,
   NotFound,
@@ -25,6 +12,19 @@ import {
   WorktreeNameTaken,
   WorktreeNotFound,
 } from "@mend/api-contracts";
+import {
+  ProjectsRepo,
+  SessionsRepo,
+  ServiceForwardsRepo,
+  ServicesRepo,
+  SessionProcessesRepo,
+  CheckpointsRepo,
+  WorktreeChangesRepo,
+  WorktreesRepo,
+} from "@mend/db";
+import { currentAgentProcess } from "@mend/domain/workbench";
+import { SessionEngine } from "@mend/sessions";
+import { Store, worktreePathOf } from "@mend/store";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 

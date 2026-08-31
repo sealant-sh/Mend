@@ -46,7 +46,6 @@ import { HttpServerRequest } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { DevicePairingLive } from "./devices.ts";
-import { WorktreesGroupLive } from "./worktrees.ts";
 import { GithubGroupLive } from "./github.ts";
 import { MachineGroupLive } from "./machine.ts";
 import {
@@ -63,6 +62,7 @@ import {
   SessionsGroupLive,
   SettingsGroupLive,
 } from "./workbench.ts";
+import { WorktreesGroupLive } from "./worktrees.ts";
 
 /** Resolves the better-auth session (cookie or bearer) and provides CurrentUser. */
 export const AuthMiddlewareLive = Layer.effect(AuthMiddleware)(
