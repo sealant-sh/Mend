@@ -9,6 +9,7 @@ import { servicesRouter } from "./services.ts";
 import { sessionsRouter } from "./sessions.ts";
 import { settingsRouter } from "./settings.ts";
 import { router } from "./trpc.ts";
+import { worktreesRouter } from "./worktrees.ts";
 
 /**
  * The web tier's tRPC surface (plan: the UI never calls the API directly).
@@ -31,6 +32,7 @@ export const appRouter = router({
   queue: queueRouter,
   services: servicesRouter,
   sessions: sessionsRouter,
+  worktrees: worktreesRouter,
   settings: settingsRouter,
 });
 

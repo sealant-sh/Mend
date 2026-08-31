@@ -1,4 +1,4 @@
-import { ProjectId, ProjectMountId, ReferenceId, SessionId } from "@mend/domain";
+import { ProjectId, ProjectMountId, ReferenceId, SessionId, WorktreeId } from "@mend/domain";
 import {
   Project,
   ProjectEnvironmentVariable,
@@ -131,12 +131,13 @@ export const projectsGroup = HttpApiGroup.make("projects")
     }),
   )
   .add(
-    // `?session=` roots the listing at that session's live worktree; absent,
-    // the default branch's tree in the bare store. A session from another
-    // project answers 404.
+    // `?worktree=` roots the listing at that worktree; `?session=` resolves
+    // through the session's worktree (pre-worktree clients); `worktree` wins
+    // when both are sent. Absent both, the default branch's tree in the bare
+    // store. Ids from another project answer 404.
     HttpApiEndpoint.get("files", "/projects/:id/files", {
       params: { id: ProjectId },
-      query: { session: Schema.optional(SessionId) },
+      query: { session: Schema.optional(SessionId), worktree: Schema.optional(WorktreeId) },
       success: ProjectFileListing,
       error: [NotFound, StoreFailure],
     }),

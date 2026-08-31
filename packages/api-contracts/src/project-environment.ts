@@ -323,10 +323,11 @@ export class NewWorkbenchSession extends Schema.Class<NewWorkbenchSession>("NewW
   mode: Schema.optional(AgentLaunchMode),
   label: Schema.NullOr(Schema.String),
   /**
-   * Names the worktree and its branch (`mend/<name>`); must be unused in the
-   * project. Null (and older clients, which omit the key) derives
-   * `session-<id>`. A named session provisions cold — hot skeletons carry
-   * pre-created worktrees.
+   * Names the worktree. An existing name JOINS that worktree — this request
+   * becomes a new conversation inside it (a conflicting `base` is refused,
+   * never silently re-based); an unused name creates it (branch
+   * `mend/<name>`). Null (and older clients, which omit the key) derives an
+   * anonymous worktree.
    */
   name: Schema.NullOr(WorktreeName).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   /** Branch or sha to base the worktree on; null = the project's default branch. */
@@ -335,6 +336,7 @@ export class NewWorkbenchSession extends Schema.Class<NewWorkbenchSession>("NewW
 
 export class SessionDetail extends Schema.Class<SessionDetail>("SessionDetail")({
   session: Session,
+  /** The WORKTREE's chain and change, denormalized here for pre-worktree clients. */
   checkpoints: Schema.Array(Checkpoint),
   change: Schema.NullOr(SessionChange),
   /** Every process the session has held, oldest first — agents, shells, Service attempts. */

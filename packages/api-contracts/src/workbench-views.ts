@@ -1,4 +1,10 @@
-import { ChangeId, MendSettings, DotfilesRepository, WorkspaceImage } from "@mend/domain";
+import {
+  ChangeId,
+  MendSettings,
+  DotfilesRepository,
+  WorkspaceImage,
+  WorktreeId,
+} from "@mend/domain";
 import { Timestamp } from "@mend/domain";
 import {
   AutomationChoice,
@@ -6,6 +12,7 @@ import {
   Project,
   Session,
   SessionProcess,
+  Worktree,
 } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
 
@@ -56,10 +63,35 @@ export class SessionAnnotation extends Schema.Class<SessionAnnotation>("SessionA
   currentAgent: Schema.NullOr(SessionProcess),
 }) {}
 
+/**
+ * List decoration for one worktree — the container's DB-cheap facts. Same
+ * discipline as SessionAnnotation: no git for a list; diff stats stay behind
+ * /changes/:id/stats.
+ */
+export class WorktreeAnnotation extends Schema.Class<WorktreeAnnotation>("WorktreeAnnotation")({
+  worktreeId: WorktreeId,
+  changeId: Schema.NullOr(ChangeId),
+  /** Conversations in the worktree — all, and currently live. */
+  sessions: Schema.Int,
+  liveSessions: Schema.Int,
+  openComments: Schema.Int,
+  totalComments: Schema.Int,
+  pendingFollowUp: Schema.Boolean,
+  /** Newest live agent process across the worktree's sessions, else newest ever; null before any launch. */
+  currentAgent: Schema.NullOr(SessionProcess),
+}) {}
+
 export class ProjectDetail extends Schema.Class<ProjectDetail>("ProjectDetail")({
   project: Project,
   sessions: Schema.Array(Session),
+  /** Kept per session while pre-worktree clients read it; same facts as the worktree's. */
   annotations: Schema.Array(SessionAnnotation),
+  /**
+   * The project's worktree containers, embedded so lists never need a second
+   * fetch. Clients detect the worktree-aware server by this key's presence.
+   */
+  worktrees: Schema.Array(Worktree),
+  worktreeAnnotations: Schema.Array(WorktreeAnnotation),
 }) {}
 
 /** The outcome of a destructive removal — what went, what would not. */

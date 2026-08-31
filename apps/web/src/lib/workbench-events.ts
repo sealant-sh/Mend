@@ -58,9 +58,16 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
             void queryClient.invalidateQueries(trpc.services.list.pathFilter());
           }
           break;
+        case "worktree":
+          // The container changed: created, renamed, removed, hot state.
+          void queryClient.invalidateQueries(trpc.worktrees.pathFilter());
+          void queryClient.invalidateQueries(trpc.projects.pathFilter());
+          break;
         case "session-change":
         case "review-comment":
           void queryClient.invalidateQueries(trpc.changes.pathFilter());
+          // Worktree list annotations carry comment/follow-up counts.
+          void queryClient.invalidateQueries(trpc.worktrees.pathFilter());
           break;
         default:
           break;

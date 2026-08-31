@@ -62,6 +62,7 @@ import {
   SessionsGroupLive,
   SettingsGroupLive,
 } from "./workbench.ts";
+import { WorktreesGroupLive } from "./worktrees.ts";
 
 /** Resolves the better-auth session (cookie or bearer) and provides CurrentUser. */
 export const AuthMiddlewareLive = Layer.effect(AuthMiddleware)(
@@ -555,6 +556,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
   Layer.provide(ProjectRecipesGroupLive),
   Layer.provide(ReferencesGroupLive),
   Layer.provide(SessionsGroupLive),
+  Layer.provide(WorktreesGroupLive),
   Layer.provide(SessionChangesGroupLive),
   Layer.provide(GithubGroupLive),
   Layer.provide(DevicesGroupLive),
