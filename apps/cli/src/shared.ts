@@ -41,8 +41,13 @@ export interface LaunchArgs {
   readonly model: string | null;
   readonly effort: string | null;
   readonly base: string | null;
-  /** Names the worktree (branch `mend/<name>`); null derives from the session id. */
+  /**
+   * Names the worktree (branch `mend/<name>`). An existing name JOINS that
+   * worktree — a new conversation inside it; null derives an anonymous one.
+   */
   readonly name: string | null;
+  /** `--worktree`: join an EXISTING worktree by name — fails when absent. */
+  readonly worktree: string | null;
   readonly ask: boolean;
   /** Priority processing — codex `service_tier=priority`. */
   readonly fast: boolean;
@@ -62,6 +67,7 @@ const LAUNCH_ERROR: Omit<LaunchArgs, "error"> = {
   effort: null,
   base: null,
   name: null,
+  worktree: null,
   ask: false,
   fast: false,
   detach: false,
@@ -86,6 +92,7 @@ export const parseLaunchArgs = (args: ReadonlyArray<string>): LaunchArgs => {
   let effort: string | null = null;
   let base: string | null = null;
   let workName: string | null = null;
+  let joinWorktree: string | null = null;
   let ask = false;
   let fast = false;
   let detach = false;
@@ -113,7 +120,8 @@ export const parseLaunchArgs = (args: ReadonlyArray<string>): LaunchArgs => {
       arg === "--model" ||
       arg === "--effort" ||
       arg === "--base" ||
-      arg === "--name"
+      arg === "--name" ||
+      arg === "--worktree"
     ) {
       const value = flagArgs[index + 1];
       if (value === undefined) return { ...LAUNCH_ERROR, error: `${arg} needs a value` };
@@ -121,6 +129,7 @@ export const parseLaunchArgs = (args: ReadonlyArray<string>): LaunchArgs => {
       else if (arg === "--model") model = value;
       else if (arg === "--effort") effort = value;
       else if (arg === "--name") workName = normalizeProjectName(value);
+      else if (arg === "--worktree") joinWorktree = value;
       else base = value;
       index += 1;
       continue;
@@ -147,6 +156,12 @@ export const parseLaunchArgs = (args: ReadonlyArray<string>): LaunchArgs => {
   if (detach && foreground) {
     return { ...LAUNCH_ERROR, error: "--detach and --foreground contradict — pick one" };
   }
+  if (workName !== null && joinWorktree !== null) {
+    return {
+      ...LAUNCH_ERROR,
+      error: "--name and --worktree contradict — --name names (or joins), --worktree only joins",
+    };
+  }
   return {
     project,
     prompt,
@@ -154,6 +169,7 @@ export const parseLaunchArgs = (args: ReadonlyArray<string>): LaunchArgs => {
     effort,
     base,
     name: workName,
+    worktree: joinWorktree,
     ask,
     fast,
     detach,

@@ -21,7 +21,7 @@ import {
 } from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
-import { LIVE_STATES, projectMenu, sessionMenu } from "#/lib/workbench-menus";
+import { LIVE_STATES, projectMenu, sessionMenu, worktreeDisplayName } from "#/lib/workbench-menus";
 
 export const Route = createFileRoute("/")({
   ssr: false,
@@ -41,6 +41,8 @@ const ACTIVE = LIVE_STATES;
 interface SessionEntry {
   readonly session: SessionDto;
   readonly project: string;
+  /** The container's display name — every row leads with the place. */
+  readonly worktreeName: string;
   readonly annotation: SessionAnnotationDto | undefined;
 }
 
@@ -74,11 +76,21 @@ function HomePage() {
   useWorkbenchEvents(onEvent);
 
   const allSessions: ReadonlyArray<SessionEntry> = details.flatMap((detail, index) =>
-    (detail.data?.sessions ?? []).map((session) => ({
-      session,
-      project: projects[index]?.name ?? "",
-      annotation: detail.data?.annotations.find((row) => row.sessionId === session.id),
-    })),
+    (detail.data?.sessions ?? []).map((session) => {
+      const worktree = detail.data?.worktrees.find((row) => row.id === session.worktreeId);
+      const siblings = (detail.data?.sessions ?? []).filter(
+        (row) => row.worktreeId === session.worktreeId,
+      );
+      return {
+        session,
+        project: projects[index]?.name ?? "",
+        worktreeName:
+          worktree === undefined
+            ? (session.label ?? `session ${session.id.slice(0, 8)}`)
+            : worktreeDisplayName(worktree, siblings),
+        annotation: detail.data?.annotations.find((row) => row.sessionId === session.id),
+      };
+    }),
   );
   const waiting = allSessions.filter(({ session }) => session.status === "waiting");
   const live = allSessions.filter(
@@ -91,13 +103,22 @@ function HomePage() {
   // Unreviewed: the session settled with a change nobody has commented on and
   // no follow-up in flight. The diff-stat chip says whether there is anything
   // to read; "no file changes" is an honest answer, not a hidden row.
-  const readyToReview = allSessions.filter(
-    ({ session, annotation }) =>
-      session.status === "completed" &&
-      annotation?.changeId != null &&
-      annotation.totalComments === 0 &&
-      !annotation.pendingFollowUp,
-  );
+  const readyToReview = allSessions
+    .filter(
+      ({ session, annotation }) =>
+        session.status === "completed" &&
+        annotation?.changeId != null &&
+        annotation.totalComments === 0 &&
+        !annotation.pendingFollowUp,
+    )
+    // One change per WORKTREE: several settled conversations must not stack
+    // duplicate rows for the same review.
+    .filter(
+      (entry, index, entries) =>
+        entries.findIndex(
+          (candidate) => candidate.annotation?.changeId === entry.annotation?.changeId,
+        ) === index,
+    );
 
   /** Rejoin a settled session — same worktree, restored state, fresh workspace. */
   const rejoin = (session: SessionDto) => {
@@ -439,14 +460,13 @@ function SessionCard({
     >
       <div className="flex items-center justify-between gap-4">
         <p className="font-sans text-sm font-medium text-foreground">
-          {session.harness} · {project}
-          {session.label === null ? "" : ` — ${session.label}`}
+          {entry.worktreeName} · {project}
         </p>
         <SessionStatusDot status={session.status} recorded={session.sealantRunId !== null} />
       </div>
       <p className="mt-3 truncate font-mono text-xs text-faint">
         {progressLine ??
-          `${session.branch}${session.baseRef === null ? "" : ` · base ${session.baseRef}`} · worktree ${session.worktree}`}
+          `${session.harness}${session.label === null ? "" : ` — ${session.label}`} · ${session.branch}${session.baseRef === null ? "" : ` · base ${session.baseRef}`}`}
         <AnnotationSuffix annotation={annotation} />
       </p>
     </Link>

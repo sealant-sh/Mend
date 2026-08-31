@@ -3,13 +3,17 @@ import type { UseNavigateResult } from "@tanstack/react-router";
 
 import {
   checkpointSession,
+  createSessionInWorktree,
   removeProject,
   removeSession,
+  removeWorktree,
   resumeSession,
   stopSession,
   type ProjectDto,
   type SessionAnnotationDto,
   type SessionDto,
+  type WorktreeAnnotationDto,
+  type WorktreeDto,
 } from "#/lib/api";
 import {
   HARNESSES,
@@ -156,19 +160,10 @@ export const sessionMenu = (
       },
     });
   }
-  entries.push(
-    "separator",
-    { label: "Copy worktree path", flash: "Copied", onSelect: () => copyText(session.worktree) },
-    { label: "Copy branch name", flash: "Copied", onSelect: () => copyText(session.branch) },
-  );
-  if (session.baseRef !== null) {
-    const baseRef = session.baseRef;
-    entries.push({ label: "Copy base ref", flash: "Copied", onSelect: () => copyText(baseRef) });
-  }
   if (!live) {
     entries.push("separator", {
       label: "Delete session…",
-      confirm: "Really delete session and worktree?",
+      confirm: "Really delete this session? The worktree, its change, and checkpoints remain.",
       danger: true,
       onSelect: () => {
         void removeSession(session.id).then(() => {
@@ -182,4 +177,87 @@ export const sessionMenu = (
     title: `${session.harness}${session.label === null ? "" : ` — ${session.label}`}`,
     entries,
   };
+};
+
+/** What to call a worktree: its name, unless anonymous — then a member's label. */
+export const worktreeDisplayName = (
+  worktree: WorktreeDto,
+  members: ReadonlyArray<SessionDto>,
+): string =>
+  worktree.name.startsWith("wt-")
+    ? (members.find((session) => session.label !== null)?.label ??
+      (members[0] === undefined ? worktree.name : `session ${members[0].id.slice(0, 8)}`))
+    : worktree.name;
+
+/** The right-click menu for a worktree group — the container's own verbs. */
+export const worktreeMenu = (
+  worktree: WorktreeDto,
+  members: ReadonlyArray<SessionDto>,
+  annotation: WorktreeAnnotationDto | undefined,
+  navigate: Navigate,
+  context: LaunchContext,
+): ContextMenuSpec => {
+  const { queryClient, trpc } = context;
+  const invalidate = () =>
+    Promise.all([
+      queryClient.invalidateQueries(trpc.projects.pathFilter()),
+      queryClient.invalidateQueries(trpc.worktrees.pathFilter()),
+      queryClient.invalidateQueries(trpc.sessions.pathFilter()),
+    ]);
+  const live = members.filter((session) => LIVE_STATES.has(session.status));
+  const newest = live[0] ?? members[0];
+  const entries: ContextMenuEntry[] = [];
+  if (newest !== undefined) {
+    entries.push({
+      label: live.length > 0 ? "Open newest live session" : "Open newest session",
+      onSelect: () =>
+        void navigate({ to: "/sessions/$sessionId", params: { sessionId: newest.id } }),
+    });
+  }
+  const changeId = annotation?.changeId ?? null;
+  if (changeId !== null) {
+    entries.push({
+      label: "Open review",
+      onSelect: () => void navigate({ to: "/changes/$changeId", params: { changeId } }),
+    });
+  }
+  entries.push(
+    "separator",
+    ...HARNESSES.filter((harness) => harness !== "shell").map(
+      (harness): ContextMenuEntry => ({
+        label: `Start ${harness} session here`,
+        onSelect: () => {
+          void createSessionInWorktree(worktree.id, harness)
+            .then((session) =>
+              navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } }),
+            )
+            .finally(() => invalidate());
+        },
+      }),
+    ),
+    "separator",
+    { label: "Copy worktree path", flash: "Copied", onSelect: () => copyText(worktree.directory) },
+    { label: "Copy branch name", flash: "Copied", onSelect: () => copyText(worktree.branch) },
+  );
+  if (worktree.baseRef !== null) {
+    const baseRef = worktree.baseRef;
+    entries.push({ label: "Copy base ref", flash: "Copied", onSelect: () => copyText(baseRef) });
+  }
+  if (live.length === 0) {
+    const facts =
+      members.length === 0
+        ? "The change and checkpoints go with it."
+        : `${members.length} session${members.length === 1 ? "" : "s"}, the change, and its review go with it.`;
+    entries.push("separator", {
+      label: "Remove worktree…",
+      confirm: `Really remove worktree ${worktreeDisplayName(worktree, members)}? ${facts}`,
+      danger: true,
+      onSelect: () => {
+        void removeWorktree(worktree.id)
+          .catch(() => undefined)
+          .finally(() => invalidate());
+      },
+    });
+  }
+  return { title: worktreeDisplayName(worktree, members), entries };
 };

@@ -7,10 +7,16 @@ import { ProjectSetupFacts } from "#/components/project-setup-facts";
 import { SessionComposer } from "#/components/session-composer";
 import { AppShell } from "#/components/shell";
 import { SessionStatusDot } from "#/components/status";
-import { removeSession } from "#/lib/api";
+import { removeWorktree } from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
-import { LIVE_STATES, sessionMenu, startSession } from "#/lib/workbench-menus";
+import {
+  LIVE_STATES,
+  sessionMenu,
+  startSession,
+  worktreeDisplayName,
+  worktreeMenu,
+} from "#/lib/workbench-menus";
 
 export const Route = createFileRoute("/projects/$projectId")({
   ssr: false,
@@ -31,7 +37,7 @@ function ProjectPage() {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const launchContext = { queryClient, trpc };
-  const { project, sessions, annotations } = useSuspenseQuery(
+  const { project, sessions, annotations, worktrees, worktreeAnnotations } = useSuspenseQuery(
     trpc.projects.detail.queryOptions({ id: projectId }),
   ).data;
   const navigate = useNavigate();
@@ -40,9 +46,25 @@ function ProjectPage() {
   const { openMenu, menuElement } = useContextMenu();
   useWorkbenchEvents();
 
-  const live = sessions.filter((session) => LIVE_STATES.has(session.status));
-  const settled = sessions.filter((session) => !LIVE_STATES.has(session.status));
-  const ordered = [...live, ...settled];
+  // The container tier: sessions grouped under their worktree, live/settled
+  // split at the WORKTREE level (live = any conversation live).
+  const groups = worktrees.map((worktree) => {
+    const members = sessions.filter((session) => session.worktreeId === worktree.id);
+    return {
+      worktree,
+      members,
+      annotation: worktreeAnnotations.find((row) => row.worktreeId === worktree.id),
+      live: members.filter((session) => LIVE_STATES.has(session.status)).length,
+      newest: members[0] ?? null,
+    };
+  });
+  const ordered = groups.toSorted((a, b) => {
+    if (a.live > 0 !== b.live > 0) return a.live > 0 ? -1 : 1;
+    const aAt = a.newest?.createdAt ?? a.worktree.createdAt;
+    const bAt = b.newest?.createdAt ?? b.worktree.createdAt;
+    return bAt.getTime() - aAt.getTime();
+  });
+  const settledGroups = ordered.filter((group) => group.live === 0);
 
   /** Second click executes — destructive actions confirm explicitly (plan §15). */
   const clearSettled = () => {
@@ -52,11 +74,18 @@ function ProjectPage() {
     }
     if (clearing !== "armed") return;
     setClearing("working");
-    void Promise.allSettled(settled.map((session) => removeSession(session.id))).finally(() => {
-      setClearing("idle");
-      void queryClient.invalidateQueries(trpc.projects.pathFilter());
-      void queryClient.invalidateQueries(trpc.environment.pathFilter());
-    });
+    // Sequential, not parallel: each removal walks the store's worktree list.
+    void settledGroups
+      .reduce(
+        (chain, group) => chain.then(() => removeWorktree(group.worktree.id).catch(() => null)),
+        Promise.resolve<unknown>(null),
+      )
+      .finally(() => {
+        setClearing("idle");
+        void queryClient.invalidateQueries(trpc.projects.pathFilter());
+        void queryClient.invalidateQueries(trpc.worktrees.pathFilter());
+        void queryClient.invalidateQueries(trpc.environment.pathFilter());
+      });
   };
 
   return (
@@ -96,67 +125,103 @@ function ProjectPage() {
 
         <div className="mt-8 grid gap-12 border-t border-rule pt-8 lg:grid-cols-[minmax(0,1fr)_320px]">
           <section>
-            <p className="border-b border-rule pb-3 text-xs font-medium text-label">Sessions</p>
+            <p className="border-b border-rule pb-3 text-xs font-medium text-label">Worktrees</p>
             <div className="mt-4 overflow-hidden rounded-2xl border border-rule bg-card shadow-xs">
               {ordered.length === 0 ? (
                 <p className="p-5 text-sm text-muted-foreground">
-                  No sessions yet — start one above, or{" "}
+                  No worktrees yet — start a session above, or{" "}
                   <span className="font-mono text-xs">mend claude</span> in this repository. Either
                   way it runs in its own worktree, recorded.
                 </p>
               ) : (
-                ordered.map((session, index) => {
-                  const annotation = annotations.find((row) => row.sessionId === session.id);
+                ordered.map((group, index) => {
+                  const { worktree, members, annotation } = group;
+                  const name = worktreeDisplayName(worktree, members);
                   return (
                     <div
-                      key={session.id}
-                      onContextMenu={(event) =>
-                        openMenu(event, sessionMenu(session, annotation, navigate, launchContext))
-                      }
-                      className={`flex items-center justify-between gap-4 px-5 py-4 transition-colors hover:bg-secondary ${index === 0 ? "" : "border-t border-rule-faint"}`}
+                      key={worktree.id}
+                      className={index === 0 ? "" : "border-t border-rule-faint"}
                     >
-                      <Link
-                        to="/sessions/$sessionId"
-                        params={{ sessionId: session.id }}
-                        className="min-w-0 flex-1 no-underline"
+                      <div
+                        onContextMenu={(event) =>
+                          openMenu(
+                            event,
+                            worktreeMenu(worktree, members, annotation, navigate, launchContext),
+                          )
+                        }
+                        className="flex items-center justify-between gap-4 px-5 pt-4 pb-1"
                       >
-                        <p className="font-sans text-sm font-medium text-foreground">
-                          {session.harness}
-                          {session.label === null ? "" : ` — ${session.label}`}
+                        <div className="min-w-0 flex-1">
+                          <p className="font-sans text-sm font-medium text-foreground">{name}</p>
+                          <p className="mt-1 truncate font-mono text-xs text-faint">
+                            {worktree.branch} · base{" "}
+                            {worktree.baseRef ?? worktree.baseSha.slice(0, 12)}
+                            {annotation !== undefined && annotation.openComments > 0 && (
+                              <span className="text-ink-2">
+                                {" "}
+                                · {annotation.openComments} open comment
+                                {annotation.openComments === 1 ? "" : "s"}
+                              </span>
+                            )}
+                            {annotation?.pendingFollowUp === true && (
+                              <span className="text-warning"> · follow-up pending</span>
+                            )}
+                          </p>
+                        </div>
+                        {annotation?.changeId != null && (
+                          <Link
+                            to="/changes/$changeId"
+                            params={{ changeId: annotation.changeId }}
+                            className="shrink-0 font-sans text-xs font-medium text-muted-foreground no-underline transition-colors hover:text-foreground"
+                          >
+                            Review
+                          </Link>
+                        )}
+                      </div>
+                      {members.length === 0 ? (
+                        <p className="px-5 pt-1 pb-4 font-mono text-xs text-faint">
+                          no sessions yet
                         </p>
-                        <p className="mt-1 truncate font-mono text-xs text-faint">
-                          {session.branch} · base {session.baseRef ?? session.baseSha.slice(0, 12)}
-                          {annotation !== undefined && annotation.openComments > 0 && (
-                            <span className="text-ink-2">
-                              {" "}
-                              · {annotation.openComments} open comment
-                              {annotation.openComments === 1 ? "" : "s"}
-                            </span>
-                          )}
-                          {annotation?.pendingFollowUp === true && (
-                            <span className="text-warning"> · follow-up pending</span>
-                          )}
-                        </p>
-                      </Link>
-                      {annotation?.changeId != null && (
-                        <Link
-                          to="/changes/$changeId"
-                          params={{ changeId: annotation.changeId }}
-                          className="shrink-0 font-sans text-xs font-medium text-muted-foreground no-underline transition-colors hover:text-foreground"
-                        >
-                          Review
-                        </Link>
+                      ) : (
+                        members.map((session) => {
+                          const sessionAnnotation = annotations.find(
+                            (row) => row.sessionId === session.id,
+                          );
+                          return (
+                            <div
+                              key={session.id}
+                              onContextMenu={(event) =>
+                                openMenu(
+                                  event,
+                                  sessionMenu(session, sessionAnnotation, navigate, launchContext),
+                                )
+                              }
+                              className="flex items-center justify-between gap-4 py-2 pr-5 pl-9 transition-colors last:pb-4 hover:bg-secondary"
+                            >
+                              <Link
+                                to="/sessions/$sessionId"
+                                params={{ sessionId: session.id }}
+                                className="min-w-0 flex-1 no-underline"
+                              >
+                                <p className="truncate font-sans text-[13px] text-foreground">
+                                  {session.harness}
+                                  {session.label === null ? "" : ` — ${session.label}`}
+                                </p>
+                              </Link>
+                              <SessionStatusDot
+                                status={session.status}
+                                recorded={session.sealantRunId !== null}
+                              />
+                            </div>
+                          );
+                        })
                       )}
-                      <SessionStatusDot
-                        status={session.status}
-                        recorded={session.sealantRunId !== null}
-                      />
                     </div>
                   );
                 })
               )}
             </div>
-            {settled.length > 0 && (
+            {settledGroups.length > 0 && (
               <div className="mt-2 flex justify-end">
                 <button
                   type="button"
@@ -168,7 +233,7 @@ function ProjectPage() {
                   {clearing === "working"
                     ? "Clearing…"
                     : clearing === "armed"
-                      ? `Really delete ${settled.length} settled session${settled.length === 1 ? "" : "s"}?`
+                      ? `Really remove ${settledGroups.length} settled worktree${settledGroups.length === 1 ? "" : "s"}? Sessions and changes go with them.`
                       : "Clear settled"}
                 </button>
               </div>
