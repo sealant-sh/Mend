@@ -102,9 +102,21 @@ interface GitKeyDto {
   readonly fingerprint: string | null;
 }
 
+interface WorktreeDto {
+  readonly id: string;
+  readonly name: string;
+  readonly directory: string;
+  readonly branch: string;
+  readonly baseSha: string;
+  readonly baseRef: string | null;
+  readonly createdAt: string;
+}
+
 interface SessionDto {
   readonly id: string;
   readonly projectId: string;
+  /** Present once the server is worktree-aware. */
+  readonly worktreeId?: string;
   readonly harness: string;
   readonly label: string | null;
   readonly worktree: string;
@@ -456,7 +468,45 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
   );
   // The worktree's name comes first, then the session details — it is the
   // identity every list leads with. `mend run` stays scriptable: flag only.
-  const worktreeName = harness === "run" ? parsed.name : (parsed.name ?? (await askWorktreeName()));
+  // `--worktree` insists on joining: the name must already exist here.
+  let worktreeName: string | null;
+  if (parsed.worktree !== null) {
+    const detail = await api<ProjectDetailDto>(config, "GET", `/projects/${project.id}`);
+    const existing = detail.worktrees ?? [];
+    if (detail.worktrees === undefined) {
+      return fail("this server predates shared worktrees — use --name instead");
+    }
+    const match =
+      existing.find((worktree) => worktree.name === parsed.worktree) ??
+      (existing.filter((worktree) => worktree.name.startsWith(parsed.worktree ?? "")).length === 1
+        ? existing.find((worktree) => worktree.name.startsWith(parsed.worktree ?? ""))
+        : undefined);
+    if (match === undefined) {
+      const names = existing.map((worktree) => worktree.name).join(", ");
+      return fail(
+        `no worktree matches "${parsed.worktree}" in ${project.name}${names === "" ? "" : ` — have: ${names}`}`,
+      );
+    }
+    worktreeName = match.name;
+  } else {
+    worktreeName = harness === "run" ? parsed.name : (parsed.name ?? (await askWorktreeName()));
+  }
+  // Say when the name joins an existing worktree — a join is a fact worth
+  // stating before the session exists, not a surprise in the tree later.
+  if (worktreeName !== null) {
+    const detail = await api<ProjectDetailDto>(config, "GET", `/projects/${project.id}`).catch(
+      () => null,
+    );
+    const joined = detail?.worktrees?.find((worktree) => worktree.name === worktreeName);
+    if (joined !== undefined) {
+      const members = (detail?.sessions ?? []).filter(
+        (candidate) => candidate.worktreeId === joined.id,
+      ).length;
+      say(
+        `${green("✓")} joins worktree ${joined.name} ${dim(`· ${members} session${members === 1 ? "" : "s"} · branch ${joined.branch}`)}`,
+      );
+    }
+  }
   const lifecycle: "detach" | LifecycleMode =
     harness === "run"
       ? "background"
@@ -2512,6 +2562,8 @@ interface ProjectDetailDto {
   readonly project: ProjectDto;
   readonly sessions: ReadonlyArray<SessionDto>;
   readonly annotations: ReadonlyArray<SessionAnnotationDto>;
+  /** Present when the server is worktree-aware — the capability signal. */
+  readonly worktrees?: ReadonlyArray<WorktreeDto>;
 }
 
 /**
@@ -2886,6 +2938,16 @@ const printSessionRow = (row: SessionRow) => {
  */
 const sessionsCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const all = args.includes("--all");
+  // v1 stays byte-stable for pinned integrations; v2 is the worktree envelope.
+  if (args.includes("--json=v2")) {
+    const projectFlag = args.indexOf("--project");
+    const projectName =
+      projectFlag !== -1 && args[projectFlag + 1] !== undefined
+        ? String(args[projectFlag + 1])
+        : null;
+    say(JSON.stringify(await buildWorktreesJson(config, projectName), null, 2));
+    return;
+  }
   const json = args.includes("--json");
   const projectFlag = args.indexOf("--project");
   const projectName =
@@ -2969,6 +3031,164 @@ const sessionsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
   for (const row of rows) printSessionRow(row);
 };
 
+interface WorktreeJsonSession {
+  readonly id: string;
+  readonly harness: string;
+  readonly label: string | null;
+  readonly status: string;
+  readonly summary: string | null;
+  readonly createdAt: string;
+}
+
+interface WorktreeJson {
+  readonly id: string | null;
+  readonly name: string;
+  readonly projectId: string;
+  readonly projectName: string;
+  readonly branch: string;
+  readonly baseSha: string;
+  readonly baseRef: string | null;
+  readonly createdAt: string;
+  readonly reviewUrl: string | null;
+  readonly review: {
+    readonly openComments: number;
+    readonly totalComments: number;
+    readonly pendingFollowUp: boolean;
+  } | null;
+  readonly sessions: ReadonlyArray<WorktreeJsonSession>;
+}
+
+interface WorktreesJson {
+  readonly version: 2;
+  readonly worktrees: ReadonlyArray<WorktreeJson>;
+}
+
+/**
+ * The worktree-grouped view both `mend worktrees --json` and
+ * `mend sessions --json=v2` emit. Against a pre-worktree server every session
+ * becomes its own pseudo worktree (`id: null`) — the envelope shape is stable
+ * either way, so integrations pin on `version`, not server age.
+ */
+const toWorktreeJsonSession = (session: SessionDto): WorktreeJsonSession => ({
+  id: session.id,
+  harness: session.harness,
+  label: session.label,
+  status: session.status,
+  summary: session.summary,
+  createdAt: session.createdAt,
+});
+
+const buildWorktreesJson = async (
+  config: CliConfig,
+  projectName: string | null,
+): Promise<WorktreesJson> => {
+  const projects = await api<ReadonlyArray<ProjectDto>>(config, "GET", "/projects");
+  const scope = projectName === null ? projects : projects.filter((p) => p.name === projectName);
+  const details = await Promise.all(
+    scope.map((p) => api<ProjectDetailDto>(config, "GET", `/projects/${p.id}`)),
+  );
+  const worktrees: Array<WorktreeJson> = [];
+  for (const detail of details) {
+    const reviewOf = (sessionIds: ReadonlySet<string>) => {
+      const facts = detail.annotations.find((a) => sessionIds.has(a.sessionId));
+      return facts === undefined
+        ? null
+        : {
+            openComments: facts.openComments,
+            totalComments: facts.totalComments,
+            pendingFollowUp: detail.annotations.some(
+              (a) => sessionIds.has(a.sessionId) && a.pendingFollowUp,
+            ),
+          };
+    };
+    const urlOf = (sessionIds: ReadonlySet<string>) => {
+      const first = [...sessionIds][0];
+      return first === undefined ? null : `${config.url.replace(/\/$/, "")}/sessions/${first}`;
+    };
+    if (detail.worktrees !== undefined) {
+      for (const worktree of detail.worktrees) {
+        const members = detail.sessions.filter((session) => session.worktreeId === worktree.id);
+        const ids = new Set(members.map((session) => session.id));
+        worktrees.push({
+          id: worktree.id,
+          name: worktree.name,
+          projectId: detail.project.id,
+          projectName: detail.project.name,
+          branch: worktree.branch,
+          baseSha: worktree.baseSha,
+          baseRef: worktree.baseRef,
+          createdAt: worktree.createdAt,
+          reviewUrl: urlOf(ids),
+          review: reviewOf(ids),
+          sessions: members
+            .toSorted((a, b) => b.createdAt.localeCompare(a.createdAt))
+            .map(toWorktreeJsonSession),
+        });
+      }
+    } else {
+      for (const session of detail.sessions) {
+        const ids = new Set([session.id]);
+        worktrees.push({
+          id: null,
+          name: session.worktree,
+          projectId: detail.project.id,
+          projectName: detail.project.name,
+          branch: session.branch,
+          baseSha: session.baseSha,
+          baseRef: session.baseRef,
+          createdAt: session.createdAt,
+          reviewUrl: urlOf(ids),
+          review: reviewOf(ids),
+          sessions: [toWorktreeJsonSession(session)],
+        });
+      }
+    }
+  }
+  return { version: 2, worktrees };
+};
+
+/** `mend worktrees [--project <p>] [--json]` — the container-first listing. */
+const worktreesCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const json = args.includes("--json");
+  const projectFlag = args.indexOf("--project");
+  const projectName =
+    projectFlag !== -1 && args[projectFlag + 1] !== undefined
+      ? String(args[projectFlag + 1])
+      : null;
+  const payload = await buildWorktreesJson(config, projectName);
+  if (json) {
+    say(JSON.stringify(payload, null, 2));
+    return;
+  }
+  if (payload.worktrees.length === 0) {
+    say(dim("no worktrees yet — mend claude --name <worktree> starts one"));
+    return;
+  }
+  for (const worktree of payload.worktrees) {
+    const live = worktree.sessions.filter((session) =>
+      ACTIVE_STATUSES.has(session.status),
+    ).length;
+    const facts: Array<string> = [
+      `${worktree.sessions.length} session${worktree.sessions.length === 1 ? "" : "s"}`,
+    ];
+    if (live > 0) facts.push(green(`${live} live`));
+    if (worktree.review !== null && worktree.review.openComments > 0) {
+      facts.push(amber(`${worktree.review.openComments} open`));
+    }
+    const base = worktree.baseRef ?? worktree.baseSha.slice(0, 12);
+    say(
+      `${worktree.name.padEnd(24)}  ${worktree.projectName}  ${dim(`${worktree.branch} · base ${base}`)}  ${facts.join(dim(" · "))}`,
+    );
+    for (const session of worktree.sessions) {
+      const status = session.status.padEnd(9);
+      const name = session.label ?? `session ${session.id.slice(0, 8)}`;
+      say(
+        `  └ ${session.harness.padEnd(8)}  ${dim(session.id.slice(0, 8))}  ${ACTIVE_STATUSES.has(session.status) ? green(status) : dim(status)}  ${name}`,
+      );
+    }
+  }
+};
+
 // ─── dashboard: the live TUI on bare `mend` ─────────────────────────────────
 
 const hasNodeFfi = (): boolean => {
@@ -3009,7 +3229,7 @@ const dashboard = async (config: CliConfig) => {
   await runDashboard({
     config,
     cwd: process.cwd(),
-    api: <T>(method: "GET" | "POST", route: string, body?: unknown) =>
+    api: <T>(method: "GET" | "POST" | "DELETE", route: string, body?: unknown) =>
       request<T>(config, method, route, body),
     attachTty: (sessionId: string, harness: string, processId?: string) =>
       attachTty(config, sessionId, harness, 0n, processId),
@@ -3032,11 +3252,13 @@ start
   mend adopt [source] [--name <name>] [--auth ambient|mend-key|bridge]
                                         adopt a repository into the store (default: cwd; any git
                                         URL — GitHub, GitLab, self-hosted, ssh://, a local path)
-  mend codex|claude|opencode ["prompt"] [--name <worktree>] [--model <id>]
-                             [--effort low|medium|high|xhigh|max]
+  mend codex|claude|opencode ["prompt"] [--name <worktree>] [--worktree <existing>]
+                             [--model <id>] [--effort low|medium|high|xhigh|max]
                              [--base <ref>] [--ask] [--fast] [--detach|-d] [--foreground]
-                                        new session worktree + launch the harness in it; the
-                                        worktree's name is asked first (--name skips the ask), a
+                                        launch the harness in a worktree; the worktree's name is
+                                        asked first (--name skips the ask — an EXISTING name joins
+                                        that worktree as a new session; --worktree joins only,
+                                        failing if absent), a
                                         quoted prompt becomes its first message,
                                         --ask restores the harness's permission prompts, --fast
                                         requests priority processing (codex service tier),
@@ -3062,6 +3284,9 @@ everything else
   mend keys share                       relay THIS machine's ssh-agent to the server (bridge mode:
                                         hardware keys sign here; Ctrl-C stops sharing)
   mend run -- <command...>              same, with an arbitrary command
+  mend worktrees [--project <p>] [--json]
+                                        every worktree and the sessions inside it (mend sessions
+                                        --json stays the v1 flat list; --json=v2 groups like this)
   mend attach <session-id-prefix>       reattach this terminal to a running session
   mend stop <session-id-prefix> | --all [--project <p>]
                                         stop the agent — the workspace harvests and closes; the
@@ -3159,6 +3384,8 @@ const main = async () => {
     case "sessions":
     case "status":
       return sessionsCommand(config, rest);
+    case "worktrees":
+      return worktreesCommand(config, rest);
     case undefined:
     case "ui":
       return dashboard(config);
