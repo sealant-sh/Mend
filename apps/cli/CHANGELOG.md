@@ -1,5 +1,31 @@
 # @sealant/mend
 
+## 0.14.0
+
+### Minor Changes
+
+- 0a90f6f: The dashboard groups everything by worktree: each session row leads with its worktree
+  (branch), its live Services hang underneath, and the detail panel is titled by the worktree. A
+  stop shortcut lands too — `x` (or `Shift+K`) arms against the selected worktree and a second press
+  stops it; lowercase `k` stays vim-up. `mend attach`/`mend rejoin` banners name the worktree as
+  well.
+- 0a90f6f: The start-a-session flow asks the worktree's name first, then the session details — on
+  the dashboard (`n` opens the name input, then the harness picker), the CLI (`mend claude` asks on
+  a TTY; `--name` skips the ask), the web and desktop composers, and the phone. A named session gets
+  branch `mend/<name>` and worktree directory `<name>`; empty keeps the auto-derived identity. Named
+  sessions provision cold (hot skeletons carry pre-created worktrees), and a taken name fails with a
+  readable message.
+
+### Patch Changes
+
+- 3204a33: Detach works — and leaves a working terminal — while talking to claude. The claude TUI
+  pushes the kitty keyboard protocol through the PTY onto the user's own terminal: Ctrl+] then
+  arrives as a CSI-u escape instead of the 0x1d byte the attach loop scanned for (detach silently
+  dead), and after any detach the terminal kept encoding every keystroke as CSI-u junk. The detach
+  key now matches both encodings, and ending an interactive attach restores the local terminal (pops
+  the kitty keyboard stack, disables bracketed paste and mouse reporting, leaves the alternate
+  screen, shows the cursor). Reattach replays from 0, which re-establishes whatever the TUI had set.
+
 ## 0.13.0
 
 ### Minor Changes
