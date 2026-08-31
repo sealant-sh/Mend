@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { Sha, type SessionId } from "@mend/domain";
+import { Sha } from "@mend/domain";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 

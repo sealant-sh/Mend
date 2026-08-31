@@ -10,7 +10,7 @@ import {
   ChangePassesRepoLive,
   ProjectsRepo,
   SessionsRepo,
-  SessionChangesRepo,
+  WorktreeChangesRepo,
   SealantIdentityStoreLive,
   SettingsRepo,
   ChangesRepoLive,
@@ -37,7 +37,8 @@ import {
   ServiceForwardsRepoLive,
   ServiceObservationsRepoLive,
   ServicesRepoLive,
-  SessionChangesRepoLive,
+  WorktreeChangesRepoLive,
+  WorktreesRepoLive,
   SessionGitOpsRepoLive,
   SessionProcessesRepoLive,
   SessionRunsRepoLive,
@@ -151,7 +152,8 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   FollowUpsRepoLive,
   ReviewCommentsRepoLive,
   ReviewSlicesRepoLive,
-  SessionChangesRepoLive,
+  WorktreeChangesRepoLive,
+  WorktreesRepoLive,
   PushDevicesRepoLive,
   ChangeToursRepoLive,
   ChangePassesRepoLive,
@@ -274,7 +276,7 @@ const InferenceWorkersLive = Layer.effectDiscard(
     const tourComposer = yield* TourComposer;
     const suggester = yield* ChangeSuggester;
     const passes = yield* ChangePassesRepo;
-    const sessionChanges = yield* SessionChangesRepo;
+    const sessionChanges = yield* WorktreeChangesRepo;
     const sessionsForJobs = yield* SessionsRepo;
     // Inference runs on the SESSION OWNER's connected subscription (plan §9.3, docs/SEALANT-
     // IDENTITY.md): a pass over someone's change is paid for by their account, never the
@@ -294,7 +296,9 @@ const InferenceWorkersLive = Layer.effectDiscard(
         sessionChanges.byId(changeId).pipe(
           Effect.option,
           Effect.flatMap((change) =>
-            Option.isSome(change) ? asSessionOwner(change.value.sessionId)(self) : self,
+            Option.isSome(change) && change.value.sessionId !== null
+              ? asSessionOwner(change.value.sessionId)(self)
+              : self,
           ),
         );
     // Every change pass records its outcome — running, completed with a

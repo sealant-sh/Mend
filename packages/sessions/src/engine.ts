@@ -346,6 +346,12 @@ export interface ProvisionInput {
   readonly ownerUserId: string | null;
 }
 
+/** Anonymous worktrees are keyed by their own id, named ones by the name. */
+const worktreeIdentityFor = (worktreeId: WorktreeId, name: string | null) =>
+  name === null
+    ? { directory: `wt-${worktreeId}`, branch: `mend/wt/${worktreeId}` }
+    : { directory: name, branch: `mend/${name}` };
+
 /** A supporting process needs a current reachable workspace. */
 export class SessionNotLiveError extends Schema.TaggedErrorClass<SessionNotLiveError>()(
   "SessionNotLiveError",
@@ -1149,12 +1155,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         );
       });
-
-      /** Anonymous worktrees are keyed by their own id, named ones by the name. */
-      const worktreeIdentityFor = (worktreeId: WorktreeId, name: string | null) =>
-        name === null
-          ? { directory: `wt-${worktreeId}`, branch: `mend/wt/${worktreeId}` }
-          : { directory: name, branch: `mend/${name}` };
 
       /** Join guard: a durable worktree is never silently re-based. */
       const refuseBaseConflict = (worktree: Worktree, base: string | null) =>

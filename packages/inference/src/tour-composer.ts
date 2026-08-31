@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { ChangeToursRepo, ProjectsRepo, SessionChangesRepo, SessionsRepo } from "@mend/db";
+import { ChangeToursRepo, ProjectsRepo, WorktreeChangesRepo, SessionsRepo } from "@mend/db";
 import { ChangeId } from "@mend/domain";
 import { RecordLink, TourStop } from "@mend/domain/workbench";
 import type { SealantClient } from "@mend/sealant";
@@ -77,7 +77,7 @@ export class TourComposer extends Context.Service<
     TourComposer,
     Effect.gen(function* () {
       const provider = yield* InferenceProvider;
-      const changes = yield* SessionChangesRepo;
+      const changes = yield* WorktreeChangesRepo;
       const sessions = yield* SessionsRepo;
       const projects = yield* ProjectsRepo;
       const tours = yield* ChangeToursRepo;
@@ -96,6 +96,12 @@ export class TourComposer extends Context.Service<
         const change = yield* changes
           .byId(job.changeId)
           .pipe(Effect.mapError(() => failed(`no change ${job.changeId}`)));
+        // Phase-A record evidence reads the LAST CONTRIBUTING conversation
+        // (the change's session mirror); multi-session evidence union is
+        // named follow-up work. Null = no session ever inhabited the worktree.
+        if (change.sessionId === null) {
+          return yield* failed("the change has no contributing session — nothing to ground findings in");
+        }
         const session = yield* sessions
           .byId(change.sessionId)
           .pipe(Effect.mapError(() => failed(`no session ${change.sessionId}`)));
