@@ -117,6 +117,7 @@ import {
   locateHarnessState,
 } from "./harness-state.ts";
 import { hotFingerprint, type HotFingerprintInputs } from "./hot-pool.ts";
+import { backfillFromNative, cursorAtEndOf } from "./native-backfill.ts";
 import {
   convertNativeSession,
   ingestNativeSession,
@@ -349,6 +350,16 @@ export class LegacyBenchReadOnlyError extends Schema.TaggedErrorClass<LegacyBenc
   { sessionId: Schema.String },
 ) {}
 
+/** The session's harness cannot continue in the requested mode (claude and codex only). */
+export class HandoffUnsupportedError extends Schema.TaggedErrorClass<HandoffUnsupportedError>()(
+  "HandoffUnsupportedError",
+  {
+    sessionId: Schema.String,
+    harness: Schema.String,
+    to: Schema.String,
+  },
+) {}
+
 /** The process id is unknown or does not identify a supporting shell. */
 export class ShellProcessNotFoundError extends Schema.TaggedErrorClass<ShellProcessNotFoundError>()(
   "ShellProcessNotFoundError",
@@ -453,6 +464,31 @@ export class SessionEngine extends Context.Service<
       | SessionLaunchSetupError
       | DotfilesResolveError
       | ProtocolHarnessUnsupportedError
+    >;
+    /**
+     * Cross-mode pickup (mode handoff): end the live agent in the OTHER mode,
+     * backfill PTY-era history from the native transcript into the durable
+     * conversation, and continue the same provider session in the requested
+     * mode. Idempotent when already live in that mode; a settled session
+     * degrades to a mode-aware resume.
+     */
+    readonly handoff: (
+      sessionId: SessionId,
+      to: "protocol" | "pty",
+      start: LaunchStart,
+      author: string | null,
+    ) => Effect.Effect<
+      Session,
+      | SessionNotFoundError
+      | SessionNotLiveError
+      | LegacyBenchReadOnlyError
+      | ProjectNotFoundError
+      | SealantPlatformError
+      | HarnessStateError
+      | SessionLaunchSetupError
+      | DotfilesResolveError
+      | ProtocolHarnessUnsupportedError
+      | HandoffUnsupportedError
     >;
     /** Queue one authored turn on the live protocol process. */
     readonly submitTurn: (
@@ -1303,6 +1339,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 cause,
               }),
           });
+          // A protocol process's whole transcript is already durably projected
+          // (the live adapter saw every entry) — advance the ingest cursor so
+          // a later cross-mode pickup backfills only genuinely PTY-era turns.
+          if (agentProcess.kind === "agent-protocol" && providerSessionId !== null) {
+            const endCursor = cursorAtEndOf(harness, providerSessionId, native.stdout);
+            if (endCursor !== null) {
+              yield* sessions.setNativeIngestCursor(sessionId, endCursor);
+            }
+          }
           // The harness-agnostic record IS the durable artifact; native
           // files are views. Adapters re-emit any supported harness from it.
           const canonical = ingestNativeSession(harness, native.stdout, "/workspace/repo");
@@ -3092,8 +3137,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           });
         }
         const previous = currentAgentProcess(rows);
+        // Any prior same-harness agent resumes by provider id — a PTY-born
+        // session picked up in protocol mode continues the same conversation
+        // (mode handoff), not a fresh one.
         const providerSessionId =
-          previous?.kind === "agent-protocol"
+          previous !== null && previous.harness === session.harness
             ? (previous.providerSessionId ?? undefined)
             : undefined;
         const composed = composeProtocolArgv(session.harness, start, providerSessionId);
@@ -3507,6 +3555,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sessionId: SessionId,
         harness: string | null,
         fresh = false,
+        // Mode handoff: a formerly-protocol session picked up from a terminal
+        // must come back as a TUI, not re-enter protocol mode.
+        forcePty = false,
       ) {
         const session = yield* sessions.byId(sessionId);
         if (isLegacyBench(session)) {
@@ -3522,7 +3573,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         const target = harness ?? session.harness;
         const priorAgent = currentAgentProcess(yield* processes.listForSession(sessionId));
-        if (priorAgent?.kind === "agent-protocol" && target === session.harness) {
+        if (!forcePty && priorAgent?.kind === "agent-protocol" && target === session.harness) {
           return yield* launchProtocol(
             sessionId,
             { mode: "protocol", permissionMode: "bypass" },
@@ -3715,6 +3766,133 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               })
             : sweepWorkspace(sessionId),
           scope,
+        );
+      });
+
+      /**
+       * Mode handoff, the history half: land the newest same-harness agent's
+       * native transcript (harvested to `transcript.native`) as durable
+       * conversation turns past the ingest cursor. Never blocks the handoff —
+       * live turns still work with missing history, and the transcript view
+       * keeps the full record either way.
+       */
+      const backfillNativeHistory = Effect.fn("SessionEngine.backfillNativeHistory")(function* (
+        session: Session,
+        sourceAgent: SessionProcess | null,
+      ) {
+        if (sourceAgent === null || sourceAgent.harness === null) return;
+        const refreshed = yield* processes.byId(sourceAgent.id);
+        const providerSessionId =
+          refreshed?.providerSessionId ??
+          sourceAgent.providerSessionId ??
+          session.providerSessionId;
+        if (providerSessionId === null) return;
+        const project = yield* projects.byId(session.projectId);
+        const transcriptPath = path.join(
+          processStatePathOf(project.storePath, session.id, sourceAgent.id),
+          "transcript.native",
+        );
+        const native = yield* Effect.promise(() =>
+          fs.readFile(transcriptPath, "utf8").catch(() => null),
+        );
+        if (native === null || native === "") return;
+        const cursor = yield* sessions.nativeIngestCursor(session.id);
+        const parsed = backfillFromNative(sourceAgent.harness, providerSessionId, native, cursor);
+        if (parsed === null) return;
+        const landed = yield* conversations.backfillConversation(
+          session.id,
+          sourceAgent.id,
+          parsed.turns,
+        );
+        yield* sessions.setNativeIngestCursor(session.id, parsed.cursor);
+        yield* Effect.logInfo("session engine: native history backfilled").pipe(
+          Effect.annotateLogs({
+            sessionId: session.id,
+            processId: sourceAgent.id,
+            turns: landed,
+          }),
+        );
+      });
+
+      /**
+       * Cross-mode pickup: one live agent process at a time, the provider
+       * session id the durable identity. Ends the other-mode agent gracefully
+       * (harvesting synchronously — the relaunch needs the provider id and
+       * transcript now), backfills PTY-era history for protocol pickups, and
+       * continues the same conversation in the requested mode.
+       */
+      const handoff = Effect.fn("SessionEngine.handoff")(function* (
+        sessionId: SessionId,
+        to: "protocol" | "pty",
+        start: LaunchStart,
+        author: string | null,
+      ) {
+        const session = yield* sessions.byId(sessionId);
+        if (isLegacyBench(session)) {
+          return yield* new LegacyBenchReadOnlyError({ sessionId });
+        }
+        if (session.harness !== "claude" && session.harness !== "codex") {
+          return yield* new HandoffUnsupportedError({
+            sessionId,
+            harness: session.harness,
+            to,
+          });
+        }
+        const rows = yield* processes.listForSession(sessionId);
+        const liveAgents = rows.filter(isLiveAgentProcess);
+        const wantedKind = to === "protocol" ? "agent-protocol" : "agent-pty";
+        if (liveAgents.some((agent) => agent.kind === wantedKind)) {
+          return session;
+        }
+        // Graceful takeover: end the other-mode agents. endAgentProcess records
+        // without the sweep tail, so the workspace stays leased across the gap.
+        let handedOver: SessionProcess | null = null;
+        for (const agent of liveAgents) {
+          if (agent.kind === "agent-protocol") {
+            yield* protocolHost.detach(agent.id);
+            yield* conversations.cancelOpenForProcess(agent.id);
+          }
+          if (agent.sealantSessionId !== null) {
+            yield* closeProcessPty(agent.sealantWorkspaceId, agent.sealantSessionId);
+          }
+          const recorded = yield* endAgentProcess(agent, {
+            how: "stopped",
+            exitCode: null,
+            outcome: "stopped",
+            summary: `handed off to ${to}`,
+          });
+          if (recorded) {
+            handedOver = agent;
+            // Synchronous, not the forked finish tail: the relaunch below
+            // needs the harvested provider id and transcript immediately.
+            yield* tryHarvest(agent);
+          }
+        }
+        const sourceAgent = handedOver ?? currentAgentProcess(rows);
+        if (to === "protocol") {
+          // History lands before the opening protocol turn, so the phone's
+          // first render is already the full conversation.
+          yield* backfillNativeHistory(session, sourceAgent).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("session engine: native backfill failed").pipe(
+                Effect.annotateLogs({ sessionId, cause: String(cause) }),
+              ),
+            ),
+          );
+          return yield* launchProtocol(sessionId, { ...start, mode: "protocol" }, author);
+        }
+        return yield* resumeSession(sessionId, null, false, true).pipe(
+          Effect.catchTag("HarnessStateNotFoundError", () =>
+            Effect.fail(
+              new SealantPlatformError({
+                code: "handoff_state_missing",
+                status: null,
+                message:
+                  "No saved harness state to reopen as a terminal — resume the session instead.",
+                cause: null,
+              }),
+            ),
+          ),
         );
       });
 
@@ -5310,6 +5488,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         stopService: (serviceId) => ownedByService(serviceId)(stopService(serviceId)),
         resumeSession: (sessionId, harness, fresh) =>
           owned(sessionId)(resumeSession(sessionId, harness, fresh)),
+        handoff: (sessionId, to, start, author) =>
+          owned(sessionId)(handoff(sessionId, to, start, author)),
         observeExternalAgents,
         transcript,
       };

@@ -11,6 +11,7 @@ import {
 import {
   Session,
   SessionDotfiles,
+  type NativeIngestCursor,
   type SessionExtraMount,
   type SessionReferenceMount,
   type SessionStatus,
@@ -93,6 +94,12 @@ export class SessionsRepo extends Context.Service<
     /** The dotfiles this session actually launched with — stamped at launch, a recorded fact. */
     readonly setDotfiles: (id: SessionId, dotfiles: SessionDotfiles) => Effect.Effect<void>;
     readonly setProviderSessionId: (id: SessionId, providerId: string) => Effect.Effect<void>;
+    /** Mode-handoff backfill bookkeeping — not part of the Session surface. */
+    readonly nativeIngestCursor: (id: SessionId) => Effect.Effect<NativeIngestCursor | null>;
+    readonly setNativeIngestCursor: (
+      id: SessionId,
+      cursor: NativeIngestCursor,
+    ) => Effect.Effect<void>;
     /** What launch actually mounted beside the worktree — recorded once, at launch. */
     readonly setReferenceMounts: (
       id: SessionId,
@@ -145,7 +152,13 @@ type SessionRow = typeof agentSessions.$inferSelect;
 type ExactKeys<A, B> = [Exclude<keyof A, keyof B> | Exclude<keyof B, keyof A>] extends [never]
   ? true
   : never;
-const sessionSeamIntact: ExactKeys<SessionRow, Session> = true;
+/**
+ * Persistence-only bookkeeping deliberately absent from the Session surface:
+ * the mode-handoff ingest cursor is read and written through its own repo
+ * methods, never carried on the domain object. Everything else stays exact.
+ */
+type SessionBookkeepingColumns = "nativeIngestCursor";
+const sessionSeamIntact: ExactKeys<Omit<SessionRow, SessionBookkeepingColumns>, Session> = true;
 void sessionSeamIntact;
 
 export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClient.PgClient> =
@@ -349,6 +362,29 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
+      const nativeIngestCursor = Effect.fn("SessionsRepo.nativeIngestCursor")(function* (
+        id: SessionId,
+      ) {
+        const [row] = yield* db
+          .select({ nativeIngestCursor: agentSessions.nativeIngestCursor })
+          .from(agentSessions)
+          .where(eq(agentSessions.id, id))
+          .limit(1)
+          .pipe(Effect.orDie);
+        return row?.nativeIngestCursor ?? null;
+      });
+
+      const setNativeIngestCursor = Effect.fn("SessionsRepo.setNativeIngestCursor")(function* (
+        id: SessionId,
+        cursor: NativeIngestCursor,
+      ) {
+        yield* db
+          .update(agentSessions)
+          .set({ nativeIngestCursor: cursor, updatedAt: new Date() })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
+      });
+
       const setReferenceMounts = Effect.fn("SessionsRepo.setReferenceMounts")(function* (
         id: SessionId,
         mounts: ReadonlyArray<SessionReferenceMount>,
@@ -516,6 +552,8 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         setWorkspaceImage,
         setDotfiles,
         setProviderSessionId,
+        nativeIngestCursor,
+        setNativeIngestCursor,
         setReferenceMounts,
         setExtraMounts,
         setStatus,

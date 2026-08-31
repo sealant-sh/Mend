@@ -1357,6 +1357,19 @@ understand the work.
   control plane later). Design: `docs/DEPLOYMENT-STRATEGIES.md`; the Sealant half is the cloudflare
   runtime adapter + bridge Worker series.
 
+- **2026-08-31: mode handoff — cross-mode pickup with native fidelity.** A session started as a PTY
+  can be picked up from the phone in full structured mode, and a phone-driven protocol session can
+  be reopened as a TUI — one live agent process at a time, the provider session id the durable
+  identity (`POST /sessions/:id/handoff {to}`). Fidelity comes from the harness's own record: the
+  takeover harvests synchronously, PTY-era history backfills into the durable conversation from the
+  native transcript through the SAME item mapping the live adapter uses (real `msg_`/`toolu_` ids,
+  raw blocks in `item.data` — never an inferred rendering), and the reverse direction is a native
+  `claude --resume` / `codex resume` whose scrollback holds the phone-authored turns. The
+  per-session native-ingest cursor (advanced at backfill and at every protocol harvest) is what
+  keeps a second pickup from duplicating protocol-era turns. Reading stays instant and read-only on
+  open; the composer is the pickup. PTY-first stands: the handoff is provider-specific machinery
+  layered on top, claude and codex only, and every other harness refuses with a clear message.
+
 - **2026-08-31: protocol process restart policy v2 — rehydrate in place.** The pipe process survives
   a Mend restart (its stdio terminates at the platform daemon), so boot re-attaches a fresh adapter
   to the surviving pipe on the SAME `session_processes` row and replays the recorded output from 0

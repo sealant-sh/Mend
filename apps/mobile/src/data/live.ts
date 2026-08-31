@@ -539,6 +539,21 @@ export const useSessionActions = () => {
     mutationFn: (sessionId: string) => api<SessionDto>("POST", `/sessions/${sessionId}/stop`, {}),
     onSettled: invalidate,
   });
+  // Cross-mode pickup (mode handoff): continue a PTY-born session here in
+  // structured mode — one round trip performs takeover, history backfill,
+  // protocol launch, and (when given) the first turn.
+  const handoff = useMutation({
+    mutationFn: (input: {
+      readonly sessionId: string;
+      readonly to: "protocol" | "pty";
+      readonly prompt?: string;
+    }) =>
+      api<SessionDto>("POST", `/sessions/${input.sessionId}/handoff`, {
+        to: input.to,
+        ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
+      }),
+    onSettled: invalidate,
+  });
   const setLabel = useMutation({
     mutationFn: (input: { readonly sessionId: string; readonly label: string | null }) =>
       api<SessionDto>("POST", `/sessions/${input.sessionId}/label`, { label: input.label }),
@@ -599,6 +614,7 @@ export const useSessionActions = () => {
     start,
     resume,
     stop,
+    handoff,
     setLabel,
     remove,
     removeSettled,

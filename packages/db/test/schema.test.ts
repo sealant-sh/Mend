@@ -150,6 +150,7 @@ describe("Mend Drizzle schema", () => {
       "workspace_ttl_renewed_at",
       "workspace_ttl_renewal_failed_at",
       "workspace_ttl_renewal_error",
+      "native_ingest_cursor",
       "workspace_image",
       "dotfiles",
       "owner_user_id",

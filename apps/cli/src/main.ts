@@ -2601,9 +2601,20 @@ const resumeCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
     `${green("✓")} resuming ${match.harness} · ${dim(match.id.slice(0, 8))}${withHarness === null ? "" : ` ${dim("as")} ${withHarness}`}`,
   );
   say(`${cobalt("  watch")} · ${config.url}/sessions/${match.id}`);
+  // A formerly-protocol session (a phone pickup) resumed from a terminal must
+  // come back as a TUI — the handoff verb routes it there; a plain resume
+  // would re-enter protocol mode with nothing to attach.
+  const priorAgent =
+    detail.annotations.find((annotation) => annotation.sessionId === match.id)?.currentAgent ??
+    null;
+  const protocolPrior = priorAgent?.kind === "agent-protocol" && withHarness === null;
   await withSpinner(
-    "resuming — a fresh workspace restores the saved session state…",
-    api<SessionDto>(config, "POST", `/sessions/${match.id}/resume`, { harness: withHarness }),
+    protocolPrior
+      ? "reopening as a terminal — same conversation…"
+      : "resuming — a fresh workspace restores the saved session state…",
+    protocolPrior
+      ? api<SessionDto>(config, "POST", `/sessions/${match.id}/handoff`, { to: "pty" })
+      : api<SessionDto>(config, "POST", `/sessions/${match.id}/resume`, { harness: withHarness }),
   );
   say(`${green("✓ recording")} · same worktree, conversation restored${detachHint()}`);
   say("");
@@ -2675,7 +2686,21 @@ const rejoinCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
   say(`${cobalt("  watch")} · ${config.url}/sessions/${session.id}`);
 
   let restored = false;
-  if (!alreadyLive) {
+  const currentAgent =
+    detail.annotations.find((annotation) => annotation.sessionId === session.id)?.currentAgent ??
+    null;
+  if (currentAgent?.kind === "agent-protocol") {
+    // A protocol agent (a phone pickup) has no PTY to attach. Hand the session
+    // off to a terminal: the TUI resumes the same provider conversation, with
+    // the phone-authored turns in its scrollback.
+    await withSpinner(
+      alreadyLive
+        ? "taking over from the protocol session — same conversation…"
+        : "reopening as a terminal — same conversation…",
+      api<SessionDto>(config, "POST", `/sessions/${session.id}/handoff`, { to: "pty" }),
+    );
+    restored = true;
+  } else if (!alreadyLive) {
     restored = await resumeForRejoin(
       config,
       session.id,

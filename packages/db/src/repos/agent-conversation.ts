@@ -60,6 +60,14 @@ export interface UpsertAgentItemInput extends AgentEventItem {
   readonly providerEventIndex: number;
 }
 
+/** One PTY-era turn reconstructed from the native transcript, ready to land as history. */
+export interface BackfillTurnInput {
+  /** Deterministic provider turn id (`native:<entry id>`); the idempotency key. */
+  readonly providerTurnId: string;
+  readonly input: string;
+  readonly items: ReadonlyArray<AgentEventItem>;
+}
+
 /** Input required to persist one replay-safe request. */
 export interface OpenAgentRequestInput extends AgentEventRequest {
   readonly sessionId: SessionId;
@@ -160,6 +168,17 @@ export class AgentConversationRepo extends Context.Service<
     ) => Effect.Effect<void>;
     readonly cancelOpenForTurn: (turnId: AgentTurnId) => Effect.Effect<void>;
     readonly cancelOpenForProcess: (processId: SessionProcessId) => Effect.Effect<void>;
+    /**
+     * Mode handoff: land PTY-era turns from the native transcript as completed
+     * history. One transaction under the session lock; ordinals append after
+     * the existing tail; a turn whose providerTurnId already exists is
+     * skipped, so a repeated backfill is a no-op. Returns the turns landed.
+     */
+    readonly backfillConversation: (
+      sessionId: SessionId,
+      processId: SessionProcessId,
+      turns: ReadonlyArray<BackfillTurnInput>,
+    ) => Effect.Effect<number>;
     /** Crash recovery: a response caught mid-delivery reads `sending` forever; make it answerable again. */
     readonly resetSendingResponses: (processId: SessionProcessId) => Effect.Effect<void>;
     /** Relaunch fallback: move still-queued turns onto the replacement process so dispatch finds them. */
@@ -799,6 +818,89 @@ export const AgentConversationRepoLive: Layer.Layer<
       if (first !== undefined) yield* notify(first.sessionId);
     });
 
+    const backfillConversation = Effect.fn("AgentConversationRepo.backfillConversation")(function* (
+      sessionId: SessionId,
+      processId: SessionProcessId,
+      turns: ReadonlyArray<BackfillTurnInput>,
+    ) {
+      if (turns.length === 0) return 0;
+      const landed = yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            yield* tx.execute(
+              sql`select pg_advisory_xact_lock(hashtext(${`mend:agent-conversation:${sessionId}`}))`,
+            );
+            const existing = yield* tx
+              .select({ providerTurnId: agentTurns.providerTurnId })
+              .from(agentTurns)
+              .where(eq(agentTurns.sessionId, sessionId));
+            const seen = new Set(
+              existing.flatMap((row) => (row.providerTurnId === null ? [] : [row.providerTurnId])),
+            );
+            const [turnPosition] = yield* tx
+              .select({ value: max(agentTurns.ordinal) })
+              .from(agentTurns)
+              .where(eq(agentTurns.sessionId, sessionId));
+            const [itemPosition] = yield* tx
+              .select({ value: max(agentItems.seq) })
+              .from(agentItems)
+              .where(eq(agentItems.sessionId, sessionId));
+            let ordinal = (turnPosition?.value ?? -1) + 1;
+            let seq = (itemPosition?.value ?? 0) + 1;
+            const now = new Date();
+            let count = 0;
+            for (const turn of turns) {
+              if (seen.has(turn.providerTurnId)) continue;
+              const [turnRow] = yield* tx
+                .insert(agentTurns)
+                .values({
+                  id: AgentTurnId.make(crypto.randomUUID()),
+                  sessionId,
+                  processId,
+                  ordinal: ordinal++,
+                  author: null,
+                  input: turn.input,
+                  status: "completed",
+                  providerTurnId: turn.providerTurnId,
+                  startedAt: now,
+                  endedAt: now,
+                })
+                .returning();
+              if (turnRow === undefined) {
+                return yield* Effect.die("agent turn backfill returned no row");
+              }
+              let eventIndex = 0;
+              for (const item of turn.items) {
+                yield* tx
+                  .insert(agentItems)
+                  .values({
+                    id: AgentItemId.make(crypto.randomUUID()),
+                    sessionId,
+                    processId,
+                    turnId: turnRow.id,
+                    seq: seq++,
+                    providerItemId: item.providerItemId,
+                    providerOutputProcessId: processId,
+                    providerOutputSeq: 0n,
+                    providerEventIndex: eventIndex++,
+                    kind: item.kind,
+                    status: item.status,
+                    title: item.title,
+                    text: item.text,
+                    data: item.data,
+                  })
+                  .onConflictDoNothing();
+              }
+              count += 1;
+            }
+            return count;
+          }),
+        )
+        .pipe(Effect.orDie);
+      if (landed > 0) yield* notify(sessionId);
+      return landed;
+    });
+
     const resetSendingResponses = Effect.fn("AgentConversationRepo.resetSendingResponses")(
       function* (processId: SessionProcessId) {
         const rows = yield* db
@@ -891,6 +993,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       resolveProviderRequest,
       cancelOpenForTurn,
       cancelOpenForProcess,
+      backfillConversation,
       resetSendingResponses,
       requeueQueuedTurns,
       protocolCursor,
