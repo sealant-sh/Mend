@@ -29,6 +29,7 @@ import {
   SessionRunsRepo,
   SessionsRepo,
   SettingsRepo,
+  SkillsRepo,
   UserDotfilesRepo,
   type NewCheckpoint,
   type NewSession,
@@ -450,6 +451,16 @@ const dotfilesStoreStubLayer = Layer.succeed(DotfilesStore, {
   current: () => Effect.succeed(null),
   archive: () => Effect.succeed(null),
   clear: () => Effect.void,
+});
+const skillsStubLayer = Layer.succeed(SkillsRepo, {
+  listForUser: () => Effect.succeed([]),
+  listForProject: () => Effect.succeed([]),
+  byId: () => Effect.die("not in test"),
+  create: () => Effect.die("not in test"),
+  update: () => Effect.die("not in test"),
+  remove: () => Effect.die("not in test"),
+  sync: () => Effect.die("not in test"),
+  forLaunch: () => Effect.succeed({ user: [], project: [] }),
 });
 
 const mendKeysStubLayer = Layer.succeed(MendKeys, {
@@ -1462,6 +1473,7 @@ const withEngine = <A, E>(
         secretCipherStubLayer,
         userDotfilesStubLayer,
         dotfilesStoreStubLayer,
+        skillsStubLayer,
       ),
     ),
   );
@@ -4005,6 +4017,7 @@ describe("SessionEngine", () => {
           settingsLayer(),
           userDotfilesStubLayer,
           dotfilesStoreStubLayer,
+          skillsStubLayer,
         ),
       ),
     );

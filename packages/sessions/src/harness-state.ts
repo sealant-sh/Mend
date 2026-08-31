@@ -279,7 +279,12 @@ export const hasLiveHarnessState = (
     const dirs = HARNESS_STATE[harness]?.homeDirs ?? [];
     for (const dir of dirs) {
       try {
-        if ((await fs.readdir(path.join(harnessHomePath, dir))).length > 0) return true;
+        const entries = await fs.readdir(path.join(harnessHomePath, dir));
+        // `skills` is configuration Mend itself materializes into the home
+        // before boot (skills.ts), not something the harness wrote — counting
+        // it would read every skills-carrying session as live and silently
+        // skip archive restores on relaunch.
+        if (entries.some((entry) => entry !== "skills")) return true;
       } catch {
         // Missing or unreadable — not live state.
       }

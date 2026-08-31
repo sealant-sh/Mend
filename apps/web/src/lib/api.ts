@@ -90,6 +90,11 @@ export type ProjectWorkspaceImageSaveResultDto = Outputs["projects"]["setWorkspa
 export type DotfilesDto = Outputs["settings"]["dotfiles"];
 export type DotfilesRepositoryDto = NonNullable<DotfilesDto["repository"]>;
 export type DotfilesSnapshotDto = NonNullable<DotfilesDto["snapshot"]>;
+
+export type SkillDto = Outputs["skills"]["list"][number];
+export type SkillDetailDto = Outputs["skills"]["detail"];
+export type SkillFileDto = SkillDetailDto["files"][number];
+export type SkillScopeDto = SkillDto["scope"];
 export type ProjectHotSessionsStatusDto = Outputs["projects"]["hotSessionsStatus"];
 export type HostEnvironmentSuggestionsDto = Outputs["settings"]["environmentSuggestions"];
 
@@ -360,6 +365,27 @@ export const postDotfilesSnapshot = (payload: {
 }) => orLogin(trpcClient.settings.postDotfilesSnapshot.mutate(payload));
 export const deleteDotfilesSnapshot = () =>
   orLogin(trpcClient.settings.deleteDotfilesSnapshot.mutate());
+
+// ─── Skills ─────────────────────────────────────────────────────────────────
+
+export const createSkill = (request: {
+  readonly scope: SkillScopeDto;
+  readonly projectId: string | null;
+  readonly name: string;
+  readonly description: string;
+  readonly files: ReadonlyArray<{ readonly path: string; readonly contents: string }>;
+}) => orLogin(trpcClient.skills.create.mutate(request));
+export const updateSkill = (
+  skillId: string,
+  request: {
+    readonly name: string;
+    readonly description: string;
+    readonly files: ReadonlyArray<{ readonly path: string; readonly contents: string }>;
+    readonly expectedRevision: number;
+  },
+) => orLogin(trpcClient.skills.update.mutate({ skillId, request }));
+export const removeSkill = (skillId: string) =>
+  orLogin(trpcClient.skills.remove.mutate({ skillId }));
 
 export const createPairing = () => orLogin(trpcClient.devices.createPairing.mutate());
 export const revokeDevice = (id: string) => orLogin(trpcClient.devices.revoke.mutate({ id }));

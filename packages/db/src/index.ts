@@ -31,6 +31,7 @@ export * from "./repos/change-tours.ts";
 export * from "./repos/review-comments.ts";
 export * from "./repos/review-slices.ts";
 export * from "./repos/runs.ts";
+export * from "./repos/skills.ts";
 export * from "./repos/worktree-changes.ts";
 export * from "./repos/worktrees.ts";
 export * from "./repos/session-git-ops.ts";

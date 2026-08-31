@@ -34,6 +34,7 @@ import {
   gitCurrentBranch,
   parseLaunchArgs,
 } from "./shared.ts";
+import { DEFAULT_SKILLS_DIR, scanSkillLibrary } from "./skills.ts";
 import { sshCommand } from "./ssh-setup.ts";
 
 /**
@@ -2384,6 +2385,99 @@ const dotfilesCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
   }
 };
 
+// ─── skills: the user/project skill libraries ───────────────────────────────
+
+interface SkillDto {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly scope: "user" | "project";
+  readonly fileCount: number;
+  readonly bytes: number;
+}
+interface SkillsSyncReportDto {
+  readonly created: ReadonlyArray<string>;
+  readonly updated: ReadonlyArray<string>;
+  readonly unchanged: ReadonlyArray<string>;
+  readonly removed: ReadonlyArray<string>;
+}
+
+/** With `--project` the project's library; bare, your own. */
+const skillsList = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const forProject = args.includes("--project");
+  const project = forProject ? await findProject(config, takeFlagValue(args, "--project")) : null;
+  const skills = await api<ReadonlyArray<SkillDto>>(
+    config,
+    "GET",
+    project === null ? "/skills" : `/projects/${project.id}/skills`,
+  );
+  const library = project === null ? "your library" : project.name;
+  if (skills.length === 0) {
+    say(dim(`no skills in ${library} — push a local one: mend skills push`));
+    return;
+  }
+  for (const skill of skills) {
+    say(
+      `  ${skill.name.padEnd(28)} ${dim(`${skill.fileCount} file${skill.fileCount === 1 ? "" : "s"} · ${formatDotfileBytes(skill.bytes)}`)}`,
+    );
+    if (skill.description !== "") say(`    ${dim(skill.description)}`);
+  }
+};
+
+/**
+ * Scan the shared agent-skills directory (`~/.agents/skills` by convention)
+ * and upload every bundle. The upload is the intent: same-named skills are
+ * replaced, and `--prune` removes what the directory no longer carries.
+ */
+const skillsPush = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const dirFlag = takeFlagValue(args, "--dir");
+  const root =
+    dirFlag === null ? path.join(os.homedir(), DEFAULT_SKILLS_DIR) : path.resolve(dirFlag);
+  const scanned = scanSkillLibrary(root);
+  if ("error" in scanned) return fail(scanned.error);
+  for (const note of scanned.notes) say(dim(`  ${note.skill}: ${note.message}`));
+  if (scanned.skills.length === 0) return fail(`no skills found under ${root}`);
+  const forProject = args.includes("--project");
+  const project = forProject ? await findProject(config, takeFlagValue(args, "--project")) : null;
+  const report = await api<SkillsSyncReportDto>(config, "POST", "/skills/sync", {
+    scope: project === null ? "user" : "project",
+    projectId: project?.id ?? null,
+    skills: scanned.skills.map((skill) => ({
+      name: skill.name,
+      description: skill.description,
+      files: skill.files,
+    })),
+    prune: args.includes("--prune"),
+  });
+  const library = project === null ? "your library" : project.name;
+  const counts = [
+    `${report.created.length} new`,
+    `${report.updated.length} updated`,
+    `${report.unchanged.length} unchanged`,
+    ...(report.removed.length > 0 ? [`${report.removed.length} removed`] : []),
+  ].join(" · ");
+  say(
+    `${green("pushed")} ${scanned.skills.length} skill${scanned.skills.length === 1 ? "" : "s"} from ${root} to ${library} · ${dim(counts)}`,
+  );
+  say(dim("sessions receive them from the next launch"));
+};
+
+const skillsCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const [verb, ...rest] = args;
+  switch (verb) {
+    case "push":
+      return skillsPush(config, rest);
+    case "list":
+      return skillsList(config, rest);
+    case undefined:
+      return skillsList(config, args);
+    default:
+      // Bare flags (`mend skills --project web`) read as the list.
+      if (verb.startsWith("--")) return skillsList(config, args);
+      return fail(`unknown skills command "${verb}" — try: mend skills push | list`);
+  }
+};
+
 // ─── completions: live sessions under TAB ───────────────────────────────────
 
 /**
@@ -2419,6 +2513,7 @@ _mend() {
     'shell:open a shell in a live session workspace'
     'service:reachable ports — add, list, stop'
     'keys:the machine Mend deploy key — init, show, share'
+    'skills:skill libraries — list, push'
     'accounts:your connected accounts on the platform'
     'pair:pair a phone or a second machine' 'doctor:read-only checklist of this setup'
     'connect:send this machine'"'"'s claude/codex/github credential to the platform'
@@ -2445,7 +2540,7 @@ _mend "$@"
 const BASH_COMPLETIONS = `_mend() {
   local cur=\${COMP_WORDS[COMP_CWORD]}
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "adopt codex claude opencode run attach stop shell service keys pair doctor continue resume rejoin refresh projects sessions status ui help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "adopt codex claude opencode run attach stop shell service keys skills pair doctor continue resume rejoin refresh projects sessions status ui help" -- "$cur") )
     return
   fi
   case \${COMP_WORDS[1]} in
@@ -3281,6 +3376,10 @@ everything else
   mend accounts                         your connected accounts on the platform (claude, codex, github)
   mend dotfiles                         your dotfiles on the server: repo + synced home files
   mend dotfiles sync [--all | paths…]   capture config files from THIS machine into your store
+  mend skills [--project [p]]           your skill library on the server (or a project's)
+  mend skills push [--project [p]] [--prune] [--dir <path>]
+                                        upload ~/.agents/skills bundles into the library; sessions
+                                        receive them at launch (--prune removes what's gone)
   mend keys share                       relay THIS machine's ssh-agent to the server (bridge mode:
                                         hardware keys sign here; Ctrl-C stops sharing)
   mend run -- <command...>              same, with an arbitrary command
@@ -3352,6 +3451,8 @@ const main = async () => {
       return keysCommand(config, rest);
     case "dotfiles":
       return dotfilesCommand(config, rest);
+    case "skills":
+      return skillsCommand(config, rest);
     case "accounts":
       return accountsCommand(config);
     case "connect":

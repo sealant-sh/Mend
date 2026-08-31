@@ -6,6 +6,7 @@ import { useState } from "react";
 import { ProjectSetupFacts } from "#/components/project-setup-facts";
 import { SessionComposer } from "#/components/session-composer";
 import { AppShell } from "#/components/shell";
+import { ProjectSkillsCard } from "#/components/skills-library";
 import { SessionStatusDot } from "#/components/status";
 import { removeWorktree } from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
@@ -242,6 +243,7 @@ function ProjectPage() {
 
           <aside className="flex flex-col gap-6">
             <ProjectSetupFacts projectId={projectId} />
+            <ProjectSkillsCard projectId={projectId} />
           </aside>
         </div>
       </div>

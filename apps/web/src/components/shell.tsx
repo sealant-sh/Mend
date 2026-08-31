@@ -77,6 +77,7 @@ function PrimaryNav({ horizontal = false }: { readonly horizontal?: boolean }) {
     >
       <NavItem to="/">Now</NavItem>
       <NavItem to="/projects">Projects</NavItem>
+      <NavItem to="/skills">Skills</NavItem>
       <NavItem to="/settings">Settings</NavItem>
     </nav>
   );
