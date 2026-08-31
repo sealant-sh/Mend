@@ -78,6 +78,37 @@ function ChangePage() {
   const review = useSuspenseQuery(
     trpc.changes.reviewDiff.queryOptions({ id: changeId, sliceId }),
   ).data;
+  // The change's session mirror is null only for a worktree no conversation
+  // has ever inhabited — nothing to review into, so no review page.
+  if (review.change.sessionId === null) {
+    return (
+      <AppShell>
+        <div className="mx-auto max-w-[1200px]">
+          <p className="ev-eyebrow">review</p>
+          <p className="mt-4 font-mono text-xs text-faint">
+            no conversation has inhabited this worktree yet · nothing to review
+          </p>
+        </div>
+      </AppShell>
+    );
+  }
+  return <ChangeReview changeId={changeId} sliceId={sliceId} sessionId={review.change.sessionId} />;
+}
+
+function ChangeReview({
+  changeId,
+  sliceId,
+  sessionId,
+}: {
+  readonly changeId: string;
+  readonly sliceId: string;
+  readonly sessionId: string;
+}) {
+  const trpc = useTRPC();
+  // Cache hit — the parent already ensured this query.
+  const review = useSuspenseQuery(
+    trpc.changes.reviewDiff.queryOptions({ id: changeId, sliceId }),
+  ).data;
   const { change, patch: diff } = review;
   const files = review.files.map((file) => ({
     path: file.newPath ?? file.oldPath ?? "unknown path",
@@ -86,9 +117,9 @@ function ChangePage() {
   }));
   const comments = useSuspenseQuery(trpc.changes.comments.queryOptions({ id: changeId })).data;
   const followUp = useSuspenseQuery(
-    trpc.sessions.pendingFollowUp.queryOptions({ id: change.sessionId }),
+    trpc.sessions.pendingFollowUp.queryOptions({ id: sessionId }),
   ).data;
-  const sessionDetail = useQuery(trpc.sessions.detail.queryOptions({ id: change.sessionId })).data;
+  const sessionDetail = useQuery(trpc.sessions.detail.queryOptions({ id: sessionId })).data;
   const [sendOpen, setSendOpen] = useState(false);
   const [focusFile, setFocusFile] = useState<{
     readonly path: string;
@@ -181,7 +212,7 @@ function ChangePage() {
         ) : (
           <ProjectCrumbs
             projectId={sessionDetail.session.projectId}
-            sessionId={change.sessionId}
+            sessionId={sessionId}
             leaf="review"
           />
         )}
@@ -215,11 +246,7 @@ function ChangePage() {
             ? ""
             : ` · base ${sessionDetail.session.baseRef}`}{" "}
           ·{" "}
-          <Link
-            to="/sessions/$sessionId"
-            params={{ sessionId: change.sessionId }}
-            className="text-info no-underline"
-          >
+          <Link to="/sessions/$sessionId" params={{ sessionId }} className="text-info no-underline">
             session
           </Link>
         </p>
@@ -229,7 +256,7 @@ function ChangePage() {
           </p>
         )}
         <PassOutcomes passes={passes} />
-        <FollowUpBanner sessionId={change.sessionId} followUp={followUp} />
+        <FollowUpBanner sessionId={sessionId} followUp={followUp} />
 
         <DescriptionCard
           tour={tour}
@@ -299,6 +326,7 @@ function ChangePage() {
       {sendOpen && (
         <SendReviewDialog
           change={change}
+          sessionId={sessionId}
           review={review}
           comments={openUnsent}
           onClose={() => setSendOpen(false)}
@@ -742,11 +770,14 @@ Address each point using your own judgment about how. Check your work with the r
 /** The plan's rule (§7.3): the user inspects and edits the instruction before sending. */
 function SendReviewDialog({
   change,
+  sessionId,
   review,
   comments,
   onClose,
 }: {
   readonly change: SessionChangeDto;
+  /** The conversation the follow-up is delivered to (the change's last contributor). */
+  readonly sessionId: string;
   readonly review: ReviewDiffDto;
   readonly comments: ReadonlyArray<ReviewCommentDto>;
   readonly onClose: () => void;
@@ -789,7 +820,7 @@ function SendReviewDialog({
   const send = () => {
     setPending(true);
     setError(null);
-    void deliverFollowUp(change.sessionId, {
+    void deliverFollowUp(sessionId, {
       reviewSliceId: review.slice.id,
       checkpointAId: review.checkpointA.id,
       checkpointBId: review.checkpointB.id,
