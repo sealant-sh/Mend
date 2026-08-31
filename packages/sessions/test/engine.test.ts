@@ -2283,6 +2283,72 @@ describe("SessionEngine", () => {
     );
   });
 
+  it("stop kills a session held open only by an orphan shell (the refuses-to-die case)", async () => {
+    const created: CreateOptions[] = [];
+    const stopped: string[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: null,
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          yield* engine.openShell(session.id);
+          // The agent exits on its own (Ctrl+C out of codex): scaffold the
+          // post-exit world directly — process ended, run settled, fold idle.
+          for (const [id, process] of world.processes) {
+            if (process.kind !== "agent-pty") continue;
+            world.processes.set(
+              id,
+              new SessionProcess({
+                ...process,
+                status: "exited",
+                exitCode: 0,
+                exitedAt: now(),
+                updatedAt: now(),
+              }),
+            );
+            const runId = process.sealantRunId;
+            const run = runId === null ? undefined : world.sessionRuns.get(runId);
+            if (runId !== null && run !== undefined) {
+              world.sessionRuns.set(
+                runId,
+                new SessionRun({
+                  ...run,
+                  status: "completed",
+                  settledAt: now(),
+                  updatedAt: now(),
+                }),
+              );
+            }
+          }
+          const before = world.sessions.get(session.id);
+          if (before !== undefined) {
+            world.sessions.set(session.id, new Session({ ...before, status: "idle" }));
+          }
+
+          // A stop with NO live agent is aimed at the session itself: the
+          // orphan shell closes and the session settles — a 200 that leaves
+          // it idle is the refuses-to-die bug.
+          yield* engine.stop(session.id);
+          const after = world.sessions.get(session.id);
+          expect(after?.status).toBe("stopped");
+          expect(after?.settledAt).not.toBeNull();
+          expect(
+            [...world.processes.values()].filter((process) => process.exitedAt === null),
+          ).toEqual([]);
+        }),
+      { sealantLayer: sealantLaunchLayer(created, undefined, stopped) },
+    );
+  });
+
   it("folds an agent exit the watcher observes: idle while a shell holds on, completed after", async () => {
     const created: CreateOptions[] = [];
     const stopped: string[] = [];

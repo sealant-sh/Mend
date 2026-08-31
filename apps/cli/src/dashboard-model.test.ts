@@ -4,9 +4,13 @@ import {
   deriveRows,
   deriveWorktrees,
   foldGroupStatus,
+  liveShellOf,
+  markSessionStopped,
+  removeWorktreeGroup,
   rowKeyOf,
   type ProjectDetailDto,
   type SessionDto,
+  type SessionProcessDto,
   type Workbench,
   type WorktreeDto,
 } from "./dashboard-model.ts";
@@ -134,5 +138,110 @@ describe("deriveRows", () => {
     // The lone-session worktree renders combined: its row still knows its group.
     const last = rows[3];
     expect(last?.kind === "session" && last.group.name).toBe("docs");
+  });
+});
+
+const proc = (over: Partial<SessionProcessDto> & { readonly id: string }): SessionProcessDto => ({
+  kind: "shell",
+  harness: null,
+  label: null,
+  status: "running",
+  exitedAt: null,
+  ...over,
+});
+
+describe("liveShellOf", () => {
+  it("reattaches to the newest LIVE shell instead of stacking a new one", () => {
+    const processes = [
+      proc({
+        id: "agent",
+        kind: "agent-pty",
+        harness: "codex",
+        exitedAt: "2026-08-31T10:00:00Z",
+        status: "exited",
+      }),
+      proc({ id: "shell-1" }),
+      proc({ id: "shell-2", exitedAt: "2026-08-31T11:00:00Z", status: "exited" }),
+    ];
+    expect(liveShellOf(processes)?.id).toBe("shell-1");
+  });
+
+  it("answers null when nothing live is attachable — a NEW shell is then honest", () => {
+    expect(
+      liveShellOf([proc({ id: "s", exitedAt: "2026-08-31T11:00:00Z", status: "exited" })]),
+    ).toBeNull();
+    expect(liveShellOf([])).toBeNull();
+  });
+});
+
+describe("optimistic verbs", () => {
+  const base = () =>
+    workbench({
+      project,
+      sessions: [
+        session({ id: "a", worktreeId: "wt-1", status: "running" }),
+        session({ id: "b", worktreeId: "wt-2", status: "running" }),
+      ],
+      annotations: [],
+      worktrees: [
+        worktree({ id: "wt-1", name: "fix-auth" }),
+        worktree({ id: "wt-2", name: "docs" }),
+      ],
+    });
+
+  it("markSessionStopped settles the row AND drops its live process facts at once", () => {
+    const data = {
+      ...base(),
+      processesBySession: new Map([
+        [
+          "a",
+          [
+            {
+              id: "p1",
+              kind: "agent-pty",
+              harness: "codex",
+              label: null,
+              status: "running",
+              exitedAt: null,
+            },
+          ],
+        ],
+      ]),
+      servicesBySession: new Map([
+        [
+          "a",
+          [
+            {
+              id: "svc",
+              sessionId: "a",
+              label: "web",
+              status: "reachable",
+              workspacePort: 5173,
+              protocol: "tcp" as const,
+              hostPort: 43100,
+            },
+          ],
+        ],
+      ]),
+    };
+    const patched = markSessionStopped(data, "a");
+    const groups = deriveWorktrees(patched, "proj-1");
+    const fixAuth = groups.find((group) => group.name === "fix-auth");
+    expect(fixAuth?.live).toBe(0);
+    expect(fixAuth?.sessions[0]?.session.status).toBe("stopped");
+    // The child fact lines vanish with the stop — no stale "running" agent row.
+    expect(fixAuth?.sessions[0]?.processes).toEqual([]);
+    expect(fixAuth?.sessions[0]?.services).toEqual([]);
+    // The other worktree is untouched.
+    expect(groups.find((group) => group.name === "docs")?.live).toBe(1);
+  });
+
+  it("removeWorktreeGroup drops the group from the rows before the server answers", () => {
+    const data = base();
+    const groups = deriveWorktrees(data, "proj-1");
+    const target = groups.find((group) => group.name === "docs");
+    const patched = removeWorktreeGroup(data, "proj-1", target!);
+    const names = deriveWorktrees(patched, "proj-1").map((group) => group.name);
+    expect(names).toEqual(["fix-auth"]);
   });
 });
