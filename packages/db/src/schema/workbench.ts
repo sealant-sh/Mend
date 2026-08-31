@@ -48,6 +48,7 @@ import type {
   SessionId,
   SessionProcessId,
   Sha,
+  WorktreeId,
 } from "@mend/domain";
 import {
   HotWorkspaceEnvironment,
@@ -282,10 +283,41 @@ export const projects = pgTable("projects", {
 });
 
 /**
+ * The durable container (plan §5.5/§5.6): one named git worktree in the project's
+ * central store. Sessions are conversations inside it; the change, its checkpoints,
+ * and their review belong to the worktree. Removal is explicit and refused while
+ * any session is live. `name` is display identity (renameable); `directory` is the
+ * store path segment and immutable — workspace bind mounts point there.
+ */
+export const worktrees = pgTable(
+  "worktrees",
+  {
+    id: text().$type<WorktreeId>().primaryKey(),
+    projectId: text()
+      .$type<ProjectId>()
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text().notNull(),
+    directory: text().notNull(),
+    branch: text().notNull(),
+    baseSha: text().$type<Sha>().notNull(),
+    /** The base as the user named it; null only for rows migrated from pre-column sessions. */
+    baseRef: text(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("worktrees_project_name_key").on(table.projectId, table.name),
+    unique("worktrees_project_directory_key").on(table.projectId, table.directory),
+  ],
+);
+
+/**
  * Pre-provisioned session skeletons kept ready for instant session starts. `id` is the session id
- * the claiming session adopts; the worktree, branch, and session socket dir all derive from it.
- * Claimable only while `fingerprint` (a hash of every create-time-fixed workspace input) still
- * matches the project's current configuration.
+ * the claiming session adopts; the session socket dir derives from it. The skeleton's worktree is
+ * a real `worktrees` row (a legal zero-session worktree) adopted at claim time. Claimable only
+ * while `fingerprint` (a hash of every create-time-fixed workspace input) still matches the
+ * project's current configuration.
  */
 export const hotWorkspaces = pgTable(
   "hot_workspaces",
@@ -295,6 +327,10 @@ export const hotWorkspaces = pgTable(
       .$type<ProjectId>()
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
+    /** Null only for pre-pivot entries, which the sweep drains as stale. */
+    worktreeId: text()
+      .$type<WorktreeId>()
+      .references(() => worktrees.id, { onDelete: "set null" }),
     ownerUserId: text(),
     status: text().$type<HotWorkspaceStatus>().notNull().default("warming"),
     error: text(),
@@ -570,13 +606,20 @@ export const agentSessions = pgTable(
       .$type<ProjectId>()
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
+    worktreeId: text()
+      .$type<WorktreeId>()
+      .notNull()
+      .references(() => worktrees.id, { onDelete: "cascade" }),
     harness: text().notNull(),
     providerSessionId: text(),
     label: text(),
+    /** Mirror of the worktree row's `directory` (pre-worktree readers). */
     worktree: text().notNull(),
+    /** Mirror of the worktree row's `branch`. */
     branch: text().notNull(),
+    /** Mirror of the worktree row's `base_sha`. */
     baseSha: text().$type<Sha>().notNull(),
-    /** The base as the user named it; null only for pre-column rows. */
+    /** Mirror of the worktree row's `base_ref`; null only for pre-column rows. */
     baseRef: text(),
     contextSnapshotId: text()
       .$type<ContextSnapshotId>()
@@ -618,6 +661,7 @@ export const agentSessions = pgTable(
   (table) => [
     index("agent_sessions_project_idx").on(table.projectId, table.createdAt),
     index("agent_sessions_status_idx").on(table.status),
+    index("agent_sessions_worktree_idx").on(table.worktreeId, table.createdAt),
   ],
 );
 
@@ -963,17 +1007,26 @@ export const projectServiceRecipes = pgTable(
   (table) => [primaryKey({ columns: [table.projectId, table.name] })],
 );
 
-export const sessionChanges = pgTable("session_changes", {
+/**
+ * One change per worktree (plan §5.6); git owns the diff, this row the identity.
+ * Physically still named `worktree_changes` after the 0046 rename; the pre-rename
+ * constraint names (`session_changes_pkey` etc.) are historical.
+ */
+export const worktreeChanges = pgTable("worktree_changes", {
   id: text().$type<ChangeId>().primaryKey(),
   projectId: text()
     .$type<ProjectId>()
     .notNull()
     .references(() => projects.id, { onDelete: "cascade" }),
+  worktreeId: text()
+    .$type<WorktreeId>()
+    .notNull()
+    .unique("worktree_changes_worktree_id_key")
+    .references(() => worktrees.id, { onDelete: "cascade" }),
+  /** Last contributing session — a maintained mirror for pre-worktree clients. */
   sessionId: text()
     .$type<SessionId>()
-    .notNull()
-    .unique()
-    .references(() => agentSessions.id, { onDelete: "cascade" }),
+    .references(() => agentSessions.id, { onDelete: "set null" }),
   branch: text().notNull(),
   baseSha: text().$type<Sha>().notNull(),
   headSha: text().$type<Sha>(),
@@ -992,7 +1045,7 @@ export const followUps = pgTable(
     changeId: text()
       .$type<ChangeId>()
       .notNull()
-      .references(() => sessionChanges.id, { onDelete: "cascade" }),
+      .references(() => worktreeChanges.id, { onDelete: "cascade" }),
     reviewSliceId: text().$type<ReviewSliceId>(),
     checkpointAId: text().$type<CheckpointId>(),
     checkpointBId: text().$type<CheckpointId>(),
@@ -1031,7 +1084,7 @@ export const reviewComments = pgTable(
     changeId: text()
       .$type<ChangeId>()
       .notNull()
-      .references(() => sessionChanges.id, { onDelete: "cascade" }),
+      .references(() => worktreeChanges.id, { onDelete: "cascade" }),
     file: text(),
     line: integer(),
     authorKind: text().$type<CommentAuthor>().notNull(),
@@ -1060,11 +1113,11 @@ export const changeTours = pgTable("change_tours", {
     .$type<ChangeId>()
     .notNull()
     .unique()
-    .references(() => sessionChanges.id, { onDelete: "cascade" }),
+    .references(() => worktreeChanges.id, { onDelete: "cascade" }),
+  /** Which conversation's record composed the tour (attribution); null after that session is deleted. */
   sessionId: text()
     .$type<SessionId>()
-    .notNull()
-    .references(() => agentSessions.id, { onDelete: "cascade" }),
+    .references(() => agentSessions.id, { onDelete: "set null" }),
   summary: text().notNull(),
   approach: text(),
   stops: jsonbArrayOf(TourStop).notNull(),
@@ -1078,7 +1131,7 @@ export const changePasses = pgTable(
     changeId: text()
       .$type<ChangeId>()
       .notNull()
-      .references(() => sessionChanges.id, { onDelete: "cascade" }),
+      .references(() => worktreeChanges.id, { onDelete: "cascade" }),
     kind: text().$type<PassKind>().notNull(),
     status: text().$type<PassStatus>().notNull(),
     detail: text(),
@@ -1093,10 +1146,20 @@ export const checkpoints = pgTable(
   "checkpoints",
   {
     id: text().$type<CheckpointId>().primaryKey(),
+    worktreeId: text()
+      .$type<WorktreeId>()
+      .notNull()
+      .references(() => worktrees.id, { onDelete: "cascade" }),
+    /**
+     * Provenance: the conversation whose activity triggered the snapshot. Null for
+     * worktree-level triggers and after the triggering session is deleted — the chain
+     * belongs to the worktree, so a deleted conversation must not sever it.
+     */
     sessionId: text()
       .$type<SessionId>()
-      .notNull()
-      .references(() => agentSessions.id, { onDelete: "cascade" }),
+      .references(() => agentSessions.id, { onDelete: "set null" }),
+    /** Position in the worktree's chain, dense from 0. */
+    ordinal: integer().notNull(),
     ref: text().notNull(),
     sha: text().$type<Sha>().notNull(),
     sealantRunId: text()
@@ -1107,6 +1170,8 @@ export const checkpoints = pgTable(
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
+    uniqueIndex("checkpoints_worktree_ordinal_idx").on(table.worktreeId, table.ordinal),
+    index("checkpoints_worktree_created_idx").on(table.worktreeId, table.createdAt),
     index("checkpoints_session_idx").on(table.sessionId, table.seq),
     index("checkpoints_session_created_idx").on(table.sessionId, table.createdAt),
   ],
@@ -1119,7 +1184,7 @@ export const reviewSlices = pgTable(
     changeId: text()
       .$type<ChangeId>()
       .notNull()
-      .references(() => sessionChanges.id, { onDelete: "cascade" }),
+      .references(() => worktreeChanges.id, { onDelete: "cascade" }),
     checkpointAId: text()
       .$type<CheckpointId>()
       .notNull()
@@ -1160,8 +1225,9 @@ export type PairingCodeRow = typeof pairingCodes.$inferSelect;
 export type CliAuthRequestRow = typeof cliAuthRequests.$inferSelect;
 export type ContextSnapshotRow = typeof contextSnapshots.$inferSelect;
 export type AgentSessionRow = typeof agentSessions.$inferSelect;
+export type WorktreeRow = typeof worktrees.$inferSelect;
 export type SessionRunRow = typeof sessionRuns.$inferSelect;
-export type SessionChangeRow = typeof sessionChanges.$inferSelect;
+export type WorktreeChangeRow = typeof worktreeChanges.$inferSelect;
 export type FollowUpRow = typeof followUps.$inferSelect;
 export type ReviewCommentRow = typeof reviewComments.$inferSelect;
 export type ReviewSliceRow = typeof reviewSlices.$inferSelect;

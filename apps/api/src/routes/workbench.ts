@@ -72,8 +72,9 @@ import {
   ServiceForwardsRepo,
   ServiceObservationsRepo,
   ServicesRepo,
-  SessionChangesRepo,
   SessionProcessesRepo,
+  WorktreeChangesRepo,
+  WorktreesRepo,
   SessionsRepo,
   SettingsRepo,
   UserDotfilesRepo,
@@ -345,7 +346,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
       Effect.gen(function* () {
         const projects = yield* ProjectsRepo;
         const sessions = yield* SessionsRepo;
-        const changes = yield* SessionChangesRepo;
+        const changes = yield* WorktreeChangesRepo;
         const project = yield* projects
           .byId(params.id)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
@@ -1563,6 +1564,13 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             Effect.catchTag("GitError", (error) =>
               Effect.fail(new StoreFailure({ message: error.stderr })),
             ),
+            Effect.catchTag("WorktreeBaseConflictError", (error) =>
+              Effect.fail(
+                new StoreFailure({
+                  message: `worktree "${error.name}" is based on ${error.baseRef ?? "its pinned commit"} — joining with base "${error.requestedBase}" would silently re-base it; drop the base to join as it stands`,
+                }),
+              ),
+            ),
           );
       }),
     )
@@ -1570,12 +1578,14 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
       Effect.gen(function* () {
         const sessions = yield* SessionsRepo;
         const checkpoints = yield* CheckpointsRepo;
-        const changes = yield* SessionChangesRepo;
+        const changes = yield* WorktreeChangesRepo;
         const session = yield* sessions
           .byId(params.id)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-        const sessionCheckpoints = yield* checkpoints.listForSession(params.id);
-        const change = yield* changes.bySession(params.id);
+        // The chain and the change belong to the worktree: this is what makes
+        // slices spanning several conversations reviewable from any of them.
+        const sessionCheckpoints = yield* checkpoints.listForWorktree(session.worktreeId);
+        const change = yield* changes.byWorktree(session.worktreeId);
         const processes = yield* SessionProcessesRepo;
         const rows = yield* processes.listForSession(params.id);
         return new SessionDetail({
@@ -1977,21 +1987,28 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const project = yield* projects
           .byId(session.projectId)
           .pipe(Effect.mapError(() => new NotFound({ id: session.projectId })));
+        // The worktree-container split: deleting a conversation deletes the
+        // conversation record only. The worktree — with its change, chain, and
+        // review — is a durable place removed only by its own explicit verb
+        // (DELETE /worktrees/:id). The legacy-bench diff guard still protects a
+        // bench whose LAST conversation is leaving.
         if (session.harness === "shell" && session.label === "bench") {
-          const worktree = worktreePathOf(project.storePath, session.worktree);
-          const diff = yield* store
-            .diffWorktree(worktree, session.baseSha)
-            .pipe(Effect.mapError((error) => new StoreFailure({ message: error.stderr })));
-          if (diff.trim() !== "") {
-            return yield* new StoreFailure({
-              message:
-                "This legacy bench still contains a reviewable change. Review, export, commit, or discard it before removal.",
-            });
+          const siblings = yield* sessions.listForWorktree(session.worktreeId);
+          if (siblings.every((sibling) => sibling.id === session.id)) {
+            const worktree = worktreePathOf(project.storePath, session.worktree);
+            const diff = yield* store
+              .diffWorktree(worktree, session.baseSha)
+              .pipe(Effect.mapError((error) => new StoreFailure({ message: error.stderr })));
+            if (diff.trim() !== "") {
+              return yield* new StoreFailure({
+                message:
+                  "This legacy bench still contains a reviewable change. Review, export, commit, or discard it before removal.",
+              });
+            }
           }
         }
-        const { leftover } = yield* store.removeWorktreeForce(project.storePath, session.worktree);
         yield* sessions.remove(params.id);
-        return new RemovalReport({ removed: true, leftover });
+        return new RemovalReport({ removed: true, leftover: null });
       }),
     )
     .handle("label", ({ params, payload }) =>
@@ -2308,8 +2325,8 @@ const loadReviewContext = Effect.fn("SessionChanges.loadReviewContext")(function
   changeId: ChangeId,
   sliceId: ReviewSliceId,
 ) {
-  const changes = yield* SessionChangesRepo;
-  const sessions = yield* SessionsRepo;
+  const changes = yield* WorktreeChangesRepo;
+  const worktrees = yield* WorktreesRepo;
   const projects = yield* ProjectsRepo;
   const slices = yield* ReviewSlicesRepo;
   const checkpoints = yield* CheckpointsRepo;
@@ -2320,30 +2337,32 @@ const loadReviewContext = Effect.fn("SessionChanges.loadReviewContext")(function
   if (slice === null || slice.changeId !== changeId) {
     return yield* new NotFound({ id: sliceId });
   }
-  const session = yield* sessions
-    .byId(change.sessionId)
-    .pipe(Effect.mapError(() => new NotFound({ id: change.sessionId })));
+  const worktreeRow = yield* worktrees
+    .byId(change.worktreeId)
+    .pipe(Effect.mapError(() => new NotFound({ id: change.worktreeId })));
   const project = yield* projects
     .byId(change.projectId)
     .pipe(Effect.mapError(() => new NotFound({ id: change.projectId })));
   const checkpointA = yield* checkpoints.byId(slice.checkpointAId);
   const checkpointB = yield* checkpoints.byId(slice.checkpointBId);
+  // Ownership is worktree-level: any two checkpoints of the worktree's chain
+  // define a slice, whichever conversations took them.
   if (
     checkpointA === null ||
     checkpointB === null ||
-    checkpointA.sessionId !== session.id ||
-    checkpointB.sessionId !== session.id
+    checkpointA.worktreeId !== worktreeRow.id ||
+    checkpointB.worktreeId !== worktreeRow.id
   ) {
     return yield* new NotFound({ id: slice.id });
   }
   return {
     change,
-    session,
+    worktreeRow,
     project,
     slice,
     checkpointA,
     checkpointB,
-    worktree: worktreePathOf(project.storePath, session.worktree),
+    worktree: worktreePathOf(project.storePath, worktreeRow.directory),
   };
 });
 
@@ -2361,8 +2380,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
                 message: "Review idempotency keys must contain between 1 and 200 characters.",
               });
             }
-            const changes = yield* SessionChangesRepo;
-            const sessions = yield* SessionsRepo;
+            const changes = yield* WorktreeChangesRepo;
             const projects = yield* ProjectsRepo;
             const checkpoints = yield* CheckpointsRepo;
             const store = yield* Store;
@@ -2373,20 +2391,21 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
             const existing = yield* slices.byIdempotencyKey(params.id, key);
             if (existing !== null) return yield* openReviewResult(existing, true);
 
-            const session = yield* sessions
-              .byId(change.sessionId)
-              .pipe(Effect.mapError(() => new NotFound({ id: change.sessionId })));
+            const worktrees = yield* WorktreesRepo;
+            const worktreeRow = yield* worktrees
+              .byId(change.worktreeId)
+              .pipe(Effect.mapError(() => new NotFound({ id: change.worktreeId })));
             const project = yield* projects
               .byId(change.projectId)
               .pipe(Effect.mapError(() => new NotFound({ id: change.projectId })));
-            const worktree = worktreePathOf(project.storePath, session.worktree);
-            const sessionCheckpoints = yield* checkpoints.listForSession(session.id);
-            const checkpointA = sessionCheckpoints.find(
-              (checkpoint) => checkpoint.trigger === "session-start",
-            );
+            const worktree = worktreePathOf(project.storePath, worktreeRow.directory);
+            // Anchor at ordinal 0 — the worktree's base state — so the review
+            // spans every conversation's work, not one session's slice of it.
+            const chain = yield* checkpoints.listForWorktree(worktreeRow.id);
+            const checkpointA = chain.find((checkpoint) => checkpoint.ordinal === 0);
             if (checkpointA === undefined) {
               return yield* new StoreFailure({
-                message: "The session has no session-start checkpoint to anchor Review.",
+                message: "The worktree has no ordinal-0 checkpoint to anchor Review.",
               });
             }
 
@@ -2410,7 +2429,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
               }
             }
 
-            const orphanedCheckpoint = sessionCheckpoints
+            const orphanedCheckpoint = chain
               .toReversed()
               .find((checkpoint) => checkpoint.trigger === "review-open");
             if (orphanedCheckpoint !== undefined) {
@@ -2432,9 +2451,19 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
               }
             }
 
-            const checkpointB = yield* engine.checkpointNow(session.id, "review-open").pipe(
+            // Snapshot through a conversation when one exists (newest live wins,
+            // else the last contributor) — the checkpoint's provenance is honest
+            // either way, and the chain is the worktree's.
+            const viaSessionId =
+              (yield* worktrees.newestLiveSessionId(worktreeRow.id)) ?? change.sessionId;
+            if (viaSessionId === null) {
+              return yield* new StoreFailure({
+                message: "No conversation has inhabited this worktree yet — nothing to review.",
+              });
+            }
+            const checkpointB = yield* engine.checkpointNow(viaSessionId, "review-open").pipe(
               Effect.catchTags({
-                SessionNotFoundError: () => Effect.fail(new NotFound({ id: session.id })),
+                SessionNotFoundError: () => Effect.fail(new NotFound({ id: viaSessionId })),
                 ProjectNotFoundError: () => Effect.fail(new NotFound({ id: project.id })),
                 GitError: (error) => Effect.fail(toFailure(error)),
               }),
@@ -2604,20 +2633,20 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
     )
     .handle("diff", ({ params }) =>
       Effect.gen(function* () {
-        const changes = yield* SessionChangesRepo;
-        const sessions = yield* SessionsRepo;
+        const changes = yield* WorktreeChangesRepo;
         const projects = yield* ProjectsRepo;
         const store = yield* Store;
         const change = yield* changes
           .byId(params.id)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-        const session = yield* sessions
-          .byId(change.sessionId)
-          .pipe(Effect.mapError(() => new NotFound({ id: change.sessionId })));
+        const worktrees = yield* WorktreesRepo;
+        const worktreeRow = yield* worktrees
+          .byId(change.worktreeId)
+          .pipe(Effect.mapError(() => new NotFound({ id: change.worktreeId })));
         const project = yield* projects
           .byId(change.projectId)
           .pipe(Effect.mapError(() => new NotFound({ id: change.projectId })));
-        const worktree = worktreePathOf(project.storePath, session.worktree);
+        const worktree = worktreePathOf(project.storePath, worktreeRow.directory);
         const diff = yield* store
           .diffWorktree(worktree, change.baseSha)
           .pipe(Effect.mapError(toFailure));
@@ -2633,7 +2662,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
     )
     .handle("read", ({ params }) =>
       Effect.gen(function* () {
-        const changes = yield* SessionChangesRepo;
+        const changes = yield* WorktreeChangesRepo;
         const jobs = yield* JobRunner;
         yield* changes.byId(params.id).pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         // One pass at a time per change (the key dedups while queued/active);
@@ -2650,7 +2679,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
     )
     .handle("tour", ({ params }) =>
       Effect.gen(function* () {
-        const changes = yield* SessionChangesRepo;
+        const changes = yield* WorktreeChangesRepo;
         const tours = yield* ChangeToursRepo;
         yield* changes.byId(params.id).pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         return yield* tours.byChange(params.id);
@@ -2658,7 +2687,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
     )
     .handle("composeTour", ({ params }) =>
       Effect.gen(function* () {
-        const changes = yield* SessionChangesRepo;
+        const changes = yield* WorktreeChangesRepo;
         const jobs = yield* JobRunner;
         yield* changes.byId(params.id).pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         yield* jobs
@@ -2673,7 +2702,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
     )
     .handle("suggest", ({ params }) =>
       Effect.gen(function* () {
-        const changes = yield* SessionChangesRepo;
+        const changes = yield* WorktreeChangesRepo;
         const jobs = yield* JobRunner;
         yield* changes.byId(params.id).pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         // One pass at a time per change; a finished pass can be re-requested.
@@ -2689,7 +2718,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
     )
     .handle("passes", ({ params }) =>
       Effect.gen(function* () {
-        const changes = yield* SessionChangesRepo;
+        const changes = yield* WorktreeChangesRepo;
         const passes = yield* ChangePassesRepo;
         yield* changes.byId(params.id).pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         return yield* passes.listForChange(params.id);
@@ -2697,20 +2726,20 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
     )
     .handle("stats", ({ params }) =>
       Effect.gen(function* () {
-        const changes = yield* SessionChangesRepo;
-        const sessions = yield* SessionsRepo;
+        const changes = yield* WorktreeChangesRepo;
         const projects = yield* ProjectsRepo;
         const store = yield* Store;
         const change = yield* changes
           .byId(params.id)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-        const session = yield* sessions
-          .byId(change.sessionId)
-          .pipe(Effect.mapError(() => new NotFound({ id: change.sessionId })));
+        const worktrees = yield* WorktreesRepo;
+        const worktreeRow = yield* worktrees
+          .byId(change.worktreeId)
+          .pipe(Effect.mapError(() => new NotFound({ id: change.worktreeId })));
         const project = yield* projects
           .byId(change.projectId)
           .pipe(Effect.mapError(() => new NotFound({ id: change.projectId })));
-        const worktree = worktreePathOf(project.storePath, session.worktree);
+        const worktree = worktreePathOf(project.storePath, worktreeRow.directory);
         const files = yield* store
           .changedFiles(worktree, change.baseSha, null)
           .pipe(Effect.mapError(toFailure));

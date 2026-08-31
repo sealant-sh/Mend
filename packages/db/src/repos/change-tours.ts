@@ -7,7 +7,7 @@ import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
-import { changeTours, sessionChanges } from "../schema/workbench.ts";
+import { changeTours, worktreeChanges } from "../schema/workbench.ts";
 
 const decodeTour = Schema.decodeUnknownEffect(Schema.Struct(ChangeTour.fields));
 const encodeStops = Schema.encodeEffect(Schema.Array(TourStop));
@@ -48,14 +48,15 @@ export const ChangeToursRepoLive: Layer.Layer<ChangeToursRepo, never, MendDB | P
         sessionId: SessionId,
       ) {
         const [row] = yield* db
-          .select({ projectId: sessionChanges.projectId })
-          .from(sessionChanges)
-          .where(eq(sessionChanges.id, changeId))
+          .select({ projectId: worktreeChanges.projectId, worktreeId: worktreeChanges.worktreeId })
+          .from(worktreeChanges)
+          .where(eq(worktreeChanges.id, changeId))
           .limit(1)
           .pipe(Effect.orDie);
         yield* notifyEvent(sql, {
           type: "session-change",
           changeId,
+          worktreeId: row?.worktreeId ?? "",
           sessionId,
           projectId: row?.projectId ?? "",
         });

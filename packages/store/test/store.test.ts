@@ -10,6 +10,8 @@ import { Effect, Layer } from "effect";
 import { Store, StoreConfig } from "../src/store.ts";
 
 const sessionId = SessionId.make("01TEST");
+/** Worktree identity as the engine derives it for unnamed worktrees. */
+const wtIdentity = (id: string) => ({ directory: `wt-${id}`, branch: `mend/wt/${id}` });
 
 /** True when the mode carries the shared-group contract: setgid + group rwx. */
 const setgidGroupWrite = (target: string) => {
@@ -64,8 +66,13 @@ describe("Store", () => {
         expect(fs.existsSync(adopted.storePath)).toBe(true);
 
         // Session worktree on its own branch from the default branch.
-        const wt = yield* store.createWorktree(adopted.storePath, sessionId, null, null);
-        expect(wt.branch).toBe(`mend/session/${sessionId}`);
+        const wt = yield* store.createWorktree(
+          adopted.storePath,
+          wtIdentity(sessionId),
+          null,
+          null,
+        );
+        expect(wt.branch).toBe(`mend/wt/${sessionId}`);
         expect(wt.baseSha).toBe(adopted.headSha);
         expect(wt.baseRef).toBe("main");
         expect(fs.existsSync(path.join(wt.path, "app.ts"))).toBe(true);
@@ -178,7 +185,12 @@ describe("Store", () => {
           cwd: adopted.storePath,
         });
         fs.chmodSync(path.join(adopted.storePath, "refs"), 0o755);
-        const wt = yield* store.createWorktree(adopted.storePath, sessionId, null, null);
+        const wt = yield* store.createWorktree(
+          adopted.storePath,
+          wtIdentity(sessionId),
+          null,
+          null,
+        );
         expect(shared()).toBe("group");
         expect(setgidGroupWrite(path.join(adopted.storePath, "refs"))).toBe(true);
         // The worktree's own gitdir metadata (where checkpoints write) is covered too.
@@ -220,7 +232,7 @@ describe("Store", () => {
 
         // A worktree with remoteEnv freshens: it bases on origin's CURRENT main,
         // not the store's adoption-time head.
-        const fresh = yield* store.createWorktree(adopted.storePath, sessionId, null, {
+        const fresh = yield* store.createWorktree(adopted.storePath, wtIdentity(sessionId), null, {
           GIT_TERMINAL_PROMPT: "0",
         });
         expect(fresh.baseRef).toBe("main");
@@ -230,7 +242,7 @@ describe("Store", () => {
         // A never-fetched branch resolves too, by name, at origin's tip.
         const onFeature = yield* store.createWorktree(
           adopted.storePath,
-          SessionId.make("01TEST2"),
+          wtIdentity("01TEST2"),
           "feature/x",
           { GIT_TERMINAL_PROMPT: "0" },
         );
@@ -240,7 +252,7 @@ describe("Store", () => {
         // Null remoteEnv skips the fetch — offline still provisions, on what the store has.
         const offline = yield* store.createWorktree(
           adopted.storePath,
-          SessionId.make("01TEST3"),
+          wtIdentity("01TEST3"),
           null,
           null,
         );
@@ -252,7 +264,9 @@ describe("Store", () => {
         const names = branches.map((b) => b.name);
         expect(names).toContain("main");
         expect(names).toContain("feature/x");
-        expect(names.some((n) => n.startsWith("mend/session/"))).toBe(false);
+        expect(names.some((n) => n.startsWith("mend/session/") || n.startsWith("mend/wt/"))).toBe(
+          false,
+        );
         expect(branches.find((b) => b.name === "main")?.isDefault).toBe(true);
         expect(branches.find((b) => b.name === "main")?.sha).toBe(newMainSha);
         expect(branches.find((b) => b.name === "feature/x")?.sha).toBe(featureSha);

@@ -3,7 +3,7 @@ import {
   MEND_EVENTS_CHANNEL,
   MendEvent,
   ProjectsRepo,
-  SessionChangesRepo,
+  WorktreeChangesRepo,
   SessionsRepo,
   SettingsRepo,
 } from "@mend/db";
@@ -40,7 +40,7 @@ export const ReviewPrepLive: Layer.Layer<
   never,
   | PgClient.PgClient
   | SessionsRepo
-  | SessionChangesRepo
+  | WorktreeChangesRepo
   | ProjectsRepo
   | SettingsRepo
   | Store
@@ -49,7 +49,7 @@ export const ReviewPrepLive: Layer.Layer<
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
     const sessions = yield* SessionsRepo;
-    const changes = yield* SessionChangesRepo;
+    const changes = yield* WorktreeChangesRepo;
     const projects = yield* ProjectsRepo;
     const settingsRepo = yield* SettingsRepo;
     const store = yield* Store;
@@ -59,7 +59,7 @@ export const ReviewPrepLive: Layer.Layer<
 
     const prepare = Effect.fn("ReviewPrep.prepare")(function* (sessionId: SessionId) {
       const session = yield* sessions.byId(sessionId);
-      const change = yield* changes.bySession(sessionId);
+      const change = yield* changes.byWorktree(session.worktreeId);
       if (change === null) return;
       const project = yield* projects.byId(session.projectId);
       const settings = yield* settingsRepo.get();
@@ -76,18 +76,22 @@ export const ReviewPrepLive: Layer.Layer<
       );
       if (files.length === 0) return;
 
+      // Key by content, not identity: many sessions settle onto ONE worktree
+      // change now, so a bare change id would dedupe forever after the first
+      // settle — and an unchanged head must not re-spend inference.
+      const head = change.headSha ?? change.baseSha;
       if (autoTour) {
         yield* jobs.enqueue({
           name: "compose-tour",
           payload: { changeId: change.id },
-          idempotencyKey: `compose-tour:${change.id}`,
+          idempotencyKey: `compose-tour:${change.id}:${head}`,
         });
       }
       if (autoSuggest) {
         yield* jobs.enqueue({
           name: "suggest-change",
           payload: { changeId: change.id },
-          idempotencyKey: `suggest-change:${change.id}`,
+          idempotencyKey: `suggest-change:${change.id}:${head}`,
         });
       }
       yield* Effect.annotateLogs(Effect.logInfo("review prep queued"), {

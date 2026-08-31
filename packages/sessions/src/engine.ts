@@ -18,8 +18,10 @@ import {
   ServiceForwardsRepo,
   ServiceObservationsRepo,
   ServicesRepo,
-  SessionChangesRepo,
   SessionGitOpsRepo,
+  WorktreeChangesRepo,
+  type WorktreeNotFoundError,
+  WorktreesRepo,
   type SessionNotFoundError,
   type SessionOutcome,
   ProjectServiceRecipesRepo,
@@ -42,6 +44,7 @@ import {
   type SessionProcessId,
   type ProjectId,
   type WorkspaceImage,
+  WorktreeId,
 } from "@mend/domain";
 import type {
   Checkpoint,
@@ -51,6 +54,7 @@ import type {
   Session,
   SessionProcess,
   SessionRun,
+  Worktree,
 } from "@mend/domain/workbench";
 import {
   AGENT_PROCESS_KINDS,
@@ -330,7 +334,11 @@ export interface ProvisionInput {
   readonly projectId: ProjectId;
   readonly harness: string;
   readonly label: string | null;
-  /** Names the worktree and its branch `mend/<name>`; null derives `session-<id>`. */
+  /**
+   * Names the worktree. An existing name JOINS that worktree — a new
+   * conversation inside it; an unused name creates it (branch `mend/<name>`);
+   * null derives an anonymous worktree identity.
+   */
   readonly name: string | null;
   /** Branch or sha to base the worktree on; null = the project's default branch. */
   readonly base: string | null;
@@ -338,11 +346,31 @@ export interface ProvisionInput {
   readonly ownerUserId: string | null;
 }
 
+/** Anonymous worktrees are keyed by their own id, named ones by the name. */
+const worktreeIdentityFor = (worktreeId: WorktreeId, name: string | null) =>
+  name === null
+    ? { directory: `wt-${worktreeId}`, branch: `mend/wt/${worktreeId}` }
+    : { directory: name, branch: `mend/${name}` };
+
 /** A supporting process needs a current reachable workspace. */
 export class SessionNotLiveError extends Schema.TaggedErrorClass<SessionNotLiveError>()(
   "SessionNotLiveError",
   {
     sessionId: Schema.String,
+  },
+) {}
+
+/**
+ * Joining an existing worktree with a different base is refused — a durable
+ * worktree is never silently re-based. Drop the base to join as it stands.
+ */
+export class WorktreeBaseConflictError extends Schema.TaggedErrorClass<WorktreeBaseConflictError>()(
+  "WorktreeBaseConflictError",
+  {
+    worktreeId: Schema.String,
+    name: Schema.String,
+    requestedBase: Schema.String,
+    baseRef: Schema.NullOr(Schema.String),
   },
 ) {}
 
@@ -425,7 +453,25 @@ export class SessionEngine extends Context.Service<
   {
     readonly provision: (
       input: ProvisionInput,
-    ) => Effect.Effect<Session, ProjectNotFoundError | GitError>;
+    ) => Effect.Effect<Session, ProjectNotFoundError | GitError | WorktreeBaseConflictError>;
+    /**
+     * The container half of provisioning: return the named worktree (join) or
+     * create it — git worktree, row, ordinal-0 checkpoint, change row. A
+     * worktree with zero sessions is a legal durable place.
+     */
+    readonly ensureWorktree: (
+      projectId: ProjectId,
+      input: { readonly name: string | null; readonly base: string | null },
+    ) => Effect.Effect<Worktree, ProjectNotFoundError | GitError | WorktreeBaseConflictError>;
+    /** A new conversation inside an existing worktree. */
+    readonly provisionSessionIn: (
+      worktreeId: WorktreeId,
+      input: {
+        readonly harness: string;
+        readonly label: string | null;
+        readonly ownerUserId: string | null;
+      },
+    ) => Effect.Effect<Session, WorktreeNotFoundError | ProjectNotFoundError>;
     readonly attachRun: (
       sessionId: SessionId,
       sealantRunId: SealantRunId,
@@ -694,7 +740,8 @@ type SessionEngineRequirements =
   | ServiceHost
   | SessionSocketHost
   | ProjectsRepo
-  | SessionChangesRepo
+  | WorktreeChangesRepo
+  | WorktreesRepo
   | CheckpointsRepo
   | ReferencesRepo
   | ProjectMountsRepo
@@ -804,7 +851,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const serviceHost = yield* ServiceHost;
       const socketHost = yield* SessionSocketHost;
       const projects = yield* ProjectsRepo;
-      const changes = yield* SessionChangesRepo;
+      const changes = yield* WorktreeChangesRepo;
+      const worktreesRepo = yield* WorktreesRepo;
       const checkpoints = yield* CheckpointsRepo;
       const references = yield* ReferencesRepo;
       const projectMounts = yield* ProjectMountsRepo;
@@ -869,28 +917,53 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return mount;
       });
 
+      /**
+       * Snapshot the WORKTREE's chain: the per-worktree advisory lock serializes
+       * concurrent writers (two live sessions settling at once) around the
+       * read-count/snapshot/insert critical section — it also keeps the two
+       * `git add -A` passes over the shared directory from interleaving. The
+       * unique `(worktree_id, ordinal)` index backstops the lock.
+       */
+      const takeWorktreeCheckpoint = Effect.fn("SessionEngine.takeWorktreeCheckpoint")(function* (
+        worktree: Worktree,
+        trigger: CheckpointTrigger,
+        sessionId: SessionId | null,
+        cursor: { readonly sealantRunId: SealantRunId | null; readonly sequence: bigint },
+      ) {
+        return yield* checkpoints.withWorktreeLock(
+          worktree.id,
+          Effect.gen(function* () {
+            const previous = yield* checkpoints.latestForWorktree(worktree.id);
+            const ordinal = yield* checkpoints.countForWorktree(worktree.id);
+            const snapshot = yield* sessionRepo.checkpoint({
+              projectId: worktree.projectId,
+              scope: worktree.id,
+              worktreeName: worktree.directory,
+              index: ordinal,
+              parent: previous?.sha ?? null,
+            });
+            return yield* checkpoints.create({
+              worktreeId: worktree.id,
+              sessionId,
+              ordinal,
+              ref: snapshot.ref,
+              sha: snapshot.sha,
+              sealantRunId: cursor.sealantRunId,
+              seq: cursor.sequence,
+              trigger,
+            });
+          }),
+        );
+      });
+
       const takeCheckpoint = Effect.fn("SessionEngine.takeCheckpoint")(function* (
         session: Session,
         trigger: CheckpointTrigger,
         cursor: { readonly sealantRunId: SealantRunId | null; readonly sequence: bigint },
       ) {
-        const previous = yield* checkpoints.latestForSession(session.id);
-        const index = yield* checkpoints.countForSession(session.id);
-        const snapshot = yield* sessionRepo.checkpoint({
-          projectId: session.projectId,
-          sessionId: session.id,
-          worktreeName: session.worktree,
-          index,
-          parent: previous?.sha ?? null,
-        });
-        return yield* checkpoints.create({
-          sessionId: session.id,
-          ref: snapshot.ref,
-          sha: snapshot.sha,
-          sealantRunId: cursor.sealantRunId,
-          seq: cursor.sequence,
-          trigger,
-        });
+        // The FK guarantees the row; a miss here is corruption, not a condition.
+        const worktree = yield* worktreesRepo.byId(session.worktreeId).pipe(Effect.orDie);
+        return yield* takeWorktreeCheckpoint(worktree, trigger, session.id, cursor);
       });
 
       /** A checkpoint that cannot be taken is a gap, carried as content — never a crash. */
@@ -911,10 +984,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const refreshChangeHead = Effect.fn("SessionEngine.refreshChangeHead")(function* (
         session: Session,
       ) {
-        const change = yield* changes.bySession(session.id);
+        const change = yield* changes.byWorktree(session.worktreeId);
         if (change === null) return;
-        const latest = yield* checkpoints.latestForSession(session.id);
-        if (latest !== null) yield* changes.refreshHead(change.id, latest.sha);
+        const latest = yield* checkpoints.latestForWorktree(session.worktreeId);
+        // The refresh stamps this session as the change's last contributor.
+        if (latest !== null) yield* changes.refreshHead(change.id, latest.sha, session.id);
       });
 
       const supervise = Effect.fn("SessionEngine.supervise")(function* (
@@ -1082,14 +1156,109 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       });
 
+      /** Join guard: a durable worktree is never silently re-based. */
+      const refuseBaseConflict = (worktree: Worktree, base: string | null) =>
+        base === null || base === worktree.baseRef || base === worktree.baseSha
+          ? Effect.void
+          : new WorktreeBaseConflictError({
+              worktreeId: worktree.id,
+              name: worktree.name,
+              requestedBase: base,
+              baseRef: worktree.baseRef,
+            });
+
+      /**
+       * The container half of provisioning: return the named worktree (join)
+       * or create it — git worktree, row, ordinal-0 checkpoint (the place's
+       * base state, no session attached), change row. A worktree with zero
+       * sessions is a legal durable place.
+       */
+      const ensureWorktreeIn = Effect.fn("SessionEngine.ensureWorktreeIn")(function* (
+        project: Project,
+        input: { readonly name: string | null; readonly base: string | null },
+      ) {
+        if (input.name !== null) {
+          const existing = yield* worktreesRepo.byName(project.id, input.name);
+          if (existing !== null) {
+            yield* refuseBaseConflict(existing, input.base);
+            return existing;
+          }
+        }
+        const remoteEnv = yield* provisionRemoteEnv(project);
+        const worktreeId = WorktreeId.make(crypto.randomUUID());
+        const identity = worktreeIdentityFor(worktreeId, input.name);
+        const created = yield* sessionRepo.createWorktree(
+          project.id,
+          identity,
+          input.base,
+          remoteEnv,
+        );
+        const row = yield* worktreesRepo.create({
+          id: worktreeId,
+          projectId: project.id,
+          name: input.name ?? identity.directory,
+          directory: identity.directory,
+          branch: created.branch,
+          baseSha: created.baseSha,
+          baseRef: created.baseRef,
+        });
+        yield* takeWorktreeCheckpoint(row, "session-start", null, {
+          sealantRunId: null,
+          sequence: 0n,
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("session engine: worktree-start checkpoint failed").pipe(
+              Effect.annotateLogs({ worktreeId: row.id, error: String(error) }),
+              Effect.as(null),
+            ),
+          ),
+        );
+        yield* changes.ensureForWorktree(project.id, row.id, row.branch, row.baseSha);
+        return row;
+      });
+
+      /** A new conversation inside a worktree: session row + its start checkpoint. */
+      const provisionSessionIn = Effect.fn("SessionEngine.provisionSessionIn")(function* (
+        project: Project,
+        worktree: Worktree,
+        input: {
+          readonly harness: string;
+          readonly label: string | null;
+          readonly ownerUserId: string | null;
+        },
+      ) {
+        const session = yield* sessions.create({
+          id: SessionId.make(crypto.randomUUID()),
+          projectId: project.id,
+          worktreeId: worktree.id,
+          harness: input.harness,
+          label: input.label,
+          ownerUserId: input.ownerUserId,
+          worktree: worktree.directory,
+          branch: worktree.branch,
+          baseSha: worktree.baseSha,
+          // Legacy rows never recorded the human base name; the pinned sha is the honest stand-in.
+          baseRef: worktree.baseRef ?? worktree.baseSha,
+          contextSnapshotId: null,
+        });
+        yield* tryCheckpoint(session, "session-start", { sealantRunId: null, sequence: 0n });
+        return session;
+      });
+
       const provisionAs = Effect.fn("SessionEngine.provisionAs")(function* (input: ProvisionInput) {
         const project = yield* projects.byId(input.projectId);
+        // Join-by-name: an existing name IS "a new conversation in that worktree".
+        if (input.name !== null) {
+          const existing = yield* worktreesRepo.byName(project.id, input.name);
+          if (existing !== null) {
+            yield* refuseBaseConflict(existing, input.base);
+            return yield* provisionSessionIn(project, existing, input);
+          }
+        }
         // Hot path: adopt a pre-provisioned skeleton when the project keeps them ready. Any
-        // failure here falls back to the cold path — a claim must never cost a session.
-        // A NAMED worktree always provisions cold: skeletons carry pre-created
-        // id-derived worktrees, and renaming a live checkout is not worth the
-        // seconds the pool saves.
-        if (project.hotSessions > 0 && input.name === null) {
+        // failure here falls back to the cold path — a claim must never cost a session. A
+        // named claim renames the pooled branch and display name; the directory never moves.
+        if (project.hotSessions > 0) {
           const claimed = yield* claimHotSession(project, input).pipe(
             Effect.catch((error) =>
               Effect.logWarning("session engine: hot claim failed — cold provision").pipe(
@@ -1100,30 +1269,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
           if (claimed !== null) return claimed;
         }
-        const sessionId = SessionId.make(crypto.randomUUID());
-        const remoteEnv = yield* provisionRemoteEnv(project);
-        const worktree = yield* sessionRepo.createWorktree(
-          project.id,
-          sessionId,
-          input.base,
-          remoteEnv,
-          input.name,
-        );
-        const session = yield* sessions.create({
-          id: sessionId,
-          projectId: project.id,
-          harness: input.harness,
-          label: input.label,
-          ownerUserId: input.ownerUserId,
-          worktree: worktree.name,
-          branch: worktree.branch,
-          baseSha: worktree.baseSha,
-          baseRef: worktree.baseRef,
-          contextSnapshotId: null,
-        });
-        yield* tryCheckpoint(session, "session-start", { sealantRunId: null, sequence: 0n });
-        yield* changes.ensureForSession(project.id, session.id, worktree.branch, worktree.baseSha);
-        return session;
+        const worktree = yield* ensureWorktreeIn(project, input);
+        return yield* provisionSessionIn(project, worktree, input);
       });
 
       const attachRun = Effect.fn("SessionEngine.attachRun")(function* (
@@ -4754,6 +4901,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* sessionRepo
             .removeWorktreeForce(entry.projectId, entry.worktree)
             .pipe(Effect.ignore);
+          // The pooled worktree row goes with its directory; a kept worktree
+          // was adopted by a session, which owns the row now.
+          if (entry.worktreeId !== null) {
+            yield* worktreesRepo.remove(entry.worktreeId).pipe(Effect.ignore);
+          }
         }
         yield* hotWorkspaces.remove(entry.id);
       });
@@ -4765,13 +4917,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         fingerprint: string,
       ) {
         const sessionId = SessionId.make(crypto.randomUUID());
+        const worktreeId = WorktreeId.make(crypto.randomUUID());
         // Skeletons pre-provision on the default branch without freshening: the claim resets
         // to the requested base with credentials anyway, and warming must not race a fetch.
-        const worktree = yield* sessionRepo.createWorktree(project.id, sessionId, null, null);
+        // The worktree row exists from the start — a pooled worktree is a legal
+        // zero-session worktree the claim adopts.
+        const identity = worktreeIdentityFor(worktreeId, null);
+        const worktree = yield* sessionRepo.createWorktree(project.id, identity, null, null);
+        yield* worktreesRepo.create({
+          id: worktreeId,
+          projectId: project.id,
+          name: identity.directory,
+          directory: identity.directory,
+          branch: worktree.branch,
+          baseSha: worktree.baseSha,
+          baseRef: worktree.baseRef,
+        });
         const worktreePath = worktreePathOf(project.storePath, worktree.name);
         const entry = yield* hotWorkspaces.create({
           id: sessionId,
           projectId: project.id,
+          worktreeId,
           ownerUserId,
           fingerprint,
           worktree: worktree.name,
@@ -4959,24 +5125,46 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (entry === null) return null;
         // The replacement warms in the background while this session launches.
         yield* requestHotReconcile(project.id);
+        if (entry.worktreeId === null) {
+          // A pre-pivot skeleton has no adoptable worktree row — drain, go cold.
+          yield* drainHotWorkspace(entry);
+          return null;
+        }
         const remoteEnv = yield* provisionRemoteEnv(project);
         const freshened = yield* sessionRepo
           .resetWorktree(project.id, entry.worktree, input.base, remoteEnv)
           .pipe(Effect.tapError(() => drainHotWorkspace(entry)));
+        yield* worktreesRepo.setBase(entry.worktreeId, freshened.baseSha, freshened.baseRef);
+        // A named claim takes the name: rename the branch in place (the ref moves,
+        // the bind-mounted directory never does) and the row's display identity.
+        if (input.name !== null) {
+          const branch = `mend/${input.name}`;
+          yield* sessionRepo
+            .renameBranch(project.id, entry.worktree, branch)
+            .pipe(Effect.tapError(() => drainHotWorkspace(entry)));
+          yield* worktreesRepo.rename(entry.worktreeId, input.name, branch);
+        }
+        const worktreeRow = yield* worktreesRepo.byId(entry.worktreeId).pipe(Effect.orDie);
         const session = yield* sessions.create({
           id: entry.id,
           projectId: project.id,
+          worktreeId: worktreeRow.id,
           harness: input.harness,
           label: input.label,
           ownerUserId: input.ownerUserId,
-          worktree: entry.worktree,
-          branch: entry.branch,
+          worktree: worktreeRow.directory,
+          branch: worktreeRow.branch,
           baseSha: freshened.baseSha,
           baseRef: freshened.baseRef,
           contextSnapshotId: null,
         });
         yield* tryCheckpoint(session, "session-start", { sealantRunId: null, sequence: 0n });
-        yield* changes.ensureForSession(project.id, session.id, entry.branch, freshened.baseSha);
+        yield* changes.ensureForWorktree(
+          project.id,
+          worktreeRow.id,
+          worktreeRow.branch,
+          freshened.baseSha,
+        );
         return session;
       });
 
@@ -5470,6 +5658,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // Fibers forked underneath inherit the principal.
       return {
         provision,
+        ensureWorktree: (projectId, input) =>
+          projects
+            .byId(projectId)
+            .pipe(Effect.flatMap((project) => ensureWorktreeIn(project, input))),
+        provisionSessionIn: (worktreeId, input) =>
+          Effect.gen(function* () {
+            const worktree = yield* worktreesRepo.byId(worktreeId);
+            const project = yield* projects.byId(worktree.projectId);
+            return yield* provisionSessionIn(project, worktree, input);
+          }).pipe(asSealantUser(input.ownerUserId)),
         attachRun: (sessionId, sealantRunId, workspaceId) =>
           owned(sessionId)(attachRun(sessionId, sealantRunId, workspaceId)),
         launch: (sessionId, argv) => owned(sessionId)(launch(sessionId, argv)),

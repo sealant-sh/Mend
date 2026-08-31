@@ -4,11 +4,12 @@
  *
  * ```
  * machine  1 ── 0..n  projects    a repository adopted into the central store
- * project  1 ── 0..n  sessions    one logical agent conversation, one worktree each
+ * project  1 ── 0..n  worktrees   a durable named place in the store; explicit removal only
+ * worktree 1 ── 0..n  sessions    one agent conversation each; several may be live at once
+ * worktree 1 ── 1     change      worktree vs base — the reviewable object
+ * worktree 1 ── 0..n  checkpoints hidden git ref + exact record pointer; two = a slice
  * session  1 ── 0..n  runs        Sealant execution records, one sequence space each
  * session  1 ── 0..n  processes   PTYs in the current workspace: agent, shells, Services
- * session  1 ── 1     change      worktree vs base — the reviewable object
- * session  1 ── 0..n  checkpoints hidden git ref + exact record pointer; two = a slice
  * session  1 ── 0..1  snapshot    immutable context manifest
  * change   1 ── 0..n  comments    reviewer's and Mend's, same pipeline
  * ```
@@ -40,3 +41,4 @@ export * from "./session-fold.ts";
 export * from "./session-process.ts";
 export * from "./session-run.ts";
 export * from "./tour.ts";
+export * from "./worktree.ts";

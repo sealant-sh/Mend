@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { Sha, type SessionId } from "@mend/domain";
+import { Sha } from "@mend/domain";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -293,18 +293,25 @@ export class Store extends Context.Service<
       remoteEnv: Record<string, string>,
     ) => Effect.Effect<AdoptedRepo, AdoptError>;
     /**
-     * Create the session's worktree on its own branch from `base` (default branch when null).
-     * `remoteEnv` freshens the base from origin first — best-effort, so an unreachable remote
-     * costs currency, never the session; null skips the fetch (caller had no credentials).
+     * Create a worktree on its own branch from `base` (default branch when null). The caller
+     * owns identity: `directory` under the store's `worktrees/` parent and the full `branch`
+     * name. `remoteEnv` freshens the base from origin first — best-effort, so an unreachable
+     * remote costs currency, never the session; null skips the fetch (caller had no credentials).
      */
     readonly createWorktree: (
       storePath: string,
-      sessionId: SessionId,
+      identity: { readonly directory: string; readonly branch: string },
       base: string | null,
       remoteEnv: Record<string, string> | null,
-      /** Names the worktree dir and its branch `mend/<name>`; null derives `session-<id>`. */
-      requestedName?: string | null,
     ) => Effect.Effect<SessionWorktree, GitError>;
+    /**
+     * Rename the branch a worktree is on in place (`git branch -m`) — the display-identity
+     * half of a rename; the directory never moves (workspace bind mounts point there).
+     */
+    readonly renameBranch: (
+      worktreePath: string,
+      newBranch: string,
+    ) => Effect.Effect<void, GitError>;
     /**
      * Freshen an existing worktree to `base` (default branch when null) without recreating it:
      * hard-reset the session branch, then clean untracked files. Ignore rules — including the
@@ -354,11 +361,13 @@ export class Store extends Context.Service<
     /**
      * Snapshot the worktree without touching HEAD, index, or files: throwaway
      * index → write-tree → commit-tree (parented on the previous checkpoint)
-     * → update-ref `refs/mend/checkpoints/<sessionId>/<n>`.
+     * → update-ref `refs/mend/checkpoints/<scope>/<n>`. `scope` is the chain's
+     * namespace — the worktree id (legacy refs used session ids; rows store
+     * their refs, so both stay resolvable).
      */
     readonly checkpoint: (
       worktreePath: string,
-      sessionId: SessionId,
+      scope: string,
       index: number,
       parent: Sha | null,
     ) => Effect.Effect<CheckpointSnapshot, GitError>;
@@ -566,10 +575,9 @@ export class Store extends Context.Service<
 
       const createWorktree = Effect.fn("Store.createWorktree")(function* (
         storePath: string,
-        sessionId: SessionId,
+        identity: { readonly directory: string; readonly branch: string },
         base: string | null,
         remoteEnv: Record<string, string> | null,
-        requestedName: string | null = null,
       ) {
         // Idempotent: stores adopted before the exclude or shared-group policies get them here.
         yield* ensureExcludes(storePath);
@@ -577,33 +585,34 @@ export class Store extends Context.Service<
         const baseRef = base ?? (yield* git(["symbolic-ref", "--short", "HEAD"], storePath));
         yield* freshenBase(storePath, baseRef, remoteEnv);
         const baseSha = yield* resolveBaseSha(storePath, baseRef, remoteEnv);
-        // A requested name is the worktree's identity: directory `<name>`,
-        // branch `mend/<name>`. The default stays id-derived (and the default
-        // branch namespace `mend/session/*` distinct, so names cannot collide
-        // with generated sessions).
-        const name = requestedName ?? `session-${sessionId}`;
-        const branch =
-          requestedName === null ? `mend/session/${sessionId}` : `mend/${requestedName}`;
-        if (requestedName !== null) {
-          const taken = yield* git(
-            ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
-            storePath,
-          ).pipe(Effect.result);
-          if (taken._tag === "Success") {
-            return yield* new GitError({
-              args: ["worktree", "add"],
-              cwd: storePath,
-              exitCode: null,
-              stderr: `worktree name "${requestedName}" is already used in this project — pick another`,
-            });
-          }
+        const { directory, branch } = identity;
+        // Backstop behind the worktrees table's uniqueness: a branch that already
+        // exists means the name is in use (possibly by a pre-pivot session row).
+        const taken = yield* git(
+          ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
+          storePath,
+        ).pipe(Effect.result);
+        if (taken._tag === "Success") {
+          return yield* new GitError({
+            args: ["worktree", "add"],
+            cwd: storePath,
+            exitCode: null,
+            stderr: `branch "${branch}" already exists in this project — pick another worktree name`,
+          });
         }
-        const worktreePath = path.join(path.dirname(storePath), "worktrees", name);
+        const worktreePath = path.join(path.dirname(storePath), "worktrees", directory);
         yield* git(["worktree", "add", "-b", branch, worktreePath, baseSha], storePath);
         // `git worktree add` does not shared-perm its admin dir the way ref writes are; the
-        // checkpoint index and HEAD for this session live there, so share it explicitly.
-        yield* Effect.sync(() => shareTree(path.join(storePath, "worktrees", name)));
-        return { path: worktreePath, name, branch, baseSha: sha(baseSha), baseRef };
+        // checkpoint index and HEAD for this worktree live there, so share it explicitly.
+        yield* Effect.sync(() => shareTree(path.join(storePath, "worktrees", directory)));
+        return { path: worktreePath, name: directory, branch, baseSha: sha(baseSha), baseRef };
+      });
+
+      const renameBranch = Effect.fn("Store.renameBranch")(function* (
+        worktreePath: string,
+        newBranch: string,
+      ) {
+        yield* git(["branch", "-m", newBranch], worktreePath);
       });
 
       const resetWorktree = Effect.fn("Store.resetWorktree")(function* (
@@ -661,6 +670,7 @@ export class Store extends Context.Service<
           const parsed = branchLine(line);
           if (parsed === null) continue;
           if (parsed.name.startsWith("mend/session/")) continue;
+          if (parsed.name.startsWith("mend/wt/")) continue;
           byName.set(parsed.name, parsed);
         }
         for (const line of remote.split("\n")) {
@@ -701,14 +711,11 @@ export class Store extends Context.Service<
 
       const checkpoint = Effect.fn("Store.checkpoint")(function* (
         worktreePath: string,
-        sessionId: SessionId,
+        scope: string,
         index: number,
         parent: Sha | null,
       ) {
-        const tmpIndex = path.join(
-          os.tmpdir(),
-          `mend-checkpoint-${sessionId}-${index}-${process.pid}`,
-        );
+        const tmpIndex = path.join(os.tmpdir(), `mend-checkpoint-${scope}-${index}-${process.pid}`);
         const env = { GIT_INDEX_FILE: tmpIndex };
         const snapshot = Effect.gen(function* () {
           yield* git(["add", "-A"], worktreePath, env);
@@ -719,7 +726,7 @@ export class Store extends Context.Service<
               ? ["commit-tree", tree, "-m", message]
               : ["commit-tree", tree, "-p", parent, "-m", message];
           const commit = yield* git(commitArgs, worktreePath);
-          const ref = `refs/mend/checkpoints/${sessionId}/${index}`;
+          const ref = `refs/mend/checkpoints/${scope}/${index}`;
           yield* git(["update-ref", ref, commit], worktreePath);
           return { ref, sha: sha(commit) };
         });
@@ -942,6 +949,7 @@ export class Store extends Context.Service<
         removeReference,
         adopt,
         createWorktree,
+        renameBranch,
         resetWorktree,
         refreshFromOrigin,
         listBranches,

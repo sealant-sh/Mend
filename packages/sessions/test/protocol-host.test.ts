@@ -145,6 +145,7 @@ const sessionsLayer = Layer.succeed(SessionsRepo, {
   create: () => Effect.die("not in test"),
   byId: () => Effect.die("not in test"),
   listForProject: () => Effect.succeed([]),
+  listForWorktree: () => Effect.succeed([]),
   listActive: () => Effect.succeed([]),
   listUnsettled: () => Effect.succeed([]),
   listRecentlySettled: () => Effect.succeed([]),

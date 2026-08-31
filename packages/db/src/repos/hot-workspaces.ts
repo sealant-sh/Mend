@@ -3,6 +3,7 @@ import {
   type ProjectId,
   type SealantWorkspaceId,
   type SessionId,
+  type WorktreeId,
 } from "@mend/domain";
 import {
   HotWorkspace,
@@ -21,6 +22,8 @@ import { hotWorkspaces } from "../schema/workbench.ts";
 export interface NewHotWorkspace {
   readonly id: SessionId;
   readonly projectId: ProjectId;
+  /** The pre-created worktree row the claiming session adopts. */
+  readonly worktreeId: WorktreeId;
   readonly ownerUserId: string | null;
   readonly fingerprint: string;
   readonly worktree: string;

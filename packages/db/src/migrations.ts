@@ -1254,6 +1254,130 @@ const nativeIngestCursorColumn = Effect.gen(function* () {
   yield* sql`ALTER TABLE agent_sessions ADD COLUMN native_ingest_cursor jsonb`;
 });
 
+/**
+ * The worktree-container pivot (plan §5.5/§5.6, decided 2026-08-31): the worktree
+ * becomes the durable named container; sessions are conversations inside it, many
+ * per worktree and several live at once; the change and the checkpoint chain move
+ * to the worktree. One worktree row is minted per existing session (they were 1:1),
+ * `session_changes` is renamed to `worktree_changes` and re-keyed, and every
+ * session-scoped CASCADE that would let a deleted conversation destroy worktree
+ * history flips to SET NULL. Pre-rename constraint names (`session_changes_pkey`
+ * and friends) stay as historical artifacts.
+ */
+const worktreesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE worktrees (
+      id text PRIMARY KEY,
+      project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name text NOT NULL,
+      directory text NOT NULL,
+      branch text NOT NULL,
+      base_sha text NOT NULL,
+      base_ref text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT worktrees_project_name_key UNIQUE (project_id, name),
+      CONSTRAINT worktrees_project_directory_key UNIQUE (project_id, directory)
+    )`;
+
+  // 1 worktree per existing session; sessions that (defensively) share a worktree
+  // directory genuinely share the worktree, so collapse — earliest session's
+  // metadata wins. name = directory = the old per-session dir name.
+  yield* sql`
+    INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha, base_ref, created_at, updated_at)
+    SELECT DISTINCT ON (project_id, worktree)
+           gen_random_uuid()::text, project_id, worktree, worktree, branch, base_sha, base_ref, created_at, updated_at
+    FROM agent_sessions
+    ORDER BY project_id, worktree, created_at ASC`;
+
+  yield* sql`ALTER TABLE agent_sessions ADD COLUMN worktree_id text REFERENCES worktrees(id) ON DELETE CASCADE`;
+  yield* sql`
+    UPDATE agent_sessions s SET worktree_id = w.id
+    FROM worktrees w WHERE w.project_id = s.project_id AND w.directory = s.worktree`;
+  yield* sql`ALTER TABLE agent_sessions ALTER COLUMN worktree_id SET NOT NULL`;
+  yield* sql`CREATE INDEX agent_sessions_worktree_idx ON agent_sessions (worktree_id, created_at)`;
+
+  // One change per worktree. Rename keeps every dependent FK/index by OID.
+  yield* sql`ALTER TABLE session_changes RENAME TO worktree_changes`;
+  yield* sql`ALTER TABLE worktree_changes ADD COLUMN worktree_id text REFERENCES worktrees(id) ON DELETE CASCADE`;
+  yield* sql`
+    UPDATE worktree_changes c SET worktree_id = s.worktree_id
+    FROM agent_sessions s WHERE s.id = c.session_id`;
+  // Defensive dedupe for shared-directory collapse: keep the earliest change row
+  // per worktree; re-point the dependents without uniqueness constraints
+  // (follow_ups, review_comments) at it; the duplicates' tours/passes/slices go
+  // with their rows (each keyed uniquely per change — merging would collide).
+  yield* sql`
+    UPDATE follow_ups f SET change_id = d.keep_id
+    FROM (
+      SELECT id, first_value(id) OVER (PARTITION BY worktree_id ORDER BY created_at, id) AS keep_id
+      FROM worktree_changes
+    ) d
+    WHERE f.change_id = d.id AND d.id <> d.keep_id`;
+  yield* sql`
+    UPDATE review_comments rc SET change_id = d.keep_id
+    FROM (
+      SELECT id, first_value(id) OVER (PARTITION BY worktree_id ORDER BY created_at, id) AS keep_id
+      FROM worktree_changes
+    ) d
+    WHERE rc.change_id = d.id AND d.id <> d.keep_id`;
+  yield* sql`
+    DELETE FROM worktree_changes c USING (
+      SELECT id, first_value(id) OVER (PARTITION BY worktree_id ORDER BY created_at, id) AS keep_id
+      FROM worktree_changes
+    ) d
+    WHERE c.id = d.id AND d.id <> d.keep_id`;
+  yield* sql`ALTER TABLE worktree_changes ALTER COLUMN worktree_id SET NOT NULL`;
+  yield* sql`ALTER TABLE worktree_changes ADD CONSTRAINT worktree_changes_worktree_id_key UNIQUE (worktree_id)`;
+  // The session pointer becomes a maintained mirror (last contributing session):
+  // optional, and deleting a conversation no longer deletes the change.
+  yield* sql`ALTER TABLE worktree_changes DROP CONSTRAINT session_changes_session_id_key`;
+  yield* sql`ALTER TABLE worktree_changes ALTER COLUMN session_id DROP NOT NULL`;
+  yield* sql`ALTER TABLE worktree_changes DROP CONSTRAINT session_changes_session_id_fkey`;
+  yield* sql`
+    ALTER TABLE worktree_changes
+    ADD CONSTRAINT worktree_changes_session_id_fkey
+    FOREIGN KEY (session_id) REFERENCES agent_sessions(id) ON DELETE SET NULL`;
+
+  // The checkpoint chain is the worktree's history: shared ordinal sequence,
+  // session pointer demoted to provenance that survives session deletion.
+  yield* sql`ALTER TABLE checkpoints ADD COLUMN worktree_id text REFERENCES worktrees(id) ON DELETE CASCADE`;
+  yield* sql`
+    UPDATE checkpoints c SET worktree_id = s.worktree_id
+    FROM agent_sessions s WHERE s.id = c.session_id`;
+  yield* sql`ALTER TABLE checkpoints ALTER COLUMN worktree_id SET NOT NULL`;
+  yield* sql`ALTER TABLE checkpoints ADD COLUMN ordinal integer`;
+  yield* sql`
+    UPDATE checkpoints SET ordinal = n.rn - 1
+    FROM (
+      SELECT id, row_number() OVER (PARTITION BY worktree_id ORDER BY created_at, id) AS rn
+      FROM checkpoints
+    ) n
+    WHERE checkpoints.id = n.id`;
+  yield* sql`ALTER TABLE checkpoints ALTER COLUMN ordinal SET NOT NULL`;
+  yield* sql`CREATE UNIQUE INDEX checkpoints_worktree_ordinal_idx ON checkpoints (worktree_id, ordinal)`;
+  yield* sql`CREATE INDEX checkpoints_worktree_created_idx ON checkpoints (worktree_id, created_at)`;
+  yield* sql`ALTER TABLE checkpoints ALTER COLUMN session_id DROP NOT NULL`;
+  yield* sql`ALTER TABLE checkpoints DROP CONSTRAINT checkpoints_session_id_fkey`;
+  yield* sql`
+    ALTER TABLE checkpoints
+    ADD CONSTRAINT checkpoints_session_id_fkey
+    FOREIGN KEY (session_id) REFERENCES agent_sessions(id) ON DELETE SET NULL`;
+
+  // Tour attribution likewise survives the composing session's deletion.
+  yield* sql`ALTER TABLE change_tours ALTER COLUMN session_id DROP NOT NULL`;
+  yield* sql`ALTER TABLE change_tours DROP CONSTRAINT change_tours_session_id_fkey`;
+  yield* sql`
+    ALTER TABLE change_tours
+    ADD CONSTRAINT change_tours_session_id_fkey
+    FOREIGN KEY (session_id) REFERENCES agent_sessions(id) ON DELETE SET NULL`;
+
+  // Pooled skeletons pre-create their worktree row from now on; legacy entries
+  // (worktree_id NULL) read as stale and drain on the first sweep.
+  yield* sql`ALTER TABLE hot_workspaces ADD COLUMN worktree_id text REFERENCES worktrees(id) ON DELETE SET NULL`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -1301,4 +1425,5 @@ export const migrations = {
   "0043_background_sessions": backgroundSessionsChoice,
   "0044_protocol_options": protocolOptionsColumn,
   "0045_native_ingest_cursor": nativeIngestCursorColumn,
+  "0046_worktrees": worktreesMigration,
 };

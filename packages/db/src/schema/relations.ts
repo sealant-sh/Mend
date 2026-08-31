@@ -33,7 +33,8 @@ export const relations = defineRelations(schema, (r) => ({
   },
   projects: {
     sessions: r.many.agentSessions({ from: r.projects.id, to: r.agentSessions.projectId }),
-    changes: r.many.sessionChanges({ from: r.projects.id, to: r.sessionChanges.projectId }),
+    worktrees: r.many.worktrees({ from: r.projects.id, to: r.worktrees.projectId }),
+    changes: r.many.worktreeChanges({ from: r.projects.id, to: r.worktreeChanges.projectId }),
     mounts: r.many.projectMounts({ from: r.projects.id, to: r.projectMounts.projectId }),
     references: r.many.projectReferences({
       from: r.projects.id,
@@ -62,8 +63,16 @@ export const relations = defineRelations(schema, (r) => ({
       to: r.agentSessions.contextSnapshotId,
     }),
   },
+  worktrees: {
+    project: r.one.projects({ from: r.worktrees.projectId, to: r.projects.id }),
+    sessions: r.many.agentSessions({ from: r.worktrees.id, to: r.agentSessions.worktreeId }),
+    change: r.one.worktreeChanges({ from: r.worktrees.id, to: r.worktreeChanges.worktreeId }),
+    checkpoints: r.many.checkpoints({ from: r.worktrees.id, to: r.checkpoints.worktreeId }),
+  },
   agentSessions: {
     project: r.one.projects({ from: r.agentSessions.projectId, to: r.projects.id }),
+    // `worktree` would collide with the mirror column; the row link gets a suffix.
+    worktreeRow: r.one.worktrees({ from: r.agentSessions.worktreeId, to: r.worktrees.id }),
     contextSnapshot: r.one.contextSnapshots({
       from: r.agentSessions.contextSnapshotId,
       to: r.contextSnapshots.id,
@@ -79,7 +88,7 @@ export const relations = defineRelations(schema, (r) => ({
       from: r.agentSessions.id,
       to: r.agentRequests.sessionId,
     }),
-    change: r.one.sessionChanges({ from: r.agentSessions.id, to: r.sessionChanges.sessionId }),
+    change: r.one.worktreeChanges({ from: r.agentSessions.id, to: r.worktreeChanges.sessionId }),
     checkpoints: r.many.checkpoints({
       from: r.agentSessions.id,
       to: r.checkpoints.sessionId,
@@ -129,29 +138,30 @@ export const relations = defineRelations(schema, (r) => ({
       to: r.checkpoints.sealantRunId,
     }),
   },
-  sessionChanges: {
-    project: r.one.projects({ from: r.sessionChanges.projectId, to: r.projects.id }),
-    session: r.one.agentSessions({ from: r.sessionChanges.sessionId, to: r.agentSessions.id }),
-    followUps: r.many.followUps({ from: r.sessionChanges.id, to: r.followUps.changeId }),
+  worktreeChanges: {
+    project: r.one.projects({ from: r.worktreeChanges.projectId, to: r.projects.id }),
+    worktree: r.one.worktrees({ from: r.worktreeChanges.worktreeId, to: r.worktrees.id }),
+    session: r.one.agentSessions({ from: r.worktreeChanges.sessionId, to: r.agentSessions.id }),
+    followUps: r.many.followUps({ from: r.worktreeChanges.id, to: r.followUps.changeId }),
     reviewComments: r.many.reviewComments({
-      from: r.sessionChanges.id,
+      from: r.worktreeChanges.id,
       to: r.reviewComments.changeId,
     }),
-    tour: r.one.changeTours({ from: r.sessionChanges.id, to: r.changeTours.changeId }),
-    passes: r.many.changePasses({ from: r.sessionChanges.id, to: r.changePasses.changeId }),
+    tour: r.one.changeTours({ from: r.worktreeChanges.id, to: r.changeTours.changeId }),
+    passes: r.many.changePasses({ from: r.worktreeChanges.id, to: r.changePasses.changeId }),
     reviewSlices: r.many.reviewSlices({
-      from: r.sessionChanges.id,
+      from: r.worktreeChanges.id,
       to: r.reviewSlices.changeId,
     }),
   },
   followUps: {
     session: r.one.agentSessions({ from: r.followUps.sessionId, to: r.agentSessions.id }),
-    change: r.one.sessionChanges({ from: r.followUps.changeId, to: r.sessionChanges.id }),
+    change: r.one.worktreeChanges({ from: r.followUps.changeId, to: r.worktreeChanges.id }),
   },
   reviewComments: {
-    change: r.one.sessionChanges({
+    change: r.one.worktreeChanges({
       from: r.reviewComments.changeId,
-      to: r.sessionChanges.id,
+      to: r.worktreeChanges.id,
     }),
     sentToSession: r.one.agentSessions({
       from: r.reviewComments.sentToSessionId,
@@ -159,14 +169,14 @@ export const relations = defineRelations(schema, (r) => ({
     }),
   },
   changeTours: {
-    change: r.one.sessionChanges({ from: r.changeTours.changeId, to: r.sessionChanges.id }),
+    change: r.one.worktreeChanges({ from: r.changeTours.changeId, to: r.worktreeChanges.id }),
     session: r.one.agentSessions({ from: r.changeTours.sessionId, to: r.agentSessions.id }),
   },
   changePasses: {
-    change: r.one.sessionChanges({ from: r.changePasses.changeId, to: r.sessionChanges.id }),
+    change: r.one.worktreeChanges({ from: r.changePasses.changeId, to: r.worktreeChanges.id }),
   },
   reviewSlices: {
-    change: r.one.sessionChanges({ from: r.reviewSlices.changeId, to: r.sessionChanges.id }),
+    change: r.one.worktreeChanges({ from: r.reviewSlices.changeId, to: r.worktreeChanges.id }),
     checkpointA: r.one.checkpoints({
       from: r.reviewSlices.checkpointAId,
       to: r.checkpoints.id,
@@ -177,6 +187,7 @@ export const relations = defineRelations(schema, (r) => ({
     }),
   },
   checkpoints: {
+    worktree: r.one.worktrees({ from: r.checkpoints.worktreeId, to: r.worktrees.id }),
     session: r.one.agentSessions({ from: r.checkpoints.sessionId, to: r.agentSessions.id }),
     run: r.one.sessionRuns({
       from: r.checkpoints.sealantRunId,

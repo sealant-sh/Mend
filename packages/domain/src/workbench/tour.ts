@@ -38,7 +38,8 @@ export class TourStop extends Schema.Class<TourStop>("TourStop")({
 export class ChangeTour extends Schema.Class<ChangeTour>("ChangeTour")({
   id: Schema.String,
   changeId: ChangeId,
-  sessionId: SessionId,
+  /** Which conversation's record composed the tour; null after that session is deleted. */
+  sessionId: Schema.NullOr(SessionId),
   summary: Schema.String,
   /** How the session approached the work, as the record shows it. */
   approach: Schema.NullOr(Schema.String),

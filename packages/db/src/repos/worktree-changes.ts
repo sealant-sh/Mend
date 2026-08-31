@@ -1,5 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
-import { ChangeId, type ProjectId, type SessionId, type Sha } from "@mend/domain";
+import { ChangeId, type ProjectId, type SessionId, type Sha, type WorktreeId } from "@mend/domain";
 import { Change } from "@mend/domain/workbench";
 import { and, count, eq, isNull, ne, or } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
@@ -7,7 +7,7 @@ import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
-import { agentSessions, followUps, reviewComments, sessionChanges } from "../schema/workbench.ts";
+import { agentSessions, followUps, reviewComments, worktreeChanges } from "../schema/workbench.ts";
 
 export class SessionChangeNotFoundError extends Schema.TaggedErrorClass<SessionChangeNotFoundError>()(
   "SessionChangeNotFoundError",
@@ -18,7 +18,9 @@ export class SessionChangeNotFoundError extends Schema.TaggedErrorClass<SessionC
 
 /**
  * The DB-cheap facts a session list can carry without touching git: whether
- * a change row exists, how the review stands, whether a follow-up waits.
+ * the worktree's change row exists, how the review stands, whether a follow-up
+ * waits. Still keyed per session — every session of a worktree carries the
+ * same change annotation.
  */
 export interface SessionAnnotationRow {
   readonly sessionId: string;
@@ -29,114 +31,144 @@ export interface SessionAnnotationRow {
 }
 
 /**
- * The reviewable object's identity row (plan §5.6) — one per session, table
- * `session_changes`. Git owns the diff; `head_sha` is an opportunistic cache
+ * The reviewable object's identity row (plan §5.6) — one per worktree, table
+ * `worktree_changes`. Git owns the diff; `head_sha` is an opportunistic cache
  * for display, refreshed by whoever looked last.
  */
-export class SessionChangesRepo extends Context.Service<
-  SessionChangesRepo,
+export class WorktreeChangesRepo extends Context.Service<
+  WorktreeChangesRepo,
   {
-    /** Idempotent: the session's change row, created on first ask. */
-    readonly ensureForSession: (
+    /** Idempotent: the worktree's change row, created on first ask. */
+    readonly ensureForWorktree: (
       projectId: ProjectId,
-      sessionId: SessionId,
+      worktreeId: WorktreeId,
       branch: string,
       baseSha: Sha,
     ) => Effect.Effect<Change>;
     readonly byId: (id: ChangeId) => Effect.Effect<Change, SessionChangeNotFoundError>;
+    readonly byWorktree: (worktreeId: WorktreeId) => Effect.Effect<Change | null>;
+    /** Phase-A compat: resolve through the session's worktree membership. */
     readonly bySession: (sessionId: SessionId) => Effect.Effect<Change | null>;
-    readonly refreshHead: (id: ChangeId, headSha: Sha) => Effect.Effect<void>;
+    /** Stamps the contributing session as the change's session mirror. */
+    readonly refreshHead: (
+      id: ChangeId,
+      headSha: Sha,
+      viaSessionId: SessionId | null,
+    ) => Effect.Effect<void>;
     /** One row per session of the project — list decoration, no git involved. */
     readonly annotationsForProject: (
       projectId: ProjectId,
     ) => Effect.Effect<ReadonlyArray<SessionAnnotationRow>>;
   }
->()("@mend/db/SessionChangesRepo") {}
+>()("@mend/db/WorktreeChangesRepo") {}
 
-const toChange = (row: typeof sessionChanges.$inferSelect): Change => new Change(row);
+const toChange = (row: typeof worktreeChanges.$inferSelect): Change => new Change(row);
 
-export const SessionChangesRepoLive: Layer.Layer<
-  SessionChangesRepo,
+export const WorktreeChangesRepoLive: Layer.Layer<
+  WorktreeChangesRepo,
   never,
   MendDB | PgClient.PgClient
 > = Layer.effect(
-  SessionChangesRepo,
+  WorktreeChangesRepo,
   Effect.gen(function* () {
     const db = yield* MendDB;
     const sql = yield* PgClient.PgClient;
 
-    const ensureForSession = Effect.fn("SessionChangesRepo.ensureForSession")(function* (
+    const ensureForWorktree = Effect.fn("WorktreeChangesRepo.ensureForWorktree")(function* (
       projectId: ProjectId,
-      sessionId: SessionId,
+      worktreeId: WorktreeId,
       branch: string,
       baseSha: Sha,
     ) {
       const [row] = yield* db
-        .insert(sessionChanges)
+        .insert(worktreeChanges)
         .values({
           id: ChangeId.make(crypto.randomUUID()),
           projectId,
-          sessionId,
+          worktreeId,
           branch,
           baseSha,
         })
         .onConflictDoUpdate({
-          target: sessionChanges.sessionId,
+          target: worktreeChanges.worktreeId,
           set: { updatedAt: new Date() },
         })
         .returning()
         .pipe(Effect.orDie);
-      if (row === undefined) return yield* Effect.die("session change upsert returned no row");
+      if (row === undefined) return yield* Effect.die("worktree change upsert returned no row");
       return toChange(row);
     });
 
-    const byId = Effect.fn("SessionChangesRepo.byId")(function* (id: ChangeId) {
+    const byId = Effect.fn("WorktreeChangesRepo.byId")(function* (id: ChangeId) {
       const [row] = yield* db
         .select()
-        .from(sessionChanges)
-        .where(eq(sessionChanges.id, id))
+        .from(worktreeChanges)
+        .where(eq(worktreeChanges.id, id))
         .limit(1)
         .pipe(Effect.orDie);
       if (row === undefined) return yield* new SessionChangeNotFoundError({ id });
       return toChange(row);
     });
 
-    const bySession = Effect.fn("SessionChangesRepo.bySession")(function* (sessionId: SessionId) {
+    const byWorktree = Effect.fn("WorktreeChangesRepo.byWorktree")(function* (
+      worktreeId: WorktreeId,
+    ) {
       const [row] = yield* db
         .select()
-        .from(sessionChanges)
-        .where(eq(sessionChanges.sessionId, sessionId))
+        .from(worktreeChanges)
+        .where(eq(worktreeChanges.worktreeId, worktreeId))
         .limit(1)
         .pipe(Effect.orDie);
       return row === undefined ? null : toChange(row);
     });
 
-    const refreshHead = Effect.fn("SessionChangesRepo.refreshHead")(function* (
+    const bySession = Effect.fn("WorktreeChangesRepo.bySession")(function* (sessionId: SessionId) {
+      const [row] = yield* db
+        .select({ change: worktreeChanges })
+        .from(worktreeChanges)
+        .innerJoin(agentSessions, eq(agentSessions.worktreeId, worktreeChanges.worktreeId))
+        .where(eq(agentSessions.id, sessionId))
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row === undefined ? null : toChange(row.change);
+    });
+
+    const refreshHead = Effect.fn("WorktreeChangesRepo.refreshHead")(function* (
       id: ChangeId,
       headSha: Sha,
+      viaSessionId: SessionId | null,
     ) {
       const [row] = yield* db
-        .update(sessionChanges)
-        .set({ headSha, updatedAt: new Date() })
+        .update(worktreeChanges)
+        .set({
+          headSha,
+          updatedAt: new Date(),
+          ...(viaSessionId === null ? {} : { sessionId: viaSessionId }),
+        })
         .where(
           and(
-            eq(sessionChanges.id, id),
-            or(isNull(sessionChanges.headSha), ne(sessionChanges.headSha, headSha)),
+            eq(worktreeChanges.id, id),
+            or(isNull(worktreeChanges.headSha), ne(worktreeChanges.headSha, headSha)),
           ),
         )
-        .returning({ sessionId: sessionChanges.sessionId, projectId: sessionChanges.projectId })
+        .returning({
+          sessionId: worktreeChanges.sessionId,
+          worktreeId: worktreeChanges.worktreeId,
+          projectId: worktreeChanges.projectId,
+        })
         .pipe(Effect.orDie);
-      if (row !== undefined) {
+      if (row !== undefined && row.sessionId !== null) {
         yield* notifyEvent(sql, {
           type: "session-change",
           changeId: id,
+          worktreeId: row.worktreeId,
           sessionId: row.sessionId,
           projectId: row.projectId,
         });
       }
     });
 
-    const annotationsForProject = Effect.fn("SessionChangesRepo.annotationsForProject")(function* (
+    const annotationsForProject = Effect.fn("WorktreeChangesRepo.annotationsForProject")(function* (
       projectId: ProjectId,
     ) {
       const openCommentCounts = db
@@ -166,15 +198,15 @@ export const SessionChangesRepoLive: Layer.Layer<
       const rows = yield* db
         .select({
           sessionId: agentSessions.id,
-          changeId: sessionChanges.id,
+          changeId: worktreeChanges.id,
           openComments: openCommentCounts.value,
           totalComments: totalCommentCounts.value,
           pendingSessionId: sessionsWithPendingFollowUps.sessionId,
         })
         .from(agentSessions)
-        .leftJoin(sessionChanges, eq(sessionChanges.sessionId, agentSessions.id))
-        .leftJoin(openCommentCounts, eq(openCommentCounts.changeId, sessionChanges.id))
-        .leftJoin(totalCommentCounts, eq(totalCommentCounts.changeId, sessionChanges.id))
+        .leftJoin(worktreeChanges, eq(worktreeChanges.worktreeId, agentSessions.worktreeId))
+        .leftJoin(openCommentCounts, eq(openCommentCounts.changeId, worktreeChanges.id))
+        .leftJoin(totalCommentCounts, eq(totalCommentCounts.changeId, worktreeChanges.id))
         .leftJoin(
           sessionsWithPendingFollowUps,
           eq(sessionsWithPendingFollowUps.sessionId, agentSessions.id),
@@ -193,6 +225,6 @@ export const SessionChangesRepoLive: Layer.Layer<
       );
     });
 
-    return { ensureForSession, byId, bySession, refreshHead, annotationsForProject };
+    return { ensureForWorktree, byId, byWorktree, bySession, refreshHead, annotationsForProject };
   }),
 );

@@ -66,8 +66,16 @@ export const MendEvent = Schema.Union([
     projectId: Schema.String,
   }),
   Schema.Struct({
+    // The container changed: created, renamed, removed, session membership moved.
+    type: Schema.Literals(["worktree"]),
+    worktreeId: Schema.String,
+    projectId: Schema.String,
+  }),
+  Schema.Struct({
     type: Schema.Literals(["session-change"]),
     changeId: Schema.String,
+    worktreeId: Schema.String,
+    /** The contributing session (the change's mirror); kept while clients migrate. */
     sessionId: Schema.String,
     projectId: Schema.String,
   }),
@@ -75,6 +83,7 @@ export const MendEvent = Schema.Union([
     type: Schema.Literals(["review-comment"]),
     commentId: Schema.String,
     changeId: Schema.String,
+    worktreeId: Schema.String,
     projectId: Schema.String,
   }),
 ]);

@@ -7,6 +7,7 @@ import {
   SealantWorkspaceId,
   SessionId,
   Sha,
+  WorktreeId,
 } from "../ids.ts";
 import { WorkspaceImage } from "../settings.ts";
 import { SequenceNumber, Timestamp } from "../timestamp.ts";
@@ -61,30 +62,33 @@ export const NativeIngestCursor = Schema.Struct({
 export type NativeIngestCursor = typeof NativeIngestCursor.Type;
 
 /**
- * One logical coding-agent conversation in its own store worktree (plan §5.5). A settled-session
+ * One logical coding-agent conversation inside a worktree (plan §5.5). The worktree is the
+ * durable container — many sessions may inhabit it over its life, several live at once; the
+ * session owns only its conversation, its processes, and its workspace. A settled-session
  * resume starts another Sealant run; SessionRun owns the ordered membership and per-run cursors.
  * The recording stays in Sealant and evidence addresses it by `(sealantRunId, sequence)`.
  */
 export class Session extends Schema.Class<Session>("Session")({
   id: SessionId,
   projectId: ProjectId,
+  /** The container this conversation runs in. */
+  worktreeId: WorktreeId,
   /** The adapter that launched it: `codex` · `claude` · `opencode` · `custom`. */
   harness: Schema.String,
   /** Provider-native session/thread id when the adapter can extract one. */
   providerSessionId: Schema.NullOr(Schema.String),
   /** Optional human label ("reaper retry storm"); sessions have no issue titles. */
   label: Schema.NullOr(Schema.String),
-  /** Worktree directory name inside the project's store. */
-  worktree: Schema.String,
-  /** The session branch the worktree is on. */
-  branch: Schema.String,
-  /** Where the worktree branched from — the change's comparison base. */
-  baseSha: Sha,
   /**
-   * The base as the user named it — a branch, tag, or sha; the project's default branch when
-   * nothing was chosen. Recorded at provision and never rewritten (`baseSha` pins the commit).
-   * Null only for sessions provisioned before the column existed.
+   * Denormalized mirror of the worktree row's `directory` — kept for
+   * pre-worktree clients; new readers resolve the worktree by `worktreeId`.
    */
+  worktree: Schema.String,
+  /** Mirror of the worktree row's `branch` (see `worktree`). */
+  branch: Schema.String,
+  /** Mirror of the worktree row's `baseSha` (see `worktree`). */
+  baseSha: Sha,
+  /** Mirror of the worktree row's `baseRef` (see `worktree`). */
   baseRef: Schema.NullOr(Schema.String),
   contextSnapshotId: Schema.NullOr(ContextSnapshotId),
   /** References mounted read-only beside the worktree at launch, SHAs as observed then. */

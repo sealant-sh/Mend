@@ -1,4 +1,4 @@
-import { ProjectsRepo, ReviewCommentsRepo, SessionChangesRepo, SessionsRepo } from "@mend/db";
+import { ProjectsRepo, ReviewCommentsRepo, WorktreeChangesRepo, SessionsRepo } from "@mend/db";
 import { ChangeId } from "@mend/domain";
 import { RecordLink } from "@mend/domain/workbench";
 import type { SealantClient } from "@mend/sealant";
@@ -107,7 +107,7 @@ export const ChangeSuggesterLive: Layer.Layer<
   ChangeSuggester,
   never,
   | InferenceProvider
-  | SessionChangesRepo
+  | WorktreeChangesRepo
   | SessionsRepo
   | ProjectsRepo
   | ReviewCommentsRepo
@@ -117,7 +117,7 @@ export const ChangeSuggesterLive: Layer.Layer<
   ChangeSuggester,
   Effect.gen(function* () {
     const provider = yield* InferenceProvider;
-    const changes = yield* SessionChangesRepo;
+    const changes = yield* WorktreeChangesRepo;
     const sessions = yield* SessionsRepo;
     const projects = yield* ProjectsRepo;
     const comments = yield* ReviewCommentsRepo;
@@ -129,6 +129,13 @@ export const ChangeSuggesterLive: Layer.Layer<
       const change = yield* changes
         .byId(job.changeId)
         .pipe(Effect.mapError(() => failed(`no change ${job.changeId}`)));
+      // Phase-A record evidence reads the LAST CONTRIBUTING conversation (the
+      // change's session mirror); multi-session union is named follow-up work.
+      if (change.sessionId === null) {
+        return yield* failed(
+          "the change has no contributing session — nothing to ground findings in",
+        );
+      }
       const session = yield* sessions
         .byId(change.sessionId)
         .pipe(Effect.mapError(() => failed(`no session ${change.sessionId}`)));

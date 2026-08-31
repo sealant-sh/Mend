@@ -1,0 +1,211 @@
+import { PgClient } from "@effect/sql-pg";
+import { SessionId, WorktreeId, type ProjectId, type Sha } from "@mend/domain";
+import { Worktree } from "@mend/domain/workbench";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { Effect, Layer, Schema } from "effect";
+import * as Context from "effect/Context";
+
+import { MendDB } from "../client.ts";
+import { notifyEvent } from "../events.ts";
+import { agentSessions, worktrees } from "../schema/workbench.ts";
+
+export class WorktreeNotFoundError extends Schema.TaggedErrorClass<WorktreeNotFoundError>()(
+  "WorktreeNotFoundError",
+  {
+    id: Schema.String,
+  },
+) {}
+
+export interface NewWorktreeRow {
+  /** Caller-supplied: the engine derives the anonymous directory/branch from it. */
+  readonly id: WorktreeId;
+  readonly projectId: ProjectId;
+  readonly name: string;
+  readonly directory: string;
+  readonly branch: string;
+  readonly baseSha: Sha;
+  readonly baseRef: string | null;
+}
+
+/** Session states that count as live for removal guards and follow-up targeting. */
+const LIVE_SESSION_STATUSES = ["starting", "running", "waiting", "idle"] as const;
+
+/**
+ * The index of durable worktree containers (plan §5.5/§5.6) — table `worktrees`.
+ * The git worktree itself lives in the project store; this row carries identity
+ * (display name vs immutable directory), the base facts, and the membership key
+ * sessions/changes/checkpoints hang off.
+ */
+export class WorktreesRepo extends Context.Service<
+  WorktreesRepo,
+  {
+    readonly create: (worktree: NewWorktreeRow) => Effect.Effect<Worktree>;
+    readonly byId: (id: WorktreeId) => Effect.Effect<Worktree, WorktreeNotFoundError>;
+    readonly byName: (projectId: ProjectId, name: string) => Effect.Effect<Worktree | null>;
+    /** Directory names are the store-path key pre-pivot rows are matched by. */
+    readonly byDirectory: (
+      projectId: ProjectId,
+      directory: string,
+    ) => Effect.Effect<Worktree | null>;
+    readonly listForProject: (projectId: ProjectId) => Effect.Effect<ReadonlyArray<Worktree>>;
+    /** Hot-claim reset: the pooled worktree re-bases to what the claim asked for. */
+    readonly setBase: (id: WorktreeId, baseSha: Sha, baseRef: string | null) => Effect.Effect<void>;
+    /** Display identity rename (name + branch); the directory never moves. */
+    readonly rename: (id: WorktreeId, name: string, branch: string) => Effect.Effect<void>;
+    readonly remove: (id: WorktreeId) => Effect.Effect<void>;
+    /**
+     * The follow-up target resolver: the newest live conversation in the
+     * worktree, or null when none is live.
+     */
+    readonly newestLiveSessionId: (id: WorktreeId) => Effect.Effect<SessionId | null>;
+  }
+>()("@mend/db/WorktreesRepo") {}
+
+const toWorktree = (row: typeof worktrees.$inferSelect): Worktree => new Worktree(row);
+
+// Compile-time seam tripwire (same discipline as SessionsRepo): a column added
+// to `worktrees` must land in @mend/domain's Worktree in the same change.
+type WorktreeRowShape = typeof worktrees.$inferSelect;
+type ExactKeys<A, B> = [Exclude<keyof A, keyof B> | Exclude<keyof B, keyof A>] extends [never]
+  ? true
+  : never;
+const worktreeSeamIntact: ExactKeys<WorktreeRowShape, Worktree> = true;
+void worktreeSeamIntact;
+
+export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgClient.PgClient> =
+  Layer.effect(
+    WorktreesRepo,
+    Effect.gen(function* () {
+      const db = yield* MendDB;
+      const pg = yield* PgClient.PgClient;
+
+      const create = Effect.fn("WorktreesRepo.create")(function* (worktree: NewWorktreeRow) {
+        const [row] = yield* db.insert(worktrees).values(worktree).returning().pipe(Effect.orDie);
+        if (row === undefined) return yield* Effect.die("worktree insert returned no row");
+        yield* notifyEvent(pg, {
+          type: "worktree",
+          worktreeId: row.id,
+          projectId: row.projectId,
+        });
+        return toWorktree(row);
+      });
+
+      const byId = Effect.fn("WorktreesRepo.byId")(function* (id: WorktreeId) {
+        const [row] = yield* db
+          .select()
+          .from(worktrees)
+          .where(eq(worktrees.id, id))
+          .limit(1)
+          .pipe(Effect.orDie);
+        if (row === undefined) return yield* new WorktreeNotFoundError({ id });
+        return toWorktree(row);
+      });
+
+      const byName = Effect.fn("WorktreesRepo.byName")(function* (
+        projectId: ProjectId,
+        name: string,
+      ) {
+        const [row] = yield* db
+          .select()
+          .from(worktrees)
+          .where(and(eq(worktrees.projectId, projectId), eq(worktrees.name, name)))
+          .limit(1)
+          .pipe(Effect.orDie);
+        return row === undefined ? null : toWorktree(row);
+      });
+
+      const byDirectory = Effect.fn("WorktreesRepo.byDirectory")(function* (
+        projectId: ProjectId,
+        directory: string,
+      ) {
+        const [row] = yield* db
+          .select()
+          .from(worktrees)
+          .where(and(eq(worktrees.projectId, projectId), eq(worktrees.directory, directory)))
+          .limit(1)
+          .pipe(Effect.orDie);
+        return row === undefined ? null : toWorktree(row);
+      });
+
+      const listForProject = Effect.fn("WorktreesRepo.listForProject")(function* (
+        projectId: ProjectId,
+      ) {
+        const rows = yield* db
+          .select()
+          .from(worktrees)
+          .where(eq(worktrees.projectId, projectId))
+          .orderBy(desc(worktrees.createdAt))
+          .pipe(Effect.orDie);
+        return rows.map(toWorktree);
+      });
+
+      const setBase = Effect.fn("WorktreesRepo.setBase")(function* (
+        id: WorktreeId,
+        baseSha: Sha,
+        baseRef: string | null,
+      ) {
+        yield* db
+          .update(worktrees)
+          .set({ baseSha, baseRef, updatedAt: new Date() })
+          .where(eq(worktrees.id, id))
+          .pipe(Effect.orDie);
+      });
+
+      const rename = Effect.fn("WorktreesRepo.rename")(function* (
+        id: WorktreeId,
+        name: string,
+        branch: string,
+      ) {
+        const [row] = yield* db
+          .update(worktrees)
+          .set({ name, branch, updatedAt: new Date() })
+          .where(eq(worktrees.id, id))
+          .returning({ projectId: worktrees.projectId })
+          .pipe(Effect.orDie);
+        if (row !== undefined) {
+          yield* notifyEvent(pg, { type: "worktree", worktreeId: id, projectId: row.projectId });
+        }
+      });
+
+      const remove = Effect.fn("WorktreesRepo.remove")(function* (id: WorktreeId) {
+        const [row] = yield* db
+          .delete(worktrees)
+          .where(eq(worktrees.id, id))
+          .returning({ projectId: worktrees.projectId })
+          .pipe(Effect.orDie);
+        if (row !== undefined) {
+          yield* notifyEvent(pg, { type: "worktree", worktreeId: id, projectId: row.projectId });
+        }
+      });
+
+      const newestLiveSessionId = Effect.fn("WorktreesRepo.newestLiveSessionId")(function* (
+        id: WorktreeId,
+      ) {
+        const [row] = yield* db
+          .select({ id: agentSessions.id })
+          .from(agentSessions)
+          .where(
+            and(
+              eq(agentSessions.worktreeId, id),
+              inArray(agentSessions.status, [...LIVE_SESSION_STATUSES]),
+            ),
+          )
+          .orderBy(desc(agentSessions.createdAt), asc(agentSessions.id))
+          .limit(1)
+          .pipe(Effect.orDie);
+        return row === undefined ? null : SessionId.make(row.id);
+      });
+
+      return {
+        create,
+        byId,
+        byName,
+        byDirectory,
+        listForProject,
+        setBase,
+        rename,
+        remove,
+        newestLiveSessionId,
+      };
+    }),
+  );

@@ -1,7 +1,7 @@
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { CheckpointId, SealantRunId, SessionId, Sha } from "./ids.ts";
+import { CheckpointId, SealantRunId, SessionId, WorktreeId, Sha } from "./ids.ts";
 import { SequenceNumber, Timestamp } from "./timestamp.ts";
 import { Checkpoint } from "./workbench/checkpoint.ts";
 
@@ -42,8 +42,10 @@ describe("Timestamp", () => {
     const wireCodec = Schema.toCodecJson(Checkpoint);
     const checkpoint = new Checkpoint({
       id: CheckpointId.make("cp_1"),
+      worktreeId: WorktreeId.make("wt_1"),
       sessionId: SessionId.make("ses_1"),
-      ref: "refs/mend/checkpoints/ses_1/1",
+      ordinal: 1,
+      ref: "refs/mend/checkpoints/wt_1/1",
       sha: Sha.make("0123abcd"),
       sealantRunId: SealantRunId.make("run_1"),
       seq: 42n,

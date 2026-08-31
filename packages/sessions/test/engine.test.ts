@@ -21,7 +21,8 @@ import {
   ServiceForwardsRepo,
   ServiceObservationsRepo,
   ServicesRepo,
-  SessionChangesRepo,
+  WorktreeChangesRepo,
+  WorktreesRepo,
   SessionGitOpsRepo,
   SessionNotFoundError,
   SessionProcessesRepo,
@@ -34,6 +35,7 @@ import {
   type NewSessionProcess,
   type NewSessionRun,
   SessionChannelTokensRepoMemory,
+  WorktreeNotFoundError,
 } from "@mend/db";
 import {
   AgentTurnId,
@@ -52,6 +54,7 @@ import {
   SessionProcessId,
   Sha,
   MendSettings,
+  WorktreeId,
   defaultSettings,
   type DotfilesRepository,
 } from "@mend/domain";
@@ -72,6 +75,7 @@ import {
   Session,
   SessionProcess,
   SessionRun,
+  Worktree,
   type SessionExtraMount,
   type SessionReferenceMount,
 } from "@mend/domain/workbench";
@@ -492,6 +496,8 @@ interface World {
   readonly serviceObservations: Map<string, ServiceObservation>;
   readonly changes: Map<string, Change>;
   readonly checkpoints: Array<Checkpoint>;
+  /** Keyed by worktree id. */
+  readonly worktrees: Map<string, Worktree>;
 }
 
 const makeWorld = (): World => ({
@@ -504,6 +510,7 @@ const makeWorld = (): World => ({
   serviceObservations: new Map(),
   changes: new Map(),
   checkpoints: [],
+  worktrees: new Map(),
 });
 
 const sessionProcessesLayer = (world: World) => {
@@ -1030,6 +1037,7 @@ const sessionsLayer = (world: World) => {
         const session = new Session({
           id: input.id,
           projectId: input.projectId,
+          worktreeId: input.worktreeId,
           harness: input.harness,
           providerSessionId: null,
           label: input.label,
@@ -1069,6 +1077,8 @@ const sessionsLayer = (world: World) => {
         : Effect.succeed(found);
     },
     listForProject: () => Effect.succeed([...world.sessions.values()]),
+    listForWorktree: (worktreeId) =>
+      Effect.succeed([...world.sessions.values()].filter((s) => s.worktreeId === worktreeId)),
     listActive: () => Effect.succeed([]),
     listUnsettled: () =>
       Effect.succeed([...world.sessions.values()].filter((s) => s.settledAt === null)),
@@ -1140,35 +1150,110 @@ const sessionsLayer = (world: World) => {
 };
 
 const changesLayer = (world: World) =>
-  Layer.succeed(SessionChangesRepo, {
-    ensureForSession: (projectId, sessionId, branch, baseSha) =>
+  Layer.succeed(WorktreeChangesRepo, {
+    ensureForWorktree: (projectId, worktreeId, branch, baseSha) =>
       Effect.sync(() => {
-        const existing = world.changes.get(sessionId);
+        const existing = world.changes.get(worktreeId);
         if (existing !== undefined) return existing;
         const change = new Change({
           id: ChangeId.make(crypto.randomUUID()),
           projectId,
-          sessionId,
+          worktreeId,
+          sessionId: null,
           branch,
           baseSha,
           headSha: null,
           createdAt: now(),
           updatedAt: now(),
         });
-        world.changes.set(sessionId, change);
+        world.changes.set(worktreeId, change);
         return change;
       }),
     byId: () => Effect.die("not in test"),
-    bySession: (sessionId) => Effect.succeed(world.changes.get(sessionId) ?? null),
-    refreshHead: (id, headSha) =>
+    byWorktree: (worktreeId) => Effect.succeed(world.changes.get(worktreeId) ?? null),
+    bySession: (sessionId) =>
+      Effect.sync(() => {
+        const session = world.sessions.get(sessionId);
+        if (session === undefined) return null;
+        return world.changes.get(session.worktreeId) ?? null;
+      }),
+    refreshHead: (id, headSha, viaSessionId) =>
       Effect.sync(() => {
         for (const [key, change] of world.changes) {
           if (change.id === id) {
-            world.changes.set(key, new Change({ ...change, headSha, updatedAt: now() }));
+            world.changes.set(
+              key,
+              new Change({
+                ...change,
+                headSha,
+                sessionId: viaSessionId ?? change.sessionId,
+                updatedAt: now(),
+              }),
+            );
           }
         }
       }),
     annotationsForProject: () => Effect.succeed([]),
+  });
+
+const worktreesLayer = (world: World) =>
+  Layer.succeed(WorktreesRepo, {
+    create: (input) =>
+      Effect.sync(() => {
+        const worktree = new Worktree({ ...input, createdAt: now(), updatedAt: now() });
+        world.worktrees.set(worktree.id, worktree);
+        return worktree;
+      }),
+    byId: (id) => {
+      const found = world.worktrees.get(id);
+      return found === undefined
+        ? Effect.fail(new WorktreeNotFoundError({ id }))
+        : Effect.succeed(found);
+    },
+    byName: (projectId, name) =>
+      Effect.succeed(
+        [...world.worktrees.values()].find(
+          (worktree) => worktree.projectId === projectId && worktree.name === name,
+        ) ?? null,
+      ),
+    byDirectory: (projectId, directory) =>
+      Effect.succeed(
+        [...world.worktrees.values()].find(
+          (worktree) => worktree.projectId === projectId && worktree.directory === directory,
+        ) ?? null,
+      ),
+    listForProject: (projectId) =>
+      Effect.succeed(
+        [...world.worktrees.values()].filter((worktree) => worktree.projectId === projectId),
+      ),
+    setBase: (id, baseSha, baseRef) =>
+      Effect.sync(() => {
+        const current = world.worktrees.get(id);
+        if (current !== undefined) {
+          world.worktrees.set(id, new Worktree({ ...current, baseSha, baseRef, updatedAt: now() }));
+        }
+      }),
+    rename: (id, name, branch) =>
+      Effect.sync(() => {
+        const current = world.worktrees.get(id);
+        if (current !== undefined) {
+          world.worktrees.set(id, new Worktree({ ...current, name, branch, updatedAt: now() }));
+        }
+      }),
+    remove: (id) =>
+      Effect.sync(() => {
+        world.worktrees.delete(id);
+      }),
+    newestLiveSessionId: (id) =>
+      Effect.succeed(
+        [...world.sessions.values()]
+          .filter(
+            (session) =>
+              session.worktreeId === id &&
+              ["starting", "running", "waiting", "idle"].includes(session.status),
+          )
+          .toSorted((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0]?.id ?? null,
+      ),
   });
 
 const sessionRunsLayer = (world: World) => {
@@ -1226,7 +1311,9 @@ const checkpointsLayer = (world: World) =>
       Effect.sync(() => {
         const checkpoint = new Checkpoint({
           id: CheckpointId.make(crypto.randomUUID()),
+          worktreeId: input.worktreeId,
           sessionId: input.sessionId,
+          ordinal: input.ordinal,
           ref: input.ref,
           sha: input.sha,
           sealantRunId: input.sealantRunId,
@@ -1239,12 +1326,15 @@ const checkpointsLayer = (world: World) =>
       }),
     byId: (id) =>
       Effect.succeed(world.checkpoints.find((checkpoint) => checkpoint.id === id) ?? null),
+    listForWorktree: (worktreeId) =>
+      Effect.succeed(world.checkpoints.filter((c) => c.worktreeId === worktreeId)),
+    latestForWorktree: (worktreeId) =>
+      Effect.succeed(world.checkpoints.filter((c) => c.worktreeId === worktreeId).at(-1) ?? null),
+    countForWorktree: (worktreeId) =>
+      Effect.succeed(world.checkpoints.filter((c) => c.worktreeId === worktreeId).length),
     listForSession: (sessionId) =>
       Effect.succeed(world.checkpoints.filter((c) => c.sessionId === sessionId)),
-    latestForSession: (sessionId) =>
-      Effect.succeed(world.checkpoints.filter((c) => c.sessionId === sessionId).at(-1) ?? null),
-    countForSession: (sessionId) =>
-      Effect.succeed(world.checkpoints.filter((c) => c.sessionId === sessionId).length),
+    withWorktreeLock: (_worktreeId, effect) => effect,
   });
 
 /** A throwaway origin repo with one commit, adopted into a tmp store. */
@@ -1294,7 +1384,7 @@ const setup = (tmp: string, world: World) => {
 };
 
 const withEngine = <A, E>(
-  work: (world: World, tmp: string) => Effect.Effect<A, E, SessionEngine | Store>,
+  work: (world: World, tmp: string) => Effect.Effect<A, E, SessionEngine | Store | WorktreesRepo>,
   options: {
     readonly sealantLayer?: Layer.Layer<SealantClient>;
     readonly protocolHostLayer?: Layer.Layer<ProtocolHost>;
@@ -1356,6 +1446,7 @@ const withEngine = <A, E>(
         agentBridgeStubLayer,
         gitOpsStubLayer,
         changesLayer(world),
+        worktreesLayer(world),
         checkpointsLayer(world),
         referencesEmptyLayer,
         projectMountsEmptyLayer,
@@ -1376,7 +1467,7 @@ const withEngine = <A, E>(
   );
   return Effect.runPromise(
     work(world, tmp).pipe(
-      Effect.provide(Layer.merge(engineLayer, storeLayer)),
+      Effect.provide(Layer.mergeAll(engineLayer, storeLayer, worktreesLayer(world))),
       Effect.ensuring(Effect.sync(() => fs.rmSync(tmp, { recursive: true, force: true }))),
       Effect.orDie,
     ),
@@ -2234,11 +2325,14 @@ describe("SessionEngine", () => {
           expect(world.sessions.get(session.id)?.status).toBe("idle");
           expect(world.sessions.get(session.id)?.settledAt).toBeNull();
           expect(stopped).toEqual([]);
-          // The end of an agent process is a turn boundary.
+          // The end of an agent process is a turn boundary. Ordinal 0 is the
+          // worktree-start snapshot (no session attached), then the session's own start.
           expect(world.checkpoints.map((checkpoint) => checkpoint.trigger)).toEqual([
+            "session-start",
             "session-start",
             "turn-boundary",
           ]);
+          expect(world.checkpoints[0]?.sessionId).toBeNull();
 
           yield* engine.stopShell(shell.id);
           expect(world.sessions.get(session.id)?.status).toBe("completed");
@@ -2525,6 +2619,7 @@ describe("SessionEngine", () => {
             new Session({
               id: sessionId,
               projectId: ProjectId.make("project-retained-at-boot"),
+              worktreeId: WorktreeId.make("wt-retained-at-boot"),
               harness: "codex",
               providerSessionId: null,
               label: null,
@@ -3221,21 +3316,120 @@ describe("SessionEngine", () => {
           base: null,
         });
 
-        expect(session.branch).toBe(`mend/session/${session.id}`);
+        expect(session.branch).toBe(`mend/wt/${session.worktreeId}`);
+        expect(session.worktree).toBe(`wt-${session.worktreeId}`);
         expect(session.baseRef).toBe("main");
         expect(session.status).toBe("starting");
         expect(session.recordHistoryComplete).toBe(true);
+        const worktreeRow = world.worktrees.get(session.worktreeId);
+        expect(worktreeRow?.directory).toBe(session.worktree);
         const worktree = path.join(tmp, "store", "fixture", "worktrees", session.worktree);
         expect(fs.existsSync(path.join(worktree, "app.ts"))).toBe(true);
 
-        const cps = world.checkpoints.filter((c) => c.sessionId === session.id);
-        expect(cps).toHaveLength(1);
-        expect(cps[0]?.trigger).toBe("session-start");
-        expect(cps[0]?.sealantRunId).toBeNull();
-        expect(cps[0]?.seq).toBe(0n);
+        // Ordinal 0 belongs to the place (no session); the conversation adds its own start.
+        const chain = world.checkpoints.filter((c) => c.worktreeId === session.worktreeId);
+        expect(chain.map((c) => [c.ordinal, c.trigger, c.sessionId])).toEqual([
+          [0, "session-start", null],
+          [1, "session-start", session.id],
+        ]);
+        expect(chain[0]?.sealantRunId).toBeNull();
+        expect(chain[0]?.seq).toBe(0n);
 
-        const change = world.changes.get(session.id);
+        const change = world.changes.get(session.worktreeId);
         expect(change?.baseSha).toBe(session.baseSha);
+        expect(change?.worktreeId).toBe(session.worktreeId);
+      }),
+    );
+  });
+
+  it("joins an existing worktree by name: one worktree, one change, two conversations", async () => {
+    await withEngine((world, tmp) =>
+      Effect.gen(function* () {
+        const project = yield* setup(tmp, world);
+        const engine = yield* SessionEngine;
+
+        const first = yield* engine.provision({
+          name: "fix-auth",
+          ownerUserId: null,
+          projectId: project.id,
+          harness: "codex",
+          label: null,
+          base: null,
+        });
+        expect(first.branch).toBe("mend/fix-auth");
+        expect(first.worktree).toBe("fix-auth");
+
+        const second = yield* engine.provision({
+          name: "fix-auth",
+          ownerUserId: null,
+          projectId: project.id,
+          harness: "claude",
+          label: "second opinion",
+          base: null,
+        });
+        expect(second.id).not.toBe(first.id);
+        expect(second.worktreeId).toBe(first.worktreeId);
+        expect(second.worktree).toBe(first.worktree);
+        expect(world.worktrees.size).toBe(1);
+        // One change per worktree — both conversations contribute to it.
+        expect(world.changes.size).toBe(1);
+        expect(world.changes.get(first.worktreeId)).toBeDefined();
+        // The chain interleaves: worktree-start, then each session's start.
+        const chain = world.checkpoints.filter((c) => c.worktreeId === first.worktreeId);
+        expect(chain.map((c) => [c.ordinal, c.sessionId])).toEqual([
+          [0, null],
+          [1, first.id],
+          [2, second.id],
+        ]);
+
+        // A conflicting base refuses loudly — never a silent re-base.
+        const conflict = yield* engine
+          .provision({
+            name: "fix-auth",
+            ownerUserId: null,
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            base: "some-other-branch",
+          })
+          .pipe(Effect.result);
+        expect(conflict._tag).toBe("Failure");
+        if (conflict._tag === "Failure") {
+          expect(conflict.failure._tag).toBe("WorktreeBaseConflictError");
+        }
+      }),
+    );
+  });
+
+  it("provisionSessionIn opens a conversation inside a worktree by id", async () => {
+    await withEngine((world, tmp) =>
+      Effect.gen(function* () {
+        const project = yield* setup(tmp, world);
+        const engine = yield* SessionEngine;
+        const worktree = yield* engine.ensureWorktree(project.id, {
+          name: "durable-place",
+          base: null,
+        });
+        // A worktree with zero sessions is a legal durable place.
+        expect(worktree.name).toBe("durable-place");
+        expect(world.sessions.size).toBe(0);
+        expect(world.changes.get(worktree.id)).toBeDefined();
+
+        const session = yield* engine.provisionSessionIn(worktree.id, {
+          harness: "codex",
+          label: null,
+          ownerUserId: null,
+        });
+        expect(session.worktreeId).toBe(worktree.id);
+        expect(session.branch).toBe("mend/durable-place");
+
+        // ensureWorktree on the same name joins, never duplicates.
+        const again = yield* engine.ensureWorktree(project.id, {
+          name: "durable-place",
+          base: null,
+        });
+        expect(again.id).toBe(worktree.id);
+        expect(world.worktrees.size).toBe(1);
       }),
     );
   });
@@ -3323,14 +3517,17 @@ describe("SessionEngine", () => {
 
         const checkpoint = yield* engine.checkpointNow(session.id, "user-mark");
         expect(checkpoint.trigger).toBe("user-mark");
-        expect(checkpoint.ref).toContain(`refs/mend/checkpoints/${session.id}/1`);
-
-        const change = world.changes.get(session.id);
+        expect(checkpoint.ref).toContain(`refs/mend/checkpoints/${session.worktreeId}/2`);
+        // The change stamps this session as its last contributor on refresh.
+        const change = world.changes.get(session.worktreeId);
         expect(change?.headSha).toBe(checkpoint.sha);
+        expect(change?.sessionId).toBe(session.id);
 
-        // The slice cp0..cp1 carries exactly the edit.
+        // The slice cp0..cp2 carries exactly the edit.
         const store = yield* Store;
-        const cp0 = world.checkpoints.find((c) => c.sessionId === session.id && c.seq === 0n);
+        const cp0 = world.checkpoints.find(
+          (c) => c.worktreeId === session.worktreeId && c.ordinal === 0,
+        );
         const diff = yield* store.diffRange(worktree, String(cp0?.sha), String(checkpoint.sha));
         expect(diff).toContain("+export const answer = 42");
       }),
@@ -3663,6 +3860,7 @@ describe("SessionEngine", () => {
     const orphan = new Session({
       id: SessionId.make(crypto.randomUUID()),
       projectId: ProjectId.make("proj-1"),
+      worktreeId: WorktreeId.make("wt-orphan"),
       harness: "codex",
       providerSessionId: null,
       label: null,
@@ -3724,6 +3922,7 @@ describe("SessionEngine", () => {
           agentBridgeStubLayer,
           gitOpsStubLayer,
           changesLayer(world),
+          worktreesLayer(world),
           checkpointsLayer(world),
           referencesEmptyLayer,
           projectMountsEmptyLayer,
@@ -3803,11 +4002,28 @@ describe("SessionEngine hot sessions", () => {
           world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
           const store = yield* Store;
           const skeletonId = SessionId.make(crypto.randomUUID());
-          const worktree = yield* store.createWorktree(project.storePath, skeletonId, null, null);
+          const pooledWorktreeId = WorktreeId.make(crypto.randomUUID());
+          const worktree = yield* store.createWorktree(
+            project.storePath,
+            { directory: `wt-${pooledWorktreeId}`, branch: `mend/wt/${pooledWorktreeId}` },
+            null,
+            null,
+          );
+          const worktreesRepo = yield* WorktreesRepo;
+          yield* worktreesRepo.create({
+            id: pooledWorktreeId,
+            projectId: project.id,
+            name: worktree.name,
+            directory: worktree.name,
+            branch: worktree.branch,
+            baseSha: worktree.baseSha,
+            baseRef: worktree.baseRef,
+          });
           pool.entries.push(
             new HotWorkspace({
               id: skeletonId,
               projectId: project.id,
+              worktreeId: pooledWorktreeId,
               ownerUserId: "user-fixture",
               status: "ready",
               error: null,

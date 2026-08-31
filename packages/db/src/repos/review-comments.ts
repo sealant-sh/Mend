@@ -13,7 +13,7 @@ import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
-import { reviewComments, sessionChanges } from "../schema/workbench.ts";
+import { reviewComments, worktreeChanges } from "../schema/workbench.ts";
 
 export class ReviewCommentNotFoundError extends Schema.TaggedErrorClass<ReviewCommentNotFoundError>()(
   "ReviewCommentNotFoundError",
@@ -87,15 +87,16 @@ export const ReviewCommentsRepoLive: Layer.Layer<
       changeId: ChangeId,
     ) {
       const [row] = yield* db
-        .select({ projectId: sessionChanges.projectId })
-        .from(sessionChanges)
-        .where(eq(sessionChanges.id, changeId))
+        .select({ projectId: worktreeChanges.projectId, worktreeId: worktreeChanges.worktreeId })
+        .from(worktreeChanges)
+        .where(eq(worktreeChanges.id, changeId))
         .limit(1)
         .pipe(Effect.orDie);
       yield* notifyEvent(sql, {
         type: "review-comment",
         commentId: id,
         changeId,
+        worktreeId: row?.worktreeId ?? "",
         projectId: row?.projectId ?? "",
       });
     });
