@@ -585,9 +585,11 @@ export class SessionEngine extends Context.Service<
       trigger: CheckpointTrigger,
     ) => Effect.Effect<Checkpoint, SessionNotFoundError | ProjectNotFoundError | GitError>;
     /**
-     * The user's stop: end every live agent process (close its PTY, settle its run). Shells and
-     * Services keep their own lifecycle — the session reads `idle` while they hold the workspace
-     * and settles `stopped` when the last one ends.
+     * The user's stop: end every live agent process (close its PTY, settle its run). Shells
+     * survive a stop that ended a live agent — you may be sitting in one — and the session
+     * reads `idle` while they hold the workspace; a stop with NO live agent left is aimed at
+     * the session itself and closes the shells too, so an orphan shell can never hold a
+     * stopped session open. Services keep their own lifecycle and verb.
      */
     readonly stop: (sessionId: SessionId) => Effect.Effect<void, SessionNotFoundError>;
     /**
@@ -3884,12 +3886,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (recorded) ended.push(agent);
         }
         if (ended.length === 0) {
-          // Nothing of ours to close: a run attached without a process, a launch still in
-          // flight, or a row that outlived its processes. The run record and the row settle.
+          // No agent to close — a run attached without a process, a launch still in flight,
+          // or agents that already exited. A stop aimed here means THE SESSION dies (amended
+          // 2026-08-31): close the supporting shells too, or an orphan bash from a dropped
+          // attach holds the workspace and the session reads idle forever — the
+          // refuses-to-die failure mode. A stop that DID end a live agent keeps its shells:
+          // you may be sitting in one watching the agent, and a second stop takes them too.
+          // Services stay either way — declared infrastructure with its own verb.
+          const liveShells = rows.filter((row) => row.kind === "shell" && isLiveProcess(row));
+          for (const shell of liveShells) {
+            if (shell.sealantSessionId !== null) {
+              yield* closeProcessPty(shell.sealantWorkspaceId, shell.sealantSessionId);
+            }
+            yield* processes.markExited(shell.id, "stopped", null);
+          }
           if (activeRun !== null) {
             yield* sessionRuns.settle(activeRun.sealantRunId, "stopped", null);
           }
-          if (foldSessionLiveness(rows) === "settled") {
+          const after = liveShells.length > 0 ? yield* processes.listForSession(sessionId) : rows;
+          if (foldSessionLiveness(after) === "settled") {
             yield* sessions.settle(sessionId, "stopped", null);
           }
         }
