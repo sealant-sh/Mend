@@ -31,6 +31,7 @@ import {
   sessionDisplayName,
   matchProjectByCwd,
   normalizeProjectName,
+  gitCurrentBranch,
   parseLaunchArgs,
 } from "./shared.ts";
 import { sshCommand } from "./ssh-setup.ts";
@@ -3227,6 +3228,7 @@ const dashboard = async (config: CliConfig) => {
   await runDashboard({
     config,
     cwd: process.cwd(),
+    cwdBranch: gitCurrentBranch(process.cwd()),
     api: <T>(method: "GET" | "POST" | "DELETE", route: string, body?: unknown) =>
       request<T>(config, method, route, body),
     attachTty: (sessionId: string, harness: string, processId?: string) =>

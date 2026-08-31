@@ -511,3 +511,29 @@ export const filterBranches = (
     })
     .map((entry) => entry.branch);
 };
+
+/** The creation modal's state: one record, three visible steps. */
+export interface CreatingState {
+  readonly projectId: string;
+  readonly step: "name" | "base" | "harness";
+  readonly name: string;
+  /** Null while the fetch is in flight — it starts when the modal opens. */
+  readonly branches: ReadonlyArray<BranchDto> | null;
+  readonly query: string;
+  readonly baseIndex: number;
+  /** Chosen base (null = the default branch). */
+  readonly base: string | null;
+  /** The name joins an existing worktree — base is fixed, step skipped. */
+  readonly joins: boolean;
+  readonly harnessIndex: number;
+}
+
+/** Commit the base step: the highlighted branch (default branch = null base). */
+export const advanceFromBase = (current: CreatingState): CreatingState => {
+  const chosen = filterBranches(current.branches ?? [], current.query)[current.baseIndex];
+  return {
+    ...current,
+    base: chosen === undefined || chosen.isDefault ? null : chosen.name,
+    step: "harness",
+  };
+};

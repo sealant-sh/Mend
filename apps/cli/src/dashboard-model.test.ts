@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  advanceFromBase,
   type BranchDto,
+  type CreatingState,
   deriveRows,
   deriveWorktrees,
   filterBranches,
@@ -290,5 +292,42 @@ describe("the base picker", () => {
     const branches = [branch({ name: "Feature/AUTH" }), branch({ name: "docs/auth-notes" })];
     expect(filterBranches(branches, "auth")[0]?.name).toBe("docs/auth-notes");
     expect(filterBranches(branches, "FEATURE")[0]?.name).toBe("Feature/AUTH");
+  });
+});
+
+describe("advanceFromBase", () => {
+  const creating = (over: Partial<CreatingState>): CreatingState => ({
+    projectId: "proj-1",
+    step: "base",
+    name: "fix-auth",
+    branches: [
+      branch({ name: "main", isDefault: true, committedAt: "2026-08-01T00:00:00.000Z" }),
+      branch({ name: "feat/api" }),
+    ],
+    query: "",
+    baseIndex: 0,
+    base: null,
+    joins: false,
+    harnessIndex: 0,
+    ...over,
+  });
+
+  it("keeps the default branch as a null base and names anything else", () => {
+    expect(advanceFromBase(creating({ baseIndex: 0 }))).toMatchObject({
+      base: null,
+      step: "harness",
+    });
+    expect(advanceFromBase(creating({ baseIndex: 1 }))).toMatchObject({
+      base: "feat/api",
+      step: "harness",
+    });
+  });
+
+  it("an unreadable list (or no match) falls back to the default base", () => {
+    expect(advanceFromBase(creating({ branches: [] }))).toMatchObject({
+      base: null,
+      step: "harness",
+    });
+    expect(advanceFromBase(creating({ query: "zzz" }))).toMatchObject({ base: null });
   });
 });

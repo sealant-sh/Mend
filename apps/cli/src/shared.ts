@@ -330,6 +330,13 @@ export const cwdFacts = (cwd: string): CwdFacts => ({
   originUrl: gitOriginUrl(cwd),
 });
 
+/** The branch checked out at `cwd`, or null outside a repo or on a detached HEAD. */
+export const gitCurrentBranch = (cwd: string): string | null => {
+  const result = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd, encoding: "utf8" });
+  const out = result.status === 0 ? result.stdout.trim() : "";
+  return out === "" || out === "HEAD" ? null : out;
+};
+
 /** The cwd repo's origin remote, or null when there is no repo or no origin. */
 export const gitOriginUrl = (cwd: string): string | null => {
   const result = spawnSync("git", ["remote", "get-url", "origin"], { cwd, encoding: "utf8" });
