@@ -4,7 +4,7 @@ import {
   type FollowUpDeliveryAttempt,
   ReviewCommentsRepo,
   ReviewSlicesRepo,
-  SessionChangesRepo,
+  WorktreeChangesRepo,
   SessionProcessesRepo,
   SessionsRepo,
 } from "@mend/db";
@@ -122,7 +122,7 @@ export const FollowUpDeliveryLive: Layer.Layer<
   | FollowUpsRepo
   | ReviewCommentsRepo
   | ReviewSlicesRepo
-  | SessionChangesRepo
+  | WorktreeChangesRepo
   | SessionProcessesRepo
   | SessionsRepo
   | FollowUpLauncher
@@ -133,7 +133,7 @@ export const FollowUpDeliveryLive: Layer.Layer<
     const followUps = yield* FollowUpsRepo;
     const comments = yield* ReviewCommentsRepo;
     const slices = yield* ReviewSlicesRepo;
-    const changes = yield* SessionChangesRepo;
+    const changes = yield* WorktreeChangesRepo;
     const processes = yield* SessionProcessesRepo;
     const sessions = yield* SessionsRepo;
     const launcher = yield* FollowUpLauncher;

@@ -4,7 +4,7 @@ import {
   FollowUpsRepo,
   ReviewCommentsRepo,
   ReviewSlicesRepo,
-  SessionChangesRepo,
+  WorktreeChangesRepo,
   SessionProcessesRepo,
   SessionsRepo,
 } from "@mend/db";
@@ -19,6 +19,7 @@ import {
   SealantRunId,
   SealantWorkspaceId,
   SessionId,
+  WorktreeId,
   SessionProcessId,
   Sha,
 } from "@mend/domain";
@@ -44,6 +45,7 @@ import {
 
 const now = () => new Date("2026-08-20T12:00:00.000Z");
 const SESSION_ID = SessionId.make("session-1");
+const WORKTREE_ID = WorktreeId.make("worktree-1");
 const PROJECT_ID = ProjectId.make("project-1");
 const CHANGE_ID = ChangeId.make("change-1");
 const SLICE_ID = ReviewSliceId.make("slice-1");
@@ -90,6 +92,7 @@ const makeWorld = (launcherMode: TestWorld["launcherMode"] = "success"): TestWor
   session: new Session({
     id: SESSION_ID,
     projectId: PROJECT_ID,
+    worktreeId: WORKTREE_ID,
     harness: "codex",
     providerSessionId: null,
     label: null,
@@ -189,6 +192,7 @@ const testLayer = (world: TestWorld) => {
   const change = new Change({
     id: CHANGE_ID,
     projectId: PROJECT_ID,
+    worktreeId: WORKTREE_ID,
     sessionId: SESSION_ID,
     branch: world.session.branch,
     baseSha: world.session.baseSha,
@@ -353,10 +357,11 @@ const testLayer = (world: TestWorld) => {
     latestForChange: () => Effect.die("not in test"),
   });
 
-  const changesLayer = Layer.succeed(SessionChangesRepo, {
-    ensureForSession: () => Effect.die("not in test"),
+  const changesLayer = Layer.succeed(WorktreeChangesRepo, {
+    ensureForWorktree: () => Effect.die("not in test"),
     byId: () => Effect.succeed(change),
-    bySession: (sessionId) => Effect.succeed(sessionId === SESSION_ID ? change : null),
+    byWorktree: (worktreeId) => Effect.succeed(worktreeId === WORKTREE_ID ? change : null),
+    bySession: (sessionId: string) => Effect.succeed(sessionId === SESSION_ID ? change : null),
     refreshHead: () => Effect.die("not in test"),
     annotationsForProject: () => Effect.die("not in test"),
   });
@@ -436,6 +441,7 @@ const testLayer = (world: TestWorld) => {
     create: () => Effect.die("not in test"),
     byId: () => Effect.succeed(world.session),
     listForProject: () => Effect.die("not in test"),
+    listForWorktree: () => Effect.die("not in test"),
     listActive: () => Effect.die("not in test"),
     listUnsettled: () => Effect.die("not in test"),
     listRecentlySettled: () => Effect.die("not in test"),

@@ -1,5 +1,5 @@
 import { ProjectNotFoundError, ProjectsRepo } from "@mend/db";
-import type { ProjectId, SessionId, Sha } from "@mend/domain";
+import type { ProjectId, Sha } from "@mend/domain";
 import { Store, worktreePathOf, type CheckpointSnapshot, type GitError } from "@mend/store";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
@@ -8,9 +8,11 @@ import * as Context from "effect/Context";
  * The session workspace AUTHORITY, keyed by identity — the deployment-strategy port
  * (docs/KUBERNETES.md grew the first two strategies; a hosted strategy is the third).
  *
- * The product invariant this port states is NOT an implementation technique: every session has
- * exactly one authoritative mutable workspace, and file mutations, checkpoints, diffs and review
- * evidence are ordered against that authority — Mend never reviews a stale copy. Today the
+ * The product invariant this port states is NOT an implementation technique: every WORKTREE has
+ * exactly one authoritative mutable place, and file mutations, checkpoints, diffs and review
+ * evidence are ordered against that authority — Mend never reviews a stale copy. Sessions are
+ * conversations against it (several may be live at once); their workspaces all mount the same
+ * authority. Today the
  * authority is a linked git worktree on this machine's store (`local`) or on the shared RWX claim
  * (`kubernetes`); both are co-located, and both are served by the LOCAL adapter below, which
  * resolves identities to store paths and runs git beside the files. A hosted strategy implements
@@ -38,17 +40,22 @@ export class SessionRepository extends Context.Service<
   SessionRepository,
   {
     /**
-     * Create the session's worktree on its own branch from `base` (default branch when null).
-     * `remoteEnv` freshens the base from origin first (best-effort); null skips the fetch.
+     * Create a worktree on its own branch from `base` (default branch when null). The caller
+     * owns identity (directory + branch). `remoteEnv` freshens the base from origin first
+     * (best-effort); null skips the fetch.
      */
     readonly createWorktree: (
       projectId: ProjectId,
-      sessionId: SessionId,
+      identity: { readonly directory: string; readonly branch: string },
       base: string | null,
       remoteEnv: Record<string, string> | null,
-      /** Names the worktree dir and its branch `mend/<name>`; null derives `session-<id>`. */
-      requestedName?: string | null,
     ) => Effect.Effect<SessionWorktreeSummary, SessionRepositoryError>;
+    /** Rename the branch a worktree is on in place; the directory never moves. */
+    readonly renameBranch: (
+      projectId: ProjectId,
+      worktreeName: string,
+      newBranch: string,
+    ) => Effect.Effect<void, SessionRepositoryError>;
     /** Freshen an existing worktree to `base` without recreating it (hot-pool claims). */
     readonly resetWorktree: (
       projectId: ProjectId,
@@ -64,7 +71,8 @@ export class SessionRepository extends Context.Service<
     /** Snapshot the authority without touching HEAD, index, or files. */
     readonly checkpoint: (input: {
       readonly projectId: ProjectId;
-      readonly sessionId: SessionId;
+      /** The chain's ref namespace — the worktree id. */
+      readonly scope: string;
       readonly worktreeName: string;
       readonly index: number;
       readonly parent: Sha | null;
@@ -97,13 +105,21 @@ export const SessionRepositoryLocalLive: Layer.Layer<
     const projects = yield* ProjectsRepo;
 
     return {
-      createWorktree: (projectId, sessionId, base, remoteEnv, requestedName = null) =>
+      createWorktree: (projectId, identity, base, remoteEnv) =>
         projects.byId(projectId).pipe(
           Effect.flatMap((project) =>
-            store.createWorktree(project.storePath, sessionId, base, remoteEnv, requestedName),
+            store.createWorktree(project.storePath, identity, base, remoteEnv),
           ),
           Effect.map(({ name, branch, baseSha, baseRef }) => ({ name, branch, baseSha, baseRef })),
         ),
+      renameBranch: (projectId, worktreeName, newBranch) =>
+        projects
+          .byId(projectId)
+          .pipe(
+            Effect.flatMap((project) =>
+              store.renameBranch(worktreePathOf(project.storePath, worktreeName), newBranch),
+            ),
+          ),
       resetWorktree: (projectId, worktreeName, base, remoteEnv) =>
         projects.byId(projectId).pipe(
           Effect.flatMap((project) =>
@@ -124,7 +140,7 @@ export const SessionRepositoryLocalLive: Layer.Layer<
             Effect.flatMap((project) =>
               store.checkpoint(
                 worktreePathOf(project.storePath, input.worktreeName),
-                input.sessionId,
+                input.scope,
                 input.index,
                 input.parent,
               ),
