@@ -848,16 +848,26 @@ const exitAfterSessionEnd = (config: CliConfig, sessionId: string): never => {
 /** Reattach a terminal to a running session (full scrollback replay, then live). */
 const attach = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const prefix = args.find((a) => !a.startsWith("--"));
-  if (prefix === undefined) return fail("usage: mend attach <session-id-prefix>");
+  // No id: the picker IS the selection surface (the resolution `mend shell`
+  // already uses), so attaching never demands an id the user must go look up.
+  if (prefix === undefined) {
+    const picked = await resolveLiveSession(config, undefined, "attach");
+    return attachPicked(config, picked);
+  }
   const sessions = await api<ReadonlyArray<SessionDto>>(config, "GET", "/sessions");
   const match = sessions.find((s) => s.id.startsWith(prefix));
   if (match === undefined) return fail(`no active session matches "${prefix}"`);
+  return attachPicked(config, match);
+};
+
+/** Attach to one resolved session — the tail both `mend attach` paths share. */
+const attachPicked = async (config: CliConfig, session: SessionDto): Promise<never> => {
   say(
-    `${green("✓")} attaching to ${sessionDisplayName(match)} · ${match.harness} ${dim(match.id.slice(0, 8))}${detachHint()}`,
+    `${green("✓")} attaching to ${sessionDisplayName(session)} · ${session.harness} ${dim(session.id.slice(0, 8))}${detachHint()}`,
   );
   say("");
-  await attachOrExit(config, match.id, match.harness);
-  exitAfterSessionEnd(config, match.id);
+  await attachOrExit(config, session.id, session.harness);
+  return exitAfterSessionEnd(config, session.id);
 };
 
 /**
@@ -872,8 +882,15 @@ const stopCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
       ? String(args[projectFlag + 1])
       : null;
   const prefix = args.find((arg, index) => !arg.startsWith("--") && index !== projectFlag + 1);
+  // Neither an id nor --all: pick the session to close, the same resolution
+  // `mend attach` uses. --all and --project keep their bulk meaning.
+  if (!all && prefix === undefined && projectName === null) {
+    const picked = await resolveLiveSession(config, undefined, "stop");
+    await stopSessions(config, [picked], false);
+    return;
+  }
   if (!all && prefix === undefined) {
-    return fail("usage: mend stop <session-id-prefix> | --all [--project <p>]");
+    return fail("usage: mend stop [session-id-prefix] | --all [--project <p>]");
   }
   const [sessions, projects] = await Promise.all([
     api<ReadonlyArray<SessionDto>>(config, "GET", "/sessions"),
@@ -900,6 +917,15 @@ const stopCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
     }
     targets = matches;
   }
+  await stopSessions(config, targets, all);
+};
+
+/** Stop each target and print its record link — the tail every stop path shares. */
+const stopSessions = async (
+  config: CliConfig,
+  targets: ReadonlyArray<SessionDto>,
+  summarise: boolean,
+): Promise<void> => {
   for (const session of targets) {
     await api<SessionDto>(config, "POST", `/sessions/${session.id}/stop`);
     say(
@@ -907,7 +933,9 @@ const stopCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
     );
     say(`${cobalt("  review")} · ${config.url}/sessions/${session.id}`);
   }
-  if (all) say(`${green("✓")} stopped ${targets.length} session${targets.length === 1 ? "" : "s"}`);
+  if (summarise) {
+    say(`${green("✓")} stopped ${targets.length} session${targets.length === 1 ? "" : "s"}`);
+  }
 };
 
 // ─── shell: the second pane — a real shell in the session's workspace ───────
@@ -927,7 +955,7 @@ const pickSessionInteractively = async (
   say(dim("more than one live session — pick one:"));
   rows.forEach((row, index) => {
     say(
-      `  ${index + 1}. ${row.session.harness.padEnd(8)} ${dim(row.session.id.slice(0, 8))}  ${row.projectName}  ${dim(row.session.branch)}`,
+      `  ${index + 1}. ${row.session.harness.padEnd(8)} ${dim(row.session.id.slice(0, 8))}  ${row.projectName}  ${dim(row.session.branch)}  ${dim(row.session.status)}`,
     );
   });
   const readline = await import("node:readline/promises");
@@ -947,6 +975,7 @@ const pickSessionInteractively = async (
 const resolveLiveSession = async (
   config: CliConfig,
   prefix: string | undefined,
+  command: string,
 ): Promise<SessionDto> => {
   const sessions = await api<ReadonlyArray<SessionDto>>(config, "GET", "/sessions?retained=1");
   if (prefix !== undefined) {
@@ -968,7 +997,7 @@ const resolveLiveSession = async (
   }
   if (candidates.length === 1) return only;
   if (process.stdin.isTTY !== true) {
-    return fail("several live sessions — name one: mend shell <session-id-prefix>");
+    return fail(`several live sessions — name one: mend ${command} <session-id-prefix>`);
   }
   const nameById = new Map(projects.map((p) => [p.id, p.name]));
   return pickSessionInteractively(
@@ -987,7 +1016,7 @@ const resolveLiveSession = async (
  */
 const shellCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const prefix = args.find((a) => !a.startsWith("--"));
-  const session = await resolveLiveSession(config, prefix);
+  const session = await resolveLiveSession(config, prefix, "shell");
   say(
     `${green("✓")} shell in ${session.harness} session ${dim(session.id.slice(0, 8))} · ${dim(session.branch)}${detachHint()}`,
   );
@@ -1249,7 +1278,7 @@ const serviceAdd = async (config: CliConfig, args: ReadonlyArray<string>) => {
     return fail(`"${portRaw}" is not a port`);
   }
   const prefix = positional.find((a) => a !== portRaw);
-  const session = await resolveLiveSession(config, prefix);
+  const session = await resolveLiveSession(config, prefix, "service add");
 
   const service = await mutateService(config, "POST", `/sessions/${session.id}/services`, {
     port,
@@ -1337,7 +1366,7 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
     const name = positionals.at(-1);
     if (name === undefined) return fail(usage);
     const prefix = positionals.length > 1 ? positionals[0] : undefined;
-    const session = await resolveLiveSession(config, prefix);
+    const session = await resolveLiveSession(config, prefix, "service run");
     const recipes = await api<ReadonlyArray<ServiceRecipeDto>>(
       config,
       "GET",
@@ -1387,7 +1416,7 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const prefix = head.find(
     (a, i) => !a.startsWith("--") && i !== portFlag + 1 && i !== nameFlag + 1,
   );
-  const session = await resolveLiveSession(config, prefix);
+  const session = await resolveLiveSession(config, prefix, "service run");
 
   const service = await withSpinner(
     protocol === "udp"
@@ -3386,8 +3415,9 @@ everything else
   mend worktrees [--project <p>] [--json]
                                         every worktree and the sessions inside it (mend sessions
                                         --json stays the v1 flat list; --json=v2 groups like this)
-  mend attach <session-id-prefix>       reattach this terminal to a running session
-  mend stop <session-id-prefix> | --all [--project <p>]
+  mend attach [session-id-prefix]       reattach this terminal to a running session
+                                        (no id: pick one from the live sessions)
+  mend stop [session-id-prefix] | --all [--project <p>]
                                         stop the agent — the workspace harvests and closes; the
                                         record and review remain
   mend shell [session-id-prefix]        open a shell in a live session's workspace

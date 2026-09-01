@@ -153,6 +153,76 @@ const expectFastExit = async (
   expect(outcome, stderr()).toEqual({ kind: "exit", code: 0 });
 };
 
+describe("Mend CLI session selection", () => {
+  const retained = (request: IncomingMessage, response: ServerResponse): boolean => {
+    if (request.url?.startsWith("/api/sessions?retained") === true) {
+      json(response, [session]);
+      return true;
+    }
+    if (request.url === "/api/projects") {
+      json(response, [project]);
+      return true;
+    }
+    return false;
+  };
+
+  it("attach with no id takes the only session instead of a usage error", async () => {
+    const fake = await startFakeMend((request, response) => {
+      if (!retained(request, response)) response.writeHead(404).end();
+    });
+    const cli = startCli(fake.url, ["attach"]);
+
+    try {
+      await fake.endFrameSent;
+      await expectFastExit(cli.exited, cli.stderr);
+      expect(cli.stdout()).toContain("attaching to");
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  });
+
+  it("stop with no id stops the only session", async () => {
+    const stopped: Array<string> = [];
+    const fake = await startFakeMend((request, response) => {
+      if (retained(request, response)) return;
+      if (request.url === `/api/sessions/${session.id}/stop`) {
+        stopped.push(session.id);
+        json(response, session);
+      } else response.writeHead(404).end();
+    });
+    const cli = startCli(fake.url, ["stop"]);
+
+    try {
+      await cli.exited;
+      expect(stopped, cli.stderr()).toEqual([session.id]);
+      expect(cli.stdout()).toContain("stopped");
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  });
+
+  it("names the command it could not disambiguate when no terminal can pick", async () => {
+    const second = { ...session, id: "session-5678", worktree: "session-5678" };
+    const fake = await startFakeMend((request, response) => {
+      if (request.url?.startsWith("/api/sessions?retained") === true) {
+        json(response, [session, second]);
+      } else if (request.url === "/api/projects") json(response, [project]);
+      else response.writeHead(404).end();
+    });
+    const cli = startCli(fake.url, ["attach"]);
+
+    try {
+      await cli.exited;
+      expect(cli.stderr()).toContain("mend attach <session-id-prefix>");
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  });
+});
+
 describe("Mend CLI session exit", () => {
   it("returns on the terminal end frame without waiting for the socket to close", async () => {
     const fake = await startFakeMend((request, response) => {
