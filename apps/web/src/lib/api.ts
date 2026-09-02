@@ -258,6 +258,9 @@ export type LaunchStartDto = Omit<LaunchRequestDto, "mode" | "argv">;
 export const launchSessionStart = (id: string, start: LaunchStartDto) =>
   orLogin(trpcClient.sessions.launch.mutate({ id, request: { ...start } }));
 export const stopSession = (id: string) => orLogin(trpcClient.sessions.stop.mutate({ id }));
+/** Store a pasted image beside the session; the reply is the workspace path to paste. */
+export const pasteSessionImage = (id: string, contentsBase64: string) =>
+  orLogin(trpcClient.sessions.pasteImage.mutate({ id, upload: { contentsBase64 } }));
 export const resumeSession = (id: string, harness: string | null) =>
   orLogin(trpcClient.sessions.resume.mutate({ id, request: { harness } }));
 export const removeSession = (id: string) => orLogin(trpcClient.sessions.remove.mutate({ id }));

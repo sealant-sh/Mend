@@ -1,6 +1,8 @@
 import { FitAddon, init as initGhostty, Terminal } from "ghostty-web";
 import { useEffect, useRef, useState } from "react";
 
+import { pasteSessionImage } from "../lib/api.ts";
+
 /**
  * The session's real terminal, live in the browser over the same `/api/tty`
  * WebSocket the CLI uses (plan §8.1.F: every device gets the same path).
@@ -13,6 +15,44 @@ import { useEffect, useRef, useState } from "react";
  */
 
 type WireState = "connecting" | "live" | "reconnecting" | "settled";
+
+/** The image on its way to the session — the one moment the terminal is not the whole story. */
+type ImageState =
+  | { readonly kind: "uploading"; readonly count: number }
+  | { readonly kind: "error"; readonly message: string }
+  | null;
+
+const imageFilesOf = (list: FileList | null | undefined): ReadonlyArray<File> =>
+  list === null || list === undefined
+    ? []
+    : Array.from(list).filter((file) => file.type.startsWith("image/"));
+
+/** Files over the terminal: claim the drag so the browser does not navigate to the image. */
+const onDragOver = (event: DragEvent) => {
+  if (event.dataTransfer?.types.includes("Files") !== true) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "copy";
+};
+
+/** Base64 without the data-URL prefix; FileReader keeps multi-megabyte pastes off the stack. */
+const base64Of = (file: File): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener(
+      "error",
+      () => reject(reader.error ?? new Error("could not read the image")),
+      { once: true },
+    );
+    reader.addEventListener(
+      "load",
+      () => {
+        const url = typeof reader.result === "string" ? reader.result : "";
+        resolve(url.slice(url.indexOf(",") + 1));
+      },
+      { once: true },
+    );
+    reader.readAsDataURL(file);
+  });
 
 // The reconnect discipline mirrors the mobile tty hook (patterns from
 // t3code's connection supervisor, MIT — pingdotgg/t3code): a fixed ladder,
@@ -41,6 +81,7 @@ export function SessionTerminal({
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [state, setState] = useState<WireState>("connecting");
+  const [image, setImage] = useState<ImageState>(null);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -168,8 +209,56 @@ export function SessionTerminal({
       observer.observe(element);
       connect();
 
+      // Images: the TUI's own Ctrl+V reads the clipboard of the container it
+      // runs in, which has none — so an image paste or drop goes up to Mend,
+      // which stores it beside the session and answers with the workspace
+      // path; that path is what the terminal pastes (bracketed, when the app
+      // asked for it). Codex attaches a pasted image path as an image; claude
+      // reads it. Text pastes are untouched — ghostty-web's own listener keeps
+      // them — so this runs in the capture phase and claims only image files.
+      const sendImages = async (files: ReadonlyArray<File>) => {
+        if (files.length === 0) return;
+        setImage({ kind: "uploading", count: files.length });
+        try {
+          const paths: Array<string> = [];
+          for (const file of files) {
+            const stored = await pasteSessionImage(sessionId, await base64Of(file));
+            paths.push(stored.path);
+          }
+          if (disposed) return;
+          term.paste(paths.join(" "));
+          setImage(null);
+        } catch (error) {
+          if (disposed) return;
+          setImage({
+            kind: "error",
+            message: error instanceof Error ? error.message : "the image was not stored",
+          });
+        }
+        term.focus();
+      };
+      const onPaste = (event: ClipboardEvent) => {
+        const files = imageFilesOf(event.clipboardData?.files);
+        if (files.length === 0) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        void sendImages(files);
+      };
+      const onDrop = (event: DragEvent) => {
+        const files = imageFilesOf(event.dataTransfer?.files);
+        if (files.length === 0) return;
+        event.preventDefault();
+        void sendImages(files);
+      };
+      element.addEventListener("paste", onPaste, { capture: true });
+      element.addEventListener("dragover", onDragOver);
+      element.addEventListener("drop", onDrop);
+
       return () => {
         disposed = true;
+        element.removeEventListener("paste", onPaste, { capture: true });
+        element.removeEventListener("dragover", onDragOver);
+        element.removeEventListener("drop", onDrop);
         window.removeEventListener("focus", onFocus);
         if (timer !== null) window.clearTimeout(timer);
         observer.disconnect();
@@ -194,6 +283,15 @@ export function SessionTerminal({
           {state === "connecting" && "connecting…"}
           {state === "settled" && "session settled — the terminal is closed; the record remains"}
           {state === "reconnecting" && "connection lost — reconnecting automatically"}
+        </p>
+      )}
+      {image !== null && (
+        <p
+          className={`border-t border-rule-faint px-4 py-2 font-mono text-[11.5px] ${image.kind === "error" ? "text-danger" : "text-faint"}`}
+        >
+          {image.kind === "uploading" &&
+            (image.count === 1 ? "image · storing…" : `${image.count} images · storing…`)}
+          {image.kind === "error" && `image · not pasted — ${image.message}`}
         </p>
       )}
     </div>

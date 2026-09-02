@@ -3,6 +3,7 @@ import {
   DeliverFollowUpRequest,
   LaunchRequest,
   NewWorkbenchSession,
+  PastedImageUpload,
   ResumeRequest,
 } from "@mend/api-contracts";
 import { ProjectId, SessionId } from "@mend/domain";
@@ -37,6 +38,11 @@ export const sessionsRouter = router({
     .input(input(Schema.Struct({ id: SessionId, request: LaunchRequest })))
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.sessions.launch({ params: { id: i.id }, payload: i.request })),
+    ),
+  pasteImage: procedure
+    .input(input(Schema.Struct({ id: SessionId, upload: PastedImageUpload })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => api.sessions.pasteImage({ params: { id: i.id }, payload: i.upload })),
     ),
   stop: procedure
     .input(byId)

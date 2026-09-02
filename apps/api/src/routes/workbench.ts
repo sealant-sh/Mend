@@ -14,6 +14,8 @@ import {
   EnvironmentStaleWrite,
   MendApi,
   NotFound,
+  PastedImage,
+  PastedImageRejected,
   ProjectBranch,
   ProjectDetail,
   ProjectEnvironmentMutationResult,
@@ -112,6 +114,7 @@ import {
   SessionEngine,
   mergeRecipes,
   readServiceRecipes,
+  storePastedImage,
 } from "@mend/sessions";
 import {
   AgentBridge,
@@ -121,6 +124,7 @@ import {
   Store,
   DotfilesStore,
   describeGitRemoteFailure,
+  harnessHomePathOf,
   resolveRemoteEnv,
   worktreePathOf,
   type DiffFileFact,
@@ -1657,6 +1661,36 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
               Effect.fail(new ProtocolSessionNotLive({ processId: error.processId })),
             ),
           );
+      }),
+    )
+    .handle("pasteImage", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        const projects = yield* ProjectsRepo;
+        const session = yield* sessions
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        const project = yield* projects
+          .byId(session.projectId)
+          .pipe(Effect.mapError(() => new NotFound({ id: session.projectId })));
+        const bytes = Buffer.from(payload.contentsBase64, "base64");
+        const stored = yield* storePastedImage(
+          harnessHomePathOf(project.storePath, session.id),
+          new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+        ).pipe(
+          Effect.catchTag("PastedImageError", (error) =>
+            Effect.fail(
+              error.reason === "write-failed"
+                ? new StoreFailure({ message: error.message })
+                : new PastedImageRejected({ message: error.message }),
+            ),
+          ),
+        );
+        return new PastedImage({
+          path: stored.path,
+          mediaType: stored.mediaType,
+          bytes: stored.bytes,
+        });
       }),
     )
     .handle("interruptTurn", ({ params }) =>

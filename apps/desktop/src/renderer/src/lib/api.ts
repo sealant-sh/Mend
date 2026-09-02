@@ -660,6 +660,16 @@ export const createSession = (
   name: string | null = null,
 ) => post<SessionDto>(`/api/projects/${projectId}/sessions`, { harness, label, name, base });
 
+/** An image stored beside the session; `path` is what the terminal pastes. */
+export interface PastedImageDto {
+  readonly path: string;
+  readonly mediaType: string;
+  readonly bytes: number;
+}
+
+export const pasteSessionImage = (sessionId: string, contentsBase64: string) =>
+  post<PastedImageDto>(`/api/sessions/${sessionId}/images`, { contentsBase64 });
+
 export const runServiceRecipe = (sessionId: string, name: string) =>
   post<ServiceViewDto>(`/api/sessions/${sessionId}/services/recipe`, { name });
 

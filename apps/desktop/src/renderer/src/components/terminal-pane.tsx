@@ -244,6 +244,7 @@ export function TerminalPane({
                 ? { kind: "process", id: tab.processId }
                 : { kind: "session", id: tab.sessionId }
             }
+            sessionId={tab.sessionId}
             from={isSessionTab ? from : "0"}
             dim={isSessionTab && !live}
             focus
