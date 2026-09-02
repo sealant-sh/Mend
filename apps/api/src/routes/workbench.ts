@@ -2153,12 +2153,25 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const liveForwards = (yield* forwards.listOpen()).filter((forward) =>
           serviceIds.has(forward.serviceId),
         );
-        if (
-          LIVE_STATES.has(session.status) ||
-          liveProcesses.length > 0 ||
-          liveForwards.length > 0
-        ) {
+        // An agent still working is never removed from under it. An idle session — the agent
+        // gone, the workspace held by a shell or by nothing — is what "remove after kill" means:
+        // a stop here closes the shells and settles it, then the record goes.
+        const agentLive = liveProcesses.some((process) => isAgentProcessKind(process.kind));
+        if (agentLive || liveForwards.length > 0) {
           return yield* new SessionActive({ id: params.id });
+        }
+        let current = session;
+        if (LIVE_STATES.has(current.status) || liveProcesses.length > 0) {
+          const engine = yield* SessionEngine;
+          yield* engine
+            .stop(params.id)
+            .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+          current = yield* sessions
+            .byId(params.id)
+            .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+          if (LIVE_STATES.has(current.status)) {
+            return yield* new SessionActive({ id: params.id });
+          }
         }
         const project = yield* projects
           .byId(session.projectId)

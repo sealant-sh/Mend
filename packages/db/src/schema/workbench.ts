@@ -697,6 +697,8 @@ export const agentSessions = pgTable(
     dotfiles: jsonbOf(SessionDotfiles),
     // Who provisioned the session — whose dotfiles apply. NULL for pre-column rows.
     ownerUserId: text(),
+    // Null until settle classifies it (0050); false = a dead end the dashboard hides.
+    hasTranscript: boolean(),
     status: text().$type<SessionStatus>().notNull().default("starting"),
     summary: text(),
     lastSeenSequence: bigint({ mode: "bigint" }).notNull().default(0n),

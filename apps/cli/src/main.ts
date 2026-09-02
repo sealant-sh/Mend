@@ -138,6 +138,8 @@ interface SessionDto {
   readonly baseRef: string | null;
   readonly status: string;
   readonly summary: string | null;
+  /** False = settled without a conversation: nothing to resume, hidden by the dashboard. */
+  readonly hasTranscript?: boolean | null;
   readonly createdAt: string;
 }
 

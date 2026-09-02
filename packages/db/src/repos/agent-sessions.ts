@@ -101,6 +101,10 @@ export class SessionsRepo extends Context.Service<
     readonly setWorkspaceImage: (id: SessionId, image: WorkspaceImage) => Effect.Effect<void>;
     /** The dotfiles this session actually launched with — stamped at launch, a recorded fact. */
     readonly setDotfiles: (id: SessionId, dotfiles: SessionDotfiles) => Effect.Effect<void>;
+    /** Record whether the harness left a conversation behind (settle-time classification). */
+    readonly setHasTranscript: (id: SessionId, hasTranscript: boolean) => Effect.Effect<void>;
+    /** Settled sessions the boot sweep has not classified yet, oldest first, bounded. */
+    readonly listSettledUnclassified: (limit: number) => Effect.Effect<ReadonlyArray<Session>>;
     readonly setProviderSessionId: (id: SessionId, providerId: string) => Effect.Effect<void>;
     /** Mode-handoff backfill bookkeeping — not part of the Session surface. */
     readonly nativeIngestCursor: (id: SessionId) => Effect.Effect<NativeIngestCursor | null>;
@@ -371,6 +375,30 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
+      const setHasTranscript = Effect.fn("SessionsRepo.setHasTranscript")(function* (
+        id: SessionId,
+        hasTranscript: boolean,
+      ) {
+        yield* db
+          .update(agentSessions)
+          .set({ hasTranscript, updatedAt: new Date() })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
+      });
+
+      const listSettledUnclassified = Effect.fn("SessionsRepo.listSettledUnclassified")(function* (
+        limit: number,
+      ) {
+        const rows = yield* db
+          .select()
+          .from(agentSessions)
+          .where(and(isNotNull(agentSessions.settledAt), isNull(agentSessions.hasTranscript)))
+          .orderBy(asc(agentSessions.settledAt))
+          .limit(limit)
+          .pipe(Effect.orDie);
+        return rows.map(toSession);
+      });
+
       const setProviderSessionId = Effect.fn("SessionsRepo.setProviderSessionId")(function* (
         id: SessionId,
         providerId: string,
@@ -572,6 +600,8 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         setSealantSessionId,
         setWorkspaceImage,
         setDotfiles,
+        setHasTranscript,
+        listSettledUnclassified,
         setProviderSessionId,
         nativeIngestCursor,
         setNativeIngestCursor,

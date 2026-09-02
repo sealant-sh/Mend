@@ -1082,6 +1082,7 @@ const sessionsLayer = (world: World) => {
           workspaceImage: null,
           dotfiles: null,
           ownerUserId: null,
+          hasTranscript: null,
           status: "starting",
           summary: null,
           lastSeenSequence: 0n,
@@ -1146,6 +1147,8 @@ const sessionsLayer = (world: World) => {
       Effect.sync(() => update(id, { sealantSessionId })),
     setWorkspaceImage: (id, image) => Effect.sync(() => update(id, { workspaceImage: image })),
     setDotfiles: (id, dotfiles) => Effect.sync(() => update(id, { dotfiles })),
+    setHasTranscript: (id, hasTranscript) => Effect.sync(() => update(id, { hasTranscript })),
+    listSettledUnclassified: () => Effect.succeed([]),
     setReferenceMounts: (id: string, mounts: ReadonlyArray<SessionReferenceMount>) =>
       Effect.sync(() => update(id, { referenceMounts: mounts })),
     setExtraMounts: (id: string, mounts: ReadonlyArray<SessionExtraMount>) =>
@@ -2732,6 +2735,7 @@ describe("SessionEngine", () => {
               workspaceImage: null,
               dotfiles: null,
               ownerUserId: null,
+              hasTranscript: null,
               status: "completed",
               summary: null,
               lastSeenSequence: 0n,
@@ -3973,6 +3977,7 @@ describe("SessionEngine", () => {
       workspaceImage: null,
       dotfiles: null,
       ownerUserId: null,
+      hasTranscript: null,
       status: "running",
       summary: null,
       lastSeenSequence: 0n,

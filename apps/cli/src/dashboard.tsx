@@ -82,6 +82,9 @@ const timeAgo = (iso: string): string => {
 
 import { createSseParser, eventFamilies, type InvalidateFamily } from "./workbench-events.ts";
 
+/** The agent itself is still working: never remove from under it. Idle (agent gone) may go. */
+const AGENT_LIVE_STATUSES: ReadonlySet<string> = new Set(["starting", "running", "waiting"]);
+
 /**
  * The workbench dashboard (bare `mend`): a drawn multi-pane interface —
  * projects pane and sessions pane side by side, a session detail panel
@@ -963,9 +966,52 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     onSettled: settleRefetch,
   });
 
-  /** Worktree removal is armed like stops: the first press states the facts. */
+  /**
+   * One session leaves; the worktree stays. The server stops an idle session's shells and
+   * settles it on the way out, so a session killed a moment ago removes without a second stop.
+   */
+  const removeSessionMutation = useMutation({
+    mutationFn: (session: SessionDto) => ctx.api("DELETE", `/sessions/${session.id}`),
+    onMutate: async (session) => {
+      await queryClient.cancelQueries({ queryKey: WORKBENCH_KEY });
+      const projectId = selectedProject?.project.id;
+      if (projectId !== undefined) {
+        patchWorkbench((current) => removeSession(current, projectId, session.id));
+      }
+      say(`removing session · ${worktreeDisplayName(session)}`);
+    },
+    onError: (error) => {
+      say(errorText(error));
+      refetch();
+    },
+    onSuccess: (_result, session) => {
+      say(`removed · ${worktreeDisplayName(session)} — the worktree remains`);
+      refetch();
+    },
+    onSettled: settleRefetch,
+  });
+  /** Removal is armed like stops: the first press states the facts. */
   const [removeArmed, setRemoveArmed] = useState<string | null>(null);
   const armRemove = (): void => {
+    // A session row removes THAT session; a worktree header removes the whole worktree.
+    if (selectedRow?.kind === "session") {
+      const session = selectedRow.item.session;
+      if (isPendingId(session.id)) return;
+      if (AGENT_LIVE_STATUSES.has(session.status)) {
+        say(`the agent is still working — kill it first (⇧K) · ${worktreeDisplayName(session)}`);
+        return;
+      }
+      if (removeArmed === session.id) {
+        setRemoveArmed(null);
+        removeSessionMutation.mutate(session);
+        return;
+      }
+      setRemoveArmed(session.id);
+      say(
+        `press again to remove session · ${worktreeDisplayName(session)} — its record goes, the worktree stays`,
+      );
+      return;
+    }
     const group = selectedGroup;
     if (group === null || group.sessions.some((item) => isPendingId(item.session.id))) return;
     if (group.live > 0) {

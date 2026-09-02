@@ -1797,8 +1797,38 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.andThen(stopWorkspaceIfUnleased(sessionId, options)),
         );
 
+      /**
+       * Whether a session left a conversation behind, decided once at settle: a harvest that
+       * captured a transcript says yes; "nothing to capture" or "no transcript" says no; any
+       * other failure (the workspace already gone) asks the durable harness home instead. A
+       * false answer is a dead end — nothing to resume — and the dashboard hides such sessions.
+       */
+      const classifyTranscript = (agentProcess: SessionProcess, harvestFailed: boolean) =>
+        Effect.gen(function* () {
+          const harness = agentProcess.harness;
+          if (harness === null || HARNESS_STATE[harness] === undefined) return;
+          const session = yield* sessions.byId(agentProcess.sessionId);
+          if (session.hasTranscript === true) return;
+          if (!harvestFailed) {
+            yield* sessions.setHasTranscript(session.id, true);
+            return;
+          }
+          const project = yield* projects.byId(session.projectId);
+          const live = yield* locateLiveTranscript(
+            harnessHomePathOf(project.storePath, session.id),
+            harness,
+          );
+          yield* sessions.setHasTranscript(session.id, live !== null);
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("session engine: transcript classification failed").pipe(
+              Effect.annotateLogs({ sessionId: agentProcess.sessionId, error: String(error) }),
+            ),
+          ),
+        );
       const tryHarvest = (agentProcess: SessionProcess) =>
         harvestHarnessState(agentProcess).pipe(
+          Effect.map(() => false),
           Effect.catch((error) =>
             Effect.logWarning("session engine: harness-state harvest failed").pipe(
               Effect.annotateLogs({
@@ -1806,8 +1836,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 processId: agentProcess.id,
                 error: String(error),
               }),
+              Effect.as(true),
             ),
           ),
+          Effect.flatMap((harvestFailed) => classifyTranscript(agentProcess, harvestFailed)),
         );
 
       /**
@@ -5457,6 +5489,33 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /** Re-attach to sessions that were live when the last process died. */
+      /** One bounded pass over settled-but-unclassified sessions (see classifyTranscript). */
+      const classifyUnclassifiedSessions = Effect.gen(function* () {
+        const rows = yield* sessions.listSettledUnclassified(500);
+        for (const session of rows) {
+          const shape = HARNESS_STATE[session.harness];
+          if (shape === undefined) {
+            // Not a harness Mend can resume (a shell, an arbitrary command): nothing to hide.
+            yield* sessions.setHasTranscript(session.id, true);
+            continue;
+          }
+          const project = yield* projects
+            .byId(session.projectId)
+            .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
+          if (project === null) continue;
+          const captured = yield* harnessStateFor(session).pipe(
+            Effect.map(() => true),
+            Effect.catch(() => Effect.succeed(false)),
+          );
+          const live = captured
+            ? null
+            : yield* locateLiveTranscript(
+                harnessHomePathOf(project.storePath, session.id),
+                session.harness,
+              );
+          yield* sessions.setHasTranscript(session.id, captured || live !== null);
+        }
+      });
       const resume = Effect.fn("SessionEngine.resume")(function* () {
         // Restart policy v2: surviving protocol pipes are rehydrated in place —
         // a Mend restart is never, by itself, the end of a protocol session.
@@ -5502,6 +5561,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           liveProcesses.map((liveProcess) => liveProcess.sessionId),
         );
 
+        // Sessions settled before transcripts were classified: read the store once, bounded, so
+        // the dashboard can hide dead ends from before this column existed.
+        yield* classifyUnclassifiedSessions.pipe(Effect.ignore);
         const unsettled = yield* sessions.listUnsettled();
         for (const session of unsettled) {
           if (reattached.has(session.id)) continue;

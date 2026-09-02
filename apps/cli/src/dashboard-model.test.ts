@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  isDeadEnd,
   advanceFromBase,
   type BranchDto,
   type CreatingState,
@@ -80,6 +81,25 @@ describe("deriveWorktrees", () => {
     // The change facts ride the group whichever member carried them.
     expect(groups[0]?.annotation?.changeId).toBe("chg-1");
     expect(foldGroupStatus(groups[0]!)).toBe("waiting");
+  });
+
+  it("hides a settled session that never had a conversation, keeps unknown and live ones", () => {
+    const data = workbench({
+      project,
+      sessions: [
+        session({ id: "dead", worktreeId: "wt-1", status: "completed", hasTranscript: false }),
+        session({ id: "unknown", worktreeId: "wt-1", status: "completed", hasTranscript: null }),
+        session({ id: "live", worktreeId: "wt-1", status: "running", hasTranscript: false }),
+        session({ id: "kept", worktreeId: "wt-1", status: "completed", hasTranscript: true }),
+      ],
+      annotations: [],
+      worktrees: [worktree({ id: "wt-1", name: "fix-auth" })],
+    });
+    const ids = deriveWorktrees(data, "proj-1").flatMap((g) => g.sessions.map((i) => i.session.id));
+    expect(ids).not.toContain("dead");
+    expect(ids.toSorted()).toEqual(["kept", "live", "unknown"]);
+    expect(isDeadEnd({ status: "completed", hasTranscript: false })).toBe(true);
+    expect(isDeadEnd({ status: "idle", hasTranscript: false })).toBe(false);
   });
 
   it("degrades to one pseudo group per session against a pre-worktree server", () => {
