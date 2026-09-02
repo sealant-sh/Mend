@@ -11,12 +11,14 @@ export class NoSignerError extends Schema.TaggedErrorClass<NoSignerError>()("NoS
 
 /**
  * The one resolution of `mode` → env for a host-side remote git op, shared by
- * the API routes and the session engine (docs/GIT-ACCESS.md). Generates the
- * machine key on first mend-key use; bridge mode requires a connected signer
- * and fails fast with the readable line when there is none.
+ * the API routes and the session engine (docs/GIT-ACCESS.md). `userId` is
+ * whose Mend key signs in mend-key mode (generated on first use; null means
+ * the only user on a single-user install); bridge mode requires a connected
+ * signer and fails fast with the readable line when there is none.
  */
 export const resolveRemoteEnv = (
   mode: GitAuthMode,
+  userId: string | null,
 ): Effect.Effect<Record<string, string>, NoSignerError | KeygenError, MendKeys | AgentBridge> =>
   Effect.gen(function* () {
     if (mode === "ambient") return remoteGitEnv(sshCommandFor("ambient", null));
@@ -29,6 +31,6 @@ export const resolveRemoteEnv = (
       return remoteGitEnv(sshCommandFor("bridge", null), bridge.socketPath());
     }
     const keys = yield* MendKeys;
-    const key = yield* keys.ensure();
+    const key = yield* keys.ensure(userId);
     return remoteGitEnv(sshCommandFor("mend-key", key.privateKeyPath));
   });

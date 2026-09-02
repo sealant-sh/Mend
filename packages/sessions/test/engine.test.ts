@@ -3502,10 +3502,11 @@ describe("SessionEngine", () => {
       Effect.gen(function* () {
         const project = yield* setup(tmp, world);
         const engine = yield* SessionEngine;
-        const worktree = yield* engine.ensureWorktree(project.id, {
-          name: "durable-place",
-          base: null,
-        });
+        const worktree = yield* engine.ensureWorktree(
+          project.id,
+          { name: "durable-place", base: null },
+          null,
+        );
         // A worktree with zero sessions is a legal durable place.
         expect(worktree.name).toBe("durable-place");
         expect(world.sessions.size).toBe(0);
@@ -3520,10 +3521,11 @@ describe("SessionEngine", () => {
         expect(session.branch).toBe("mend/durable-place");
 
         // ensureWorktree on the same name joins, never duplicates.
-        const again = yield* engine.ensureWorktree(project.id, {
-          name: "durable-place",
-          base: null,
-        });
+        const again = yield* engine.ensureWorktree(
+          project.id,
+          { name: "durable-place", base: null },
+          null,
+        );
         expect(again.id).toBe(worktree.id);
         expect(world.worktrees.size).toBe(1);
       }),

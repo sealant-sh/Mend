@@ -23,6 +23,7 @@ export * from "./repos/project-links.ts";
 export * from "./repos/project-secrets.ts";
 export * from "./repos/project-service-recipes.ts";
 export * from "./repos/user-dotfiles.ts";
+export * from "./repos/user-git-access.ts";
 export * from "./repos/sealant-identities.ts";
 export * from "./repos/projects.ts";
 export * from "./repos/push-devices.ts";

@@ -1299,6 +1299,17 @@ const sessionHasTranscriptMigration = Effect.gen(function* () {
   yield* sql`ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS has_transcript boolean`;
 });
 
+/** Per-user git access default: Mend key on the server, or the user's own machine via the bridge. */
+const userGitAccessMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS user_git_access (
+      user_id text PRIMARY KEY,
+      mode text NOT NULL,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+});
+
 const worktreesMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`
@@ -1499,4 +1510,5 @@ export const migrations = {
   "0048_standby_hot_workspaces": standbyHotWorkspacesMigration,
   "0049_project_links": projectLinksMigration,
   "0050_session_has_transcript": sessionHasTranscriptMigration,
+  "0051_user_git_access": userGitAccessMigration,
 };

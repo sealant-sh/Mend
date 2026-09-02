@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 
+import { GitAccessPanel } from "#/components/git-access-panel";
 import { StatusDot } from "#/components/status";
 import { useTRPC } from "#/lib/trpc";
 
@@ -59,6 +60,7 @@ export function FirstRun() {
   const devices =
     useQuery(trpc.devices.list.queryOptions(undefined, { staleTime: 30_000 })).data ?? [];
   const connected = accounts.filter(({ status }) => status === "active");
+  const gitAccess = useQuery(trpc.git.access.queryOptions()).data;
 
   return (
     <section className="mt-8">
@@ -66,7 +68,7 @@ export function FirstRun() {
         <div className="border-b border-rule-faint px-5 py-4">
           <p className="text-xs font-medium text-label">First run</p>
           <p className="mt-1.5 max-w-[62ch] text-sm leading-relaxed text-muted-foreground">
-            Nothing is adopted yet. Five steps get an agent working in a recorded worktree on this
+            Nothing is adopted yet. Six steps get an agent working in a recorded worktree on this
             machine; Mend marks the ones it can observe.
           </p>
         </div>
@@ -108,6 +110,31 @@ export function FirstRun() {
 
         <Step
           index={3}
+          title="Give Mend access to your repositories"
+          status={
+            gitAccess === undefined ? (
+              <StatusDot tone="hollow" word="…" />
+            ) : gitAccess.mode === "bridge" ? (
+              <StatusDot
+                tone={gitAccess.bridge.connected ? "green" : "hollow"}
+                word={gitAccess.bridge.connected ? "signer connected" : "no signer yet"}
+              />
+            ) : gitAccess.key.exists ? (
+              <StatusDot tone="green" word="key created" />
+            ) : (
+              <StatusDot tone="hollow" word="no key yet" />
+            )
+          }
+        >
+          A key of yours on the server, added to your git account, is the one that keeps working
+          when you close the laptop.
+        </Step>
+        <div className="px-5 pb-4 pl-[2.9rem]">
+          <GitAccessPanel compact />
+        </div>
+
+        <Step
+          index={4}
           title="Adopt a repository"
           status={<StatusDot tone="hollow" word="none adopted" />}
           action={
@@ -124,7 +151,7 @@ export function FirstRun() {
         </Step>
 
         <Step
-          index={4}
+          index={5}
           title="Start a session"
           status={<StatusDot tone="hollow" word="none yet" />}
         >
@@ -134,7 +161,7 @@ export function FirstRun() {
         </Step>
 
         <Step
-          index={5}
+          index={6}
           title="Pair your phone"
           status={
             devices.length === 0 ? (

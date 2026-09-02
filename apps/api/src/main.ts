@@ -48,6 +48,7 @@ import {
   SessionsRepoLive,
   SettingsRepoLive,
   UserDotfilesRepoLive,
+  UserGitAccessRepoLive,
 } from "@mend/db";
 import type { ChangeId, SessionId } from "@mend/domain";
 import { resolveAutomation } from "@mend/domain/workbench";
@@ -135,6 +136,7 @@ import { HostEnvironmentLive } from "./services/host-environment.ts";
 const DrizzleRepositoriesLive = Layer.mergeAll(
   AgentConversationRepoLive,
   UserDotfilesRepoLive,
+  UserGitAccessRepoLive,
   HotWorkspacesRepoLive,
   SessionGitOpsRepoLive,
   SessionProcessesRepoLive,
