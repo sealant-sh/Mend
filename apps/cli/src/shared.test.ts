@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { isDetachChunk, parseLaunchArgs, matchProjectByCwd, normalizeRemoteUrl } from "./shared.ts";
+import {
+  isDetachChunk,
+  isPasteChunk,
+  parseLaunchArgs,
+  pasteBytes,
+  matchProjectByCwd,
+  normalizeRemoteUrl,
+  trackBracketedPaste,
+} from "./shared.ts";
 
 describe("isDetachChunk", () => {
   it("matches Ctrl+] in both wire encodings", () => {
@@ -15,6 +23,38 @@ describe("isDetachChunk", () => {
     expect(isDetachChunk(Buffer.from("]"))).toBe(false);
     expect(isDetachChunk(Buffer.from("\x1b[93;1u"))).toBe(false);
     expect(isDetachChunk(Buffer.from("hello"))).toBe(false);
+  });
+});
+
+describe("isPasteChunk", () => {
+  it("matches exactly Ctrl+V in both wire encodings", () => {
+    expect(isPasteChunk(Buffer.from([0x16]))).toBe(true);
+    expect(isPasteChunk(Buffer.from("\x1b[118;5u"))).toBe(true);
+    expect(isPasteChunk(Buffer.from("\x1b[118;5:1u"))).toBe(true);
+    expect(isPasteChunk(Buffer.from("\x1b[118;5:2u"))).toBe(true);
+    expect(isPasteChunk(Buffer.from("\x1b[118;5:3u"))).toBe(false);
+    // A pasted blob that happens to carry 0x16 is not a paste request.
+    expect(isPasteChunk(Buffer.from("ab\x16cd", "latin1"))).toBe(false);
+    expect(isPasteChunk(Buffer.from("v"))).toBe(false);
+    expect(isPasteChunk(Buffer.from([]))).toBe(false);
+  });
+});
+
+describe("trackBracketedPaste", () => {
+  it("follows the last mode change in a chunk and keeps state otherwise", () => {
+    expect(trackBracketedPaste(Buffer.from("\x1b[?2004h"), false)).toBe(true);
+    expect(trackBracketedPaste(Buffer.from("\x1b[?2004l"), true)).toBe(false);
+    expect(trackBracketedPaste(Buffer.from("\x1b[?2004h..\x1b[?2004l"), true)).toBe(false);
+    expect(trackBracketedPaste(Buffer.from("\x1b[?2004l..\x1b[?2004h"), false)).toBe(true);
+    expect(trackBracketedPaste(Buffer.from("plain output"), true)).toBe(true);
+    expect(trackBracketedPaste(Buffer.from("plain output"), false)).toBe(false);
+  });
+
+  it("wraps a paste only when the app asked", () => {
+    expect(pasteBytes("/workspace/harness-home/paste/a.png", true).toString()).toBe(
+      "\x1b[200~/workspace/harness-home/paste/a.png\x1b[201~",
+    );
+    expect(pasteBytes("/a.png", false).toString()).toBe("/a.png");
   });
 });
 

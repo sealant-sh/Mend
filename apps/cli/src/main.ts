@@ -6,6 +6,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { readClipboardImage } from "./clipboard.ts";
 import { doctorCommand } from "./doctor.ts";
 import { readSyncFiles, scanDotfileCandidates } from "./dotfiles.ts";
 import { formatLoadReport, type EnvironmentLoadReportDto } from "./env.ts";
@@ -37,7 +38,10 @@ import {
   gitTopLevel,
   HARNESS_COMMANDS,
   isDetachChunk,
+  isPasteChunk,
   LIVE_STATUSES,
+  pasteBytes,
+  trackBracketedPaste,
   sessionDisplayName,
   matchProjectByCwd,
   normalizeProjectName,
@@ -671,9 +675,12 @@ const attachTty = async (
     finishAttachment?.();
   };
   const signals = ["SIGHUP", "SIGINT", "SIGTERM"] as const;
+  let bracketedPaste = false;
   const onTtyFrame = (event: MessageEvent) => {
     if (typeof event.data !== "string") {
-      process.stdout.write(Buffer.from(event.data));
+      const bytes = Buffer.from(event.data);
+      bracketedPaste = trackBracketedPaste(bytes, bracketedPaste);
+      process.stdout.write(bytes);
       return;
     }
     try {
@@ -701,8 +708,38 @@ const attachTty = async (
       return;
     }
     if (ws.readyState !== WebSocket.OPEN) return;
+    if (isPasteChunk(data)) {
+      // Ctrl+V — the agent's own clipboard is empty (the workspace has no
+      // display), so an image on THIS machine's clipboard goes up to Mend and
+      // its workspace path is pasted instead; codex and claude read the path.
+      // No image, or no way to ask: the keystroke goes through untouched.
+      void pasteClipboardImage(data);
+      return;
+    }
     // Copy into a plain ArrayBuffer (WebSocket.send rejects pooled Buffer views).
     ws.send(new Uint8Array(data).buffer);
+  };
+  const forward = (bytes: Buffer) => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(new Uint8Array(bytes).buffer);
+  };
+  const pasteClipboardImage = async (keystroke: Buffer): Promise<void> => {
+    const image = await readClipboardImage();
+    if (image === null) {
+      forward(keystroke);
+      return;
+    }
+    try {
+      const stored = await request<{ readonly path: string }>(
+        config,
+        "POST",
+        `/sessions/${sessionId}/images`,
+        { contentsBase64: image.bytes.toString("base64") },
+      );
+      forward(pasteBytes(stored.path, bracketedPaste));
+    } catch {
+      // The TUI owns the screen; a bell is the only honest signal left.
+      process.stdout.write("\x07");
+    }
   };
   try {
     sendResize();
