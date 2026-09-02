@@ -363,3 +363,31 @@ export const normalizeProjectName = (raw: string): string => {
     .replace(/-+$/, "");
   return slug === "" ? "project" : slug.slice(0, 64);
 };
+
+/**
+ * Whether one stdin chunk is exactly Ctrl+V — the raw 0x16 byte, or the
+ * kitty CSI-u form `ESC [ 118 ; 5 u` (`v` is code 118) on press or repeat.
+ * Exact, not contained: a paste that happens to carry 0x16 is not a request.
+ */
+export const isPasteChunk = (data: Buffer): boolean => {
+  if (data.length === 1 && data[0] === 0x16) return true;
+  const text = data.toString("latin1");
+  return text === "\u001b[118;5u" || text === "\u001b[118;5:1u" || text === "\u001b[118;5:2u";
+};
+
+/**
+ * Follow the remote app's bracketed-paste mode through the bytes it writes:
+ * the last `ESC [ ? 2004 h|l` in a chunk wins; a chunk with neither keeps the
+ * current state. A pasted image path is wrapped only when the app asked.
+ */
+export const trackBracketedPaste = (output: Buffer, current: boolean): boolean => {
+  const text = output.toString("latin1");
+  const on = text.lastIndexOf("\u001b[?2004h");
+  const off = text.lastIndexOf("\u001b[?2004l");
+  if (on === -1 && off === -1) return current;
+  return on > off;
+};
+
+/** The bytes that paste `text` into the remote app, bracketed when it asked. */
+export const pasteBytes = (text: string, bracketed: boolean): Buffer =>
+  Buffer.from(bracketed ? `\u001b[200~${text}\u001b[201~` : text, "utf8");

@@ -124,6 +124,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "mend codex, mend claude, and mend opencode are the same command with a different harness. The session runs in a workspace on the platform, in its own git worktree, and everything it does is recorded. This terminal attaches to it.",
       "The worktree's name is asked first. --name skips the ask; an existing name joins that worktree as a new session. --worktree joins only and fails if the name is unknown. A quoted prompt becomes the first message.",
       "Detach with Ctrl+] and the session keeps running. Reattach from any terminal with mend attach, or from the phone.",
+      "Ctrl+V with an image on this machine's clipboard sends the image to the session and pastes its path; codex and claude read it. Needs wl-paste on Wayland, xclip on X11, nothing extra on macOS.",
     ],
     options: [
       { flag: "--name <worktree>", text: "name the worktree; an existing name joins it" },
@@ -194,6 +195,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     description: [
       sessionArg,
       "A session that was picked up on the phone is taken back into this terminal: the phone's agent ends and the same conversation continues here.",
+      "Ctrl+V with an image on this machine's clipboard sends the image to the session and pastes its path; codex and claude read it. Needs wl-paste on Wayland, xclip on X11, nothing extra on macOS.",
     ],
     see: ["stop", "rejoin", "shell"],
   },
