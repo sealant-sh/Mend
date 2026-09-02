@@ -1,4 +1,5 @@
 import {
+  type ProjectLinkId,
   BriefDocument,
   DotfilesRepository,
   EvidencePointer,
@@ -396,6 +397,29 @@ export const skills = pgTable("skills", {
   createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
+
+export const projectLinks = pgTable(
+  "project_links",
+  {
+    id: text().$type<ProjectLinkId>().primaryKey(),
+    projectId: text()
+      .$type<ProjectId>()
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    linkedProjectId: text()
+      .$type<ProjectId>()
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text().notNull(),
+    worktreeName: text().notNull(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("project_links_project_id_name_key").on(table.projectId, table.name),
+    unique("project_links_project_id_linked_key").on(table.projectId, table.linkedProjectId),
+  ],
+);
 
 export const projectMounts = pgTable(
   "project_mounts",

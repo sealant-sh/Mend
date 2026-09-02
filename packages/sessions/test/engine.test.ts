@@ -13,6 +13,8 @@ import {
   ProjectMountNotFoundError,
   ProjectClusterBindingsRepo,
   ProjectMountsRepo,
+  ProjectLinksRepo,
+  ProjectLinkNotFoundError,
   ProjectSecretsRepo,
   ProjectServiceRecipesRepo,
   ProjectsRepo,
@@ -887,6 +889,14 @@ const serviceStateLayer = (world: World) =>
     serviceObservationsLayer(world),
   );
 
+/** No linked projects in these worlds. */
+const projectLinksEmptyLayer = Layer.succeed(ProjectLinksRepo, {
+  create: () => Effect.die("not in test"),
+  byId: (id) => Effect.fail(new ProjectLinkNotFoundError({ linkId: id })),
+  listForProject: () => Effect.succeed([]),
+  remove: () => Effect.void,
+});
+
 /** No declared mounts in these worlds. */
 const projectMountsEmptyLayer = Layer.succeed(ProjectMountsRepo, {
   create: () => Effect.die("not in test"),
@@ -1464,6 +1474,7 @@ const withEngine = <A, E>(
         checkpointsLayer(world),
         referencesEmptyLayer,
         projectMountsEmptyLayer,
+        projectLinksEmptyLayer,
         projectRecipesEmptyLayer,
         options.hotWorkspacesLayer ?? hotWorkspacesEmptyLayer,
       ),
@@ -4007,6 +4018,7 @@ describe("SessionEngine", () => {
           checkpointsLayer(world),
           referencesEmptyLayer,
           projectMountsEmptyLayer,
+          projectLinksEmptyLayer,
           projectRecipesEmptyLayer,
           hotWorkspacesEmptyLayer,
         ),

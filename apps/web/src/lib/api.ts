@@ -213,6 +213,17 @@ export const addProjectMount = (
 export const removeProjectMount = async (projectId: string, mountId: string): Promise<void> => {
   await orLogin(trpcClient.projects.removeMount.mutate({ id: projectId, mountId }));
 };
+export const addProjectLink = (
+  projectId: string,
+  input: {
+    readonly linkedProjectId: string;
+    readonly name: string;
+    readonly worktreeName: string | null;
+  },
+) => orLogin(trpcClient.projects.addLink.mutate({ id: projectId, link: input }));
+export const removeProjectLink = async (projectId: string, linkId: string): Promise<void> => {
+  await orLogin(trpcClient.projects.removeLink.mutate({ id: projectId, linkId }));
+};
 export const addProjectRecipe = (
   projectId: string,
   input: {

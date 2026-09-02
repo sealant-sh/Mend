@@ -1,5 +1,13 @@
-import { ProjectId, ProjectMountId, ReferenceId, SessionId, WorktreeId } from "@mend/domain";
 import {
+  ProjectLinkId,
+  ProjectId,
+  ProjectMountId,
+  ReferenceId,
+  SessionId,
+  WorktreeId,
+} from "@mend/domain";
+import {
+  ProjectLink,
   Project,
   ProjectEnvironmentVariable,
   ProjectMount,
@@ -217,6 +225,41 @@ export const referencesGroup = HttpApiGroup.make("references")
       params: { id: ProjectId },
       payload: ProjectReferenceSelection,
       success: Schema.Array(Reference),
+      error: NotFound,
+    }),
+  )
+  .middleware(AuthMiddleware);
+
+/**
+ * Link another adopted project (ADR-0001): its named worktree is bound read-write at
+ * `/workspace/repos/<name>` in this project's sessions. A null worktree name picks — creating it
+ * if needed — the linked project's worktree named after its default branch.
+ */
+export class AddProjectLink extends Schema.Class<AddProjectLink>("AddProjectLink")({
+  linkedProjectId: ProjectId,
+  name: Schema.String,
+  worktreeName: Schema.NullOr(Schema.String),
+}) {}
+
+export const projectLinksGroup = HttpApiGroup.make("projectLinks")
+  .add(
+    HttpApiEndpoint.get("list", "/projects/:id/links", {
+      params: { id: ProjectId },
+      success: Schema.Array(ProjectLink),
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("add", "/projects/:id/links", {
+      params: { id: ProjectId },
+      payload: AddProjectLink,
+      success: ProjectLink,
+      error: [NotFound, StoreFailure],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.delete("remove", "/projects/:id/links/:linkId", {
+      params: { id: ProjectId, linkId: ProjectLinkId },
       error: NotFound,
     }),
   )

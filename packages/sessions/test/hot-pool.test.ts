@@ -18,6 +18,7 @@ const base: HotFingerprintInputs = {
     { name: "drizzle", path: "/store/_references/drizzle" },
   ],
   mounts: [{ name: "notes", hostPath: "/home/u/notes", readOnly: true }],
+  links: [{ name: "api", rootPath: "/store/api/worktrees" }],
 };
 
 describe("hotFingerprint", () => {
@@ -60,5 +61,17 @@ describe("hotFingerprint", () => {
       expect(seen.has(fingerprint)).toBe(false);
       seen.add(fingerprint);
     }
+  });
+
+  it("changes when a linked project's root changes, not when its bound worktree does", () => {
+    const relinked = hotFingerprint({
+      ...base,
+      links: [{ name: "api", rootPath: "/store/api-fork/worktrees" }],
+    });
+    expect(relinked).not.toBe(hotFingerprint(base));
+    // The worktree bound at launch is not a create-time input, so it is not in the inputs at all.
+    expect(hotFingerprint({ ...base, links: [...base.links].toReversed() })).toBe(
+      hotFingerprint(base),
+    );
   });
 });

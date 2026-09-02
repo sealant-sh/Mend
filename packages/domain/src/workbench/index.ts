@@ -26,6 +26,7 @@ export * from "./follow-up.ts";
 export * from "./harness-launch.ts";
 export * from "./hot-workspace.ts";
 export * from "./mount.ts";
+export * from "./link.ts";
 export * from "./pass.ts";
 export * from "./project.ts";
 export * from "./project-cluster-binding.ts";

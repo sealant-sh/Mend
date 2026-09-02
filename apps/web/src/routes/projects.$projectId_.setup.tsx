@@ -7,6 +7,7 @@ import {
   DotfilesSection,
   GitAccessSection,
   HotSessionsSection,
+  LinksSection,
   MountsSection,
   ReferencesSection,
   RemoveProjectSection,
@@ -139,6 +140,7 @@ function ProjectSetupPage() {
         <div className="mt-12 flex flex-col gap-10 border-t border-rule pt-8">
           <ReferencesSection projectId={projectId} />
           <MountsSection projectId={projectId} />
+          <LinksSection projectId={projectId} />
           <ServicesSection projectId={projectId} />
           <DotfilesSection project={project} />
           <HotSessionsSection project={project} />

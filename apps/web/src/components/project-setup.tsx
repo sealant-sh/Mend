@@ -4,11 +4,13 @@ import { useState } from "react";
 
 import { GitKeyCard } from "#/components/git-key-card";
 import {
+  addProjectLink,
   addProjectMount,
   addProjectRecipe,
   addReference,
   refreshReference,
   removeProject,
+  removeProjectLink,
   removeProjectMount,
   removeProjectRecipe,
   removeReference,
@@ -606,6 +608,166 @@ export function MountsSection({ projectId }: { readonly projectId: string }) {
             className={`w-full px-4 py-2.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground ${mounts.length === 0 ? "" : "border-t border-rule-faint"}`}
           >
             + add folder…
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Linked projects (ADR-0001): sibling adopted projects this project's
+ * sessions work in, read-write, at /workspace/repos/<name>. The linked
+ * project's named worktree is bound at launch; commits there are that
+ * project's own change, reviewed on its side.
+ */
+export function LinksSection({ projectId }: { readonly projectId: string }) {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const links = useSuspenseQuery(trpc.projects.links.queryOptions({ id: projectId })).data;
+  const projects = useSuspenseQuery(trpc.projects.list.queryOptions()).data;
+  const [busy, setBusy] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+
+  const invalidate = () => queryClient.invalidateQueries(trpc.projects.pathFilter());
+  const candidates = projects.filter(
+    (project) =>
+      project.id !== projectId && !links.some((link) => link.linkedProjectId === project.id),
+  );
+  const nameOf = (id: string) => projects.find((project) => project.id === id)?.name ?? id;
+
+  const remove = (linkId: string) => {
+    setBusy(linkId);
+    void removeProjectLink(projectId, linkId)
+      .then(invalidate)
+      .finally(() => setBusy(null));
+  };
+
+  const add = (form: HTMLFormElement) => {
+    const data = new FormData(form);
+    const linkedProjectId = String(data.get("linkedProjectId") ?? "");
+    const name = String(data.get("name") ?? "").trim();
+    const worktreeName = String(data.get("worktreeName") ?? "").trim();
+    if (linkedProjectId === "" || name === "") return;
+    setBusy("add");
+    setAddError(null);
+    void addProjectLink(projectId, {
+      linkedProjectId,
+      name,
+      worktreeName: worktreeName === "" ? null : worktreeName,
+    })
+      .then(async () => {
+        await invalidate();
+        form.reset();
+        setAdding(false);
+        return null;
+      })
+      .catch((error: unknown) => {
+        setAddError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => setBusy(null));
+  };
+
+  return (
+    <section id="links" className="scroll-mt-6">
+      <p className="border-b border-rule pb-2 text-xs font-medium text-label">Linked projects</p>
+      <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
+        Other adopted projects next sessions can work in, read-write, at{" "}
+        <span className="font-mono text-[11px]">/workspace/repos/&lt;name&gt;</span>. One of the
+        linked project's worktrees is bound at launch; commits there are that project's own change.
+      </p>
+      <div className="mt-3 overflow-hidden rounded-2xl border border-rule bg-card shadow-xs">
+        {links.map((link, index) => (
+          <div
+            key={link.id}
+            className={`px-4 py-3 ${index === 0 ? "" : "border-t border-rule-faint"}`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <p className="truncate font-sans text-[13px] font-medium text-foreground">
+                {link.name}
+                <span className="ml-2 font-mono text-[11px] text-warning">read-write</span>
+              </p>
+              <button
+                type="button"
+                disabled={busy !== null}
+                onClick={() => remove(link.id)}
+                className="shrink-0 text-xs text-muted-foreground transition-colors hover:text-danger disabled:opacity-50"
+              >
+                {busy === link.id ? "working…" : "remove"}
+              </button>
+            </div>
+            <p className="mt-1 truncate font-mono text-[11px] text-faint">
+              {nameOf(link.linkedProjectId)} · worktree {link.worktreeName}
+            </p>
+          </div>
+        ))}
+        {adding ? (
+          <form
+            className={`flex flex-col gap-2 px-4 py-3 ${links.length === 0 ? "" : "border-t border-rule-faint"}`}
+            onSubmit={(event) => {
+              event.preventDefault();
+              add(event.currentTarget);
+            }}
+          >
+            <select
+              name="linkedProjectId"
+              autoFocus
+              className="w-full rounded-lg border border-input bg-background px-2.5 py-1.5 font-mono text-xs text-foreground"
+            >
+              {candidates.length === 0 ? (
+                <option value="" disabled>
+                  every other project is already linked
+                </option>
+              ) : null}
+              {candidates.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
+            <input
+              name="name"
+              placeholder="name (api)"
+              className="w-full rounded-lg border border-input bg-background px-2.5 py-1.5 font-mono text-xs text-foreground placeholder:text-faint"
+            />
+            <input
+              name="worktreeName"
+              placeholder="worktree (blank = the default branch's)"
+              className="w-full rounded-lg border border-input bg-background px-2.5 py-1.5 font-mono text-xs text-foreground placeholder:text-faint"
+            />
+            <div className="flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setAdding(false);
+                  setAddError(null);
+                }}
+                className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+              >
+                cancel
+              </button>
+              <button
+                type="submit"
+                disabled={busy !== null || candidates.length === 0}
+                className="rounded-xl border border-border bg-card px-3 py-1.5 font-mono text-xs text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-50"
+              >
+                {busy === "add" ? "linking…" : "link project"}
+              </button>
+            </div>
+            {addError === null ? null : (
+              <p className="border-l-2 border-[var(--sw-red)] pl-2 text-xs text-danger">
+                {addError}
+              </p>
+            )}
+          </form>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setAdding(true)}
+            className={`w-full px-4 py-2.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground ${links.length === 0 ? "" : "border-t border-rule-faint"}`}
+          >
+            + link a project…
           </button>
         )}
       </div>

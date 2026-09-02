@@ -53,6 +53,7 @@ import {
   WorkspacePackageResolutionView,
 } from "@mend/api-contracts";
 import {
+  ProjectLinksRepo,
   AgentConversationRepo,
   ChangePassesRepo,
   ChangeToursRepo,
@@ -893,6 +894,102 @@ export const ProjectMountsGroupLive = HttpApiBuilder.group(MendApi, "projectMoun
           return yield* new NotFound({ id: params.mountId });
         }
         yield* mounts.remove(params.mountId);
+        yield* rewarmHotSessions(params.id);
+      }),
+    ),
+);
+
+/**
+ * Linked projects (ADR-0001): sibling adopted projects this project's sessions work in,
+ * read-write, at /workspace/repos/<name>. The engine mounts the linked project's worktrees root
+ * as a bindable root and binds the named worktree at launch.
+ */
+export const ProjectLinksGroupLive = HttpApiBuilder.group(MendApi, "projectLinks", (handlers) =>
+  handlers
+    .handle("list", ({ params }) =>
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        const links = yield* ProjectLinksRepo;
+        yield* projects
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        return yield* links.listForProject(params.id);
+      }),
+    )
+    .handle("add", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        const links = yield* ProjectLinksRepo;
+        const worktrees = yield* WorktreesRepo;
+        const engine = yield* SessionEngine;
+        yield* projects
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        if (payload.linkedProjectId === params.id) {
+          return yield* new StoreFailure({ message: "A project cannot link itself." });
+        }
+        const linked = yield* projects
+          .byId(payload.linkedProjectId)
+          .pipe(Effect.mapError(() => new NotFound({ id: payload.linkedProjectId })));
+        if (!STORE_NAME.test(payload.name)) {
+          return yield* new StoreFailure({
+            message: `"${payload.name}" is not a usable link name (lowercase letters, digits, ".", "_", "-").`,
+          });
+        }
+        const existing = yield* links.listForProject(params.id);
+        const clash = existing.find(
+          (link) => link.name === payload.name || link.linkedProjectId === payload.linkedProjectId,
+        );
+        if (clash !== undefined) {
+          return yield* new StoreFailure({
+            message: `Already linked on this project: ${clash.name} (${linked.name})`,
+          });
+        }
+        // The worktree bound at launch: a named one must exist; none named picks the linked
+        // project's worktree named after its default branch, created now if it is missing.
+        const worktreeName = payload.worktreeName?.trim() ?? "";
+        if (worktreeName !== "") {
+          const named = yield* worktrees.byName(linked.id, worktreeName);
+          if (named === null) {
+            return yield* new StoreFailure({
+              message: `${linked.name} has no worktree named ${worktreeName}.`,
+            });
+          }
+        }
+        const target =
+          worktreeName !== ""
+            ? worktreeName
+            : yield* engine
+                .ensureWorktree(linked.id, { name: linked.defaultBranch, base: null })
+                .pipe(
+                  Effect.mapError(
+                    (error) =>
+                      new StoreFailure({
+                        message: `Could not prepare ${linked.name}'s ${linked.defaultBranch} worktree: ${error.message}`,
+                      }),
+                  ),
+                  Effect.map((worktree) => worktree.name),
+                );
+        const created = yield* links.create({
+          projectId: params.id,
+          linkedProjectId: linked.id,
+          name: payload.name,
+          worktreeName: target,
+        });
+        yield* rewarmHotSessions(params.id);
+        return created;
+      }),
+    )
+    .handle("remove", ({ params }) =>
+      Effect.gen(function* () {
+        const links = yield* ProjectLinksRepo;
+        const link = yield* links
+          .byId(params.linkId)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.linkId })));
+        if (link.projectId !== params.id) {
+          return yield* new NotFound({ id: params.linkId });
+        }
+        yield* links.remove(params.linkId);
         yield* rewarmHotSessions(params.id);
       }),
     ),

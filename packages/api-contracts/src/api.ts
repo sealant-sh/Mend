@@ -10,7 +10,13 @@ import {
   projectSecretsGroup,
   projectRecipesGroup,
 } from "./project-environment.ts";
-import { projectsGroup, gitKeysGroup, referencesGroup, projectMountsGroup } from "./projects.ts";
+import {
+  projectsGroup,
+  gitKeysGroup,
+  referencesGroup,
+  projectMountsGroup,
+  projectLinksGroup,
+} from "./projects.ts";
 import { issuesGroup, briefsGroup, runsGroup } from "./queue.ts";
 import { sessionsGroup } from "./sessions.ts";
 import { settingsGroup, dotfilesGroup } from "./settings.ts";
@@ -36,6 +42,7 @@ export const MendApi = HttpApi.make("mend")
   .add(projectSecretsGroup)
   .add(projectClusterBindingsGroup)
   .add(projectMountsGroup)
+  .add(projectLinksGroup)
   .add(projectRecipesGroup)
   .add(referencesGroup)
   .add(sessionsGroup)

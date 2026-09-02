@@ -29,6 +29,11 @@ export interface HotFingerprintInputs {
     readonly hostPath: string;
     readonly readOnly: boolean;
   }>;
+  /**
+   * Linked projects (ADR-0001): the root mounted per link is create-time-fixed; WHICH worktree
+   * is bound is not (the launch binds it), so the worktree name stays out.
+   */
+  readonly links: ReadonlyArray<{ readonly name: string; readonly rootPath: string }>;
 }
 
 const encodeWorkspaceImage = Schema.encodeSync(WorkspaceImage);
@@ -57,6 +62,7 @@ export const hotFingerprint = (inputs: HotFingerprintInputs): string => {
       hostPath: m.hostPath,
       readOnly: m.readOnly,
     })),
+    links: byName(inputs.links).map((l) => ({ name: l.name, rootPath: l.rootPath })),
   };
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 };
