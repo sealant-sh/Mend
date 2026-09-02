@@ -1441,7 +1441,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
             ? " ↑↓ move · enter start · esc cancel"
             : focus === "projects"
               ? " ↑↓ move · enter/l sessions · ⇥ panes · r refresh · q quit"
-              : " ↑↓ move · enter attach/resume · n new worktree · s session here · x stop · ⇧D remove · v review · e rename · o web · q quit";
+              : " ↑↓ move · enter attach/resume · n new worktree · s session here · ⇧K kill · ⇧D remove · v review · e rename · o web · q quit";
 
   const loadFailure =
     data === undefined && failureReason !== null

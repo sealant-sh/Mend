@@ -2744,6 +2744,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           `\`mend service run --port <port> [--name <n>] -- <command...>\` — it runs the ` +
           `command supervised in this workspace, waits for the port, and makes it reachable ` +
           `from the user's own machine. NEVER background a server inside a tool call. ` +
+          `Listen on IPv4 — \`127.0.0.1\` or \`0.0.0.0\`: the forward dials the workspace's ` +
+          `\`127.0.0.1\`, so a server bound only to \`::1\` reports healthy and answers ` +
+          `nothing (Vite and friends: pass \`--host\`). In a monorepo, run the ONE app's own ` +
+          `dev command (\`pnpm --dir apps/<app> dev\`): a root-level dev script fans out to ` +
+          `every app and hands each the same \`--port\`, so they collide and drift onto ports ` +
+          `nobody asked for. ` +
           `\`mend service add <port>\` adopts something already listening; ` +
           `\`mend service list\` shows what runs.\n\n` +
           recipesLine;
