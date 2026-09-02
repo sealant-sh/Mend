@@ -36,6 +36,7 @@ import {
 } from "./shared.ts";
 import { DEFAULT_SKILLS_DIR, scanSkillLibrary } from "./skills.ts";
 import { sshCommand } from "./ssh-setup.ts";
+import { cliVersion, fetchServerVersion, versionLines } from "./version.ts";
 
 /**
  * The mend CLI (plan §7.2): the terminal-first entry into the workbench.
@@ -3470,6 +3471,7 @@ everything else
   mend ssh setup [--key <path>]         make this machine ready once: offer a key (ssh-agent
                                         preferred — nothing new created), write Host mend-ws
   mend completions zsh|bash             print the TAB-completion hook (live session ids under TAB)
+  mend version                          this CLI's version, and the server's when it answers
 
   server: MEND_URL (default http://localhost:3105) · auth: MEND_TOKEN
   detach key: Ctrl+] (set MEND_DETACH_KEY=none when an outer multiplexer owns detaching)
@@ -3545,6 +3547,12 @@ const main = async () => {
     case "help":
     case "--help":
       say(HELP);
+      return;
+    case "version":
+    case "--version":
+    case "-v":
+      for (const line of versionLines(cliVersion(), await fetchServerVersion(config.url)))
+        say(line);
       return;
     default:
       return fail(`unknown command "${command}" — try: mend help`);
