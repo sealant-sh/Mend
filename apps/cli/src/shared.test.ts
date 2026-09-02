@@ -20,6 +20,9 @@ describe("isDetachChunk", () => {
     expect(isDetachChunk(Buffer.from("\x1b[93;5:1u"))).toBe(true);
     expect(isDetachChunk(Buffer.from("\x1b[93;5:2u"))).toBe(true);
     expect(isDetachChunk(Buffer.from("\x1b[93;5:3u"))).toBe(false);
+    // Lock modifiers reported alongside ctrl still detach.
+    expect(isDetachChunk(Buffer.from("\x1b[93;133u"))).toBe(true);
+    expect(isDetachChunk(Buffer.from("\x1b[93;133:2u"))).toBe(true);
     expect(isDetachChunk(Buffer.from("]"))).toBe(false);
     expect(isDetachChunk(Buffer.from("\x1b[93;1u"))).toBe(false);
     expect(isDetachChunk(Buffer.from("hello"))).toBe(false);
@@ -33,6 +36,18 @@ describe("isPasteChunk", () => {
     expect(isPasteChunk(Buffer.from("\x1b[118;5:1u"))).toBe(true);
     expect(isPasteChunk(Buffer.from("\x1b[118;5:2u"))).toBe(true);
     expect(isPasteChunk(Buffer.from("\x1b[118;5:3u"))).toBe(false);
+    // A terminal asked to report all keys adds the lock modifiers: Num Lock (128), Caps (64).
+    expect(isPasteChunk(Buffer.from("\x1b[118;133u"))).toBe(true);
+    expect(isPasteChunk(Buffer.from("\x1b[118;69u"))).toBe(true);
+    expect(isPasteChunk(Buffer.from("\x1b[118;197:1u"))).toBe(true);
+    // Alternate key codes and the text field ride along without changing the key.
+    expect(isPasteChunk(Buffer.from("\x1b[118:86;5u"))).toBe(true);
+    expect(isPasteChunk(Buffer.from("\x1b[118;5;22u"))).toBe(true);
+    // Shift+Ctrl+V is still a paste; Ctrl+Alt+V is another chord.
+    expect(isPasteChunk(Buffer.from("\x1b[86;6u"))).toBe(true);
+    expect(isPasteChunk(Buffer.from("\x1b[118;7u"))).toBe(false);
+    // Two reports in one chunk are typing, not a request.
+    expect(isPasteChunk(Buffer.from("\x1b[118;5u\x1b[118;5u"))).toBe(false);
     // A pasted blob that happens to carry 0x16 is not a paste request.
     expect(isPasteChunk(Buffer.from("ab\x16cd", "latin1"))).toBe(false);
     expect(isPasteChunk(Buffer.from("v"))).toBe(false);
