@@ -348,7 +348,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         });
       }),
     )
-    .handle("detail", ({ params }) =>
+    .handle("detail", ({ params, query }) =>
       Effect.gen(function* () {
         const projects = yield* ProjectsRepo;
         const sessions = yield* SessionsRepo;
@@ -357,7 +357,14 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         const project = yield* projects
           .byId(params.id)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-        const projectSessions = yield* sessions.listForProject(params.id);
+        // A settled session with no transcript cannot be resumed or handed off: hidden by
+        // default, listed only on request (`mend sessions --all`). Its worktree still lists.
+        const projectSessions = (yield* sessions.listForProject(params.id)).filter(
+          (session) =>
+            query.deadEnds === "include" ||
+            LIVE_STATES.has(session.status) ||
+            session.hasTranscript !== false,
+        );
         const worktreeRows = yield* worktrees.listForProject(params.id);
         const annotations = yield* changes.annotationsForProject(params.id);
         // One read for every session's processes; `currentAgent` is derived per session.
