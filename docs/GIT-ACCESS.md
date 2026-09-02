@@ -18,34 +18,42 @@ delivery prompt lives with the session that builds it.
 
 ## Decisions
 
-1. **Two auth modes per project, host-side only.**
-   - _Ambient_ (default): the login user's git/ssh setup, unchanged. Fix the failure story only: run
-     ssh with `BatchMode=yes`, surface "permission denied / host key unknown" as readable errors
-     instead of dead clones.
-   - _Mend key_: Mend generates an ed25519 keypair on the server machine (`~/.config/mend/keys/` —
-     `$XDG_CONFIG_HOME/mend`; a pre-XDG `~/.mend` stays authoritative when it is the only one
-     present — 0600; private key never leaves the host, never enters a workspace). The UI/CLI shows
-     the public key with a copy button — "add this as a deploy key" on GitHub/GitLab/Gitea/anything.
-     Git ops run with
-     `GIT_SSH_COMMAND="ssh -i <key> -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"`.
-     This is the recommended mode for a served Mend (homelab): the key is born on the machine that
-     fetches, and hardware-key users get a scoped, revocable identity instead of an impossible copy.
+1. **Three auth modes per project, host-side only; a per-user default.**
+   - _Mend key_ (the default, per user since 2026-09-02): Mend generates an ed25519 keypair for each
+     user on the server machine (`<keys root>/users/<userId>/id_ed25519`; the keys root is
+     `MEND_KEYS_ROOT`, else `~/.config/mend/keys`; 0600; the private key never leaves the host,
+     never enters a workspace). A server-wide key from before per-user keys is claimed by the first
+     user who asks, so a public key already registered on a git host keeps working. The UI/CLI shows
+     the public key with a copy button and the recommendation: add it to the user's git account SSH
+     keys, so every repository they can reach works from detached sessions, the phone, and the hot
+     pool alike; a deploy key on one repository is the scoped alternative. Git ops run with
+     `GIT_SSH_COMMAND="ssh -i <key> -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"` and
+     the credential is the session owner's (the shim resolves session → owner; an unowned op on a
+     single-user install uses the only key, and refuses to guess between two).
+   - _Ambient_: the login user's git/ssh setup on the server host, unchanged. Fix the failure story
+     only: run ssh with `BatchMode=yes`, surface "permission denied / host key unknown" as readable
+     errors instead of dead clones.
+   - _Bridge_: below.
+   - The user-level choice (`user_git_access`, `GET/PUT /me/git-access`, Settings → Git access, the
+     first-run checklist, `mend keys mode`) is between Mend key and bridge. New projects adopt with
+     it; a project's setup page overrides it.
 
 2. **YubiKey / hardware keys: the agent bridge (shipped).** A hardware key cannot be copied and
    demands a touch per signature, so it can never back daemon fetches. The universal interface in
    front of it is the ssh-agent socket; agent forwarding is a solved shape. `mend keys share` on the
-   laptop reverse-forwards the local `SSH_AUTH_SOCK` to the Mend server over the private network
-   (one outbound WebSocket, agent-protocol frames relayed verbatim inside; nothing secret ever
-   transits — challenges and signatures only, serialized one at a time). While connected, the server
-   exposes a real agent socket under `~/.config/mend/keys/_bridge/` and projects in the third auth
-   mode, `bridge`, sign through it — host-side ops and the workspace shim alike; the key blinks on
-   the laptop, and the share CLI prints what each signature is for ("signature requested by mend
-   (project shimtest → localhost)") with an honest waiting line and a 60s touch window. Disconnected
-   → those ops fail fast with "no signer connected — run `mend keys share` on the machine that holds
-   your key", and the deploy key still covers everything routine. The web card reports presence as
-   an observation ("signer connected · laptop"), never a judgment. Browser-based signing stays
-   impossible by design (WebAuthn cannot produce SSH signatures), and nothing about an agent
-   response is ever persisted.
+   laptop — or, when the user's git access is bridge, any attaching `mend` command and the dashboard
+   for as long as they run — reverse-forwards the local `SSH_AUTH_SOCK` to the Mend server over the
+   private network (one outbound WebSocket, agent-protocol frames relayed verbatim inside; nothing
+   secret ever transits — challenges and signatures only, serialized one at a time). While
+   connected, the server exposes a real agent socket under `~/.config/mend/keys/_bridge/` and
+   projects in the third auth mode, `bridge`, sign through it — host-side ops and the workspace shim
+   alike; the key blinks on the laptop, and the share CLI prints what each signature is for
+   ("signature requested by mend (project shimtest → localhost)") with an honest waiting line and a
+   60s touch window. Disconnected → those ops fail fast with "no signer connected — run
+   `mend keys share` on the machine that holds your key", and the deploy key still covers everything
+   routine. The web card reports presence as an observation ("signer connected · laptop"), never a
+   judgment. Browser-based signing stays impossible by design (WebAuthn cannot produce SSH
+   signatures), and nothing about an agent response is ever persisted.
 
 3. **Remotes never enter the workspace; plain `git push` still works — the shim.** The container
    gets no key, no agent socket, no token. Instead the workspace image sets `GIT_SSH_COMMAND` to a
@@ -53,10 +61,10 @@ delivery prompt lives with the session that builds it.
    the host; the host opens the real authenticated connection and shuttles the pack protocol
    (jump-host pattern, `ProxyCommand` shape). Stock git, every subcommand, no aliasing — one env var
    reroutes the transport layer git itself designed to be replaceable.
-   - The host resolves _which_ credential per request: session → project → owner. Day 0 that is the
-     machine's one Mend key; the same seam later resolves per-user keys or a connected agent bridge
-     — this is what makes multi-tenant identity possible at all (a baked-in container key decides
-     too early and produces a copyable secret).
+   - The host resolves _which_ credential per request: session → project → owner. That is the
+     owner's Mend key (per user since 2026-09-02) or the connected agent bridge — this is what makes
+     multi-tenant identity possible at all (a baked-in container key decides too early and produces
+     a copyable secret).
    - The seam is also the policy point: log every remote op; optionally auto-allow `mend shell`
      pushes and require confirmation for agent-initiated ones. Whether the gate is on is product
      policy; the shim makes it possible.

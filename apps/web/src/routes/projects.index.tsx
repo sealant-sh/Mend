@@ -1,5 +1,5 @@
 import { useContextMenu } from "@mend/ui/context-menu";
-import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
@@ -79,8 +79,12 @@ function AdoptForm() {
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [source, setSource] = useState("");
-  const [auth, setAuth] = useState<GitAuthModeDto>("ambient");
-  const [gitKey, setGitKey] = useState<GitKeyDto | null>(null);
+  // The user's git access (Settings) is the default; the row below overrides it for this adopt.
+  const access = useQuery(trpc.git.access.queryOptions()).data;
+  const [authOverride, setAuthOverride] = useState<GitAuthModeDto | null>(null);
+  const auth: GitAuthModeDto = authOverride ?? access?.mode ?? "mend-key";
+  const [createdKey, setCreatedKey] = useState<GitKeyDto | null>(null);
+  const gitKey = createdKey ?? (access?.key.exists === true ? access.key : null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
@@ -100,14 +104,14 @@ function AdoptForm() {
     }
   };
 
-  // Choosing the Mend key generates it up front: the deploy key must be on
+  // Choosing the Mend key generates it up front: the public key must be on
   // the git host before a private clone can succeed, so show it now.
   const chooseAuth = (mode: GitAuthModeDto) => {
-    setAuth(mode);
+    setAuthOverride(mode);
     setError(null);
     if (mode !== "mend-key" || gitKey !== null) return;
     initGitKey()
-      .then(setGitKey)
+      .then(setCreatedKey)
       .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)));
   };
 
@@ -138,7 +142,7 @@ function AdoptForm() {
       </div>
       <div className="mt-3 flex items-center gap-2">
         <span className="text-xs text-label">git access:</span>
-        {(["ambient", "mend-key"] as const).map((mode) => (
+        {(["mend-key", "bridge", "ambient"] as const).map((mode) => (
           <button
             key={mode}
             type="button"
@@ -149,7 +153,7 @@ function AdoptForm() {
                 : "border-border bg-card text-muted-foreground hover:text-foreground"
             }`}
           >
-            {mode === "ambient" ? "ambient" : "mend key"}
+            {mode === "mend-key" ? "mend key" : mode}
           </button>
         ))}
       </div>

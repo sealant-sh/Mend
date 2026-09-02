@@ -11,11 +11,11 @@ import { mendHome } from "./paths.ts";
 
 /**
  * Host-side git authentication (docs/GIT-ACCESS.md): the one seam every
- * remote git operation resolves its credential through. Two modes today —
- * `ambient` (the login user's ssh setup, unchanged) and `mend-key` (the
- * machine's Mend-generated deploy key). The same seam later resolves per-user
- * keys or a connected agent bridge; nothing outside this file decides how a
- * remote is reached.
+ * remote git operation resolves its credential through. Three modes —
+ * `ambient` (the login user's ssh setup, unchanged), `mend-key` (the calling
+ * user's Mend-generated key, one per user, held on this host), and `bridge`
+ * (a connected agent). Nothing outside this file decides how a remote is
+ * reached.
  */
 
 /** `ssh-keygen` could not run or exited nonzero. */
@@ -24,7 +24,7 @@ export class KeygenError extends Schema.TaggedErrorClass<KeygenError>()("KeygenE
 }) {}
 
 export interface MendKeyInfo {
-  /** OpenSSH public key line — what the user pastes as a deploy key. */
+  /** OpenSSH public key line — what the user adds to their git account (or a repo's deploy keys). */
   readonly publicKey: string;
   /** `ssh-keygen -lf` output: size, hash, comment, type. */
   readonly fingerprint: string;
@@ -32,7 +32,7 @@ export interface MendKeyInfo {
   readonly privateKeyPath: string;
 }
 
-/** Where the machine's Mend key lives. Overridable for tests only. */
+/** Where the Mend keys live (`users/<id>/id_ed25519` under it). Overridable for tests only. */
 export class MendKeysConfig extends Context.Service<
   MendKeysConfig,
   {
@@ -50,19 +50,31 @@ export const MendKeysConfigLive: Layer.Layer<MendKeysConfig> = Layer.effect(
 );
 
 /**
- * The machine's Mend deploy key: ed25519, generated on this host, private
- * half 0600 and never copied anywhere — not into workspaces, not into the DB.
- * The public half is what the UI/CLI hand out with "add this as a deploy key".
+ * A user's Mend key: ed25519, generated on this host, private half 0600 and
+ * never copied anywhere — not into workspaces, not into the DB. One key per
+ * Mend user, so the public half added to that user's git account acts as
+ * them and nobody else on the same server. The public half is what the
+ * UI/CLI hand out: "add this to your git account's SSH keys" (or, scoped to
+ * one repository, as its deploy key).
+ *
+ * `userId` null means "whoever is the only user here": rows from before
+ * sessions recorded an owner still resolve on a single-user install, and
+ * refuse on a shared one rather than guess.
  */
 export class MendKeys extends Context.Service<
   MendKeys,
   {
-    /** Generate the keypair if missing (first mend-key project), then describe it. */
-    readonly ensure: () => Effect.Effect<MendKeyInfo, KeygenError>;
-    /** Describe the key without creating it; null when none was generated yet. */
-    readonly read: () => Effect.Effect<MendKeyInfo | null, KeygenError>;
+    /** Generate the user's keypair if missing (first mend-key use), then describe it. */
+    readonly ensure: (userId: string | null) => Effect.Effect<MendKeyInfo, KeygenError>;
+    /** Describe the user's key without creating it; null when none was generated yet. */
+    readonly read: (userId: string | null) => Effect.Effect<MendKeyInfo | null, KeygenError>;
   }
 >()("@mend/store/MendKeys") {}
+
+/** Subdirectory per user under the keys root. */
+export const USERS_DIR = "users";
+/** The pre-per-user key: one for the whole server, now claimed by its first user. */
+const LEGACY_PRIVATE_KEY = "id_ed25519";
 
 const sshKeygen = (args: ReadonlyArray<string>): Effect.Effect<string, KeygenError> =>
   Effect.callback((resume) => {
@@ -80,10 +92,60 @@ export const MendKeysLive: Layer.Layer<MendKeys, never, MendKeysConfig> = Layer.
   MendKeys,
   Effect.gen(function* () {
     const config = yield* MendKeysConfig;
-    const privateKeyPath = path.join(config.root, "id_ed25519");
-    const publicKeyPath = `${privateKeyPath}.pub`;
+    const usersRoot = path.join(config.root, USERS_DIR);
+    const legacyPrivateKeyPath = path.join(config.root, LEGACY_PRIVATE_KEY);
 
-    const describe = Effect.fn("MendKeys.describe")(function* () {
+    const userDirs = (): ReadonlyArray<string> =>
+      fs.existsSync(usersRoot)
+        ? fs
+            .readdirSync(usersRoot, { withFileTypes: true })
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => entry.name)
+        : [];
+
+    /** The user whose key an unowned op may use: the only one, else nobody. */
+    const resolveOwner = (userId: string | null): Effect.Effect<string, KeygenError> => {
+      if (userId !== null) return Effect.succeed(userId);
+      const owners = userDirs();
+      if (owners.length === 1 && owners[0] !== undefined) return Effect.succeed(owners[0]);
+      // A legacy server-wide key with no user dir yet: the first owner will claim it.
+      if (owners.length === 0 && fs.existsSync(legacyPrivateKeyPath)) {
+        return Effect.succeed(LEGACY_OWNER);
+      }
+      return new KeygenError({
+        stderr:
+          owners.length === 0
+            ? "no Mend key exists yet — sign in and create one (mend keys init)"
+            : "the Mend key is per user and this operation has no owner",
+      });
+    };
+
+    const paths = (owner: string) => {
+      const privateKeyPath =
+        owner === LEGACY_OWNER
+          ? legacyPrivateKeyPath
+          : path.join(usersRoot, owner, LEGACY_PRIVATE_KEY);
+      return { privateKeyPath, publicKeyPath: `${privateKeyPath}.pub` };
+    };
+
+    /**
+     * The first user to ask claims the server-wide key of a pre-per-user
+     * install, so the public key already on their git host keeps working.
+     */
+    const claimLegacy = (owner: string) =>
+      Effect.sync(() => {
+        if (owner === LEGACY_OWNER || !fs.existsSync(legacyPrivateKeyPath)) return;
+        if (userDirs().length > 0) return;
+        const { privateKeyPath, publicKeyPath } = paths(owner);
+        fs.mkdirSync(path.dirname(privateKeyPath), { recursive: true, mode: 0o700 });
+        fs.renameSync(legacyPrivateKeyPath, privateKeyPath);
+        if (fs.existsSync(`${legacyPrivateKeyPath}.pub`)) {
+          fs.renameSync(`${legacyPrivateKeyPath}.pub`, publicKeyPath);
+        }
+      });
+
+    const describe = Effect.fn("MendKeys.describe")(function* (owner: string) {
+      const { privateKeyPath, publicKeyPath } = paths(owner);
       const publicKey = yield* Effect.sync(() =>
         fs.readFileSync(publicKeyPath, "utf8").trimEnd(),
       ).pipe(Effect.orDie);
@@ -91,25 +153,38 @@ export const MendKeysLive: Layer.Layer<MendKeys, never, MendKeysConfig> = Layer.
       return { publicKey, fingerprint, privateKeyPath };
     });
 
-    const ensure = Effect.fn("MendKeys.ensure")(function* () {
+    const ensure = Effect.fn("MendKeys.ensure")(function* (userId: string | null) {
+      const owner = yield* resolveOwner(userId);
+      yield* claimLegacy(owner);
+      const { privateKeyPath } = paths(owner);
       if (!fs.existsSync(privateKeyPath)) {
-        yield* Effect.sync(() => fs.mkdirSync(config.root, { recursive: true, mode: 0o700 }));
+        yield* Effect.sync(() =>
+          fs.mkdirSync(path.dirname(privateKeyPath), { recursive: true, mode: 0o700 }),
+        );
         const comment = `mend@${os.hostname()}`;
         yield* sshKeygen(["-q", "-t", "ed25519", "-N", "", "-C", comment, "-f", privateKeyPath]);
         // ssh-keygen already writes 0600/0644; pin it anyway — the whole mode rests on this.
         yield* Effect.sync(() => fs.chmodSync(privateKeyPath, 0o600));
       }
-      return yield* describe();
+      return yield* describe(owner);
     });
 
-    const read = Effect.fn("MendKeys.read")(function* () {
-      if (!fs.existsSync(publicKeyPath)) return null;
-      return yield* describe();
+    const read = Effect.fn("MendKeys.read")(function* (userId: string | null) {
+      const owner = yield* resolveOwner(userId).pipe(
+        Effect.catchTag("KeygenError", () => Effect.succeed(null)),
+      );
+      if (owner === null) return null;
+      yield* claimLegacy(owner);
+      if (!fs.existsSync(paths(owner).publicKeyPath)) return null;
+      return yield* describe(owner);
     });
 
     return { ensure, read };
   }),
 );
+
+/** Sentinel owner for the not-yet-claimed server-wide key. Never a real user id. */
+const LEGACY_OWNER = "";
 
 /**
  * The ssh command for a remote git operation under `mode`, as a
@@ -188,7 +263,7 @@ const FAILURE_PATTERNS: ReadonlyArray<FailurePattern> = [
     test: /Permission denied \(publickey|Permission denied, please try again|access denied|could not read Username|Authentication failed/i,
     describe: (mode) =>
       mode === "mend-key"
-        ? "The remote refused the Mend key (permission denied). Add the project's Mend public key as a deploy key on the git host, then retry."
+        ? "The remote refused the Mend key (permission denied). Add your Mend public key to your git account's SSH keys (or as a deploy key on this repository), then retry."
         : mode === "bridge"
           ? "The remote refused the connected signer's keys (permission denied). Check that the shared key is authorized on the git host — and that the agent you shared actually holds it (`ssh-add -l` on the sharing machine)."
           : "The remote refused this machine's credentials (permission denied). Mend uses your login user's git/ssh setup for this project — check that a plain `git ls-remote` works in a shell here.",

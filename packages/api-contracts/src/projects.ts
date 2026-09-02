@@ -21,8 +21,10 @@ import { AuthMiddleware } from "./common.ts";
 import { ProjectFileListing, ProjectPullRequests } from "./settings.ts";
 import {
   AdoptProject,
+  GitAccessView,
   GitBridgeStatusView,
   GitKeyView,
+  SetGitAccessRequest,
   ProjectApplyDotfilesRequest,
   ProjectAutomationRequest,
   ProjectDetail,
@@ -165,14 +167,23 @@ export const projectsGroup = HttpApiGroup.make("projects")
   .middleware(AuthMiddleware);
 
 /**
- * The machine's Mend git key (docs/GIT-ACCESS.md). GET reads; POST generates
- * on first use ("mend keys init"). One key per machine today — the per-user
- * seam arrives with multi-tenant identity.
+ * The calling user's Mend git key (docs/GIT-ACCESS.md): GET reads; POST
+ * generates on first use ("mend keys init"). One key per user, held on the
+ * server. `/me/git-access` is the user's default: which of their key or
+ * their own machine (bridge) signs.
  */
 export const gitKeysGroup = HttpApiGroup.make("gitKeys")
   .add(HttpApiEndpoint.get("show", "/keys/git", { success: GitKeyView }))
   .add(HttpApiEndpoint.post("init", "/keys/git", { success: GitKeyView, error: StoreFailure }))
   .add(HttpApiEndpoint.get("bridgeStatus", "/keys/bridge", { success: GitBridgeStatusView }))
+  .add(HttpApiEndpoint.get("access", "/me/git-access", { success: GitAccessView }))
+  .add(
+    HttpApiEndpoint.put("setAccess", "/me/git-access", {
+      payload: SetGitAccessRequest,
+      success: GitAccessView,
+      error: StoreFailure,
+    }),
+  )
   .middleware(AuthMiddleware);
 
 /** Add a reference: clone `source` shallow into the store, pinned to `ref` when given. */

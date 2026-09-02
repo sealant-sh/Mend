@@ -51,8 +51,9 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
             return yield* new WorktreeNameTaken({ projectId: params.id, name: payload.name });
           }
         }
+        const caller = yield* CurrentUser;
         return yield* engine
-          .ensureWorktree(params.id, { name: payload.name, base: payload.base })
+          .ensureWorktree(params.id, { name: payload.name, base: payload.base }, caller.user.id)
           .pipe(
             Effect.catchTag("ProjectNotFoundError", () =>
               Effect.fail(new NotFound({ id: params.id })),

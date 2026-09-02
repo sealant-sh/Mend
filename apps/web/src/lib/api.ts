@@ -99,6 +99,8 @@ export type ProjectHotSessionsStatusDto = Outputs["projects"]["hotSessionsStatus
 export type HostEnvironmentSuggestionsDto = Outputs["settings"]["environmentSuggestions"];
 
 export type GitKeyDto = Outputs["git"]["key"];
+export type GitAccessDto = Outputs["git"]["access"];
+export type GitAccessModeDto = GitAccessDto["mode"];
 export type GitBridgeStatusDto = Outputs["git"]["bridgeStatus"];
 export type ReferenceDto = Outputs["git"]["references"][number];
 export type ProjectMountDto = Outputs["projects"]["mounts"][number];
@@ -248,6 +250,8 @@ export const removeReference = async (id: string): Promise<void> => {
 export const refreshReference = (id: string) =>
   orLogin(trpcClient.git.refreshReference.mutate({ id }));
 export const initGitKey = () => orLogin(trpcClient.git.initKey.mutate());
+export const setGitAccess = (mode: GitAccessModeDto) =>
+  orLogin(trpcClient.git.setAccess.mutate({ mode }));
 
 // ─── Sessions · services ────────────────────────────────────────────────────
 

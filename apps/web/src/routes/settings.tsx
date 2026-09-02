@@ -3,6 +3,7 @@ import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { useReducer, useState } from "react";
 
+import { GitAccessPanel } from "#/components/git-access-panel";
 import {
   PairingQr,
   formatDay,
@@ -77,6 +78,7 @@ function SettingsPage() {
         <ThemePanel />
         <WorkspaceEnvironmentPanel />
         <DotfilesPanel />
+        <GitAccessSettingsPanel />
         <SessionLifecyclePanel />
         <ReviewAutomationPanel />
         <ConnectedAccountsPanel />
@@ -867,6 +869,19 @@ const AUTOMATION_ROWS: ReadonlyArray<{
  * Only the launching CLI can enforce Off — a closing browser tab cannot
  * promise a stop — so the switch governs CLI launches.
  */
+function GitAccessSettingsPanel() {
+  return (
+    <section className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
+      <h2 className="font-sans text-sm font-semibold">Git access</h2>
+      <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+        How Mend reaches your repositories. New projects adopt with this; a project&apos;s setup
+        page can override it.
+      </p>
+      <GitAccessPanel />
+    </section>
+  );
+}
+
 function SessionLifecyclePanel() {
   const trpc = useTRPC();
   const queryClient = useQueryClient();

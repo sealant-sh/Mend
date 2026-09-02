@@ -6,7 +6,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { bridgeUrlOf, shareAgent, startAgentShare } from "./agent-share.ts";
+import { type AgentShareHandle, bridgeUrlOf, shareAgent, startAgentShare } from "./agent-share.ts";
 import { readClipboardImage } from "./clipboard.ts";
 import { doctorCommand } from "./doctor.ts";
 import { readSyncFiles, scanDotfileCandidates } from "./dotfiles.ts";
@@ -84,8 +84,6 @@ interface CliConfig {
   readonly token: string | null;
   /** The device row the token belongs to — lets `mend logout` revoke it server-side. */
   readonly deviceId: string | null;
-  /** Share this machine's ssh-agent while the dashboard runs (mend keys autoshare). */
-  readonly autoshare: boolean;
 }
 
 interface ProjectDto {
@@ -195,7 +193,6 @@ const loadConfig = (): CliConfig => {
     configuredUrl,
     token: process.env["MEND_TOKEN"] ?? fileConfig.token ?? null,
     deviceId: fileConfig.deviceId ?? null,
-    autoshare: fileConfig.autoshare ?? true,
   };
 };
 
@@ -379,7 +376,7 @@ const adopt = async (config: CliConfig, args: ReadonlyArray<string>) => {
   say(`${dim("  default branch")} ${project.defaultBranch}`);
   // Say which signer did the work — the clone already proved it answers.
   if (project.gitAuthMode === "mend-key") {
-    say(`${dim("  git auth")} mend key ${dim("(the machine's deploy key signed this clone)")}`);
+    say(`${dim("  git auth")} mend key ${dim("(your Mend key signed this clone)")}`);
   } else if (project.gitAuthMode === "bridge") {
     say(`${dim("  git auth")} bridge ${dim("(signed through the connected `mend keys share`)")}`);
   }
@@ -1936,36 +1933,16 @@ const takeFlagValue = (args: ReadonlyArray<string>, flag: string): string | null
   return at !== -1 && args[at + 1] !== undefined ? String(args[at + 1]) : null;
 };
 
-// Only these fields persist; `configuredUrl` is derived on every load. A
-// setting not named keeps its saved value — login must not reset autoshare.
+// Only these three fields persist; `configuredUrl` is derived on every load.
 const saveCliConfig = (next: {
   readonly url: string;
   readonly token: string | null;
   readonly deviceId: string | null;
-  readonly autoshare?: boolean;
 }) => {
-  let saved: { readonly autoshare?: boolean } = {};
-  if (fs.existsSync(CONFIG_PATH)) {
-    try {
-      saved = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")) as typeof saved;
-    } catch {
-      // unreadable — rewritten below
-    }
-  }
-  const autoshare = next.autoshare ?? saved.autoshare;
   fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true, mode: 0o700 });
   fs.writeFileSync(
     CONFIG_PATH,
-    `${JSON.stringify(
-      {
-        url: next.url,
-        token: next.token,
-        deviceId: next.deviceId,
-        ...(autoshare === undefined ? {} : { autoshare }),
-      },
-      null,
-      2,
-    )}\n`,
+    `${JSON.stringify({ url: next.url, token: next.token, deviceId: next.deviceId }, null, 2)}\n`,
     { mode: 0o600 },
   );
   fs.chmodSync(CONFIG_PATH, 0o600);
@@ -2012,9 +1989,9 @@ const printGitKey = (key: GitKeyDto) => {
   if (key.publicKey === null) return;
   say(key.publicKey);
   if (key.fingerprint !== null) say(dim(`  ${key.fingerprint}`));
-  say(dim("  add this as a deploy key on your git host (GitHub/GitLab/Gitea: repo"));
-  say(dim("  settings → deploy keys; grant write access if sessions should push),"));
-  say(dim("  then adopt with: mend adopt <ssh-url> --auth mend-key"));
+  say(dim("  add this to your git account's SSH keys (GitHub: settings → SSH keys) so"));
+  say(dim("  every repository you can reach works; for one repository only, add it"));
+  say(dim("  as that repository's deploy key instead (grant write if sessions push)"));
 };
 
 const keysShow = async (config: CliConfig) => {
@@ -2081,27 +2058,40 @@ const keysShare = async (config: CliConfig) => {
   });
 };
 
-/** `mend keys autoshare [on|off]`: whether the dashboard shares the agent while it runs. */
-const keysAutoshare = (config: CliConfig, args: ReadonlyArray<string>) => {
+interface GitAccessDto {
+  readonly mode: "mend-key" | "bridge";
+  readonly key: GitKeyDto;
+  readonly bridge: { readonly connected: boolean; readonly clientName: string | null };
+}
+
+/**
+ * `mend keys mode [mend-key|bridge]`: how this user's remotes are reached by
+ * default. The Mend key lives on the server and works whenever the server
+ * is up — detached sessions, the phone, the hot pool. Bridge signs with this
+ * machine's ssh-agent and only works while a mend command is running here.
+ */
+const keysMode = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const [value] = args;
-  if (value === undefined) {
-    say(
-      config.autoshare
-        ? `on ${dim("— the dashboard shares this machine's ssh-agent while it runs")}`
-        : `off ${dim("— run mend keys share by hand when a bridge-mode project needs it")}`,
-    );
+  if (value !== undefined && value !== "mend-key" && value !== "bridge") {
+    return fail(`keys mode takes mend-key or bridge, not "${value}"`);
+  }
+  const access =
+    value === undefined
+      ? await api<GitAccessDto>(config, "GET", "/me/git-access")
+      : await api<GitAccessDto>(config, "PUT", "/me/git-access", { mode: value });
+  if (value !== undefined) say(`${green("✓")} git access · ${value}`);
+  if (access.mode === "mend-key") {
+    say(`mend-key ${dim("— your Mend key on the server signs; works whenever the server is up")}`);
+    if (access.key.exists) printGitKey(access.key);
+    else say(dim("  no key yet — mend keys init creates it"));
     return;
   }
-  if (value !== "on" && value !== "off") {
-    return fail(`keys autoshare takes on or off, not "${value}"`);
-  }
-  saveCliConfig({
-    url: config.configuredUrl ?? config.url,
-    token: config.token,
-    deviceId: config.deviceId,
-    autoshare: value === "on",
-  });
-  say(`${green("✓")} autoshare ${value} ${dim(`· ${CONFIG_PATH}`)}`);
+  say(`bridge ${dim("— this machine's ssh-agent signs; only while a mend command runs here")}`);
+  say(
+    access.bridge.connected
+      ? `${green("●")} signer connected · ${access.bridge.clientName ?? "unknown machine"}`
+      : dim("  no signer connected — mend shares the agent whenever it runs (or: mend keys share)"),
+  );
 };
 
 const keysCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
@@ -2111,8 +2101,8 @@ const keysCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
       return keysInit(config);
     case "share":
       return keysShare(config);
-    case "autoshare":
-      return keysAutoshare(config, args.slice(1));
+    case "mode":
+      return keysMode(config, args.slice(1));
     case "show":
     case undefined:
       return keysShow(config);
@@ -3387,22 +3377,7 @@ const dashboard = async (config: CliConfig) => {
     process.exit(rerun.status ?? 0);
   }
   const { runDashboard } = await import("./dashboard.tsx");
-  // Bridge-mode projects sign with this machine's ssh-agent: share it for as
-  // long as the dashboard runs (mend keys autoshare off stops that). A second
-  // share replaces the first on the server, so a foreground `mend keys share`
-  // elsewhere hands over rather than fights.
-  const agentSock = process.env["SSH_AUTH_SOCK"];
-  const agentShare =
-    config.autoshare && agentSock !== undefined && agentSock !== ""
-      ? startAgentShare({
-          url: bridgeUrlOf(
-            parseMendUrl(config.url).toString().replace(/\/$/, ""),
-            config.token,
-            os.hostname(),
-          ),
-          agentSock,
-        })
-      : null;
+  const agentShare = await startShareIfBridge(config);
   try {
     await runDashboard({
       config,
@@ -3420,6 +3395,44 @@ const dashboard = async (config: CliConfig) => {
 };
 
 // ─── entry ──────────────────────────────────────────────────────────────────
+
+/**
+ * Share this machine's ssh-agent for as long as the calling command runs —
+ * only when the user's git access is bridge (mend keys mode). Their remotes
+ * then sign here, and a base fetch before a worktree is created can't be
+ * skipped for want of a signer. Any other mode, no agent, or an unreachable
+ * server: nothing is shared. A newer share replaces an older one on the
+ * server, so overlapping mend commands hand over rather than fight.
+ */
+const startShareIfBridge = async (config: CliConfig): Promise<AgentShareHandle | null> => {
+  const agentSock = process.env["SSH_AUTH_SOCK"];
+  if (agentSock === undefined || agentSock === "") return null;
+  let access: GitAccessDto;
+  try {
+    access = await request<GitAccessDto>(config, "GET", "/me/git-access");
+  } catch {
+    return null;
+  }
+  if (access.mode !== "bridge") return null;
+  return startAgentShare({
+    url: bridgeUrlOf(
+      parseMendUrl(config.url).toString().replace(/\/$/, ""),
+      config.token,
+      os.hostname(),
+    ),
+    agentSock,
+  });
+};
+
+/** Run one command under the share (see startShareIfBridge); stop it on the way out. */
+const withAgentShare = async <T>(config: CliConfig, work: () => Promise<T>): Promise<T> => {
+  const share = await startShareIfBridge(config);
+  try {
+    return await work();
+  } finally {
+    share?.stop();
+  }
+};
 
 /** `mend help [command...]`: the index, a group, or one page. */
 const helpCommand = (words: ReadonlyArray<string>) => {
@@ -3481,13 +3494,13 @@ const main = async () => {
     case "claude":
     case "opencode":
     case "run":
-      return launch(config, command, rest);
+      return withAgentShare(config, () => launch(config, command, rest));
     case "attach":
-      return attach(config, rest);
+      return withAgentShare(config, () => attach(config, rest));
     case "stop":
       return stopCommand(config, rest);
     case "shell":
-      return shellCommand(config, rest);
+      return withAgentShare(config, () => shellCommand(config, rest));
     case "service":
       return serviceCommand(config, rest);
     case "login":
@@ -3522,9 +3535,9 @@ const main = async () => {
     case "continue":
       return continueSession(config, rest);
     case "resume":
-      return resumeCommand(config, rest);
+      return withAgentShare(config, () => resumeCommand(config, rest));
     case "rejoin":
-      return rejoinCommand(config, rest);
+      return withAgentShare(config, () => rejoinCommand(config, rest));
     case "projects":
       return projectsCommand(config);
     case "refresh":

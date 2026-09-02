@@ -100,11 +100,11 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     synopsis: ["[source] [--name <name>] [--auth ambient|mend-key|bridge]"],
     description: [
       "Clones the repository into Mend's store. Every session then gets its own worktree of it. The default source is the current directory; any git URL works, GitHub, GitLab, self-hosted, ssh://, or a local path.",
-      "--auth says how the store fetches from the remote. ambient uses the server's own credentials. mend-key uses this machine's deploy key (see mend keys). bridge relays this machine's ssh-agent while mend keys share runs, so hardware keys stay here.",
+      "--auth says how the store fetches from the remote. Default: your mode from mend keys mode. mend-key signs with your Mend key on the server (see mend keys). bridge relays this machine's ssh-agent while a mend command runs here, so hardware keys stay on your desk. ambient uses the server's own credentials.",
     ],
     options: [
       { flag: "--name <name>", text: "the project's name in Mend. Default: the repository's" },
-      { flag: "--auth <mode>", text: "ambient, mend-key, or bridge. Default: ambient" },
+      { flag: "--auth <mode>", text: "mend-key, bridge, or ambient. Default: mend keys mode" },
     ],
     examples: [
       { command: "mend adopt", text: "the repository you are standing in" },
@@ -511,20 +511,32 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   {
     name: "keys init",
     section: "project setup",
-    summary: "generate this machine's Mend deploy key (ed25519)",
+    summary: "create your Mend key (ed25519) on the server",
     synopsis: [],
     description: [
-      "Creates a key under ~/.config/mend/keys for projects adopted with --auth mend-key. Add the public key on your git host as a deploy key.",
+      "One key per user, held on the server, never copied anywhere. Add the public key to your git account's SSH keys and every repository you can reach works, from detached sessions and the phone too. For one repository only, add it as that repository's deploy key instead.",
     ],
-    see: ["keys show", "adopt"],
+    see: ["keys show", "keys mode", "adopt"],
   },
   {
     name: "keys show",
     section: "project setup",
-    summary: "print the public key",
+    summary: "print your Mend public key",
     synopsis: [],
-    description: ["The key to add as a deploy key on your git host."],
+    description: [
+      "The key to add to your git account's SSH keys, or as a deploy key on one repository.",
+    ],
     see: ["keys init"],
+  },
+  {
+    name: "keys mode",
+    section: "project setup",
+    summary: "how your remotes are reached: mend-key or bridge",
+    synopsis: ["[mend-key|bridge]"],
+    description: [
+      "mend-key (the default) signs with your Mend key on the server and works whenever the server is up. bridge signs with this machine's ssh-agent, so a hardware key never leaves your desk, but only while a mend command is running here. New projects adopt with this mode; a project's setup page can override it. Without a value, prints the current mode.",
+    ],
+    see: ["keys init", "keys share"],
   },
   {
     name: "keys share",
@@ -533,19 +545,9 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     synopsis: [],
     description: [
       "Bridge mode for projects adopted with --auth bridge: the server's git operations sign with the keys in this machine's ssh-agent, so hardware keys never leave here. Runs until Ctrl-C.",
-      "The dashboard does this on its own while it runs (see mend keys autoshare), so this command is for a machine that is not running the dashboard. The server takes one signer at a time; a newer share replaces the older one.",
+      "When your mode is bridge (mend keys mode), every attaching mend command and the dashboard do this on their own for as long as they run, so this command is for a machine that is not running one. The server takes one signer at a time; a newer share replaces the older one.",
     ],
-    see: ["keys autoshare", "adopt"],
-  },
-  {
-    name: "keys autoshare",
-    section: "project setup",
-    summary: "share the ssh-agent while the dashboard runs: on or off",
-    synopsis: ["[on|off]"],
-    description: [
-      "On by default: mend (the dashboard) relays this machine's ssh-agent to the server for as long as it is open, and the header says so. Without a value, prints the current setting. Needs SSH_AUTH_SOCK; without an agent the dashboard runs without sharing.",
-    ],
-    see: ["keys share"],
+    see: ["keys mode", "adopt"],
   },
 
   // ── this machine ───────────────────────────────────────────────────────

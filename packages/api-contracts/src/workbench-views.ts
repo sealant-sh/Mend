@@ -244,6 +244,25 @@ export class GitBridgeStatusView extends Schema.Class<GitBridgeStatusView>("GitB
   since: Schema.NullOr(Timestamp),
 }) {}
 
+/** The user-level git access choice; `ambient` stays a per-project mode. */
+export const GitAccessMode = Schema.Literals(["mend-key", "bridge"]);
+export type GitAccessMode = typeof GitAccessMode.Type;
+
+/**
+ * How the calling user's remotes are reached by default: the mode, their Mend key (public
+ * half; exists=false until created), and the bridge's presence. New projects adopt with the
+ * mode; the CLI shares the machine's agent only while the mode is bridge.
+ */
+export class GitAccessView extends Schema.Class<GitAccessView>("GitAccessView")({
+  mode: GitAccessMode,
+  key: GitKeyView,
+  bridge: GitBridgeStatusView,
+}) {}
+
+export class SetGitAccessRequest extends Schema.Class<SetGitAccessRequest>("SetGitAccessRequest")({
+  mode: GitAccessMode,
+}) {}
+
 export const HostToolSuggestionView = Schema.Struct({
   executable: Schema.String,
   kind: Schema.Literals(["package", "service"]),

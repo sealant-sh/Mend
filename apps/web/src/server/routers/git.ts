@@ -1,4 +1,4 @@
-import { AddReference } from "@mend/api-contracts";
+import { AddReference, SetGitAccessRequest } from "@mend/api-contracts";
 import { ReferenceId } from "@mend/domain";
 import { Schema } from "effect";
 
@@ -24,4 +24,8 @@ export const gitRouter = router({
   key: procedure.query(({ ctx }) => run(ctx, (api) => api.gitKeys.show())),
   initKey: procedure.mutation(({ ctx }) => run(ctx, (api) => api.gitKeys.init())),
   bridgeStatus: procedure.query(({ ctx }) => run(ctx, (api) => api.gitKeys.bridgeStatus())),
+  access: procedure.query(({ ctx }) => run(ctx, (api) => api.gitKeys.access())),
+  setAccess: procedure
+    .input(input(SetGitAccessRequest))
+    .mutation(({ ctx, input: payload }) => run(ctx, (api) => api.gitKeys.setAccess({ payload }))),
 });

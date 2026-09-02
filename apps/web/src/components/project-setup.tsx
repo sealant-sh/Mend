@@ -56,18 +56,19 @@ const GIT_AUTH_CHOICES: ReadonlyArray<{
   readonly value: GitAuthModeDto;
   readonly label: string;
 }> = [
-  { value: "ambient", label: "ambient" },
   { value: "mend-key", label: "mend key" },
   { value: "bridge", label: "bridge" },
+  { value: "ambient", label: "ambient" },
 ];
 
 /**
- * How host-side git reaches this project's remote (docs/GIT-ACCESS.md):
- * ambient rides the login user's ssh setup; mend-key is a per-machine deploy
- * key whose public half this card hands out (switching generates it, so the
- * card can show it immediately); bridge signs through an ssh-agent shared
- * from another machine — presence is shown as an observation, and ops fail
- * readably while nobody is connected.
+ * How host-side git reaches this project's remote (docs/GIT-ACCESS.md), a
+ * per-project override of the user's git access (Settings): mend-key signs
+ * with the caller's own Mend key, whose public half this card hands out
+ * (switching generates it, so the card can show it immediately); bridge
+ * signs through the ssh-agent a mend command shares from the user's machine
+ * — presence is shown as an observation, and ops fail readably while nobody
+ * is connected; ambient rides the server's login user's ssh setup.
  */
 export function GitAccessSection({ project }: { readonly project: ProjectDto }) {
   const trpc = useTRPC();
@@ -102,9 +103,10 @@ export function GitAccessSection({ project }: { readonly project: ProjectDto }) 
     <section id="git" className="scroll-mt-6">
       <p className="border-b border-rule pb-2 text-xs font-medium text-label">Git access</p>
       <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
-        How Mend reaches this project&apos;s remote. Ambient uses your login user&apos;s git and ssh
-        setup; the Mend key is this machine&apos;s own deploy key; bridge signs through an ssh-agent
-        shared from another machine with <span className="font-mono">mend keys share</span>.
+        How Mend reaches this project&apos;s remote; the default for new projects is set in
+        Settings. The Mend key is your own key on the server, added to your git account. Bridge
+        signs through your machine&apos;s ssh-agent while a <span className="font-mono">mend</span>{" "}
+        command runs there. Ambient uses the server&apos;s login user&apos;s git and ssh setup.
       </p>
       <div className="mt-3 flex gap-1">
         {GIT_AUTH_CHOICES.map((choice) => (
@@ -128,7 +130,7 @@ export function GitAccessSection({ project }: { readonly project: ProjectDto }) 
       )}
       {project.gitAuthMode === "mend-key" && gitKey.data !== undefined && (
         <div className="mt-3">
-          <GitKeyCard gitKey={gitKey.data} />
+          <GitKeyCard gitKey={gitKey.data} originUrl={project.originUrl} />
         </div>
       )}
       {project.gitAuthMode === "bridge" && bridge.data !== undefined && (
@@ -149,9 +151,10 @@ export function GitAccessSection({ project }: { readonly project: ProjectDto }) 
           </p>
           {!bridge.data.connected && (
             <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
-              Run <span className="font-mono">mend keys share</span> on the machine that holds your
-              key; git ops for this project wait for no one — they fail readably until a signer
-              connects.
+              Any attaching <span className="font-mono">mend</span> command on the machine that
+              holds your key shares its agent while it runs (or{" "}
+              <span className="font-mono">mend keys share</span> by hand); git ops for this project
+              wait for no one — they fail readably until a signer connects.
             </p>
           )}
         </div>

@@ -5,6 +5,7 @@ import {
   ChangedFileView,
   ChangeStats,
   CurrentUser,
+  GitAccessView,
   GitBridgeStatusView,
   GitKeyView,
   EnvironmentLoadedEntry,
@@ -82,6 +83,7 @@ import {
   SessionsRepo,
   SettingsRepo,
   UserDotfilesRepo,
+  UserGitAccessRepo,
 } from "@mend/db";
 import {
   MendSettings,
@@ -224,8 +226,8 @@ const readableGitFailure = (error: GitError, mode: GitAuthMode): StoreFailure =>
  * with the same readable lines as before (a hung clone would be worse than
  * an honest no).
  */
-const remoteEnvFor = (mode: GitAuthMode) =>
-  resolveRemoteEnv(mode).pipe(
+const remoteEnvFor = (mode: GitAuthMode, userId: string | null) =>
+  resolveRemoteEnv(mode, userId).pipe(
     Effect.catchTag("NoSignerError", (error) => new StoreFailure({ message: error.message })),
     Effect.catchTag(
       "KeygenError",
@@ -329,8 +331,11 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
             message: `"${payload.name}" is already adopted — its store lives at ${existing.storePath}`,
           });
         }
-        const mode = payload.gitAuthMode ?? "ambient";
-        const remoteEnv = yield* remoteEnvFor(mode);
+        // The user's git access default decides a new project's mode unless the request says.
+        const caller = yield* CurrentUser;
+        const gitAccess = yield* UserGitAccessRepo;
+        const mode = payload.gitAuthMode ?? (yield* gitAccess.mode(caller.user.id)) ?? "mend-key";
+        const remoteEnv = yield* remoteEnvFor(mode, caller.user.id);
         const adopted = yield* withSignerContext(
           mode,
           `adopt ${payload.name} → ${payload.source}`,
@@ -491,7 +496,10 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         // settings card can show a public key the moment the mode lands.
         // Bridge is NOT resolved here: switching to it must work before the
         // signer connects — the card reports presence as an observation.
-        if (payload.gitAuthMode === "mend-key") yield* remoteEnvFor("mend-key");
+        if (payload.gitAuthMode === "mend-key") {
+          const caller = yield* CurrentUser;
+          yield* remoteEnvFor("mend-key", caller.user.id);
+        }
         return yield* projects
           .setGitAuthMode(params.id, payload.gitAuthMode)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
@@ -573,7 +581,8 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         const project = yield* projects
           .byId(params.id)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-        const remoteEnv = yield* remoteEnvFor(project.gitAuthMode);
+        const caller = yield* CurrentUser;
+        const remoteEnv = yield* remoteEnvFor(project.gitAuthMode, caller.user.id);
         yield* withSignerContext(
           project.gitAuthMode,
           `refresh ${project.name} → origin`,
@@ -786,7 +795,8 @@ export const GitKeysGroupLive = HttpApiBuilder.group(MendApi, "gitKeys", (handle
     .handle("show", () =>
       Effect.gen(function* () {
         const keys = yield* MendKeys;
-        const key = yield* keys.read().pipe(Effect.orDie);
+        const caller = yield* CurrentUser;
+        const key = yield* keys.read(caller.user.id).pipe(Effect.orDie);
         return key === null
           ? new GitKeyView({ exists: false, publicKey: null, fingerprint: null })
           : new GitKeyView({
@@ -799,8 +809,9 @@ export const GitKeysGroupLive = HttpApiBuilder.group(MendApi, "gitKeys", (handle
     .handle("init", () =>
       Effect.gen(function* () {
         const keys = yield* MendKeys;
+        const caller = yield* CurrentUser;
         const key = yield* keys
-          .ensure()
+          .ensure(caller.user.id)
           .pipe(
             Effect.mapError(
               (error) =>
@@ -820,8 +831,43 @@ export const GitKeysGroupLive = HttpApiBuilder.group(MendApi, "gitKeys", (handle
         const bridgeStatus = yield* bridge.status();
         return new GitBridgeStatusView(bridgeStatus);
       }),
+    )
+    .handle("access", () => gitAccessView())
+    .handle("setAccess", ({ payload }) =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        const gitAccess = yield* UserGitAccessRepo;
+        yield* gitAccess.setMode(caller.user.id, payload.mode);
+        // Choosing the key creates it, so the page can show what to add on the git host.
+        if (payload.mode === "mend-key") yield* remoteEnvFor("mend-key", caller.user.id);
+        return yield* gitAccessView();
+      }),
     ),
 );
+
+/** The calling user's git access: mode, their key (public half), the bridge's presence. */
+const gitAccessView = () =>
+  Effect.gen(function* () {
+    const caller = yield* CurrentUser;
+    const gitAccess = yield* UserGitAccessRepo;
+    const keys = yield* MendKeys;
+    const bridge = yield* AgentBridge;
+    const mode = (yield* gitAccess.mode(caller.user.id)) ?? "mend-key";
+    const key = yield* keys.read(caller.user.id).pipe(Effect.orDie);
+    const bridgeStatus = yield* bridge.status();
+    return new GitAccessView({
+      mode,
+      key:
+        key === null
+          ? new GitKeyView({ exists: false, publicKey: null, fingerprint: null })
+          : new GitKeyView({
+              exists: true,
+              publicKey: key.publicKey,
+              fingerprint: key.fingerprint,
+            }),
+      bridge: new GitBridgeStatusView(bridgeStatus),
+    });
+  });
 
 /** The blueprint's path shape, checked early so the failure names the field, not the launch. */
 const isNormalizedAbsolutePath = (value: string): boolean =>
@@ -967,7 +1013,11 @@ export const ProjectLinksGroupLive = HttpApiBuilder.group(MendApi, "projectLinks
           worktreeName !== ""
             ? worktreeName
             : yield* engine
-                .ensureWorktree(linked.id, { name: linked.defaultBranch, base: null })
+                .ensureWorktree(
+                  linked.id,
+                  { name: linked.defaultBranch, base: null },
+                  (yield* CurrentUser).user.id,
+                )
                 .pipe(
                   Effect.mapError(
                     (error) =>
@@ -1600,7 +1650,7 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
           });
         }
         // References are a global list with no project to carry a mode — ambient.
-        const remoteEnv = yield* remoteEnvFor("ambient");
+        const remoteEnv = yield* remoteEnvFor("ambient", null);
         const cloned = yield* store
           .cloneReference(payload.name, payload.source, payload.ref, remoteEnv)
           .pipe(Effect.mapError((error) => readableGitFailure(error.cause, "ambient")));
@@ -1631,7 +1681,7 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
         const reference = yield* references
           .byId(params.id)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-        const remoteEnv = yield* remoteEnvFor("ambient");
+        const remoteEnv = yield* remoteEnvFor("ambient", null);
         const refreshed = yield* store
           .refreshReference(reference.path, reference.pinnedRef, remoteEnv)
           .pipe(Effect.mapError((error) => readableGitFailure(error, "ambient")));

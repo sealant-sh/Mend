@@ -471,6 +471,8 @@ export class SessionEngine extends Context.Service<
     readonly ensureWorktree: (
       projectId: ProjectId,
       input: { readonly name: string | null; readonly base: string | null },
+      /** Whose git credential freshens the base (their Mend key, or their bridge). */
+      ownerUserId: string | null,
     ) => Effect.Effect<Worktree, ProjectNotFoundError | GitError | WorktreeBaseConflictError>;
     /** A new conversation inside an existing worktree. */
     readonly provisionSessionIn: (
@@ -1154,8 +1156,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const provisionRemoteEnv = Effect.fn("SessionEngine.provisionRemoteEnv")(function* (
         project: Project,
+        ownerUserId: string | null,
       ) {
-        return yield* resolveRemoteEnv(project.gitAuthMode).pipe(
+        return yield* resolveRemoteEnv(project.gitAuthMode, ownerUserId).pipe(
           Effect.provideService(MendKeys, mendKeys),
           Effect.provideService(AgentBridge, agentBridge),
           Effect.catch((error) =>
@@ -1191,6 +1194,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const ensureWorktreeIn = Effect.fn("SessionEngine.ensureWorktreeIn")(function* (
         project: Project,
         input: { readonly name: string | null; readonly base: string | null },
+        ownerUserId: string | null,
       ) {
         if (input.name !== null) {
           const existing = yield* worktreesRepo.byName(project.id, input.name);
@@ -1199,7 +1203,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return existing;
           }
         }
-        const remoteEnv = yield* provisionRemoteEnv(project);
+        const remoteEnv = yield* provisionRemoteEnv(project, ownerUserId);
         const worktreeId = WorktreeId.make(crypto.randomUUID());
         const identity = worktreeIdentityFor(worktreeId, input.name);
         const created = yield* sessionRepo.createWorktree(
@@ -1264,7 +1268,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const project = yield* projects.byId(input.projectId);
         // The place first: join by name (an existing name IS "a new conversation in that
         // worktree") or create it — git worktree, row, ordinal-0 checkpoint.
-        const worktree = yield* ensureWorktreeIn(project, input);
+        const worktree = yield* ensureWorktreeIn(project, input, input.ownerUserId);
         // Hot path (ADR-0001): a standby skeleton serves ANY worktree — new or joined — because
         // the pool mounts the project's worktrees root and the launch binds this one. Any
         // failure here falls back to the cold path; a claim must never cost a session.
@@ -4907,10 +4911,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 );
               }
               const mode = project.gitAuthMode;
+              // The session's owner signs: their Mend key, never another user's.
+              const owner = yield* sessions
+                .byId(sessionId)
+                .pipe(Effect.map((ownerRow) => ownerRow.ownerUserId));
               const keyPath =
                 mode === "mend-key"
                   ? (yield* mendKeys
-                      .ensure()
+                      .ensure(owner)
                       .pipe(
                         Effect.mapError(
                           (error) => new Error(`could not create the Mend key: ${error.stderr}`),
@@ -5849,10 +5857,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // Fibers forked underneath inherit the principal.
       return {
         provision,
-        ensureWorktree: (projectId, input) =>
+        ensureWorktree: (projectId, input, ownerUserId) =>
           projects
             .byId(projectId)
-            .pipe(Effect.flatMap((project) => ensureWorktreeIn(project, input))),
+            .pipe(Effect.flatMap((project) => ensureWorktreeIn(project, input, ownerUserId))),
         provisionSessionIn: (worktreeId, input) =>
           Effect.gen(function* () {
             const worktree = yield* worktreesRepo.byId(worktreeId);

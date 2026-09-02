@@ -371,6 +371,17 @@ export const userSealantIdentities = pgTable("user_sealant_identities", {
   createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * How this user's git remotes are reached by default (docs/GIT-ACCESS.md): their Mend key on
+ * the server, or their own machine's agent through the bridge. New projects adopt with it; the
+ * CLI shares the agent only when it says bridge. No row = mend-key.
+ */
+export const userGitAccess = pgTable("user_git_access", {
+  userId: text().primaryKey(),
+  mode: text().$type<"mend-key" | "bridge">().notNull(),
+  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
 export const userDotfiles = pgTable("user_dotfiles", {
   userId: text().primaryKey(),
   repository: jsonbOf(DotfilesRepository),

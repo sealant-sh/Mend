@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -28,27 +29,78 @@ const withKeys = <A, E>(work: (root: string) => Effect.Effect<A, E, MendKeys>): 
 };
 
 describe("MendKeys", () => {
-  it("generates once, reads back, private key stays 0600", async () => {
+  it("generates one key per user, reads back, private key stays 0600", async () => {
     await withKeys((root) =>
       Effect.gen(function* () {
         const keys = yield* MendKeys;
 
         // Nothing yet — read reports absence rather than creating.
-        expect(yield* keys.read()).toBeNull();
+        expect(yield* keys.read("u1")).toBeNull();
 
-        const created = yield* keys.ensure();
+        const created = yield* keys.ensure("u1");
         expect(created.publicKey.startsWith("ssh-ed25519 ")).toBe(true);
         expect(created.fingerprint).toContain("ED25519");
-        expect(created.privateKeyPath).toBe(path.join(root, "id_ed25519"));
+        expect(created.privateKeyPath).toBe(path.join(root, "users", "u1", "id_ed25519"));
         const mode = fs.statSync(created.privateKeyPath).mode & 0o777;
         expect(mode).toBe(0o600);
 
         // Idempotent: a second ensure returns the same key, not a new one.
-        const again = yield* keys.ensure();
+        const again = yield* keys.ensure("u1");
         expect(again.publicKey).toBe(created.publicKey);
+        expect((yield* keys.read("u1"))?.publicKey).toBe(created.publicKey);
 
-        const read = yield* keys.read();
-        expect(read?.publicKey).toBe(created.publicKey);
+        // Another user gets their own key; neither sees the other's.
+        const other = yield* keys.ensure("u2");
+        expect(other.publicKey).not.toBe(created.publicKey);
+        expect(other.privateKeyPath).toBe(path.join(root, "users", "u2", "id_ed25519"));
+      }),
+    );
+  });
+
+  it("an unowned op uses the only user's key and refuses to guess between two", async () => {
+    await withKeys(() =>
+      Effect.gen(function* () {
+        const keys = yield* MendKeys;
+        expect(yield* keys.read(null)).toBeNull();
+        const only = yield* keys.ensure("u1");
+        expect((yield* keys.ensure(null)).publicKey).toBe(only.publicKey);
+        expect((yield* keys.read(null))?.publicKey).toBe(only.publicKey);
+
+        yield* keys.ensure("u2");
+        const refused = yield* keys.ensure(null).pipe(Effect.flip);
+        expect(refused.stderr).toContain("per user");
+        expect(yield* keys.read(null)).toBeNull();
+      }),
+    );
+  });
+
+  it("the first user claims a pre-per-user server-wide key", async () => {
+    await withKeys((root) =>
+      Effect.gen(function* () {
+        const keys = yield* MendKeys;
+        // A server-wide key from before, at the legacy path.
+        fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+        execFileSync("ssh-keygen", [
+          "-q",
+          "-t",
+          "ed25519",
+          "-N",
+          "",
+          "-f",
+          path.join(root, "id_ed25519"),
+        ]);
+        const legacy = yield* keys.ensure(null);
+        expect(legacy.privateKeyPath).toBe(path.join(root, "id_ed25519"));
+
+        // The first user to ask takes it over — same public key, moved into their dir.
+        const claimed = yield* keys.ensure("u1");
+        expect(claimed.publicKey).toBe(legacy.publicKey);
+        expect(claimed.privateKeyPath).toBe(path.join(root, "users", "u1", "id_ed25519"));
+        expect(fs.existsSync(path.join(root, "id_ed25519"))).toBe(false);
+
+        // A second user gets a fresh key of their own.
+        const second = yield* keys.ensure("u2");
+        expect(second.publicKey).not.toBe(legacy.publicKey);
       }),
     );
   });
@@ -78,7 +130,7 @@ describe("describeGitRemoteFailure", () => {
     const stderr =
       "git@gitlab.com: Permission denied (publickey).\nfatal: Could not read from remote repository.";
     expect(describeGitRemoteFailure(stderr, "ambient")).toContain("login user's git/ssh setup");
-    expect(describeGitRemoteFailure(stderr, "mend-key")).toContain("deploy key");
+    expect(describeGitRemoteFailure(stderr, "mend-key")).toContain("git account's SSH keys");
     expect(describeGitRemoteFailure(stderr, "mend-key")).toContain("Permission denied (publickey)");
   });
 
