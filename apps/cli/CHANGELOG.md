@@ -1,5 +1,34 @@
 # @sealant/mend
 
+## 0.18.0
+
+### Minor Changes
+
+- a228468: The CLI explains itself. `mend help` is an index again: one line per command, grouped
+  into start, sessions, services, project setup, and this machine, aligned in two columns at your
+  terminal's width. Every command now has its own page, `mend help <command>` or
+  `mend <command> --help`, with usage, a description, options, examples, and see-also;
+  `mend help service` lists a family. Usage errors quote the same synopsis. The same pages ship as
+  man pages: `man mend` and `man mend-<command>` after a global install, or `mend man <command>`
+  from anywhere. Every description was rewritten to say what the command does in plain words.
+
+  `mend version` (also `--version`, `-v`) prints this CLI's version, then the server's when it
+  answers within two seconds, and states a mismatch as a fact.
+
+- 62e947a: Linked projects. A project's setup page gains a "Linked projects" section: pick another
+  adopted project and a name, and every next session of this project works in that project too,
+  read-write, at `/workspace/repos/<name>`. The linked project's named worktree is bound at launch
+  (blank picks, creating it if needed, the worktree named after its default branch); commits there
+  are that project's own change, reviewed on its side, never part of this session's change. Distinct
+  from references, which are read-only clones for reading, and from mounted folders, which are host
+  paths and so cannot exist on a cluster. Linking rewarms the hot pool.
+- d9e397e: Hot sessions are standby workspaces. A pooled workspace no longer pre-creates a worktree:
+  it mounts the project's worktrees directory and the session that claims it binds its own worktree
+  at launch, so the pool now serves a named join into an existing worktree as well as a brand-new
+  one, and a skeleton never spends a worktree or a worktree row ahead of time. Every session's
+  workspace is created this way (Sealant 0.26, sealantd 0.13), which is also what lets a project
+  mount sibling repositories next. Migration 0048 relaxes the pool's worktree columns.
+
 ## 0.17.0
 
 ### Minor Changes
