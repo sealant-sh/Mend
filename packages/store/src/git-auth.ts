@@ -146,6 +146,14 @@ export const MendKeysLive: Layer.Layer<MendKeys, never, MendKeysConfig> = Layer.
 
     const describe = Effect.fn("MendKeys.describe")(function* (owner: string) {
       const { privateKeyPath, publicKeyPath } = paths(owner);
+      // Re-pin 0600 on every use, not only at creation: a volume's group policy
+      // (Kubernetes fsGroup adds g+rw to every file at pod start) or a copy
+      // can loosen it, and ssh then refuses the key outright — "UNPROTECTED
+      // PRIVATE KEY FILE" — which surfaced through the shim as a session that
+      // could not fetch. The whole mode rests on this bit.
+      yield* Effect.sync(() => {
+        if (fs.existsSync(privateKeyPath)) fs.chmodSync(privateKeyPath, 0o600);
+      }).pipe(Effect.orDie);
       const publicKey = yield* Effect.sync(() =>
         fs.readFileSync(publicKeyPath, "utf8").trimEnd(),
       ).pipe(Effect.orDie);

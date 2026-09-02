@@ -57,6 +57,22 @@ describe("MendKeys", () => {
     );
   });
 
+  it("re-pins 0600 on every use — a volume policy that loosens the key is undone", async () => {
+    await withKeys(() =>
+      Effect.gen(function* () {
+        const keys = yield* MendKeys;
+        const created = yield* keys.ensure("u1");
+        // What Kubernetes fsGroup does to every file on the volume at pod start.
+        fs.chmodSync(created.privateKeyPath, 0o660);
+        yield* keys.read("u1");
+        expect(fs.statSync(created.privateKeyPath).mode & 0o777).toBe(0o600);
+        fs.chmodSync(created.privateKeyPath, 0o660);
+        yield* keys.ensure("u1");
+        expect(fs.statSync(created.privateKeyPath).mode & 0o777).toBe(0o600);
+      }),
+    );
+  });
+
   it("an unowned op uses the only user's key and refuses to guess between two", async () => {
     await withKeys(() =>
       Effect.gen(function* () {
