@@ -866,7 +866,29 @@ const attachPicked = async (config: CliConfig, session: SessionDto): Promise<nev
     `${green("✓")} attaching to ${sessionDisplayName(session)} · ${session.harness} ${dim(session.id.slice(0, 8))}${detachHint()}`,
   );
   say("");
-  await attachOrExit(config, session.id, session.harness);
+  const outcome = await attachTty(config, session.id, session.harness, 0n, undefined, {
+    handleSignals: true,
+  });
+  // A live protocol agent (a phone pickup) has no PTY behind it — the attach
+  // reports "unavailable" with nothing wrong. Take the session over: end the
+  // protocol agent, resume the same conversation as a TUI, then attach to it.
+  if (outcome === "unavailable") {
+    const detail = await api<SessionDetailLiteDto>(config, "GET", `/sessions/${session.id}`);
+    if (
+      detail.currentAgent?.kind === "agent-protocol" &&
+      agentIsLive(detail.session, detail.currentAgent)
+    ) {
+      say(`${amber("taking over")} from the protocol session`);
+      await withSpinner(
+        "reopening as a terminal — same conversation…",
+        api<SessionDto>(config, "POST", `/sessions/${session.id}/handoff`, { to: "pty" }),
+      );
+      say("");
+      await attachOrExit(config, session.id, session.harness);
+      return exitAfterSessionEnd(config, session.id);
+    }
+  }
+  await finishAttach(config, session.id, outcome);
   return exitAfterSessionEnd(config, session.id);
 };
 

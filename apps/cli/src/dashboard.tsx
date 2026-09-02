@@ -24,6 +24,7 @@ import {
   worktreeDisplayName,
   fetchWorkbench,
   type HarnessItem,
+  liveProtocolOf,
   liveShellOf,
   mapWorkbenchSessions,
   markSessionStopped,
@@ -638,8 +639,16 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           "GET",
           `/sessions/${session.id}`,
         );
+        const liveProtocol = liveProtocolOf(detail.processes);
         const existing = liveShellOf(detail.processes);
-        if (existing !== null) {
+        if (liveProtocol !== null) {
+          // A phone pickup holds the session in protocol mode — no PTY behind
+          // it. Take it over: end the protocol agent, resume the same
+          // conversation as a TUI, then attach to that.
+          process.stdout.write(`taking over from the protocol session — same conversation…\n\n`);
+          await ctx.api<SessionDto>("POST", `/sessions/${session.id}/handoff`, { to: "pty" });
+          outcome = await ctx.attachTty(session.id, session.harness);
+        } else if (existing !== null) {
           process.stdout.write(`no live terminal — rejoining the open shell\n\n`);
           outcome = await ctx.attachTty(session.id, "shell", existing.id);
         } else {

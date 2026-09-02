@@ -420,6 +420,18 @@ export const liveShellOf = (
   processes.findLast((process) => process.kind === "shell" && process.exitedAt === null) ?? null;
 
 /**
+ * The session's live protocol agent — a phone pickup driving the same
+ * conversation over stream-json. It holds the workspace with no PTY behind it,
+ * so a terminal "get me in" must take it over (hand back to a TUI) rather than
+ * report the attach unavailable or open a bare shell. Null = no pickup to take.
+ */
+export const liveProtocolOf = (
+  processes: ReadonlyArray<SessionProcessDto>,
+): SessionProcessDto | null =>
+  processes.find((process) => process.kind === "agent-protocol" && process.exitedAt === null) ??
+  null;
+
+/**
  * The optimistic stop: the row settles AND its live process/service fact
  * lines drop in the same paint — the server's refetch only confirms.
  */
