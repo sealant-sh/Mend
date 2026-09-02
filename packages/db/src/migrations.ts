@@ -1293,6 +1293,12 @@ const projectLinksMigration = Effect.gen(function* () {
     )`;
 });
 
+/** Whether a session left a conversation behind; null until settle classifies it. */
+const sessionHasTranscriptMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS has_transcript boolean`;
+});
+
 const worktreesMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`
@@ -1492,4 +1498,5 @@ export const migrations = {
   "0047_skills": skillsMigration,
   "0048_standby_hot_workspaces": standbyHotWorkspacesMigration,
   "0049_project_links": projectLinksMigration,
+  "0050_session_has_transcript": sessionHasTranscriptMigration,
 };

@@ -163,6 +163,7 @@ describe("Mend Drizzle schema", () => {
       "workspace_image",
       "dotfiles",
       "owner_user_id",
+      "has_transcript",
       "status",
       "summary",
       "last_seen_sequence",

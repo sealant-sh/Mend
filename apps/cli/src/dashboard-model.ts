@@ -26,6 +26,8 @@ export interface SessionDto {
   readonly baseRef: string | null;
   readonly status: string;
   readonly summary: string | null;
+  /** False = settled without a conversation: nothing to resume; hidden. Absent on older servers. */
+  readonly hasTranscript?: boolean | null;
   readonly createdAt: string;
 }
 
@@ -280,6 +282,14 @@ export const toSessionItem =
     processes: data.processesBySession.get(session.id) ?? [],
   });
 
+/**
+ * A settled session that never had a conversation — no transcript captured, none in the harness
+ * home — cannot be resumed or handed off. The dashboard hides it; `mend sessions --all` still
+ * lists it, and removing the worktree takes it along.
+ */
+export const isDeadEnd = (session: Pick<SessionDto, "status" | "hasTranscript">): boolean =>
+  !LIVE_STATUSES.has(session.status) && session.hasTranscript === false;
+
 export const deriveWorktrees = (
   data: Workbench | undefined,
   projectId: string | null,
@@ -288,7 +298,9 @@ export const deriveWorktrees = (
   const detail = data.details.get(projectId);
   if (detail === undefined) return [];
   const item = toSessionItem(data, detail);
-  const sorted = detail.sessions.toSorted(bySessionRecency);
+  const sorted = detail.sessions
+    .filter((session) => !isDeadEnd(session))
+    .toSorted(bySessionRecency);
   const groups: Array<WorktreeGroup> = [];
   if (detail.worktrees !== undefined) {
     const claimed = new Set<string>();

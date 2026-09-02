@@ -23,7 +23,9 @@ export const projectsRouter = router({
   list: procedure.query(({ ctx }) => run(ctx, (api) => api.projects.list())),
   detail: procedure
     .input(byId)
-    .query(({ ctx, input: i }) => run(ctx, (api) => api.projects.detail({ params: { id: i.id } }))),
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) => api.projects.detail({ params: { id: i.id }, query: {} })),
+    ),
   adopt: procedure
     .input(input(AdoptProject))
     .mutation(({ ctx, input: payload }) => run(ctx, (api) => api.projects.adopt({ payload }))),

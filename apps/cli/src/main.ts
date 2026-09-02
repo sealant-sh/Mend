@@ -138,6 +138,8 @@ interface SessionDto {
   readonly baseRef: string | null;
   readonly status: string;
   readonly summary: string | null;
+  /** False = settled without a conversation: nothing to resume, hidden by the dashboard. */
+  readonly hasTranscript?: boolean | null;
   readonly createdAt: string;
 }
 
@@ -3112,8 +3114,12 @@ const sessionsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
 
   let rows: Array<SessionRow>;
   if (all || projectName !== null) {
+    // --all means all: dead ends (settled, no conversation) included, which the server hides
+    // otherwise for every client.
     const details = await Promise.all(
-      scope.map((p) => api<ProjectDetailDto>(config, "GET", `/projects/${p.id}`)),
+      scope.map((p) =>
+        api<ProjectDetailDto>(config, "GET", `/projects/${p.id}${all ? "?deadEnds=include" : ""}`),
+      ),
     );
     rows = details.flatMap((detail) =>
       detail.sessions.map((session) => ({

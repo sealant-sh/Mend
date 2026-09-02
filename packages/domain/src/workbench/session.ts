@@ -115,6 +115,13 @@ export class Session extends Schema.Class<Session>("Session")({
   dotfiles: Schema.NullOr(SessionDotfiles),
   /** Who provisioned the session — whose dotfiles apply. Null for pre-column rows. */
   ownerUserId: Schema.NullOr(Schema.String),
+  /**
+   * Whether the harness left a conversation behind — a transcript Mend captured at settle or
+   * found in the live harness home. False is a dead end: nothing to resume, nothing to hand
+   * off, so the dashboard hides such settled sessions. Null until settle (or for rows the
+   * boot sweep has not classified yet).
+   */
+  hasTranscript: Schema.NullOr(Schema.Boolean),
   status: SessionStatus,
   /** What the harness reported at settle, when anything. */
   summary: Schema.NullOr(Schema.String),
