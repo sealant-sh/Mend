@@ -72,6 +72,7 @@ const fakeWorkspace: Workspace = {
     session: async () => new Promise(() => {}),
   },
   exec: async () => new Promise(() => {}),
+  bind: async () => [],
   sessions: {
     open: async () => new Promise(() => {}),
     get: async () => new Promise(() => {}),
@@ -101,6 +102,7 @@ const sealantFakeLayer = Layer.succeed(SealantClient, {
   getSession: () => Effect.die("not in test"),
   sessionOutput: () => Effect.die("not in test"),
   exec: () => Effect.die("not in test"),
+  bindWorkspace: () => Effect.succeed([]),
   diffCommits: () => Effect.die("not in test"),
   inferenceRespond: () => Effect.die("not in test"),
   recordStream: () => Stream.fromEffect(Effect.die("not in test")),

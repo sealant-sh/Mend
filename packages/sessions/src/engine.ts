@@ -94,6 +94,7 @@ import {
   resolveRemoteEnv,
   sshTransportArgs,
   worktreePathOf,
+  worktreesRootOf,
   DeploymentConfig,
 } from "@mend/store";
 import type { Harness, Run as SdkRun, Workspace, WorkspaceCredentialsOptions } from "@sealant/sdk";
@@ -1253,19 +1254,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       const provisionAs = Effect.fn("SessionEngine.provisionAs")(function* (input: ProvisionInput) {
         const project = yield* projects.byId(input.projectId);
-        // Join-by-name: an existing name IS "a new conversation in that worktree".
-        if (input.name !== null) {
-          const existing = yield* worktreesRepo.byName(project.id, input.name);
-          if (existing !== null) {
-            yield* refuseBaseConflict(existing, input.base);
-            return yield* provisionSessionIn(project, existing, input);
-          }
-        }
-        // Hot path: adopt a pre-provisioned skeleton when the project keeps them ready. Any
-        // failure here falls back to the cold path — a claim must never cost a session. A
-        // named claim renames the pooled branch and display name; the directory never moves.
+        // The place first: join by name (an existing name IS "a new conversation in that
+        // worktree") or create it — git worktree, row, ordinal-0 checkpoint.
+        const worktree = yield* ensureWorktreeIn(project, input);
+        // Hot path (ADR-0001): a standby skeleton serves ANY worktree — new or joined — because
+        // the pool mounts the project's worktrees root and the launch binds this one. Any
+        // failure here falls back to the cold path; a claim must never cost a session.
         if (project.hotSessions > 0) {
-          const claimed = yield* claimHotSession(project, input).pipe(
+          const claimed = yield* claimHotSession(project, worktree, input).pipe(
             Effect.catch((error) =>
               Effect.logWarning("session engine: hot claim failed — cold provision").pipe(
                 Effect.annotateLogs({ projectId: project.id, error: String(error) }),
@@ -1275,7 +1271,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
           if (claimed !== null) return claimed;
         }
-        const worktree = yield* ensureWorktreeIn(project, input);
         return yield* provisionSessionIn(project, worktree, input);
       });
 
@@ -2374,15 +2369,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const provisionWorkspace = Effect.fn("SessionEngine.provisionWorkspace")(function* (input: {
         readonly project: Project;
         readonly sessionId: SessionId;
-        /** Absolute worktree path — the workspace's mount source. */
-        readonly worktree: string;
         /** The session socket dir from `socketHost.start`, mounted at `/run/mend`. */
         readonly socketDir: string;
         readonly shape: ReturnType<typeof platformShape>;
         readonly ownerUserId: string | null;
         readonly onFailure: (message: string) => Effect.Effect<void>;
       }) {
-        const { project, sessionId, worktree, socketDir, shape, ownerUserId } = input;
+        const { project, sessionId, socketDir, shape, ownerUserId } = input;
         const settings = yield* settingsRepo.get();
         const report = <A, E extends { readonly message: string }>(
           effect: Effect.Effect<A, E>,
@@ -2433,6 +2426,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
         }
         const workspaceMounts = [
+          // The worktrees' shared git metadata: every worktree's `.git` file points at the bare
+          // repository by absolute path, so it must sit at that same path inside the workspace.
+          // (The SDK derived this itself for a mount source; a standby root has many worktrees.)
+          { hostPath: project.storePath, mountPath: project.storePath, readOnly: false },
           { hostPath: socketDir, mountPath: SESSION_SOCKET_MOUNT_PATH },
           ...(harnessHomeReady
             ? [{ hostPath: harnessHome, mountPath: HARNESS_HOME_MOUNT_PATH, readOnly: false }]
@@ -2547,7 +2544,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         };
         const createWorkspace = (credentials: WorkspaceCredentialsOptions | undefined) =>
           sealant.createWorkspace({
-            source: { kind: "mount", path: worktree },
+            // Standby (ADR-0001, sealantd ADR-0014): the ROOT is mounted, hidden; /workspace/repo
+            // does not exist until the launch binds it to one worktree. Neither Docker nor
+            // Kubernetes can add a mount later, and this is what lets a pooled workspace serve
+            // any worktree of the project.
+            source: { kind: "standby", rootPath: worktreesRootOf(project.storePath) },
             ...(workspaceMounts.length === 0 ? {} : { mounts: workspaceMounts }),
             harness: shape.harness,
             name: `mend-${sessionId.slice(0, 8)}`,
@@ -2704,7 +2705,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const appendWorkspaceNote = Effect.fn("SessionEngine.appendWorkspaceNote")(function* (
         workspace: Workspace,
         project: Project,
-        worktree: string,
+        /** Null for a standby skeleton: no worktree, so no mend.toml, until it is claimed. */
+        worktree: string | null,
         referenceMounts: ReadonlyArray<SessionReferenceMount>,
         extraMounts: ReadonlyArray<SessionExtraMount>,
       ) {
@@ -2729,7 +2731,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 .join("\n") +
               `\n\n`;
         const declaredRecipes = mergeRecipes(
-          yield* readServiceRecipes(worktree).pipe(Effect.orElseSucceed(() => [])),
+          yield* worktree === null
+            ? Effect.succeed([])
+            : readServiceRecipes(worktree).pipe(Effect.orElseSucceed(() => [])),
           yield* projectRecipes.listForProject(project.id).pipe(Effect.orElseSucceed(() => [])),
         );
         const recipesLine =
@@ -2949,7 +2953,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           (yield* provisionWorkspace({
             project,
             sessionId,
-            worktree,
             socketDir,
             shape,
             ownerUserId,
@@ -2957,6 +2960,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               sessions.settle(sessionId, "failed", `launch failed: ${message}`).pipe(Effect.ignore),
           }));
         const { workspace, workspaceImage, environmentManifest } = provisioned;
+        // Standby (ADR-0001): the workspace mounted the project's worktrees root; point its
+        // working directory at THIS session's worktree before anything looks for the repo. The
+        // daemon records the bind and the platform re-applies it on every relaunch.
+        yield* sealant
+          .bindWorkspace(workspace, { subpath: session.worktree })
+          .pipe(
+            Effect.tapError((error) =>
+              sessions
+                .settle(
+                  sessionId,
+                  "failed",
+                  `launch failed: could not bind the worktree — ${error.message}`,
+                )
+                .pipe(Effect.ignore),
+            ),
+          );
         yield* sessions.setWorkspaceImage(sessionId, workspaceImage);
         // Stamped alongside the image: what this session ACTUALLY launched with — the repo
         // url+ref that was cloned and the exact snapshot sha the store packed (for a hot
@@ -4938,9 +4957,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* channelTokens.revoke(entry.id).pipe(Effect.ignore);
         if (options?.keepWorktree !== true) {
           yield* socketHost.stop(entry.id).pipe(Effect.ignore);
-          yield* sessionRepo
-            .removeWorktreeForce(entry.projectId, entry.worktree)
-            .pipe(Effect.ignore);
+          // Only rows from before standby workspaces carry a pre-created worktree.
+          if (entry.worktree !== null) {
+            yield* sessionRepo
+              .removeWorktreeForce(entry.projectId, entry.worktree)
+              .pipe(Effect.ignore);
+          }
           // The pooled worktree row goes with its directory; a kept worktree
           // was adopted by a session, which owns the row now.
           if (entry.worktreeId !== null) {
@@ -4957,39 +4979,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         fingerprint: string,
       ) {
         const sessionId = SessionId.make(crypto.randomUUID());
-        const worktreeId = WorktreeId.make(crypto.randomUUID());
-        // Skeletons pre-provision on the default branch without freshening: the claim resets
-        // to the requested base with credentials anyway, and warming must not race a fetch.
-        // The worktree row exists from the start — a pooled worktree is a legal
-        // zero-session worktree the claim adopts.
-        const identity = worktreeIdentityFor(worktreeId, null);
-        const worktree = yield* sessionRepo.createWorktree(project.id, identity, null, null);
-        yield* worktreesRepo.create({
-          id: worktreeId,
-          projectId: project.id,
-          name: identity.directory,
-          directory: identity.directory,
-          branch: worktree.branch,
-          baseSha: worktree.baseSha,
-          baseRef: worktree.baseRef,
-        });
-        const worktreePath = worktreePathOf(project.storePath, worktree.name);
+        // A skeleton is a STANDBY workspace (ADR-0001): it mounts the project's worktrees root
+        // and no worktree of its own. The claiming session brings whichever worktree it needs —
+        // brand new or an existing one — and the launch binds it. Only the session id is
+        // pre-generated: the harness home and socket dir are keyed by it and mounted here.
         const entry = yield* hotWorkspaces.create({
           id: sessionId,
           projectId: project.id,
-          worktreeId,
+          worktreeId: null,
           ownerUserId,
           fingerprint,
-          worktree: worktree.name,
-          branch: worktree.branch,
-          baseSha: worktree.baseSha,
+          worktree: null,
+          branch: null,
+          baseSha: null,
         });
         const socketDir = yield* socketHost.start(sessionId, socketApiFor(sessionId));
         const provisionAttempt = Effect.gen(function* () {
           const provisioned = yield* provisionWorkspace({
             project,
             sessionId,
-            worktree: worktreePath,
             socketDir,
             // The unified image carries EVERY baked agent CLI and the shell shape's credential
             // ladder attaches all connected accounts, so one skeleton serves any harness.
@@ -5000,7 +5008,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* appendWorkspaceNote(
             provisioned.workspace,
             project,
-            worktreePath,
+            null,
             provisioned.referenceMounts,
             provisioned.extraMounts,
           );
@@ -5155,8 +5163,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * the reset immediately), and create the session row under the POOLED id, which the
        * worktree, branch, and socket dir already carry. Null falls back to the cold path.
        */
+      /**
+       * Claim a ready standby skeleton for a session in `worktree`: the session adopts the
+       * pooled id (its harness home and socket dir are already mounted), and the launch binds
+       * the worktree. Null means nothing matched the project's current fingerprint.
+       */
       const claimHotSession = Effect.fn("SessionEngine.claimHotSession")(function* (
         project: Project,
+        worktree: Worktree,
         input: ProvisionInput,
       ) {
         const ownerUserId = input.ownerUserId ?? (yield* userDotfilesRepo.firstUserId());
@@ -5165,49 +5179,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (entry === null) return null;
         // The replacement warms in the background while this session launches.
         yield* requestHotReconcile(project.id);
-        if (entry.worktreeId === null) {
-          // A pre-pivot skeleton has no adoptable worktree row — drain, go cold.
-          yield* drainHotWorkspace(entry);
-          return null;
-        }
-        const remoteEnv = yield* provisionRemoteEnv(project);
-        const freshened = yield* sessionRepo
-          .resetWorktree(project.id, entry.worktree, input.base, remoteEnv)
-          .pipe(Effect.tapError(() => drainHotWorkspace(entry)));
-        yield* worktreesRepo.setBase(entry.worktreeId, freshened.baseSha, freshened.baseRef);
-        // A named claim takes the name: rename the branch in place (the ref moves,
-        // the bind-mounted directory never does) and the row's display identity.
-        if (input.name !== null) {
-          const branch = `mend/${input.name}`;
-          yield* sessionRepo
-            .renameBranch(project.id, entry.worktree, branch)
-            .pipe(Effect.tapError(() => drainHotWorkspace(entry)));
-          yield* worktreesRepo.rename(entry.worktreeId, input.name, branch);
-        }
-        const worktreeRow = yield* worktreesRepo.byId(entry.worktreeId).pipe(Effect.orDie);
         const session = yield* sessions.create({
           id: entry.id,
           projectId: project.id,
-          worktreeId: worktreeRow.id,
+          worktreeId: worktree.id,
           harness: input.harness,
           label: input.label,
           ownerUserId: input.ownerUserId,
-          worktree: worktreeRow.directory,
-          branch: worktreeRow.branch,
-          baseSha: freshened.baseSha,
-          baseRef: freshened.baseRef,
+          worktree: worktree.directory,
+          branch: worktree.branch,
+          baseSha: worktree.baseSha,
+          baseRef: worktree.baseRef ?? worktree.baseSha,
           contextSnapshotId: null,
         });
         yield* tryCheckpoint(session, "session-start", { sealantRunId: null, sequence: 0n });
-        yield* changes.ensureForWorktree(
-          project.id,
-          worktreeRow.id,
-          worktreeRow.branch,
-          freshened.baseSha,
-        );
         return session;
       });
-
       /**
        * Boot-and-heartbeat pass: abandoned claims and dead entries drain, live ready entries get
        * their socket re-bound (deterministic dir — the running container's mount comes back to
