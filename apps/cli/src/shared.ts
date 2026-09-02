@@ -189,16 +189,9 @@ export const parseLaunchArgs = (args: ReadonlyArray<string>): LaunchArgs => {
  */
 export const isDetachChunk = (data: Buffer): boolean => {
   if (data.includes(0x1d)) return true;
-  // latin1 maps bytes 1:1, so the scan sees exactly the wire bytes. A string
-  // scan rather than a regex: an escape byte inside a pattern trips lint, and
-  // anchoring on the real ESC[ prefix keeps pasted text from ever matching.
-  const text = data.toString("latin1");
-  const prefix = "\u001b[93;5";
-  for (let start = text.indexOf(prefix); start !== -1; start = text.indexOf(prefix, start + 1)) {
-    const rest = text.slice(start + prefix.length);
-    if (rest.startsWith("u") || rest.startsWith(":1u") || rest.startsWith(":2u")) return true;
-  }
-  return false;
+  return csiUKeysOf(data).some(
+    (key) => key.code === 93 && isCtrlChord(key) && isPressOrRepeat(key),
+  );
 };
 
 /**
@@ -365,14 +358,63 @@ export const normalizeProjectName = (raw: string): string => {
 };
 
 /**
- * Whether one stdin chunk is exactly Ctrl+V — the raw 0x16 byte, or the
- * kitty CSI-u form `ESC [ 118 ; 5 u` (`v` is code 118) on press or repeat.
- * Exact, not contained: a paste that happens to carry 0x16 is not a request.
+ * One kitty-keyboard-protocol key report (`CSI code[:alt...] ; mods[:event] [; text] u`),
+ * as the terminal sends it once the inner TUI pushed the protocol. `mods` is
+ * the wire value minus one (so 4 = ctrl); lock modifiers (caps 64, num 128)
+ * are masked off — a terminal asked to report all keys reports those too,
+ * and Ctrl+V with Num Lock on arrives as `ESC [ 118 ; 133 u`. `event` is 1
+ * for press (the default when omitted), 2 repeat, 3 release.
+ */
+export interface CsiUKey {
+  readonly code: number;
+  readonly mods: number;
+  readonly event: number;
+}
+
+// Built from a string: an escape byte inside a regex literal trips lint.
+const CSI_U = new RegExp(
+  `${String.fromCharCode(0x1b)}\\[(\\d+)(?::\\d*)*(?:;(\\d+)(?::(\\d+))?)?(?:;[\\d:]+)?u`,
+  "g",
+);
+const LOCK_MODIFIERS = 64 | 128;
+
+/** Every CSI-u key report inside a chunk, in order. */
+export const csiUKeysOf = (data: Buffer): ReadonlyArray<CsiUKey> => {
+  // latin1 maps bytes 1:1, so the scan sees exactly the wire bytes.
+  const text = data.toString("latin1");
+  const keys: Array<CsiUKey> = [];
+  for (const match of text.matchAll(CSI_U)) {
+    const code = Number(match[1]);
+    const mods = (match[2] === undefined ? 1 : Number(match[2])) - 1;
+    const event = match[3] === undefined ? 1 : Number(match[3]);
+    keys.push({ code, mods: mods & ~LOCK_MODIFIERS, event });
+  }
+  return keys;
+};
+
+const CTRL = 4;
+const SHIFT = 1;
+/** Ctrl held, optionally shift, nothing else (alt/super/hyper/meta make it another chord). */
+const isCtrlChord = (key: CsiUKey): boolean => (key.mods & ~SHIFT) === CTRL;
+const isPressOrRepeat = (key: CsiUKey): boolean => key.event === 1 || key.event === 2;
+
+/**
+ * Whether one stdin chunk is Ctrl+V — the raw 0x16 byte on its own, or one
+ * CSI-u report of `v` (118) or `V` (86) with ctrl, on press or repeat. Exact
+ * for the raw byte: a paste that happens to carry 0x16 is not a request.
  */
 export const isPasteChunk = (data: Buffer): boolean => {
   if (data.length === 1 && data[0] === 0x16) return true;
-  const text = data.toString("latin1");
-  return text === "\u001b[118;5u" || text === "\u001b[118;5:1u" || text === "\u001b[118;5:2u";
+  const keys = csiUKeysOf(data);
+  const key = keys[0];
+  return (
+    keys.length === 1 &&
+    key !== undefined &&
+    (key.code === 118 || key.code === 86) &&
+    isCtrlChord(key) &&
+    isPressOrRepeat(key) &&
+    data.toString("latin1").startsWith("\u001b[")
+  );
 };
 
 /**
