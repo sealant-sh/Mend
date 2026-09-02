@@ -476,7 +476,19 @@ export interface GhosttyTerminalSurfaceOptions {
    * default — whose Paste entry can never reach a canvas terminal.
    */
   readonly onContextMenu?: (event: MouseEvent) => void;
+  /**
+   * Image files pasted or dropped onto the surface. The clipboard the running
+   * TUI would read on Ctrl+V belongs to a container that has none, so the
+   * host owns the upload and pastes the resulting path; the surface only
+   * claims the event. Text on the clipboard is never routed here.
+   */
+  readonly onImageFiles?: (files: ReadonlyArray<File>) => void;
 }
+
+const imageFilesOf = (list: FileList | null | undefined): ReadonlyArray<File> =>
+  list === null || list === undefined
+    ? []
+    : Array.from(list).filter((file) => file.type.startsWith("image/"));
 
 export class GhosttyTerminalSurface {
   readonly canvas: HTMLCanvasElement;
@@ -1092,12 +1104,35 @@ export class GhosttyTerminalSurface {
     // would receive (for example an html-only clipboard converted to text)
     // leaks through onInput without bracketed-paste encoding.
     event.preventDefault();
+    const images = imageFilesOf(event.clipboardData?.files);
+    if (images.length > 0 && this.options.onImageFiles !== undefined) {
+      // An image clipboard: the shortcut's clipboard read resolves to nothing
+      // useful, and must not land text after the host pastes the path.
+      this.pasteShortcutToken += 1;
+      this.options.onImageFiles(images);
+      return;
+    }
     const data = event.clipboardData?.getData("text/plain") ?? "";
     if (data.length === 0) return;
     // The native paste won the race with actual text; a pending clipboard read
     // must not double. An empty native paste leaves the read as the only path.
     this.pasteShortcutToken += 1;
     this.options.onData(this.core.encodePaste(data));
+  };
+
+  private readonly onDragOver = (event: DragEvent) => {
+    if (this.options.onImageFiles === undefined) return;
+    if (event.dataTransfer?.types.includes("Files") !== true) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  };
+
+  private readonly onDrop = (event: DragEvent) => {
+    if (this.options.onImageFiles === undefined) return;
+    const images = imageFilesOf(event.dataTransfer?.files);
+    if (images.length === 0) return;
+    event.preventDefault();
+    this.options.onImageFiles(images);
   };
 
   private readonly onCompositionStart = () => {
@@ -1495,6 +1530,8 @@ export class GhosttyTerminalSurface {
     this.canvas.addEventListener("wheel", this.onWheel, { passive: false });
     this.canvas.addEventListener("mousedown", this.onMouseDown);
     this.canvas.addEventListener("contextmenu", this.onContextMenu);
+    this.canvas.addEventListener("dragover", this.onDragOver);
+    this.canvas.addEventListener("drop", this.onDrop);
     this.scrollbar.addEventListener("pointerdown", this.onScrollbarPointerDown);
     this.scrollbar.addEventListener("pointermove", this.onScrollbarPointerMove);
     this.scrollbar.addEventListener("pointerup", this.onScrollbarPointerUp);
@@ -1518,6 +1555,8 @@ export class GhosttyTerminalSurface {
     this.canvas.removeEventListener("pointerup", this.onPointerUp);
     this.canvas.removeEventListener("pointercancel", this.onPointerUp);
     this.canvas.removeEventListener("wheel", this.onWheel);
+    this.canvas.removeEventListener("dragover", this.onDragOver);
+    this.canvas.removeEventListener("drop", this.onDrop);
     this.canvas.removeEventListener("mousedown", this.onMouseDown);
     this.canvas.removeEventListener("contextmenu", this.onContextMenu);
     this.scrollbar.removeEventListener("pointerdown", this.onScrollbarPointerDown);

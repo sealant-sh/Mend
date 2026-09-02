@@ -221,6 +221,16 @@ export const api = async <T>(
 
 // ─── queries ────────────────────────────────────────────────────────────────
 
+/** An image stored beside the session; `path` is what the terminal pastes. */
+export interface PastedImageDto {
+  readonly path: string;
+  readonly mediaType: string;
+  readonly bytes: number;
+}
+
+export const pasteSessionImage = (sessionId: string, contentsBase64: string) =>
+  api<PastedImageDto>("POST", `/sessions/${sessionId}/images`, { contentsBase64 });
+
 export const ACTIVE = new Set(["starting", "running", "waiting", "idle"]);
 
 export const agentIsActive = (

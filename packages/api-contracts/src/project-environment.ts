@@ -424,3 +424,30 @@ export class AgentRequestResolved extends Schema.TaggedErrorClass<AgentRequestRe
 ) {}
 
 /** Approval and structured-input responses are disjoint on the wire. */
+
+/**
+ * An image pasted or dropped onto a session's terminal. The bytes are written
+ * into the session's durable harness home — mounted read-write into every
+ * workspace the session gets, never inside the worktree — and the reply
+ * carries the path inside the workspace, which the terminal then pastes as
+ * text. Both TUIs (claude, codex) accept a pasted path to an image file; the
+ * clipboard the TUI would read on Ctrl+V belongs to a container that has none.
+ * The format is sniffed from the bytes, never trusted from the client.
+ */
+export class PastedImageUpload extends Schema.Class<PastedImageUpload>("PastedImageUpload")({
+  contentsBase64: Schema.String,
+}) {}
+
+export class PastedImage extends Schema.Class<PastedImage>("PastedImage")({
+  /** Path inside the workspace — what the terminal pastes. */
+  path: Schema.String,
+  mediaType: Schema.String,
+  bytes: Schema.Int,
+}) {}
+
+/** The bytes are not an accepted image, or exceed the size cap. */
+export class PastedImageRejected extends Schema.TaggedErrorClass<PastedImageRejected>()(
+  "PastedImageRejected",
+  { message: Schema.String },
+  { httpApiStatus: 422 },
+) {}

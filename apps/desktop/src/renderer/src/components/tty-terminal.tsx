@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
+import { pasteSessionImage } from "#/lib/api";
 import { useTerminalFont, type TerminalFontSetting } from "#/lib/terminal-font";
 import type { GhosttyTheme } from "#/terminal/ghostty/core";
 import {
@@ -39,8 +40,35 @@ const THEME: GhosttyTheme = {
   selectionBackground: "rgba(87, 129, 234, 0.28)",
 };
 
+/** The image on its way to the session — the one moment the terminal is not the whole story. */
+type ImageState =
+  | { readonly kind: "uploading"; readonly count: number }
+  | { readonly kind: "error"; readonly message: string }
+  | null;
+
+/** Base64 without the data-URL prefix; FileReader keeps multi-megabyte pastes off the stack. */
+const base64Of = (file: File): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener(
+      "error",
+      () => reject(reader.error ?? new Error("could not read the image")),
+      { once: true },
+    );
+    reader.addEventListener(
+      "load",
+      () => {
+        const url = typeof reader.result === "string" ? reader.result : "";
+        resolve(url.slice(url.indexOf(",") + 1));
+      },
+      { once: true },
+    );
+    reader.readAsDataURL(file);
+  });
+
 export function TtyTerminal({
   target,
+  sessionId,
   from = "0",
   dim = false,
   focus = false,
@@ -48,6 +76,11 @@ export function TtyTerminal({
   onState,
 }: {
   readonly target: TtyTarget;
+  /**
+   * The session this PTY belongs to (a shell's too): a pasted image is stored
+   * beside it and its workspace path pasted. Omitted, images are not accepted.
+   */
+  readonly sessionId?: string;
   /** Record sequence to replay from; changing it reconnects. */
   readonly from?: string;
   /** Settled sessions read at 55% — the bytes are history, not a live shell. */
@@ -61,6 +94,7 @@ export function TtyTerminal({
   const surfaceRef = useRef<GhosttyTerminalSurface | null>(null);
   const font = useTerminalFont();
   const [state, setState] = useState<WireState>("connecting");
+  const [image, setImage] = useState<ImageState>(null);
   const onStateRef = useRef(onState);
   onStateRef.current = onState;
   const fontRef = useRef<TerminalFontSetting>(font);
@@ -191,6 +225,38 @@ export function TtyTerminal({
       onLinkActivate: (text) => {
         void window.mend.shell.openExternal(text);
       },
+      // Images: the TUI's Ctrl+V reads the clipboard of the container it runs
+      // in, which has none. Mend stores the bytes beside the session and
+      // answers with the workspace path; that path is pasted like any text
+      // (bracketed, when the app asked for it). Codex attaches a pasted image
+      // path as an image; claude reads it.
+      ...(sessionId === undefined
+        ? {}
+        : {
+            onImageFiles: (files: ReadonlyArray<File>) => {
+              void (async () => {
+                setImage({ kind: "uploading", count: files.length });
+                try {
+                  const paths: Array<string> = [];
+                  for (const file of files) {
+                    const stored = await pasteSessionImage(sessionId, await base64Of(file));
+                    paths.push(stored.path);
+                  }
+                  if (disposed) return;
+                  const joined = paths.join(" ");
+                  await surface?.pasteFromClipboard(() => Promise.resolve(joined));
+                  setImage(null);
+                } catch (error) {
+                  if (disposed) return;
+                  setImage({
+                    kind: "error",
+                    message: error instanceof Error ? error.message : "the image was not stored",
+                  });
+                }
+                surface?.focus();
+              })();
+            },
+          }),
     };
 
     void GhosttyTerminalSurface.create(host, options).then(
@@ -225,7 +291,7 @@ export function TtyTerminal({
       host.replaceChildren();
     };
     // `focus` only matters at mount; re-running for it would reset the screen.
-  }, [target.kind, target.id, from]);
+  }, [target.kind, target.id, sessionId, from]);
 
   return (
     <div className="relative h-full w-full bg-term">
@@ -235,6 +301,15 @@ export function TtyTerminal({
           {state === "connecting" && "connecting…"}
           {state === "reconnecting" && "reconnecting…"}
           {state === "refused" && "no terminal — the server refused the attach"}
+        </p>
+      )}
+      {image !== null && (
+        <p
+          className={`pointer-events-none absolute bottom-2 left-3 font-mono text-[11.5px] ${image.kind === "error" ? "text-term-red" : "text-term-faint"}`}
+        >
+          {image.kind === "uploading" &&
+            (image.count === 1 ? "image · storing…" : `${image.count} images · storing…`)}
+          {image.kind === "error" && `image · not pasted — ${image.message}`}
         </p>
       )}
     </div>

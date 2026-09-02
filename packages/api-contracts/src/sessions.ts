@@ -27,7 +27,14 @@ import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware, ProcessLogPage } from "./common.ts";
-import { AgentRequestResolved, HandoffRequest, HandoffUnsupported } from "./project-environment.ts";
+import {
+  AgentRequestResolved,
+  HandoffRequest,
+  HandoffUnsupported,
+  PastedImage,
+  PastedImageRejected,
+  PastedImageUpload,
+} from "./project-environment.ts";
 import {
   CheckpointRequest,
   DeliverFollowUpRequest,
@@ -101,6 +108,15 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       payload: SubmitAgentTurnRequest,
       success: AgentTurn,
       error: [NotFound, ProtocolSessionNotLive],
+    }),
+  )
+  .add(
+    // An image for the terminal: stored beside the session, pasted as a path.
+    HttpApiEndpoint.post("pasteImage", "/sessions/:id/images", {
+      params: { id: SessionId },
+      payload: PastedImageUpload,
+      success: PastedImage,
+      error: [NotFound, StoreFailure, PastedImageRejected],
     }),
   )
   .add(
