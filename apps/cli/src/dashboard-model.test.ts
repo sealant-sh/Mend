@@ -8,6 +8,7 @@ import {
   deriveWorktrees,
   filterBranches,
   foldGroupStatus,
+  liveProtocolOf,
   liveShellOf,
   markSessionStopped,
   removeWorktreeGroup,
@@ -175,6 +176,37 @@ describe("liveShellOf", () => {
       liveShellOf([proc({ id: "s", exitedAt: "2026-08-31T11:00:00Z", status: "exited" })]),
     ).toBeNull();
     expect(liveShellOf([])).toBeNull();
+  });
+});
+
+describe("liveProtocolOf", () => {
+  it("finds the live protocol agent so a terminal can take the pickup over", () => {
+    const processes = [
+      proc({
+        id: "pty",
+        kind: "agent-pty",
+        harness: "claude",
+        exitedAt: "2026-09-01T10:39:16Z",
+        status: "stopped",
+      }),
+      proc({ id: "protocol", kind: "agent-protocol", harness: "claude", status: "running" }),
+    ];
+    expect(liveProtocolOf(processes)?.id).toBe("protocol");
+  });
+
+  it("answers null when no protocol agent is live — a shell fallback stays honest", () => {
+    expect(
+      liveProtocolOf([
+        proc({
+          id: "protocol",
+          kind: "agent-protocol",
+          exitedAt: "2026-09-01T11:14:09Z",
+          status: "stopped",
+        }),
+        proc({ id: "shell-1" }),
+      ]),
+    ).toBeNull();
+    expect(liveProtocolOf([])).toBeNull();
   });
 });
 
