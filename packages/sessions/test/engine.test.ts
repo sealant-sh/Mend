@@ -132,6 +132,7 @@ const sealantDeadLayer = Layer.succeed(SealantClient, {
   getSession: () => Effect.die("not in test"),
   sessionOutput: () => Effect.die("not in test"),
   exec: () => Effect.die("not in test"),
+  bindWorkspace: () => Effect.succeed([]),
   diffCommits: () => Effect.die("not in test"),
   inferenceRespond: () => Effect.die("not in test"),
   recordStream: () => Stream.fromEffect(Effect.die("not in test")),
@@ -247,6 +248,7 @@ const sealantLaunchLayer = (
       session: async () => initialPty,
     },
     exec: async () => new Promise(() => undefined),
+    bind: async () => [],
     sessions: {
       open: async (_argv, options) => {
         if (options !== undefined) openedOptions?.push(options);
@@ -283,6 +285,7 @@ const sealantLaunchLayer = (
             )
           : Effect.succeed(workspace);
       }),
+    bindWorkspace: () => Effect.succeed([]),
     getWorkspace: () =>
       rejectWorkspaceLookup()
         ? Effect.fail(
@@ -4079,37 +4082,21 @@ describe("SessionEngine hot sessions", () => {
         Effect.gen(function* () {
           const project = yield* setup(tmp, world);
           world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
-          const store = yield* Store;
           const skeletonId = SessionId.make(crypto.randomUUID());
-          const pooledWorktreeId = WorktreeId.make(crypto.randomUUID());
-          const worktree = yield* store.createWorktree(
-            project.storePath,
-            { directory: `wt-${pooledWorktreeId}`, branch: `mend/wt/${pooledWorktreeId}` },
-            null,
-            null,
-          );
-          const worktreesRepo = yield* WorktreesRepo;
-          yield* worktreesRepo.create({
-            id: pooledWorktreeId,
-            projectId: project.id,
-            name: worktree.name,
-            directory: worktree.name,
-            branch: worktree.branch,
-            baseSha: worktree.baseSha,
-            baseRef: worktree.baseRef,
-          });
+          // A standby skeleton (ADR-0001): a live workspace over the project's worktrees root,
+          // no worktree of its own — the claiming session brings one and the launch binds it.
           pool.entries.push(
             new HotWorkspace({
               id: skeletonId,
               projectId: project.id,
-              worktreeId: pooledWorktreeId,
+              worktreeId: null,
               ownerUserId: "user-fixture",
               status: "ready",
               error: null,
               fingerprint: "match-simulated-by-the-fake-claim",
-              worktree: worktree.name,
-              branch: worktree.branch,
-              baseSha: worktree.baseSha,
+              worktree: null,
+              branch: null,
+              baseSha: null,
               sealantWorkspaceId: SealantWorkspaceId.make("workspace-1"),
               workspaceImage: defaultSettings.workspaceImage,
               dotfiles: { repository: null, snapshotSha: null },
@@ -4135,10 +4122,12 @@ describe("SessionEngine hot sessions", () => {
             ownerUserId: "user-fixture",
             base: null,
           });
-          // The session adopted the skeleton wholesale — same id, same worktree and branch.
+          // The session adopted the skeleton's id, and brought a worktree of its own.
           expect(session.id).toBe(skeletonId);
-          expect(session.worktree).toBe(worktree.name);
-          expect(session.branch).toBe(worktree.branch);
+          expect(session.worktree).toMatch(/^wt-/);
+          expect(session.branch).toBe(`mend/wt/${session.worktreeId}`);
+          const worktreesRepo = yield* WorktreesRepo;
+          expect((yield* worktreesRepo.byId(session.worktreeId))?.directory).toBe(session.worktree);
 
           yield* engine.launch(session.id, ["codex"]);
 

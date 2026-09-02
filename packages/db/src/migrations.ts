@@ -1264,6 +1264,18 @@ const nativeIngestCursorColumn = Effect.gen(function* () {
  * history flips to SET NULL. Pre-rename constraint names (`session_changes_pkey`
  * and friends) stay as historical artifacts.
  */
+/**
+ * Standby workspaces (ADR-0001): a hot skeleton no longer pre-creates a worktree — the pool mounts
+ * the project's worktrees root and the claiming session binds its own worktree at launch. The
+ * worktree columns stay for rows from before, which the drain still removes.
+ */
+const standbyHotWorkspacesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE hot_workspaces ALTER COLUMN worktree DROP NOT NULL`;
+  yield* sql`ALTER TABLE hot_workspaces ALTER COLUMN branch DROP NOT NULL`;
+  yield* sql`ALTER TABLE hot_workspaces ALTER COLUMN base_sha DROP NOT NULL`;
+});
+
 const worktreesMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`
@@ -1461,4 +1473,5 @@ export const migrations = {
   "0045_native_ingest_cursor": nativeIngestCursorColumn,
   "0046_worktrees": worktreesMigration,
   "0047_skills": skillsMigration,
+  "0048_standby_hot_workspaces": standbyHotWorkspacesMigration,
 };

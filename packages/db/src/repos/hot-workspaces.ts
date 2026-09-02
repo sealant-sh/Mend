@@ -22,12 +22,12 @@ import { hotWorkspaces } from "../schema/workbench.ts";
 export interface NewHotWorkspace {
   readonly id: SessionId;
   readonly projectId: ProjectId;
-  /** The pre-created worktree row the claiming session adopts. */
-  readonly worktreeId: WorktreeId;
+  /** Always null since standby workspaces (ADR-0001): the claiming session brings its own worktree. */
+  readonly worktreeId: WorktreeId | null;
   readonly ownerUserId: string | null;
   readonly fingerprint: string;
-  readonly worktree: string;
-  readonly branch: string;
+  readonly worktree: string | null;
+  readonly branch: string | null;
   readonly baseSha: HotWorkspace["baseSha"];
 }
 

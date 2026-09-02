@@ -337,9 +337,10 @@ export const hotWorkspaces = pgTable(
     status: text().$type<HotWorkspaceStatus>().notNull().default("warming"),
     error: text(),
     fingerprint: text().notNull(),
-    worktree: text().notNull(),
-    branch: text().notNull(),
-    baseSha: text().$type<Sha>().notNull(),
+    // Null since standby workspaces (0048): the pool no longer pre-creates a worktree.
+    worktree: text(),
+    branch: text(),
+    baseSha: text().$type<Sha>(),
     sealantWorkspaceId: text().$type<SealantWorkspaceId>(),
     workspaceImage: jsonbOf(WorkspaceImage),
     dotfiles: jsonbOf(SessionDotfiles),

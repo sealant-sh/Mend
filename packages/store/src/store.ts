@@ -244,7 +244,14 @@ const rmBestEffort = (target: string): { readonly leftover: string | null } => {
 
 /** Where a named worktree lives relative to its project's bare repo. */
 export const worktreePathOf = (storePath: string, name: string) =>
-  path.join(path.dirname(storePath), "worktrees", name);
+  path.join(worktreesRootOf(storePath), name);
+
+/**
+ * The project's worktrees directory — the ROOT a standby workspace mounts (ADR-0001): every
+ * worktree of the project sits directly under it, and the workspace binds one at claim.
+ */
+export const worktreesRootOf = (storePath: string) =>
+  path.join(path.dirname(storePath), "worktrees");
 
 /**
  * Where a session's harvested harness state lives (plan: the session store).

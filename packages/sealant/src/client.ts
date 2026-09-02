@@ -1,5 +1,7 @@
 import type { WorkspaceImageOs } from "@mend/domain";
 import type {
+  WorkspaceBind,
+  WorkspaceBindOptions,
   CreateOptions,
   InferenceContinueOptions,
   InferenceRespondOptions,
@@ -155,6 +157,15 @@ export interface SealantClientShape {
     argv: readonly string[],
     options?: WorkspaceExecOptions,
   ) => Effect.Effect<WorkspaceExecResult, SealantPlatformError>;
+  /**
+   * Point a standby workspace's working directory (or a bindable extra mount) at one
+   * subdirectory of its root (Mend ADR-0001, sealantd ADR-0014). Waits for the workspace to be
+   * ready first: the daemon applies the bind over its control connection.
+   */
+  readonly bindWorkspace: (
+    workspace: Workspace,
+    options: WorkspaceBindOptions,
+  ) => Effect.Effect<ReadonlyArray<WorkspaceBind>, SealantPlatformError>;
   /**
    * The committed diff between two shas, read from git in the workspace — the
    * source of truth for what a change contains. Mend prefers this to the
@@ -363,6 +374,13 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       (workspace: Workspace, argv: readonly string[], options?: WorkspaceExecOptions) =>
         wrap(() => workspace.exec(argv, options)),
     );
+    const bindWorkspace = Effect.fn("SealantClient.bindWorkspace")(
+      (workspace: Workspace, options: WorkspaceBindOptions) =>
+        wrap(async () => {
+          await workspace.ready();
+          return workspace.bind(options);
+        }),
+    );
 
     const diffCommits = Effect.fn("SealantClient.diffCommits")(function* (
       workspaceId: string,
@@ -532,6 +550,7 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       getSession,
       sessionOutput,
       exec,
+      bindWorkspace,
       diffCommits,
       inferenceRespond,
       recordStream,
@@ -846,6 +865,7 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantClients
       getSession: (workspace, sessionId) => via((c) => c.getSession(workspace, sessionId)),
       sessionOutput: (sessionId, options) => via((c) => c.sessionOutput(sessionId, options)),
       exec: (workspace, argv, options) => via((c) => c.exec(workspace, argv, options)),
+      bindWorkspace: (workspace, options) => via((c) => c.bindWorkspace(workspace, options)),
       diffCommits: (workspaceId, base, head) => via((c) => c.diffCommits(workspaceId, base, head)),
       inferenceRespond: (options) => via((c) => c.inferenceRespond(options)),
       recordStream: (run, options) => viaStream((c) => c.recordStream(run, options)),

@@ -47,8 +47,9 @@ export class HotWorkspace extends Schema.Class<HotWorkspace>("HotWorkspace")({
   id: SessionId,
   projectId: ProjectId,
   /**
-   * The skeleton's pre-created worktree row (a legal zero-session worktree the
-   * claim adopts). Null only for pre-pivot entries, which read as stale.
+   * Null since standby workspaces (ADR-0001): a skeleton no longer pre-creates a worktree —
+   * the pool mounts the project's worktrees root and the claiming session binds its own at
+   * launch. Rows from before still carry the pre-created worktree the drain must remove.
    */
   worktreeId: Schema.NullOr(WorktreeId),
   /** Whose dotfiles were resolved at prewarm. Null when no user has dotfiles configured. */
@@ -59,11 +60,11 @@ export class HotWorkspace extends Schema.Class<HotWorkspace>("HotWorkspace")({
   /** Hash of every create-time-fixed input; claims require an exact match. */
   fingerprint: Schema.String,
   /** Worktree directory name inside the project's store (derived from `id`). */
-  worktree: Schema.String,
+  worktree: Schema.NullOr(Schema.String),
   /** The pre-created session branch the worktree is on. */
-  branch: Schema.String,
+  branch: Schema.NullOr(Schema.String),
   /** Where the worktree branched from at prewarm; the claim resets it to the requested base. */
-  baseSha: Sha,
+  baseSha: Schema.NullOr(Sha),
   /** The live workspace, once created. Null while warming. */
   sealantWorkspaceId: Schema.NullOr(SealantWorkspaceId),
   /** The image the workspace actually launched with — stamped onto the claiming session. */
