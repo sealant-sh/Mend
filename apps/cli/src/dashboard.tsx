@@ -7,8 +7,9 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 
+import type { AgentShareHandle, ShareEvent } from "./agent-share.ts";
 import {
   deriveHarnesses,
   deriveProjects,
@@ -118,6 +119,8 @@ export interface DashboardContext {
     harness: string,
     processId?: string,
   ) => Promise<"detached" | "ended" | "dropped" | "interrupted" | "unavailable">;
+  /** The ssh-agent share running alongside; null when off or no agent. */
+  readonly agentShare: AgentShareHandle | null;
 }
 
 // ─── panes and rows ─────────────────────────────────────────────────────────
@@ -444,6 +447,9 @@ type Focus = "projects" | "sessions";
 
 const PROJECTS_PANE_WIDTH = 30;
 
+/** The header's share fact when no share runs. */
+const noShare = (): "off" => "off";
+
 const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit: () => void }) => {
   const renderer = useRenderer();
   const queryClient = useQueryClient();
@@ -468,6 +474,10 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   const [busy, setBusy] = useState<string | null>(null);
   const [busyStarted, setBusyStarted] = useState(0);
   const [status, setStatus] = useState<StatusMessage | null>(null);
+  const shareState = useSyncExternalStore(
+    (onChange) => ctx.agentShare?.subscribe(() => onChange()) ?? (() => {}),
+    ctx.agentShare === null ? noShare : ctx.agentShare.snapshot,
+  );
   const [editing, setEditing] = useState<SessionDto | null>(null);
   /** Session id a stop is armed against; the second press fires it. */
   const [stopArmed, setStopArmed] = useState<string | null>(null);
@@ -548,6 +558,18 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
 
   const say = (text: string): void => setStatus({ text, at: Date.now() });
   const refetch = (): void => void queryClient.invalidateQueries({ queryKey: WORKBENCH_KEY });
+  // Signature requests are facts from outside React — the status line says them.
+  useEffect(() => {
+    const share = ctx.agentShare;
+    if (share === null) return;
+    return share.subscribe((event: ShareEvent | null) => {
+      if (event === null) return;
+      if (event.kind === "sign-requested") {
+        say(`✎ signature requested (${event.context}) — touch your key if it blinks`);
+      } else if (event.kind === "signed") say(`✓ signed (${event.seconds.toFixed(1)}s)`);
+      else if (event.kind === "not-signed") say(`✗ not signed — ${event.message}`);
+    });
+  }, [ctx.agentShare]);
 
   // A repo underfoot that the store has never met: raise the adopt offer the
   // first time the workbench answers and no project matches the cwd.
@@ -1496,6 +1518,14 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           </span>
           <span fg={FAINT}> · </span>
           <span fg={liveTotal > 0 ? MUTED : FAINT}>{liveTotal} live</span>
+          {shareState === "off" ? null : (
+            <>
+              <span fg={FAINT}> · </span>
+              <span fg={shareState === "connected" ? MUTED : FAINT}>
+                {shareState === "connected" ? "agent shared" : "agent share reconnecting"}
+              </span>
+            </>
+          )}
         </text>
         <text height={1} fg={FAINT} bg="transparent">
           {`${ctx.config.url}  `}

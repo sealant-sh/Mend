@@ -533,8 +533,19 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     synopsis: [],
     description: [
       "Bridge mode for projects adopted with --auth bridge: the server's git operations sign with the keys in this machine's ssh-agent, so hardware keys never leave here. Runs until Ctrl-C.",
+      "The dashboard does this on its own while it runs (see mend keys autoshare), so this command is for a machine that is not running the dashboard. The server takes one signer at a time; a newer share replaces the older one.",
     ],
-    see: ["adopt"],
+    see: ["keys autoshare", "adopt"],
+  },
+  {
+    name: "keys autoshare",
+    section: "project setup",
+    summary: "share the ssh-agent while the dashboard runs: on or off",
+    synopsis: ["[on|off]"],
+    description: [
+      "On by default: mend (the dashboard) relays this machine's ssh-agent to the server for as long as it is open, and the header says so. Without a value, prints the current setting. Needs SSH_AUTH_SOCK; without an agent the dashboard runs without sharing.",
+    ],
+    see: ["keys share"],
   },
 
   // ── this machine ───────────────────────────────────────────────────────

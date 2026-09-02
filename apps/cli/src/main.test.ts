@@ -383,6 +383,7 @@ describe("mend help", () => {
       "keys init",
       "keys show",
       "keys share",
+      "keys autoshare",
       "env load",
       "env show",
       "accounts",

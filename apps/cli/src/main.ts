@@ -6,6 +6,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { bridgeUrlOf, shareAgent, startAgentShare } from "./agent-share.ts";
 import { readClipboardImage } from "./clipboard.ts";
 import { doctorCommand } from "./doctor.ts";
 import { readSyncFiles, scanDotfileCandidates } from "./dotfiles.ts";
@@ -83,6 +84,8 @@ interface CliConfig {
   readonly token: string | null;
   /** The device row the token belongs to — lets `mend logout` revoke it server-side. */
   readonly deviceId: string | null;
+  /** Share this machine's ssh-agent while the dashboard runs (mend keys autoshare). */
+  readonly autoshare: boolean;
 }
 
 interface ProjectDto {
@@ -192,6 +195,7 @@ const loadConfig = (): CliConfig => {
     configuredUrl,
     token: process.env["MEND_TOKEN"] ?? fileConfig.token ?? null,
     deviceId: fileConfig.deviceId ?? null,
+    autoshare: fileConfig.autoshare ?? true,
   };
 };
 
@@ -1932,16 +1936,36 @@ const takeFlagValue = (args: ReadonlyArray<string>, flag: string): string | null
   return at !== -1 && args[at + 1] !== undefined ? String(args[at + 1]) : null;
 };
 
-// Only these three fields persist; `configuredUrl` is derived on every load.
+// Only these fields persist; `configuredUrl` is derived on every load. A
+// setting not named keeps its saved value — login must not reset autoshare.
 const saveCliConfig = (next: {
   readonly url: string;
   readonly token: string | null;
   readonly deviceId: string | null;
+  readonly autoshare?: boolean;
 }) => {
+  let saved: { readonly autoshare?: boolean } = {};
+  if (fs.existsSync(CONFIG_PATH)) {
+    try {
+      saved = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")) as typeof saved;
+    } catch {
+      // unreadable — rewritten below
+    }
+  }
+  const autoshare = next.autoshare ?? saved.autoshare;
   fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true, mode: 0o700 });
   fs.writeFileSync(
     CONFIG_PATH,
-    `${JSON.stringify({ url: next.url, token: next.token, deviceId: next.deviceId }, null, 2)}\n`,
+    `${JSON.stringify(
+      {
+        url: next.url,
+        token: next.token,
+        deviceId: next.deviceId,
+        ...(autoshare === undefined ? {} : { autoshare }),
+      },
+      null,
+      2,
+    )}\n`,
     { mode: 0o600 },
   );
   fs.chmodSync(CONFIG_PATH, 0o600);
@@ -2011,128 +2035,73 @@ const keysInit = async (config: CliConfig) => {
 };
 
 /**
- * The ssh-agent bridge, client half (docs/GIT-ACCESS.md decision 2): relay
- * the LOCAL ssh-agent to the Mend server over one standing WebSocket, so
- * bridge-mode git ops sign with a key that never leaves this machine — a
- * hardware key blinks here, not on the server. Agent-protocol messages are
- * relayed verbatim (length-prefixed frames, base64 over JSON); the only
- * inspection is each message's type byte, to say what is being asked.
+ * `mend keys share`: the ssh-agent bridge in the foreground (agent-share.ts
+ * holds the relay). Prints every connect, drop, and signature; Ctrl-C stops.
  */
 const keysShare = async (config: CliConfig) => {
   const agentSock = process.env["SSH_AUTH_SOCK"];
   if (agentSock === undefined || agentSock === "") {
     return fail("SSH_AUTH_SOCK is not set — start (or plug in) your ssh-agent first");
   }
-  const url = parseMendUrl(`${config.url}/api/keys/bridge/ws`);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.searchParams.set("host", os.hostname());
-  if (config.token !== null) url.searchParams.set("token", config.token);
-
-  /**
-   * One complete agent exchange against the local agent: fresh connection,
-   * write the framed request verbatim, read one framed response. A hardware
-   * key blocks here until the touch — hence the generous timeout.
-   */
-  const askLocalAgent = (payload: Buffer): Promise<Buffer> =>
-    new Promise((resolve, reject) => {
-      const connection = net.connect(agentSock, () => {
-        connection.write(payload);
-      });
-      const timer = setTimeout(() => {
-        connection.destroy();
-        reject(new Error("the agent did not answer within 60s — touch missed?"));
-      }, 60_000);
-      let pending: Buffer = Buffer.alloc(0);
-      connection.on("data", (chunk: Buffer) => {
-        pending = Buffer.concat([pending, chunk]);
-        if (pending.length >= 4 && pending.length >= 4 + pending.readUInt32BE(0)) {
-          clearTimeout(timer);
-          connection.end();
-          resolve(pending.subarray(0, 4 + pending.readUInt32BE(0)));
-        }
-      });
-      connection.on("error", (error) => {
-        clearTimeout(timer);
-        reject(error);
-      });
-    });
-
-  // Strictly one request at a time, in arrival order — the agent protocol is
-  // request/response and a hardware key cannot answer two touches at once.
-  let chain: Promise<unknown> = Promise.resolve();
-  const SSH_AGENTC_SIGN_REQUEST = 13;
-  const SSH_AGENTC_REQUEST_IDENTITIES = 11;
-
-  let attempt = 0;
-  for (;;) {
-    const ws = new WebSocket(url);
-    const closed = new Promise<void>((resolve) => {
-      ws.addEventListener("close", () => resolve(), { once: true });
-    });
-    const opened = await new Promise<boolean>((resolve) => {
-      ws.addEventListener("open", () => resolve(true), { once: true });
-      ws.addEventListener("error", () => resolve(false), { once: true });
-    });
-    if (opened) {
-      attempt = 0;
-      say(`${green("●")} sharing this machine's ssh-agent with ${config.url}`);
-      say(dim(`  agent: ${agentSock} · signature requests print here · Ctrl-C stops sharing`));
-      ws.addEventListener("message", (event) => {
-        const text =
-          typeof event.data === "string"
-            ? event.data
-            : Buffer.from(event.data as ArrayBuffer).toString("utf8");
-        let frame: { t?: string; id?: number; context?: string; payload?: string };
-        try {
-          frame = JSON.parse(text) as typeof frame;
-        } catch {
+  const url = bridgeUrlOf(
+    parseMendUrl(config.url).toString().replace(/\/$/, ""),
+    config.token,
+    os.hostname(),
+  );
+  await shareAgent({
+    url,
+    agentSock,
+    signal: new AbortController().signal,
+    onEvent: (event) => {
+      switch (event.kind) {
+        case "connected":
+          say(`${green("●")} sharing this machine's ssh-agent with ${config.url}`);
+          say(dim(`  agent: ${agentSock} · signature requests print here · Ctrl-C stops sharing`));
           return;
-        }
-        if (
-          frame.t !== "req" ||
-          typeof frame.id !== "number" ||
-          typeof frame.payload !== "string"
-        ) {
+        case "disconnected":
+          say(
+            dim(`not connected — retrying in ${Math.round(event.retryMs / 1000)}s (Ctrl-C stops)`),
+          );
           return;
-        }
-        const id = frame.id;
-        const payload = Buffer.from(frame.payload, "base64");
-        const type = payload[4];
-        const context = typeof frame.context === "string" ? frame.context : "mend";
-        chain = chain.then(async () => {
-          const started = Date.now();
-          if (type === SSH_AGENTC_SIGN_REQUEST) {
-            say(`${amber("✎")} signature requested by mend ${dim(`(${context})`)}`);
-            say(dim("  waiting — touch your key if it blinks (up to 60s)…"));
-          } else if (type === SSH_AGENTC_REQUEST_IDENTITIES) {
-            say(dim(`  identities requested (${context})`));
-          }
-          try {
-            const response = await askLocalAgent(payload);
-            if (ws.readyState !== WebSocket.OPEN) return null;
-            ws.send(JSON.stringify({ t: "res", id, payload: response.toString("base64") }));
-            if (type === SSH_AGENTC_SIGN_REQUEST) {
-              say(
-                `${green("✓")} signed ${dim(`(${((Date.now() - started) / 1000).toFixed(1)}s)`)}`,
-              );
-            }
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ t: "err", id, message }));
-            }
-            if (type === SSH_AGENTC_SIGN_REQUEST) say(`${amber("✗")} not signed — ${message}`);
-          }
-          return null;
-        });
-      });
-    }
-    await closed;
-    attempt += 1;
-    const delay = Math.min(30_000, 1000 * 2 ** Math.min(attempt - 1, 5));
-    say(dim(`not connected — retrying in ${Math.round(delay / 1000)}s (Ctrl-C stops)`));
-    await new Promise((resolve) => setTimeout(resolve, delay));
+        case "sign-requested":
+          say(`${amber("✎")} signature requested by mend ${dim(`(${event.context})`)}`);
+          say(dim("  waiting — touch your key if it blinks (up to 60s)…"));
+          return;
+        case "identities-requested":
+          say(dim(`  identities requested (${event.context})`));
+          return;
+        case "signed":
+          say(`${green("✓")} signed ${dim(`(${event.seconds.toFixed(1)}s)`)}`);
+          return;
+        case "not-signed":
+          say(`${amber("✗")} not signed — ${event.message}`);
+          return;
+      }
+    },
+  });
+};
+
+/** `mend keys autoshare [on|off]`: whether the dashboard shares the agent while it runs. */
+const keysAutoshare = (config: CliConfig, args: ReadonlyArray<string>) => {
+  const [value] = args;
+  if (value === undefined) {
+    say(
+      config.autoshare
+        ? `on ${dim("— the dashboard shares this machine's ssh-agent while it runs")}`
+        : `off ${dim("— run mend keys share by hand when a bridge-mode project needs it")}`,
+    );
+    return;
   }
+  if (value !== "on" && value !== "off") {
+    return fail(`keys autoshare takes on or off, not "${value}"`);
+  }
+  saveCliConfig({
+    url: config.configuredUrl ?? config.url,
+    token: config.token,
+    deviceId: config.deviceId,
+    autoshare: value === "on",
+  });
+  say(`${green("✓")} autoshare ${value} ${dim(`· ${CONFIG_PATH}`)}`);
 };
 
 const keysCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
@@ -2142,6 +2111,8 @@ const keysCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
       return keysInit(config);
     case "share":
       return keysShare(config);
+    case "autoshare":
+      return keysAutoshare(config, args.slice(1));
     case "show":
     case undefined:
       return keysShow(config);
@@ -3416,15 +3387,36 @@ const dashboard = async (config: CliConfig) => {
     process.exit(rerun.status ?? 0);
   }
   const { runDashboard } = await import("./dashboard.tsx");
-  await runDashboard({
-    config,
-    cwd: process.cwd(),
-    cwdBranch: gitCurrentBranch(process.cwd()),
-    api: <T>(method: "GET" | "POST" | "DELETE", route: string, body?: unknown) =>
-      request<T>(config, method, route, body),
-    attachTty: (sessionId: string, harness: string, processId?: string) =>
-      attachTty(config, sessionId, harness, 0n, processId),
-  });
+  // Bridge-mode projects sign with this machine's ssh-agent: share it for as
+  // long as the dashboard runs (mend keys autoshare off stops that). A second
+  // share replaces the first on the server, so a foreground `mend keys share`
+  // elsewhere hands over rather than fights.
+  const agentSock = process.env["SSH_AUTH_SOCK"];
+  const agentShare =
+    config.autoshare && agentSock !== undefined && agentSock !== ""
+      ? startAgentShare({
+          url: bridgeUrlOf(
+            parseMendUrl(config.url).toString().replace(/\/$/, ""),
+            config.token,
+            os.hostname(),
+          ),
+          agentSock,
+        })
+      : null;
+  try {
+    await runDashboard({
+      config,
+      cwd: process.cwd(),
+      cwdBranch: gitCurrentBranch(process.cwd()),
+      api: <T>(method: "GET" | "POST" | "DELETE", route: string, body?: unknown) =>
+        request<T>(config, method, route, body),
+      attachTty: (sessionId: string, harness: string, processId?: string) =>
+        attachTty(config, sessionId, harness, 0n, processId),
+      agentShare,
+    });
+  } finally {
+    agentShare?.stop();
+  }
 };
 
 // ─── entry ──────────────────────────────────────────────────────────────────
