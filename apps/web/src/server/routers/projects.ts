@@ -1,4 +1,5 @@
 import {
+  AddProjectLink,
   AddProjectMount,
   AddProjectServiceRecipe,
   AdoptProject,
@@ -9,7 +10,7 @@ import {
   ProjectReferenceSelection,
   ProjectWorkspaceImageRequest,
 } from "@mend/api-contracts";
-import { ProjectId, ProjectMountId } from "@mend/domain";
+import { ProjectId, ProjectLinkId, ProjectMountId } from "@mend/domain";
 import { Schema } from "effect";
 
 import { run } from "../api/index.ts";
@@ -97,6 +98,21 @@ export const projectsRouter = router({
     .input(input(Schema.Struct({ id: ProjectId, mountId: ProjectMountId })))
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.projectMounts.remove({ params: { id: i.id, mountId: i.mountId } })),
+    ),
+  links: procedure
+    .input(byId)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) => api.projectLinks.list({ params: { id: i.id } })),
+    ),
+  addLink: procedure
+    .input(input(Schema.Struct({ id: ProjectId, link: AddProjectLink })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => api.projectLinks.add({ params: { id: i.id }, payload: i.link })),
+    ),
+  removeLink: procedure
+    .input(input(Schema.Struct({ id: ProjectId, linkId: ProjectLinkId })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => api.projectLinks.remove({ params: { id: i.id, linkId: i.linkId } })),
     ),
   recipes: procedure
     .input(byId)

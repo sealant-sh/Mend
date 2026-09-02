@@ -63,6 +63,9 @@ export type ReferenceId = typeof ReferenceId.Type;
 export const ProjectMountId = Schema.String.pipe(Schema.brand("ProjectMountId"));
 export type ProjectMountId = typeof ProjectMountId.Type;
 
+export const ProjectLinkId = Schema.String.pipe(Schema.brand("ProjectLinkId"));
+export type ProjectLinkId = typeof ProjectLinkId.Type;
+
 export const SkillId = Schema.String.pipe(Schema.brand("SkillId"));
 export type SkillId = typeof SkillId.Type;
 

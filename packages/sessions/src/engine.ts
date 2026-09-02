@@ -11,6 +11,7 @@ import {
   ProjectClusterBindingsRepo,
   ProjectEnvironmentRepo,
   ProjectMountsRepo,
+  ProjectLinksRepo,
   type ProjectNotFoundError,
   ProjectSecretsRepo,
   ProjectsRepo,
@@ -58,6 +59,7 @@ import type {
   Worktree,
 } from "@mend/domain/workbench";
 import {
+  ProjectLink,
   AGENT_PROCESS_KINDS,
   type AgentApprovalDecision,
   type AgentInputAnswers,
@@ -350,6 +352,10 @@ export interface ProvisionInput {
 }
 
 /** Anonymous worktrees are keyed by their own id, named ones by the name. */
+/** Where a linked project is bound inside the workspace (ADR-0001). */
+export const linkedProjectMountPath = (name: string) => `/workspace/repos/${name}`;
+const isLinkedProjectMountPath = (mountPath: string) => mountPath.startsWith("/workspace/repos/");
+
 const worktreeIdentityFor = (worktreeId: WorktreeId, name: string | null) =>
   name === null
     ? { directory: `wt-${worktreeId}`, branch: `mend/wt/${worktreeId}` }
@@ -751,6 +757,7 @@ type SessionEngineRequirements =
   | CheckpointsRepo
   | ReferencesRepo
   | ProjectMountsRepo
+  | ProjectLinksRepo
   | ProjectClusterBindingsRepo
   | ProjectEnvironmentRepo
   | ProjectSecretsRepo
@@ -863,6 +870,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const checkpoints = yield* CheckpointsRepo;
       const references = yield* ReferencesRepo;
       const projectMounts = yield* ProjectMountsRepo;
+      const projectLinks = yield* ProjectLinksRepo;
       const projectEnvironment = yield* ProjectEnvironmentRepo;
       const projectSecrets = yield* ProjectSecretsRepo;
       const projectClusterBindings = yield* ProjectClusterBindingsRepo;
@@ -2394,6 +2402,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const declaredMounts = yield* projectMounts
           .listForProject(project.id)
           .pipe(Effect.orElseSucceed(() => []));
+        const linkedProjects = yield* resolveLinkedProjects(project);
         // The durable harness home (harness-state.ts): a store-backed directory mounted
         // read-write into the workspace; boot symlinks each harness's `$HOME` state dirs into
         // it, so conversation state survives any workspace death. A failed mkdir costs
@@ -2444,6 +2453,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // Omitted = the blueprint default (read-only). Only rw is explicit.
             ...(mount.readOnly ? {} : { readOnly: false }),
           })),
+          // Linked projects (ADR-0001): the linked project's worktrees root as a BINDABLE mount
+          // — the launch binds the named worktree at /workspace/repos/<name> — plus its bare
+          // repository at its own absolute path, for the worktrees' `.git` pointers.
+          ...linkedProjects.flatMap(({ link, linked }) => [
+            { hostPath: linked.storePath, mountPath: linked.storePath, readOnly: false },
+            {
+              hostPath: worktreesRootOf(linked.storePath),
+              mountPath: linkedProjectMountPath(link.name),
+              readOnly: false,
+              bindable: true,
+            },
+          ]),
         ];
         // The project's workspace-image override wins; null inherits the global default. The
         // caller records whichever one it ACTUALLY provisioned with, so a later settings change
@@ -2684,16 +2705,78 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 sha: reference.headSha,
               }),
           ),
-          extraMounts: declaredMounts.map(
-            (mount) =>
-              new SessionExtraMount({
-                name: mount.name,
-                hostPath: mount.hostPath,
-                mountPath: `/workspace/home/${mount.name}`,
-                readOnly: mount.readOnly,
-              }),
-          ),
+          extraMounts: [
+            ...declaredMounts.map(
+              (mount) =>
+                new SessionExtraMount({
+                  name: mount.name,
+                  hostPath: mount.hostPath,
+                  mountPath: `/workspace/home/${mount.name}`,
+                  readOnly: mount.readOnly,
+                }),
+            ),
+            // A linked project rides as a read-write extra mount on the record: what the agent
+            // could change, and where — the linked project's own worktree.
+            ...linkedProjects.map(
+              ({ link, linked }) =>
+                new SessionExtraMount({
+                  name: `repos/${link.name}`,
+                  hostPath: worktreePathOf(linked.storePath, link.worktreeName),
+                  mountPath: linkedProjectMountPath(link.name),
+                  readOnly: false,
+                }),
+            ),
+          ],
         };
+      });
+
+      /** The project's links with their projects; a link to a vanished project is skipped. */
+      const resolveLinkedProjects = Effect.fn("SessionEngine.resolveLinkedProjects")(function* (
+        project: Project,
+      ) {
+        const links = yield* projectLinks
+          .listForProject(project.id)
+          .pipe(Effect.orElseSucceed(() => []));
+        const resolved: Array<{ readonly link: ProjectLink; readonly linked: Project }> = [];
+        for (const link of links) {
+          const linked = yield* projects
+            .byId(link.linkedProjectId)
+            .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
+          if (linked !== null) resolved.push({ link, linked });
+        }
+        return resolved;
+      });
+
+      /**
+       * Bind every linked project's worktree at its mount path (ADR-0001). Best-effort per
+       * link: a worktree that no longer exists leaves that path unbound and a warning, never a
+       * failed launch — the session's own repository is unaffected.
+       */
+      const bindLinkedProjects = Effect.fn("SessionEngine.bindLinkedProjects")(function* (
+        workspace: Workspace,
+        project: Project,
+      ) {
+        for (const { link, linked } of yield* resolveLinkedProjects(project)) {
+          const worktree = yield* worktreesRepo.byName(linked.id, link.worktreeName);
+          const outcome: Effect.Effect<unknown, Error | SealantPlatformError> =
+            worktree === null
+              ? Effect.fail(new Error(`${linked.name} has no worktree named ${link.worktreeName}`))
+              : sealant.bindWorkspace(workspace, {
+                  mountPath: linkedProjectMountPath(link.name),
+                  subpath: worktree.directory,
+                });
+          yield* outcome.pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("session engine: linked project not bound").pipe(
+                Effect.annotateLogs({
+                  projectId: project.id,
+                  link: link.name,
+                  error: String(error),
+                }),
+              ),
+            ),
+          );
+        }
       });
 
       /**
@@ -2717,11 +2800,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               `before guessing a dependency's API:\n\n` +
               referenceMounts.map((reference) => `- ${reference.mountPath}`).join("\n") +
               `\n\n`;
+        const linkedMounts = extraMounts.filter((mount) =>
+          isLinkedProjectMountPath(mount.mountPath),
+        );
+        const folderMounts = extraMounts.filter(
+          (mount) => !isLinkedProjectMountPath(mount.mountPath),
+        );
+        const linkedSection =
+          linkedMounts.length === 0
+            ? ""
+            : `Linked repositories — sibling projects, read-write. Commits there are that ` +
+              `repository's own change, reviewed on its side, not part of this session's change:\n\n` +
+              linkedMounts.map((mount) => `- ${mount.mountPath}`).join("\n") +
+              `\n\n`;
         const foldersSection =
-          extraMounts.length === 0
+          folderMounts.length === 0
             ? ""
             : `Project folders from the user's machine:\n\n` +
-              extraMounts
+              folderMounts
                 .map((mount) =>
                   mount.readOnly
                     ? `- ${mount.mountPath} (read-only)`
@@ -2760,6 +2856,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const note =
           `\n<!-- mend:mounts -->\n## Mend mounts\n\nMounted beside the repo:\n\n` +
           referencesSection +
+          linkedSection +
           foldersSection +
           `\n` +
           servicesSection;
@@ -2976,6 +3073,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 .pipe(Effect.ignore),
             ),
           );
+        yield* bindLinkedProjects(workspace, project);
         yield* sessions.setWorkspaceImage(sessionId, workspaceImage);
         // Stamped alongside the image: what this session ACTUALLY launched with — the repo
         // url+ref that was cloned and the exact snapshot sha the store packed (for a hot
@@ -4934,6 +5032,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             name: m.name,
             hostPath: m.hostPath,
             readOnly: m.readOnly,
+          })),
+          links: (yield* resolveLinkedProjects(project)).map(({ link, linked }) => ({
+            name: link.name,
+            rootPath: worktreesRootOf(linked.storePath),
           })),
         };
         return inputs;

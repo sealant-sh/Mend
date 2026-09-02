@@ -51,11 +51,11 @@ project's worktree, moves from provision to claim.
 - A standby container sees every worktree of its project, including other sessions' uncommitted work
   in that repository. Accepted: a project is one team's repository and already shares environment
   and secrets across its sessions. Harness homes stay outside the root and private.
-- The pool serves new worktrees and named joins hot. No skeleton creates a worktree ahead of
-  time, and nothing worktree-shaped enters the pool fingerprint. Resumes and rejoins still go
-  cold: a session's harness home is keyed by its id and mounted at provision, so a pooled
-  workspace holds the pre-generated id's home, not the resumed session's. Serving those hot needs
-  the harness home to follow the session rather than the id, a separate change.
+- The pool serves new worktrees and named joins hot. No skeleton creates a worktree ahead of time,
+  and nothing worktree-shaped enters the pool fingerprint. Resumes and rejoins still go cold: a
+  session's harness home is keyed by its id and mounted at provision, so a pooled workspace holds
+  the pre-generated id's home, not the resumed session's. Serving those hot needs the harness home
+  to follow the session rather than the id, a separate change.
 - The reviewable change is unchanged: it is still the session's worktree versus its base. Writes to
   a linked project land in that project's worktree and are its own change, not this session's.
 - git's `safe.directory` must name the real path behind the symlink; the image's fixed entry for

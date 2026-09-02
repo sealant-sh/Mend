@@ -1276,6 +1276,23 @@ const standbyHotWorkspacesMigration = Effect.gen(function* () {
   yield* sql`ALTER TABLE hot_workspaces ALTER COLUMN base_sha DROP NOT NULL`;
 });
 
+/** Linked projects (ADR-0001): sibling adopted projects mounted read-write at /workspace/repos/<name>. */
+const projectLinksMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE project_links (
+      id text PRIMARY KEY,
+      project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      linked_project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name text NOT NULL,
+      worktree_name text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT project_links_project_id_name_key UNIQUE (project_id, name),
+      CONSTRAINT project_links_project_id_linked_key UNIQUE (project_id, linked_project_id)
+    )`;
+});
+
 const worktreesMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`
@@ -1474,4 +1491,5 @@ export const migrations = {
   "0046_worktrees": worktreesMigration,
   "0047_skills": skillsMigration,
   "0048_standby_hot_workspaces": standbyHotWorkspacesMigration,
+  "0049_project_links": projectLinksMigration,
 };
