@@ -1,5 +1,27 @@
 # @sealant/mend
 
+## 0.20.0
+
+### Minor Changes
+
+- 9972147: Ctrl+V in an attached terminal (`mend codex`, `mend claude`, `mend attach`, the
+  dashboard) now pastes an image from this machine's clipboard into the session: the CLI reads the
+  clipboard (wl-paste on Wayland, xclip on X11, osascript on macOS), stores the image beside the
+  session, and pastes its workspace path, which codex and claude read as an attachment. Before, the
+  keystroke reached the agent's own clipboard handler inside the workspace, which has no display,
+  and failed with an X11 error. With no image on the clipboard the keystroke goes through untouched.
+
+  The dashboard now renders every worktree as a header with its sessions indented underneath, one
+  session or many. A worktree with a single session used to collapse into one row that carried the
+  worktree's name, so ⇧D on it read as "remove the worktree" while it removed the session.
+
+- 9972147: The dashboard hides settled sessions that never had a conversation — no transcript
+  captured at settle, none in the harness home — since there is nothing to resume or hand off;
+  `mend sessions --all` still lists them. Mend now records that fact once at settle (and classifies
+  older sessions once at boot). ⇧D on a session row removes that session and leaves the worktree; a
+  session killed a moment ago removes without a second stop, since the server closes its shells and
+  settles it on the way out. ⇧D on a worktree header still removes the worktree.
+
 ## 0.19.0
 
 ### Minor Changes
