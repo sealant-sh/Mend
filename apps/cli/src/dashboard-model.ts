@@ -354,23 +354,22 @@ export const pseudoGroup = (
 });
 
 /**
- * The flat walkable row list: a lone-session worktree stays ONE combined row
- * (today's density); a shared worktree gets a header row with its session
- * children underneath. Process/service lines stay facts, never targets.
+ * The flat walkable row list: every worktree is a header row with its session
+ * children indented underneath, one session or many — a row always says what
+ * it is, so ⇧D on it removes what it names. Process/service lines stay facts,
+ * never targets.
  */
 export type SelectableRow =
   | { readonly kind: "worktree"; readonly group: WorktreeGroup }
   | { readonly kind: "session"; readonly group: WorktreeGroup; readonly item: SessionItem };
 
 export const deriveRows = (groups: ReadonlyArray<WorktreeGroup>): ReadonlyArray<SelectableRow> =>
-  groups.flatMap((group): ReadonlyArray<SelectableRow> => {
-    const only = group.sessions.length === 1 ? group.sessions[0] : undefined;
-    if (only !== undefined) return [{ kind: "session", group, item: only }];
-    return [
+  groups.flatMap(
+    (group): ReadonlyArray<SelectableRow> => [
       { kind: "worktree", group },
       ...group.sessions.map((item): SelectableRow => ({ kind: "session", group, item })),
-    ];
-  });
+    ],
+  );
 
 export const rowKeyOf = (row: SelectableRow): string =>
   row.kind === "worktree" ? `wt:${row.group.key}` : `s:${row.item.session.id}`;

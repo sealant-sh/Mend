@@ -19,7 +19,6 @@ import {
   deriveWorktrees,
   filterBranches,
   foldGroupStatus,
-  labelIsIdentity,
   rowKeyOf,
   worktreeDisplayName,
   fetchWorkbench,
@@ -233,44 +232,7 @@ const ProcessLines = ({
   </>
 );
 
-/**
- * A lone-session worktree, combined into one row (today's density): the
- * worktree name leads, everything live inside hangs underneath as facts.
- */
-const CombinedRow = ({
-  group,
-  item,
-  selected,
-}: {
-  readonly group: WorktreeGroup;
-  readonly item: SessionItem;
-  readonly selected: boolean;
-}) => {
-  const { session, annotation, services, processes } = item;
-  const color = STATUS_COLOR[session.status] ?? MUTED;
-  const age = timeAgo(session.createdAt).replace(" ago", "");
-  const trailingLabel = labelIsIdentity(session) ? "" : (session.label ?? "");
-  return (
-    <box flexShrink={0} flexDirection="column" backgroundColor="transparent">
-      <box height={1} flexShrink={0} backgroundColor={selected ? WASH : "transparent"}>
-        <text height={1} bg="transparent">
-          <Gutter selected={selected} />
-          <span fg={INK}>{group.name.slice(0, 30).padEnd(31)}</span>
-          <span fg={color}>{session.status.padEnd(10)}</span>
-          <span fg={FAINT}>{age.padEnd(9)}</span>
-          <span fg={MUTED}>{session.harness.padEnd(10)}</span>
-          {annotation !== undefined && annotation.openComments > 0 ? (
-            <span fg={MUTED}>{`${annotation.openComments} open  `}</span>
-          ) : null}
-          <span fg={FAINT}>{trailingLabel.slice(0, 40)}</span>
-        </text>
-      </box>
-      <ProcessLines processes={processes} services={services} indent={"     └ "} />
-    </box>
-  );
-};
-
-/** A shared worktree's header: the place, its folded status, its member facts. */
+/** A worktree's header: the place, its folded status, its member facts. */
 const WorktreeHeaderRow = ({
   group,
   selected,
@@ -292,14 +254,16 @@ const WorktreeHeaderRow = ({
         <span fg={INK}>{group.name.slice(0, 30).padEnd(31)}</span>
         <span fg={color}>{(group.live > 0 ? folded : "settled").padEnd(10)}</span>
         <span fg={FAINT}>{age.padEnd(9)}</span>
-        <span fg={MUTED}>{`${group.sessions.length} sessions`}</span>
+        <span fg={MUTED}>
+          {`${group.sessions.length} session${group.sessions.length === 1 ? "" : "s"}`}
+        </span>
         {open > 0 ? <span fg={MUTED}>{` · ${open} open`}</span> : null}
       </text>
     </box>
   );
 };
 
-/** One conversation inside a shared worktree — the label is its identity. */
+/** One conversation inside a worktree — the label is its identity. */
 const SessionChildRow = ({
   item,
   selected,
@@ -1576,13 +1540,6 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
                 <WorktreeHeaderRow
                   key={rowKeyOf(row)}
                   group={row.group}
-                  selected={index === rowIndex}
-                />
-              ) : row.group.sessions.length === 1 ? (
-                <CombinedRow
-                  key={rowKeyOf(row)}
-                  group={row.group}
-                  item={row.item}
                   selected={index === rowIndex}
                 />
               ) : (

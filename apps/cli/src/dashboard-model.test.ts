@@ -143,7 +143,7 @@ describe("deriveWorktrees", () => {
 });
 
 describe("deriveRows", () => {
-  it("keeps lone-session worktrees as one combined row and expands shared ones", () => {
+  it("renders every worktree as a header with its sessions indented underneath", () => {
     const data = workbench({
       project,
       sessions: [
@@ -158,10 +158,16 @@ describe("deriveRows", () => {
       ],
     });
     const rows = deriveRows(deriveWorktrees(data, "proj-1"));
-    expect(rows.map(rowKeyOf)).toEqual(["wt:wt-1", "s:a", "s:b", "s:c"]);
-    expect(rows.map((row) => row.kind)).toEqual(["worktree", "session", "session", "session"]);
-    // The lone-session worktree renders combined: its row still knows its group.
-    const last = rows[3];
+    expect(rows.map(rowKeyOf)).toEqual(["wt:wt-1", "s:a", "s:b", "wt:wt-2", "s:c"]);
+    expect(rows.map((row) => row.kind)).toEqual([
+      "worktree",
+      "session",
+      "session",
+      "worktree",
+      "session",
+    ]);
+    // A lone session is still a child row — never mistaken for its worktree.
+    const last = rows[4];
     expect(last?.kind === "session" && last.group.name).toBe("docs");
   });
 });

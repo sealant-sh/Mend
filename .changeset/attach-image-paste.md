@@ -8,3 +8,7 @@ pastes an image from this machine's clipboard into the session: the CLI reads th
 pastes its workspace path, which codex and claude read as an attachment. Before, the keystroke
 reached the agent's own clipboard handler inside the workspace, which has no display, and failed
 with an X11 error. With no image on the clipboard the keystroke goes through untouched.
+
+The dashboard now renders every worktree as a header with its sessions indented underneath, one
+session or many. A worktree with a single session used to collapse into one row that carried the
+worktree's name, so ⇧D on it read as "remove the worktree" while it removed the session.
