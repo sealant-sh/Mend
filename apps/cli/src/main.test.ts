@@ -370,53 +370,62 @@ describe("mend help", () => {
     const help = cli.stdout();
 
     expect(help.indexOf("\nstart\n")).toBeGreaterThan(-1);
-    expect(help.indexOf("\nstart\n")).toBeLessThan(help.indexOf("\neverything else\n"));
+    expect(help.indexOf("\nstart\n")).toBeLessThan(help.indexOf("\nsessions\n"));
     // The start block is the first run, in order.
-    const started = [
-      "mend login",
-      "mend connect",
-      "mend adopt",
-      "mend codex",
-      "mend pair",
-      "mend doctor",
-    ];
-    const positions = started.map((command) => help.indexOf(`  ${command}`));
+    const started = ["login", "connect", "adopt", "codex", "pair", "doctor"];
+    const positions = started.map((command) => help.indexOf(`\n  ${command} `));
     expect(positions).toEqual(positions.toSorted((a, b) => a - b));
     expect(positions[0]).toBeGreaterThan(help.indexOf("\nstart\n"));
-    expect(positions.at(-1)).toBeLessThan(help.indexOf("\neverything else\n"));
+    expect(positions.at(-1)).toBeLessThan(help.indexOf("\nsessions\n"));
     // Nothing was dropped on the way past the reorder.
     for (const command of [
-      "mend logout",
-      "mend keys init",
-      "mend keys show",
-      "mend keys share",
-      "mend env load",
-      "mend env show",
-      "mend accounts",
-      "mend dotfiles",
-      "mend dotfiles sync",
-      "mend run --",
-      "mend attach",
-      "mend stop",
-      "mend shell",
-      "mend service run",
-      "mend service add",
-      "mend service init",
-      "mend service list",
-      "mend service logs",
-      "mend service restart",
-      "mend service stop",
-      "mend continue",
-      "mend resume",
-      "mend rejoin",
-      "mend projects",
-      "mend sessions",
-      "mend status",
-      "mend completions",
+      "logout",
+      "keys init",
+      "keys show",
+      "keys share",
+      "env load",
+      "env show",
+      "accounts",
+      "dotfiles",
+      "dotfiles sync",
+      "run",
+      "attach",
+      "stop",
+      "shell",
+      "service run",
+      "service add",
+      "service init",
+      "service list",
+      "service logs",
+      "service restart",
+      "service stop",
+      "continue",
+      "resume",
+      "rejoin",
+      "projects",
+      "sessions",
+      "completions",
+      "version",
     ]) {
-      expect(help, command).toContain(`  ${command}`);
+      expect(help, command).toContain(`\n  ${command} `);
     }
     // The installer's renderer stays out of the printed surface.
-    expect(help).not.toContain("mend qr");
+    expect(help).not.toContain("  qr ");
+  });
+
+  it("prints one command's page for help <command> and <command> --help alike", async () => {
+    const byHelp = startCli("http://127.0.0.1:1", ["help", "service", "run"]);
+    const byFlag = startCli("http://127.0.0.1:1", ["service", "run", "--help"]);
+    await Promise.all([byHelp.exited, byFlag.exited]);
+    expect(byHelp.stdout()).toContain("mend service run · ");
+    expect(byHelp.stdout()).toContain("--no-connect");
+    expect(byFlag.stdout()).toBe(byHelp.stdout());
+  });
+
+  it("quotes the catalog's synopsis in a usage error", async () => {
+    const cli = startCli("http://127.0.0.1:1", ["service", "stop"]);
+    const outcome = await cli.exited;
+    expect(outcome.code).toBe(1);
+    expect(cli.stderr()).toContain("usage: mend service stop <name-or-id>");
   });
 });

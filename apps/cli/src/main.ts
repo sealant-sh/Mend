@@ -9,6 +9,16 @@ import * as path from "node:path";
 import { doctorCommand } from "./doctor.ts";
 import { readSyncFiles, scanDotfileCandidates } from "./dotfiles.ts";
 import { formatLoadReport, type EnvironmentLoadReportDto } from "./env.ts";
+import {
+  findCommand,
+  manFileName,
+  renderCommand,
+  renderGroup,
+  renderIndex,
+  renderManIndex,
+  renderManPage,
+  usageOf,
+} from "./help.ts";
 import { loginCommand } from "./login.ts";
 import { type ApiCall, pairCommand, qrCommand } from "./pair.ts";
 import {
@@ -36,6 +46,7 @@ import {
 } from "./shared.ts";
 import { DEFAULT_SKILLS_DIR, scanSkillLibrary } from "./skills.ts";
 import { sshCommand } from "./ssh-setup.ts";
+import { cliVersion, fetchServerVersion, versionLines } from "./version.ts";
 
 /**
  * The mend CLI (plan §7.2): the terminal-first entry into the workbench.
@@ -446,9 +457,7 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
     parsed.ask ||
     parsed.fast;
   if (harness === "run" && structured) {
-    return fail(
-      "mend run takes no prompt or harness flags — usage: mend run [--project p] -- <command...>",
-    );
+    return fail(`mend run takes no prompt or harness flags · ${usageOf("run")}`);
   }
   if (harness === "run" && (parsed.detach || parsed.foreground)) {
     return fail(
@@ -457,9 +466,7 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
   }
   const argv = harness === "run" ? parsed.custom : (HARNESS_COMMANDS[harness] ?? []);
   if (argv.length === 0) {
-    return fail(
-      harness === "run" ? "usage: mend run -- <command...>" : `unknown harness ${harness}`,
-    );
+    return fail(harness === "run" ? usageOf("run") : `unknown harness ${harness}`);
   }
 
   const project = await findProject(config, parsed.project, true);
@@ -912,7 +919,7 @@ const stopCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
     return;
   }
   if (!all && prefix === undefined) {
-    return fail("usage: mend stop [session-id-prefix] | --all [--project <p>]");
+    return fail(usageOf("stop"));
   }
   const [sessions, projects] = await Promise.all([
     api<ReadonlyArray<SessionDto>>(config, "GET", "/sessions"),
@@ -1293,7 +1300,7 @@ const serviceAdd = async (config: CliConfig, args: ReadonlyArray<string>) => {
   );
   const portRaw = positional.find((a) => /^\d+$/.test(a));
   if (portRaw === undefined) {
-    return fail("usage: mend service add [session] <port> [--name <n>] [--udp] [--http|--https]");
+    return fail(usageOf("service add"));
   }
   const port = Number(portRaw);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -1328,7 +1335,7 @@ const serviceList = async (config: CliConfig) => {
 
 const serviceStop = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const needle = args.find((a) => !a.startsWith("--"));
-  if (needle === undefined) return fail("usage: mend service stop <name-or-id-prefix>");
+  if (needle === undefined) return fail(usageOf("service stop"));
   const services = await fetchServices(config);
   const matches = services.filter(
     (service) => service.label === needle || service.id.startsWith(needle),
@@ -1378,9 +1385,7 @@ const autoConnect = async (config: CliConfig, service: ServiceDto): Promise<void
 
 const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const dashdash = args.indexOf("--");
-  const usage =
-    "usage: mend service run [session] --port <port> [--name <n>] [--udp] [--http|--https] [--no-connect] -- <command...>\n" +
-    "       mend service run [session] <name> [--no-connect]          (a declared recipe)";
+  const usage = usageOf("service run");
   // No explicit command = a DECLARED Service: resolve the name against the
   // session worktree's mend.toml and start (or adopt) its recipe.
   if (dashdash === -1) {
@@ -1467,7 +1472,7 @@ const serviceLogs = async (config: CliConfig, args: ReadonlyArray<string>) => {
     (argument, index) => !argument.startsWith("--") && index !== fromFlag + 1,
   );
   if (needle === undefined || from === undefined || !/^(0|[1-9]\d*)$/.test(from)) {
-    return fail("usage: mend service logs <name-or-id-prefix> [--from <decimal-sequence>]");
+    return fail(usageOf("service logs"));
   }
   const everything = await fetchServiceViews(config, true);
   const matches = everything.filter(
@@ -1538,7 +1543,7 @@ const serviceLogs = async (config: CliConfig, args: ReadonlyArray<string>) => {
 
 const serviceRestart = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const needle = args.find((a) => !a.startsWith("--"));
-  if (needle === undefined) return fail("usage: mend service restart <name-or-id-prefix>");
+  if (needle === undefined) return fail(usageOf("service restart"));
   const service = await findLiveService(config, needle);
   const restarted = await withSpinner(
     `restarting ${service.label ?? service.id.slice(0, 8)}…`,
@@ -1847,7 +1852,7 @@ const accountsCommand = async (config: CliConfig) => {
 const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const [providerArg, ...flags] = args;
   if (!isProvider(providerArg)) {
-    return fail("usage: mend connect claude|codex|github [--from-stdin] [--remove]");
+    return fail(usageOf("connect"));
   }
   const provider = providerArg;
   if (flags.includes("--remove")) {
@@ -2102,7 +2107,7 @@ const keysCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
     case undefined:
       return keysShow(config);
     default:
-      return fail(`unknown keys command "${verb}" — try: mend keys init | show | share`);
+      return fail(`unknown keys command "${verb}" · mend help keys lists them`);
   }
 };
 
@@ -2339,8 +2344,7 @@ const envCluster = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const explicitProject = takeFlagValue(args, "--project");
   const positional = args.filter((arg, i) => !arg.startsWith("--") && args[i - 1] !== "--project");
   const [verb, ...rest] = positional;
-  const usage =
-    "try: mend env cluster add secret <name> | add configmap <name> | remove <kind>/<name> | sa <name> | sa --clear";
+  const usage = usageOf("env cluster");
   const project = await findProject(config, explicitProject);
   const route = `/projects/${project.id}/cluster-bindings`;
   const appliesLine = () =>
@@ -2353,7 +2357,7 @@ const envCluster = async (config: CliConfig, args: ReadonlyArray<string>) => {
   if (verb === "add") {
     const [kind, objectName] = rest;
     if ((kind !== "secret" && kind !== "configmap") || objectName === undefined) {
-      return fail(`env cluster add takes a kind and an object name — ${usage}`);
+      return fail(`env cluster add takes a kind and an object name\n${usage}`);
     }
     const result = await api<{ readonly revision: number }>(config, "POST", route, {
       kind,
@@ -2367,7 +2371,7 @@ const envCluster = async (config: CliConfig, args: ReadonlyArray<string>) => {
     const [ref] = rest;
     const [kind, objectName] = ref?.split("/", 2) ?? [];
     if ((kind !== "secret" && kind !== "configmap") || objectName === undefined) {
-      return fail(`env cluster remove takes <kind>/<name>, e.g. secret/app-env — ${usage}`);
+      return fail(`env cluster remove takes <kind>/<name>, e.g. secret/app-env\n${usage}`);
     }
     const snapshot = await api<ProjectClusterBindingsDto>(config, "GET", route);
     const binding = snapshot.bindings.find((b) => b.kind === kind && b.objectName === objectName);
@@ -2384,7 +2388,7 @@ const envCluster = async (config: CliConfig, args: ReadonlyArray<string>) => {
     const clear = args.includes("--clear");
     const [name] = rest;
     if (!clear && name === undefined)
-      return fail(`env cluster sa takes a name or --clear — ${usage}`);
+      return fail(`env cluster sa takes a name or --clear\n${usage}`);
     const result = await api<{ readonly serviceAccount: string | null; readonly revision: number }>(
       config,
       "PUT",
@@ -2405,7 +2409,7 @@ const envCluster = async (config: CliConfig, args: ReadonlyArray<string>) => {
     }
     return appliesLine();
   }
-  return fail(`unknown env cluster command "${verb ?? ""}" — ${usage}`);
+  return fail(`unknown env cluster command "${verb ?? ""}"\n${usage}`);
 };
 
 const envCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
@@ -2419,7 +2423,7 @@ const envCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
     case undefined:
       return envShow(config, rest);
     default:
-      return fail(`unknown env command "${verb}" — try: mend env load | show | cluster`);
+      return fail(`unknown env command "${verb}" · mend help env lists them`);
   }
 };
 
@@ -2432,7 +2436,7 @@ const dotfilesCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
     case undefined:
       return dotfilesShow(config);
     default:
-      return fail(`unknown dotfiles command "${verb}" — try: mend dotfiles sync | show`);
+      return fail(`unknown dotfiles command "${verb}" · mend help dotfiles lists them`);
   }
 };
 
@@ -2525,7 +2529,7 @@ const skillsCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
     default:
       // Bare flags (`mend skills --project web`) read as the list.
       if (verb.startsWith("--")) return skillsList(config, args);
-      return fail(`unknown skills command "${verb}" — try: mend skills push | list`);
+      return fail(`unknown skills command "${verb}" · mend help skills lists them`);
   }
 };
 
@@ -2613,9 +2617,7 @@ const completionsCommand = (args: ReadonlyArray<string>) => {
       process.stdout.write(BASH_COMPLETIONS);
       return;
     default:
-      return fail(
-        'usage: mend completions zsh|bash — e.g. mend completions zsh > "$fpath[1]/_mend"',
-      );
+      return fail(`${usageOf("completions")} · e.g. mend completions zsh > "$fpath[1]/_mend"`);
   }
 };
 
@@ -3353,7 +3355,7 @@ const hasNodeFfi = (): boolean => {
  */
 const dashboard = async (config: CliConfig) => {
   if (process.stdout.isTTY !== true) {
-    say(HELP);
+    say(renderIndex());
     return;
   }
   if (!hasNodeFfi()) {
@@ -3384,100 +3386,58 @@ const dashboard = async (config: CliConfig) => {
 
 // ─── entry ──────────────────────────────────────────────────────────────────
 
-const HELP = `mend — the agent workbench
+/** `mend help [command...]`: the index, a group, or one page. */
+const helpCommand = (words: ReadonlyArray<string>) => {
+  if (words.length === 0) {
+    say(renderIndex());
+    return;
+  }
+  const doc = findCommand(words);
+  if (doc !== null && (doc.name.split(" ").length > 1 || words.length === 1)) {
+    say(renderCommand(doc));
+    return;
+  }
+  const group = renderGroup(words[0] ?? "");
+  if (doc !== null) {
+    say(renderCommand(doc));
+    return;
+  }
+  if (group !== null) {
+    say(group);
+    return;
+  }
+  return fail(`no command "${words.join(" ")}" · mend help lists them`);
+};
 
-start
-  mend login [--url <server>]           sign this terminal in through the browser: opens
-                                        <server>/authorize, you press Authorize there, and the
-                                        CLI saves a revocable device token (0600); no password
-                                        is ever typed here
-  mend connect <provider> [--from-stdin] [--remove]
-                                        send THIS machine's claude/codex/github credential to the
-                                        platform under your own user (reads the file the provider's
-                                        CLI wrote at login; --from-stdin pastes one instead)
-  mend adopt [source] [--name <name>] [--auth ambient|mend-key|bridge]
-                                        adopt a repository into the store (default: cwd; any git
-                                        URL — GitHub, GitLab, self-hosted, ssh://, a local path)
-  mend codex|claude|opencode ["prompt"] [--name <worktree>] [--worktree <existing>]
-                             [--model <id>] [--effort low|medium|high|xhigh|max]
-                             [--base <ref>] [--ask] [--fast] [--detach|-d] [--foreground]
-                                        launch the harness in a worktree; the worktree's name is
-                                        asked first (--name skips the ask — an EXISTING name joins
-                                        that worktree as a new session; --worktree joins only,
-                                        failing if absent), a
-                                        quoted prompt becomes its first message,
-                                        --ask restores the harness's permission prompts, --fast
-                                        requests priority processing (codex service tier),
-                                        --detach launches without attaching (reattach anywhere),
-                                        --foreground stops the session when this CLI exits
-  mend pair [--url <base url>]          pair a phone or a second machine: prints a QR, the code, and
-                                        the URL to reach this server (one device, once, 10 minutes)
-  mend doctor                           read-only checklist of this machine's setup — one line per
-                                        fact, each unfinished one ending in the command that fixes it
-
-everything else
-  mend                                  the dashboard: every project and session, live
-  mend logout                           revoke this terminal's device token and forget it
-  mend keys init                        generate the machine's Mend deploy key (ed25519)
-  mend keys show                        print the public key — add it as a deploy key on your git host
-  mend env load [file] [--secret [A,B]] load a .env into the project: ordinary names → configuration,
-                                        secret-shaped names → secrets; --secret sends all (or the
-                                        named ones, e.g. DATABASE_URL) to secrets
-  mend env show                         what the project store holds — names only, never values
-  mend accounts                         your connected accounts on the platform (claude, codex, github)
-  mend dotfiles                         your dotfiles on the server: repo + synced home files
-  mend dotfiles sync [--all | paths…]   capture config files from THIS machine into your store
-  mend skills [--project [p]]           your skill library on the server (or a project's)
-  mend skills push [--project [p]] [--prune] [--dir <path>]
-                                        upload ~/.agents/skills bundles into the library; sessions
-                                        receive them at launch (--prune removes what's gone)
-  mend keys share                       relay THIS machine's ssh-agent to the server (bridge mode:
-                                        hardware keys sign here; Ctrl-C stops sharing)
-  mend run -- <command...>              same, with an arbitrary command
-  mend worktrees [--project <p>] [--json]
-                                        every worktree and the sessions inside it (mend sessions
-                                        --json stays the v1 flat list; --json=v2 groups like this)
-  mend attach [session-id-prefix]       reattach this terminal to a running session
-                                        (no id: pick one from the live sessions)
-  mend stop [session-id-prefix] | --all [--project <p>]
-                                        stop the agent — the workspace harvests and closes; the
-                                        record and review remain
-  mend shell [session-id-prefix]        open a shell in a live session's workspace
-  mend service run [session] --port <p> [--name <n>] [--udp] -- <command...>
-                                        start + supervise a server in the session workspace
-  mend service run [session] <name>     start a declared Service (mend.toml recipe)
-  mend service <name>                   shorthand for the above
-  mend service init [--yes]             scaffold mend.toml from package.json + compose ports
-  mend service add [session] <port> [--name <n>] [--udp]
-                                        adopt a listening workspace port — reachable on this machine
-  mend service connect [name…] [--port <p>]
-                                        bring live Services to THIS machine's loopback — each
-                                        connection tunnels through the server, authenticated as you
-  mend service list                     every live service and its observed state
-  mend service logs <name-or-id>        follow a supervised service's output (replay, then live)
-  mend service restart <name-or-id>     re-run its recorded command — same URL
-  mend service stop <name-or-id>        stop a service (closes its host port)
-  mend continue [session-id]            resume a session with its pending review follow-up
-  mend resume [session-id] [--with h]   rejoin a settled session (state restored; --with switches harness)
-  mend rejoin [session-id] [--harness h] attach if live, otherwise resume; newest live wins
-  mend refresh [project]                fetch origin's branches into the store — new sessions
-                                        base on current tips (default: the cwd's project)
-  mend projects                         adopted projects and their live sessions
-  mend sessions [--all] [--project p] [--json]
-                                        sessions with review facts; JSON is stable for integrations
-  mend status                           active sessions (alias of mend sessions)
-  mend ssh                              workspace SSH status: gateway, registered keys, ssh config
-  mend ssh setup [--key <path>]         make this machine ready once: offer a key (ssh-agent
-                                        preferred — nothing new created), write Host mend-ws
-  mend completions zsh|bash             print the TAB-completion hook (live session ids under TAB)
-
-  server: MEND_URL (default http://localhost:3105) · auth: MEND_TOKEN
-  detach key: Ctrl+] (set MEND_DETACH_KEY=none when an outer multiplexer owns detaching)
-  config file: ~/.config/mend/cli.json { "url": ..., "token": ..., "deviceId": ... }
-`;
+/** `mend man [command...]`: the same page through man(1), or the text page without it. */
+const manCommand = (words: ReadonlyArray<string>) => {
+  const doc = words.length === 0 ? null : findCommand(words);
+  if (words.length > 0 && doc === null) {
+    return fail(`no command "${words.join(" ")}" · mend help lists them`);
+  }
+  const version = cliVersion();
+  const page = doc === null ? renderManIndex(version) : renderManPage(doc, version);
+  const file = path.join(os.tmpdir(), `mend-man-${process.pid}-${manFileName(doc)}`);
+  fs.writeFileSync(file, page);
+  const result = spawnSync("man", ["-l", file], { stdio: "inherit" });
+  fs.rmSync(file, { force: true });
+  if (result.error !== undefined || result.status !== 0) {
+    say(doc === null ? renderIndex() : renderCommand(doc));
+  }
+};
 
 const main = async () => {
   const [command, ...rest] = process.argv.slice(2);
+  // `mend <command> --help` (or -h) before the separator is that command's page,
+  // never an argument: `mend run -- cmd --help` keeps its --help for cmd.
+  const ownArgs = rest.slice(0, rest.indexOf("--") === -1 ? rest.length : rest.indexOf("--"));
+  if (
+    command !== undefined &&
+    command !== "help" &&
+    ownArgs.some((a) => a === "--help" || a === "-h")
+  ) {
+    return helpCommand([command, ...ownArgs.filter((a) => !a.startsWith("-"))]);
+  }
   const config = loadConfig();
   switch (command) {
     case "adopt":
@@ -3511,7 +3471,7 @@ const main = async () => {
       return connectCommand(config, rest);
     case "pair":
       return pairCommand(rest, boundApi(config));
-    // Deliberately absent from HELP: the installer renders its own QR through this.
+    // Hidden in the catalog: the installer renders its own QR through this.
     case "qr":
       return qrCommand(rest);
     case "doctor":
@@ -3544,10 +3504,18 @@ const main = async () => {
       return dashboard(config);
     case "help":
     case "--help":
-      say(HELP);
+    case "-h":
+      return helpCommand(rest);
+    case "man":
+      return manCommand(rest);
+    case "version":
+    case "--version":
+    case "-v":
+      for (const line of versionLines(cliVersion(), await fetchServerVersion(config.url)))
+        say(line);
       return;
     default:
-      return fail(`unknown command "${command}" — try: mend help`);
+      return fail(`unknown command "${command}" · mend help lists them`);
   }
 };
 
