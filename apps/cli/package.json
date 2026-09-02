@@ -21,16 +21,21 @@
   "bin": {
     "mend": "./dist/main.js"
   },
+  "directories": {
+    "man": "./man"
+  },
   "files": [
-    "dist"
+    "dist",
+    "man"
   ],
   "type": "module",
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
-    "build": "tsc src/main.ts src/dashboard.tsx --outDir dist --module nodenext --target es2023 --types node --skipLibCheck --allowImportingTsExtensions --rewriteRelativeImportExtensions --jsx react-jsx --jsxImportSource @opentui/react",
+    "build": "tsc src/main.ts src/dashboard.tsx --outDir dist --module nodenext --target es2023 --types node --skipLibCheck --allowImportingTsExtensions --rewriteRelativeImportExtensions --jsx react-jsx --jsxImportSource @opentui/react && pnpm run man",
     "lint": "oxlint . --no-error-on-unmatched-pattern",
+    "man": "node --experimental-strip-types scripts/man.ts",
     "prepack": "pnpm run build",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsgo -p tsconfig.json --noEmit"
