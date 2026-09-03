@@ -1264,14 +1264,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return session;
       });
 
-      const provisionAs = Effect.fn("SessionEngine.provisionAs")(function* (input: ProvisionInput) {
-        const project = yield* projects.byId(input.projectId);
-        // The place first: join by name (an existing name IS "a new conversation in that
-        // worktree") or create it — git worktree, row, ordinal-0 checkpoint.
-        const worktree = yield* ensureWorktreeIn(project, input, input.ownerUserId);
-        // Hot path (ADR-0001): a standby skeleton serves ANY worktree — new or joined — because
-        // the pool mounts the project's worktrees root and the launch binds this one. Any
-        // failure here falls back to the cold path; a claim must never cost a session.
+      /**
+       * A new conversation in a worktree, hot when the pool can serve it (ADR-0001): a standby
+       * skeleton serves ANY worktree — new, joined, or one that already holds sessions — because
+       * the pool mounts the project's worktrees root and the launch binds this one. Any failure
+       * here falls back to the cold path; a claim must never cost a session.
+       */
+      const provisionInWorktree = Effect.fn("SessionEngine.provisionInWorktree")(function* (
+        project: Project,
+        worktree: Worktree,
+        input: {
+          readonly harness: string;
+          readonly label: string | null;
+          readonly ownerUserId: string | null;
+        },
+      ) {
         if (project.hotSessions > 0) {
           const claimed = yield* claimHotSession(project, worktree, input).pipe(
             Effect.catch((error) =>
@@ -1284,6 +1291,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (claimed !== null) return claimed;
         }
         return yield* provisionSessionIn(project, worktree, input);
+      });
+
+      const provisionAs = Effect.fn("SessionEngine.provisionAs")(function* (input: ProvisionInput) {
+        const project = yield* projects.byId(input.projectId);
+        // The place first: join by name (an existing name IS "a new conversation in that
+        // worktree") or create it — git worktree, row, ordinal-0 checkpoint.
+        const worktree = yield* ensureWorktreeIn(project, input, input.ownerUserId);
+        return yield* provisionInWorktree(project, worktree, input);
       });
 
       const attachRun = Effect.fn("SessionEngine.attachRun")(function* (
@@ -5313,7 +5328,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const claimHotSession = Effect.fn("SessionEngine.claimHotSession")(function* (
         project: Project,
         worktree: Worktree,
-        input: ProvisionInput,
+        input: {
+          readonly harness: string;
+          readonly label: string | null;
+          readonly ownerUserId: string | null;
+        },
       ) {
         const ownerUserId = input.ownerUserId ?? (yield* userDotfilesRepo.firstUserId());
         const inputs = yield* hotInputsFor(project, ownerUserId);
@@ -5865,7 +5884,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.gen(function* () {
             const worktree = yield* worktreesRepo.byId(worktreeId);
             const project = yield* projects.byId(worktree.projectId);
-            return yield* provisionSessionIn(project, worktree, input);
+            return yield* provisionInWorktree(project, worktree, input);
           }).pipe(asSealantUser(input.ownerUserId)),
         attachRun: (sessionId, sealantRunId, workspaceId) =>
           owned(sessionId)(attachRun(sessionId, sealantRunId, workspaceId)),

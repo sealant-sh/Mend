@@ -4163,4 +4163,79 @@ describe("SessionEngine hot sessions", () => {
       },
     );
   });
+
+  it("claims a ready skeleton for a new conversation inside an existing worktree too", async () => {
+    const created: CreateOptions[] = [];
+    const spawned: ReadonlyArray<string>[] = [];
+    const pool = { entries: [] as Array<HotWorkspace>, removed: [] as Array<string> };
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const skeletonId = SessionId.make(crypto.randomUUID());
+          // A standby skeleton (ADR-0001): a live workspace over the project's worktrees root,
+          // no worktree of its own — the claiming session brings one and the launch binds it.
+          pool.entries.push(
+            new HotWorkspace({
+              id: skeletonId,
+              projectId: project.id,
+              worktreeId: null,
+              ownerUserId: "user-fixture",
+              status: "ready",
+              error: null,
+              fingerprint: "match-simulated-by-the-fake-claim",
+              worktree: null,
+              branch: null,
+              baseSha: null,
+              sealantWorkspaceId: SealantWorkspaceId.make("workspace-1"),
+              workspaceImage: defaultSettings.workspaceImage,
+              dotfiles: { repository: null, snapshotSha: null },
+              environment: {
+                environmentRevision: 0,
+                environmentVariableNames: [],
+                secretRevision: 0,
+                secretNames: [],
+              },
+              referenceMounts: [],
+              extraMounts: [],
+              createdAt: now(),
+              updatedAt: now(),
+            }),
+          );
+
+          const engine = yield* SessionEngine;
+          // The worktree already exists (a durable place, or one holding other sessions): the
+          // worktree-scoped verb — "s session here", the web's new conversation — claims too.
+          const place = yield* engine.ensureWorktree(
+            project.id,
+            { name: "shared-place", base: null },
+            "user-fixture",
+          );
+          const session = yield* engine.provisionSessionIn(place.id, {
+            harness: "codex",
+            label: null,
+            ownerUserId: "user-fixture",
+          });
+          expect(session.id).toBe(skeletonId);
+          expect(session.worktreeId).toBe(place.id);
+          expect(session.worktree).toBe(place.directory);
+          const worktreesRepo = yield* WorktreesRepo;
+          expect((yield* worktreesRepo.byId(session.worktreeId))?.directory).toBe(session.worktree);
+
+          yield* engine.launch(session.id, ["codex"]);
+
+          expect(created).toHaveLength(0);
+          expect(spawned.length).toBeGreaterThan(0);
+          expect(pool.removed).toContain(skeletonId);
+          const launched = world.sessions.get(session.id);
+          expect(launched?.status).toBe("running");
+          expect(launched?.sealantWorkspaceId).toBe("workspace-1");
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created, () => false, undefined, spawned),
+        hotWorkspacesLayer: hotPoolLayer(pool),
+      },
+    );
+  });
 });
