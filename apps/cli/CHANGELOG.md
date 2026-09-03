@@ -1,5 +1,18 @@
 # @sealant/mend
 
+## 0.21.1
+
+### Patch Changes
+
+- 2baf887: A new conversation inside an existing worktree (⇧S "session here" in the dashboard, the
+  web's new session in a worktree, `POST /worktrees/:id/sessions`) now claims a ready standby
+  skeleton like every other launch, instead of always creating a fresh workspace. A standby skeleton
+  serves any worktree since 0.18.0; this path had simply been left on the cold road.
+- 70a69e5: The Mend key's private half is pinned to mode 0600 on every use, not only when it is
+  created. On Kubernetes the volume's fsGroup policy adds group read/write to every file at pod
+  start, ssh then refuses the key ("UNPROTECTED PRIVATE KEY FILE"), and every mend-key fetch and
+  push, host-side and through the workspace shim, failed with "Permission denied (publickey)".
+
 ## 0.21.0
 
 ### Minor Changes
