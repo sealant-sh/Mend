@@ -2645,9 +2645,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             services: workspaceImage.services,
             ...(Object.keys(env).length === 0 ? {} : { env }),
             ...(Object.keys(secretEnv).length === 0 ? {} : { secretEnv }),
-            // Cluster bindings pass through unconditionally — no Mend-side capability pre-check.
-            // The platform validates at create: a non-Kubernetes runtime refuses synchronously
-            // with `runtime-env-references-unsupported`, mapped to a readable refusal below.
+            // Cluster bindings (and the Docker service above) pass through unconditionally — no
+            // Mend-side capability pre-check. The platform validates at create: a runtime that
+            // cannot serve them refuses synchronously with a stable code
+            // (`runtime-env-references-unsupported`, `workspace-docker-unsupported`), mapped to
+            // a readable refusal below.
             ...(clusterBindings.bindings.length === 0
               ? {}
               : {
@@ -2684,9 +2686,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // A missing harness account must not discard a valid GitHub account (and vice versa).
         // Try the complete identity first, then each useful subset before interactive auth.
         const workspace = yield* createWithCredentialFallback(shape.credentialAttempts).pipe(
-          // The platform's typed code IS Mend's capability check (a config flag could lie): a
-          // non-Kubernetes workspace runtime refused the cluster references synchronously — no
-          // workspace exists, no build queued. Restate it naming every binding, observationally.
+          // The platform's typed code IS Mend's capability check (a config flag could lie): the
+          // workspace runtime refused the request synchronously — no workspace exists, no build
+          // queued. Restate it naming what was refused, observationally.
           Effect.mapError((error) =>
             error.code === "runtime-env-references-unsupported"
               ? new SealantPlatformError({
@@ -2700,7 +2702,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       : ` · service account ${clusterBindings.serviceAccount}`) +
                     " · cluster bindings do not resolve on this deployment's workspace runtime — remove them in project setup to launch here",
                 })
-              : error,
+              : error.code === "workspace-docker-unsupported"
+                ? new SealantPlatformError({
+                    code: error.code,
+                    status: error.status,
+                    cause: error.cause,
+                    message:
+                      "launch refused · Docker · this deployment's workspace runtime does not provide workspace-scoped Docker — turn Docker off in the workspace environment (Settings, or the project's image override), or ask the operator to enable `workspaces.docker` on the Sealant chart",
+                  })
+                : error,
           ),
           report,
           Effect.onInterrupt(() =>

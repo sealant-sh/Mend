@@ -34,7 +34,9 @@ known capabilities and invariants.
 | Service exposure                                        | loopback forwards         | forwards over the control channel | authenticated HTTP/WS previews only  |
 
 Capabilities differ per strategy and are **reported, never assumed** — sealant's `supports()`
-already refuses what a runtime cannot do (DinD, gVisor selection, mount sources on Cloudflare), and
+already refuses what a runtime cannot do (the Docker service where the operator has not enabled it,
+gVisor selection, mount sources on Cloudflare), the API refuses at create with a stable code
+(`runtime-env-references-unsupported`, `workspace-docker-unsupported`) so nothing is queued, and
 Mend's `worktreeMount` answers `undefined` where co-location does not hold. UI copy follows the
 voice rules: state the observed capability gap, never a judgment.
 
@@ -80,5 +82,5 @@ regardless of strategy.
    consistent with its "self-hosted, not SaaS" positioning; hosted Mend deploys a Sealant per cell
    (or per tenant) rather than teaching Sealant multi-tenancy.
 3. **Capability surfacing.** The SDK should expose what a workspace's runtime family can and cannot
-   do so Mend can degrade UI honestly (no raw TCP forwards, disk ceilings, no DinD). Recorded as
-   platform feedback.
+   do so Mend can degrade UI honestly (no raw TCP forwards, disk ceilings, Docker off). Recorded as
+   platform feedback; the typed create-time refusals are the first half of it.
