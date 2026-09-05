@@ -28,6 +28,7 @@ COPY packages/domain/package.json packages/domain/
 COPY packages/db/package.json packages/db/
 COPY packages/api-contracts/package.json packages/api-contracts/
 COPY packages/auth/package.json packages/auth/
+COPY packages/network/package.json packages/network/
 COPY packages/jobs/package.json packages/jobs/
 COPY packages/sealant/package.json packages/sealant/
 COPY packages/inference/package.json packages/inference/

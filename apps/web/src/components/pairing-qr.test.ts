@@ -1,37 +1,33 @@
+import { PublicOrigin } from "@mend/network";
+import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { countdown, groupCode, pairingPayload, pairingUrls } from "./pairing-qr.tsx";
 
 const at = (iso: string) => Math.floor(new Date(iso).getTime() / 1000);
 
+const decodeOrigin = Schema.decodeUnknownSync(PublicOrigin);
 const pairing = (urls: ReadonlyArray<string>) => ({
   code: "ABCDEFGH",
   expiresAt: "2026-08-22T10:10:00.000Z",
-  urls,
+  urls: urls.map((url) => decodeOrigin(url)),
 });
 
 describe("pairingUrls", () => {
-  it("leads with the origin this page was served from", () => {
-    expect(pairingUrls(pairing(["http://100.84.1.2:3105"]), "http://mymachine:3105")).toEqual([
-      "http://mymachine:3105",
-      "http://100.84.1.2:3105",
-    ]);
-  });
-
-  it("keeps the detected addresses when the origin is one of them", () => {
+  it("keeps only the server-configured origins in their preferred order", () => {
     expect(
       pairingUrls(
-        pairing(["http://100.84.1.2:3105", "http://192.168.1.9:3105"]),
-        "http://100.84.1.2:3105",
+        pairing([
+          "http://mac-mini.local:3105",
+          "http://192.168.1.9:3105",
+          "http://mac-mini.local:3105",
+        ]),
       ),
-    ).toEqual(["http://100.84.1.2:3105", "http://192.168.1.9:3105"]);
+    ).toEqual(["http://mac-mini.local:3105", "http://192.168.1.9:3105"]);
   });
 
-  it("leaves a loopback origin out — it is no route for a phone", () => {
-    expect(pairingUrls(pairing(["http://100.84.1.2:3105"]), "http://localhost:3105")).toEqual([
-      "http://100.84.1.2:3105",
-    ]);
-    expect(pairingUrls(pairing([]), "http://127.0.0.1:3105")).toEqual(["http://127.0.0.1:3105"]);
+  it("does not infer a URL from the browser or machine interfaces", () => {
+    expect(pairingUrls(pairing([]))).toEqual([]);
   });
 });
 

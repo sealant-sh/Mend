@@ -24,6 +24,7 @@
     "@fontsource/space-grotesk": "catalog:",
     "@mend/api-contracts": "workspace:*",
     "@mend/domain": "workspace:*",
+    "@mend/network": "workspace:*",
     "@mend/sealant": "workspace:*",
     "@mend/ui": "workspace:*",
     "@pierre/diffs": "catalog:",

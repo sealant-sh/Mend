@@ -197,7 +197,8 @@ describe("mend login", () => {
     } finally {
       await fake.close();
     }
-  });
+    // This exercises two real polling delays and a separate CLI process.
+  }, 10_000);
 
   it("reuses a saved server URL without asking for it again", async () => {
     let polls = 0;

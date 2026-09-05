@@ -1,4 +1,5 @@
 import { MendApi, PairClaimRequest } from "@mend/api-contracts";
+import { makePublicNetwork, PublicOrigin } from "@mend/network";
 import { Schema } from "effect";
 import { HttpApi } from "effect/unstable/httpapi";
 import { describe, expect, it } from "vitest";
@@ -8,6 +9,7 @@ import {
   DEVICE_TOKEN_PREFIX,
   claimAddress,
   cliAuthVerifyPath,
+  configuredOriginForRequest,
   inCidr,
   PAIRING_ALPHABET,
   PAIRING_CODE_LENGTH,
@@ -158,6 +160,36 @@ describe("inCidr", () => {
     expect(inCidr("10.0.0.5", "10.0.0.5")).toBe(true);
     expect(inCidr("fd7a::1", "fd7a::1")).toBe(true);
     expect(inCidr("10.0.0.5", "10.0.0.0/99")).toBe(false);
+  });
+});
+
+describe("the configured pairing address", () => {
+  const decodeOrigin = Schema.decodeUnknownSync(PublicOrigin);
+  const network = makePublicNetwork(decodeOrigin("http://localhost:3105"), [
+    decodeOrigin("http://mac-mini.local:3105"),
+    decodeOrigin("http://192.168.1.20:3105"),
+  ]);
+
+  it("keeps an allowed Origin or Host address", () => {
+    expect(
+      configuredOriginForRequest(network, {
+        origin: "http://192.168.1.20:3105",
+        host: "spoofed.invalid",
+      }),
+    ).toBe("http://192.168.1.20:3105");
+    expect(configuredOriginForRequest(network, { host: "mac-mini.local:3105" })).toBe(
+      "http://mac-mini.local:3105",
+    );
+  });
+
+  it("ignores unlisted Host and forwarded values", () => {
+    expect(
+      configuredOriginForRequest(network, {
+        host: "172.18.0.4:3105",
+        "x-forwarded-host": "mac-mini.local:3105",
+        "x-forwarded-proto": "http",
+      }),
+    ).toBe("http://localhost:3105");
   });
 });
 

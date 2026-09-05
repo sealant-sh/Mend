@@ -1,23 +1,24 @@
 {
-  "name": "@mend/api-contracts",
+  "name": "@mend/network",
   "version": "0.0.0",
   "private": true,
+  "description": "Mend's explicit public URL and browser-origin configuration",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
   },
   "scripts": {
-    "lint": "oxlint .",
+    "lint": "oxlint . --no-error-on-unmatched-pattern",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@mend/domain": "workspace:*",
-    "@mend/network": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {
+    "@effect/vitest": "catalog:",
     "@mend/typescript": "workspace:*",
+    "typescript": "catalog:",
     "vitest": "catalog:"
   }
 }

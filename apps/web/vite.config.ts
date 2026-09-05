@@ -1,6 +1,8 @@
+import { loadPublicNetwork } from "@mend/network";
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import viteReact from "@vitejs/plugin-react";
+import { Effect } from "effect";
 import { nitro } from "nitro/vite";
 import { defineConfig } from "vite";
 import tsconfigPaths from "vite-tsconfig-paths";
@@ -9,13 +11,13 @@ import tsconfigPaths from "vite-tsconfig-paths";
 // server (apps/api) on 3101. The proxy keeps them one origin — the same
 // shape production has, where the web server proxies /api to the API.
 
-// Vite refuses Host headers it doesn't recognise (DNS-rebinding guard). Bare
-// IPs pass on their own, so reaching dev by LAN or tailnet address needs
-// nothing here; a MagicDNS or mDNS name does. MEND_DEV_HOSTS carries those,
-// comma-separated, so no operator's private hostname lands in the repo.
-const allowedHosts = process.env.MEND_DEV_HOSTS?.split(",")
-  .map((host) => host.trim())
-  .filter((host) => host.length > 0);
+// Vite's DNS-rebinding guard receives the same explicit hosts as auth and
+// CORS. It accepts hostnames rather than origins, so scheme and port remain
+// enforced by those request boundaries.
+const publicNetwork = Effect.runSync(loadPublicNetwork);
+const allowedHosts = [
+  ...new Set(publicNetwork.allowedOrigins.map((origin) => new URL(origin).hostname)),
+];
 
 const config = defineConfig({
   server: {
@@ -23,7 +25,7 @@ const config = defineConfig({
     // (ARCHITECTURE.md §9), so dev binds every interface, not just loopback.
     host: true,
     port: 3105,
-    ...(allowedHosts && allowedHosts.length > 0 ? { allowedHosts } : {}),
+    allowedHosts,
     proxy: {
       // ws: the terminal rides a WebSocket (/api/tty); the shorthand form
       // proxies only HTTP and leaves the upgrade hanging forever in dev.
