@@ -328,6 +328,17 @@ with two concurrent `bash -i` PTYs in one mount-sourced workspace:
   `exitCode: undefined`; 0.9.0 reported `exitCode: 0` for the same sequence. Services surface exit
   codes to the user ("exited · code 0"), so the observed code should survive the wire.
 
+**2026-09-06 packaging observation, SDK/runtime 0.28.0:** a real installed `mend run -- sh -c …`
+created a workspace, committed a file, and settled with a completed session, an exited process,
+three checkpoints, and a null process exit code. This is Mend's recorded observation, not a direct
+reproduction of the older `sessions.get()` result. The public SDK still makes
+`InteractiveSessionStatus.exitCode` optional. Mend's watcher preserves zero with `?? null`; its
+first-observer-wins settlement can also retain an earlier unknown value. We have not established
+that a later numeric result existed in this run. Packaging acceptance checks the file, commit,
+record marker, checkpoints, and observed process end independently. It rejects an observed nonzero
+code and reports null as unavailable, never as zero. Retaining terminal exit evidence in the public
+status/record remains useful platform work; no platform internals are used to fill it.
+
 Everything else the concurrent-PTY spike checked passed on both versions: two PTYs open concurrently
 in one workspace, independent output streams, shared filesystem and network between PTYs,
 independent close, `sessions.get()` reattach, and resize.

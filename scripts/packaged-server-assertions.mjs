@@ -286,6 +286,26 @@ export function isolatedClientEnvironment(source, home, dockerConfig) {
   };
 }
 
+/** A completed PTY may have no exit code; never normalize that observation to zero. */
+export function completedCommandEvidence(detail) {
+  assert.notEqual(detail.session?.status, "failed", "Session failed");
+  const agent = detail.currentAgent;
+  if (agent?.status !== "exited") return false;
+  assert.ok(
+    agent.exitCode === null || agent.exitCode === 0,
+    "Command has an observed nonzero or malformed exit code",
+  );
+  assert.ok(
+    typeof agent.exitedAt === "string" && Number.isFinite(Date.parse(agent.exitedAt)),
+    "An exited process must have an observed exit time",
+  );
+  return detail.session?.status === "completed" &&
+    Array.isArray(detail.checkpoints) &&
+    detail.checkpoints.length >= 2
+    ? detail
+    : false;
+}
+
 /** The health version must name the pin, not merely a reachable HTTP server. */
 export function assertHealth(body, version) {
   assert.ok(

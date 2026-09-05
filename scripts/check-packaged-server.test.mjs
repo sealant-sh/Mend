@@ -27,6 +27,7 @@ import {
   assertUpgradeRetention,
   assertWorkspaceMounts,
   cleanupOwnedVolumes,
+  completedCommandEvidence,
   createVolumeLedger,
   createDiagnosticProbe,
   createFailedCommandDiagnostics,
@@ -308,6 +309,37 @@ test("containment does not confuse sibling prefixes or parent directories", () =
   assert.equal(isInside("/tmp/test", "/tmp/test/child"), true);
   for (const value of ["/tmp/test", "/tmp/test-other", "/tmp/test/../elsewhere", "/tmp", undefined])
     assert.equal(isInside("/tmp/test", value), false);
+});
+
+const detail = (exitCode) =>
+  Object.freeze({
+    session: { status: "completed" },
+    checkpoints: [{}, {}],
+    currentAgent: Object.freeze({ status: "exited", exitedAt: "2026-09-06T00:00:00Z", exitCode }),
+  });
+
+test("completed command evidence preserves unknown exit codes and rejects observed failure", () => {
+  for (const code of [null, 0]) {
+    const value = detail(code);
+    assert.equal(completedCommandEvidence(value), value);
+    assert.equal(value.currentAgent.exitCode, code);
+  }
+  for (const code of [1, -1, 137, undefined, "0"])
+    assert.throws(() => completedCommandEvidence(detail(code)));
+  assert.equal(completedCommandEvidence({ ...detail(null), currentAgent: null }), false);
+  assert.equal(completedCommandEvidence({ ...detail(null), checkpoints: [] }), false);
+  assert.equal(
+    completedCommandEvidence({ ...detail(null), session: { status: "running" } }),
+    false,
+  );
+  assert.throws(() => completedCommandEvidence({ ...detail(null), session: { status: "failed" } }));
+  for (const exitedAt of [null, "", "not a timestamp"])
+    assert.throws(() =>
+      completedCommandEvidence({
+        ...detail(null),
+        currentAgent: { ...detail(null).currentAgent, exitedAt },
+      }),
+    );
 });
 
 test("health checks require the exact configured version", () => {

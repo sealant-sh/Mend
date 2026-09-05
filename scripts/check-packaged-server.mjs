@@ -49,6 +49,7 @@ import {
   assertUpgradeRetention,
   assertWorkspaceMounts,
   cleanupOwnedVolumes,
+  completedCommandEvidence,
   createVolumeLedger,
   createDiagnosticProbe,
   createFailedCommandDiagnostics,
@@ -994,7 +995,7 @@ async function main() {
   stage = "real CLI session and Docker mount evidence";
   // Keep the real process alive briefly so inspect can observe its actual mounts before
   // normal workspace reclamation. No mock launch or host-store write creates the change.
-  const command = `set -eu; git config user.name Acceptance; git config user.email acceptance@example.invalid; printf '%s\\n' '${marker}' > packaged-proof.txt; git add packaged-proof.txt; git commit -m 'packaged acceptance'; printf '%s\\n' '${marker}'; sleep 30`;
+  const command = `set -eu; git config user.name Acceptance; git config user.email acceptance@example.invalid; printf '%s\\n' '${marker}' > packaged-proof.txt; git add packaged-proof.txt; git commit -m 'packaged acceptance'; sleep 30; printf '%s\\n' '${marker}'`;
   const launched = start(
     process.execPath,
     [bin, "run", "--project", projectName, "--name", "packaged-proof", "--", "sh", "-c", command],
@@ -1041,12 +1042,12 @@ async function main() {
       value.session.status !== "failed",
       "Session failed; server logs are deliberately not printed",
     );
-    return value.session.status === "completed" &&
-      value.checkpoints?.length >= 2 &&
-      value.currentAgent?.exitCode === 0
-      ? value
-      : false;
+    return completedCommandEvidence(value);
   });
+  if (detail.currentAgent.exitCode === null)
+    console.log(
+      "OBSERVED completed session and exited PTY; process exit code unavailable, not inferred as zero",
+    );
   check(
     detail.session.baseSha === baseSha &&
       detail.change?.id &&
