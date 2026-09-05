@@ -202,6 +202,49 @@ it("passes only the server allowlist to a real child process", async () => {
   });
 });
 
+it("streams large process output to an exclusive private file, never a captured string", async () => {
+  const directory = temporary();
+  const file = path.join(directory, "database.sql.partial");
+  const result = await runServerProcess(
+    process.execPath,
+    ["-e", "process.stdout.write(Buffer.alloc(16 * 1024 * 1024, 120))"],
+    {},
+    { stdoutFile: file },
+  );
+  expect(result).toMatchObject({ status: 0, stdout: "", stderr: "" });
+  expect(fs.statSync(file).size).toBe(16 * 1024 * 1024);
+  expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+  const overwritten = await runServerProcess(
+    process.execPath,
+    ["-e", "console.log('replacement')"],
+    {},
+    { stdoutFile: file },
+  );
+  expect(overwritten.status).toBeNull();
+  expect(fs.statSync(file).size).toBe(16 * 1024 * 1024);
+});
+
+it("retains private partial output on process failure and bounds captured output", async () => {
+  const file = path.join(temporary(), "database.sql.partial");
+  const result = await runServerProcess(
+    process.execPath,
+    ["-e", "process.stdout.write('partial'); process.exitCode = 1"],
+    {},
+    { stdoutFile: file },
+  );
+  expect(result.status).toBe(1);
+  expect(result.stdout).toBe("");
+  expect(fs.readFileSync(file, "utf8")).toBe("partial");
+  const bounded = await runServerProcess(
+    process.execPath,
+    ["-e", "process.stdout.write(Buffer.alloc(5 * 1024 * 1024, 120))"],
+    {},
+  );
+  expect(bounded.status).toBeNull();
+  expect(bounded.stdout.length).toBeLessThanOrEqual(4 * 1024 * 1024);
+  expect(bounded.error).toContain("capture limit");
+});
+
 const runProductionDocker = async (
   args: ReadonlyArray<string>,
   cwd: string,

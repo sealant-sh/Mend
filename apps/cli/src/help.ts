@@ -559,7 +559,15 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     description: [
       "Server commands manage the local Docker Compose installation. They do not sign this CLI in or change Docker's global context.",
     ],
-    see: ["server setup", "login", "doctor"],
+    see: [
+      "server setup",
+      "server status",
+      "server start",
+      "server stop",
+      "server restart",
+      "server logs",
+      "server upgrade",
+    ],
   },
   {
     name: "server setup",
@@ -569,7 +577,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "[--context <name>] [--version <version|latest>] [--bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--registry-port <n>] [--docker-socket <path>] [--assets-dir <dir>] [--offline]",
     ],
     description: [
-      "Checks a local Unix-socket Docker context and the Compose plugin, downloads the compose and Postgres initialization assets for one Mend release, preserves existing data and secrets, and starts the server. Re-running repairs the same pinned version. Use --version only when you intend to change the server version.",
+      "Checks a local Unix-socket Docker context and the Compose plugin, downloads the compose and Postgres initialization assets for one Mend release, preserves existing data and secrets, and starts the server. Re-running repairs the same pinned version. A changed --version is refused; use mend server upgrade. Updating this CLI never updates an existing server pin.",
       "The default listens only on localhost at http://localhost:3105. Non-local access requires both --bind and --url. Every extra browser origin must be named with --origin; setup never guesses from the request Host header or network interfaces.",
       "Docker Desktop on Linux and macOS, and OrbStack on macOS, expose client-side proxy sockets. Containers use the daemon-side /var/run/docker.sock. --docker-socket overrides detection and is retained on reruns.",
       "Setup holds an exclusive process lock through startup and health checks. A busy lock reports its owner and manual recovery steps. Never remove a live lock. Private configuration uses immutable generations and an atomic active pointer; failed attempts retain credentials and never delete Docker volumes.",
@@ -612,9 +620,102 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
           "mend server setup --context orbstack --bind 0.0.0.0 --url http://100.70.80.90:3105",
         text: "explicit tailnet exposure",
       },
-      { command: "mend server setup --version latest", text: "explicitly upgrade the server" },
+      {
+        command:
+          "mend server setup --version 0.23.0 --assets-dir ./release-assets --offline --registry-port 5501",
+        text: "install from local release assets and preloaded images",
+      },
     ],
     see: ["server", "login", "doctor"],
+  },
+  {
+    name: "server status",
+    section: "this machine",
+    summary: "show the saved pin, generation and container state",
+    synopsis: [""],
+    description: [
+      "Reads the existing installation without changing its files. A running Mend must answer health with the exact pinned version. A stopped server makes no health claim. Never installs a server implicitly.",
+    ],
+    see: ["server logs", "server start"],
+  },
+  {
+    name: "server start",
+    section: "this machine",
+    summary: "start the selected server generation",
+    synopsis: ["[--offline]"],
+    description: [
+      "Reuses the saved context, generation, credentials and exact pin. Uses preloaded images only, with no pulls or asset downloads, even without --offline. Exact image label and health version are required.",
+    ],
+    options: [
+      { flag: "--offline", text: "explicitly request the default no-download, no-pull behavior" },
+    ],
+    see: ["server status", "server upgrade"],
+  },
+  {
+    name: "server stop",
+    section: "this machine",
+    summary: "stop Mend and Postgres without deleting data",
+    synopsis: [""],
+    description: [
+      "Stops only the installation's Compose services. Connections are interrupted. Workspace containers and volumes remain, but active work may lose connectivity and need reconnection. No volume deletion or Docker prune is performed.",
+    ],
+    see: ["server start", "server status"],
+  },
+  {
+    name: "server restart",
+    section: "this machine",
+    summary: "restart Mend using the same generation and pin",
+    synopsis: ["[--offline]"],
+    description: [
+      "Checks preloaded images before stopping Mend, then starts the saved generation and verifies exact-version health. Postgres stays running. Connections are interrupted; workspace containers and data remain, but active work may need reconnection.",
+    ],
+    options: [
+      { flag: "--offline", text: "explicitly request the default no-download, no-pull behavior" },
+    ],
+    see: ["server status", "server logs"],
+  },
+  {
+    name: "server logs",
+    section: "this machine",
+    summary: "print a bounded tail of the installation's container logs",
+    synopsis: ["[--tail <n>]"],
+    description: [
+      "Reads logs without changing the configuration or data. No follow mode; output capture is also byte-bounded. Treat container logs as private before sharing them.",
+    ],
+    options: [{ flag: "--tail <n>", text: "lines per service, 1..1000. Default: 100" }],
+    see: ["server status"],
+  },
+  {
+    name: "server upgrade",
+    section: "this machine",
+    summary: "upgrade to an explicit version with a database backup",
+    synopsis: ["--version <target|latest> [--assets-dir <dir>] [--offline]"],
+    description: [
+      "Preflights release assets and the canonical image's version label before interrupting Mend. Downgrades are refused. latest is resolved only when explicitly requested; a same-version request does nothing.",
+      "Stops app writers, starts official Postgres if needed, and streams pg_dumpall into a private database backup before selecting and starting the target. Connections are interrupted. Workspace containers and data are retained, but active work can lose connectivity and need reconnection. Stop any external database writers before upgrading.",
+      "Preflight or backup failure retains the old pin and attempts to recover the old app if it was running. Once target startup may have begun, Mend never automatically downgrades or restores the database. The target pin, old generation and backup remain. Inspect logs, fix the target, then use mend server start. Recovery records are under the installation's backups/upgrade-UUID directory.",
+    ],
+    options: [
+      {
+        flag: "--version <target|latest>",
+        text: "required exact target version, or explicit latest",
+      },
+      {
+        flag: "--assets-dir <dir>",
+        text: "copy target compose.v1.yaml and postgres-init.sh from local release assets",
+      },
+      {
+        flag: "--offline",
+        text: "no GitHub requests or Docker pulls; target assets and exact-version images must be available locally",
+      },
+    ],
+    examples: [
+      {
+        command: "mend server upgrade --version 0.24.0 --assets-dir ./release-0.24.0 --offline",
+        text: "controlled offline upgrade",
+      },
+    ],
+    see: ["server logs", "server status", "server start"],
   },
   {
     name: "ssh",

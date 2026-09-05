@@ -1,8 +1,8 @@
 # Server persistence and runtime contract
 
-Setup and the upcoming lifecycle commands share one installation directory, normally
-`$XDG_CONFIG_HOME/mend` or `~/.config/mend`. This layout replaces the unreleased flat setup layout.
-It does not migrate a flat installation or generate replacement credentials for one.
+Setup and lifecycle commands share one installation directory, normally `$XDG_CONFIG_HOME/mend` or
+`~/.config/mend`. This layout replaces the unreleased flat setup layout. It does not migrate a flat
+installation or generate replacement credentials for one.
 
 ## Layout
 
@@ -18,6 +18,11 @@ mend/
       server.env                  # complete Compose interpolation inputs plus credentials
       compose.yaml
       postgres-init.sh
+  backups/
+    upgrade-UUID/
+      recovery.json               # exact previous and target generation paths, recovery policy
+      database.sql.partial        # incomplete dump, never used for recovery
+      database.sql                # only published after successful pg_dumpall and fsync
 ```
 
 Directories are private, mode `0700`. Credentials and config files are `0600`, including
@@ -124,8 +129,9 @@ Use these existing owners rather than duplicating setup internals:
   values. Keep all operations on an installation, including start/stop/status/logs/upgrade, inside
   this lock scope.
 - `server-setup.ts`: `readServerInstallation(store)` validates the active deployment and returns
-  `{ config, directory }` or ordinary absence. `nodeServerSetupRuntime()` captures the host
-  environment once and provides the real process and HTTP implementations.
+  `{ config, directory }` or ordinary absence. `nodeServerRuntime()` captures the host environment
+  once and provides the real process and HTTP implementations. The older `nodeServerSetupRuntime`
+  name remains an alias.
 - `server-runtime.ts`: `serverComposeArgs({ directory, dockerContext }, command)` supplies the
   explicit context, project `mend`, project directory, env file, and Compose file. Always pass the
   immutable directory from the selected generation, not the moving `active` symlink.
@@ -161,15 +167,94 @@ The runtime must forward probe deadlines, not discard the third `run` argument. 
 return tagged results and never log credentials; the registry helper returns tagged results plus
 cleanup warnings. No PR5 lifecycle commands or upgrade policy are implemented here.
 
-Low-level store file values are private serialized bytes. A future upgrade must parse and render its
-complete proposed config/env pair before `prepare`, preserve `identity`, and perform its own upgrade
-policy checks before `activate`. The store enforces identity continuity and atomic publication; it
-does not interpret application versions or orchestrate rollback. Retaining old files is not proof
-that a previous application version can run against newer database contents.
+Low-level store file values are private serialized bytes. Upgrade parses and renders its complete
+proposed config/env pair, preserves identity bytes, then uses `prepare` to fsync an immutable target
+without selecting it. `activate` verifies retained files and switches the pointer without copying or
+rewriting the selected generation. `createBackup` owns private recovery directories and the durable
+publication of completed dumps. These extend the existing store rather than introducing a second
+filesystem transaction implementation. Version policy and orchestration stay in `server-setup.ts`.
+Retaining old files is not proof that the old application can run against newer database contents.
 
 The extraction keeps filesystem ownership and publication in `server-store.ts`, process policy in
 `server-runtime.ts`, and setup decisions/validation in `server-setup.ts`. The previous private
 four-file writer could not safely be reused by lifecycle commands.
+
+## Lifecycle commands and upgrade recovery
+
+```sh
+mend server status
+mend server logs --tail 100         # 1..1000 lines per service; no follow
+mend server stop                    # stops Mend and Postgres, not workspaces
+mend server start --offline         # reuses the active generation and pin
+mend server restart --offline       # stops Mend only, leaves Postgres running
+mend server upgrade --version 0.24.0 --assets-dir ./release-0.24.0 --offline
+mend server upgrade --version latest # explicit GitHub resolution and pull of missing images
+```
+
+Start and restart never download assets or pull images, with or without `--offline`. They require
+preloaded images with the saved version label and exact-version health. Status and logs hold the
+same lock but never rewrite configuration, change permissions, or start containers. Status reports
+stopped containers without making a health claim. If Mend is running, one bounded health request
+must match the saved pin. Missing installations produce a readable error without creating a
+configuration directory or running setup.
+
+Updating the CLI does not change an existing server pin. Setup repairs the same version; a changed
+`--version`, including `latest`, directs the user to upgrade. Upgrades require `--version`; latest
+is never implicit. Semver precedence, including prerelease identifiers, determines downgrade
+refusal. A same-version upgrade does nothing and directs startup retries to `mend server start`.
+
+Upgrade proceeds under the installation lock:
+
+1. Validate target assets and the complete proposed config/env pair. Inspect the canonical image and
+   require its `org.opencontainers.image.version` label to equal the exact target. Online upgrades
+   pull only missing images; offline upgrades never pull or contact GitHub. Verify both Compose
+   generations resolve to only the canonical Mend pin and official `postgres:17-alpine`.
+2. Fsync a prepared target generation, leaving `active` unchanged. Record the old and target paths
+   in a private `backups/upgrade-UUID/recovery.json` before stopping anything.
+3. Warn about interruption, stop Mend's app writers, and ensure official Postgres is running. Run
+   `docker compose ... exec -T postgres pg_dumpall --username=postgres`. The production process
+   runtime passes stdout directly to an exclusively created `0600` file, not a buffered string. Only
+   successful, nonempty, fsynced output becomes `database.sql`; failed partial files remain private
+   and are not backups. Stop external database writers before upgrading: pg_dumpall takes
+   per-database consistent snapshots while Mend's writers are stopped, not a cross-database snapshot
+   in the presence of unrelated writes. PostgreSQL stays running for the dump.
+4. Activate the target only after the backup completes. This is the write-ahead migration boundary.
+   Start it with `--pull never --no-build` and require exact-version health.
+
+If assets, images, generation preparation, or recovery-directory creation fail, the old pin and app
+are untouched. If stop, backup, or activation fails before target startup, reselect the exact old
+generation and attempt to recover the old app only if it was running before the upgrade. Recovery
+failure is reported with `mend server start` guidance. If Postgres was stopped, a failed backup may
+leave Postgres running; it does not start a previously stopped app.
+
+Once target startup has been attempted, any failure retains the new target, old generation, and
+completed backup. **Never automatically downgrade or restore the database.** Run:
+
+```sh
+mend server logs --tail 100
+mend server status
+# Fix the target image/runtime problem without changing the pin, then:
+mend server start --offline
+```
+
+After a killed upgrade, recover the lock only as described above. If `active` selects the target,
+assume migrations may have begun, even if no successful startup was recorded. Keep all recovery
+files and retry that target after diagnosis. If `active` still selects the old generation, target
+startup was not reached and `mend server start --offline` retries the old app. Do not select an
+unreferenced prepared generation just because it exists.
+
+A manual database recovery is an operator decision: stop Mend, preserve the current database and
+volumes, test the completed SQL dump in an isolated compatible PostgreSQL cluster, and assess the
+application/migration compatibility before directing any application at the restored database. There
+is intentionally no automatic restore or rollback command. The SQL dump includes role credentials
+and both Mend and Sealant databases; do not share it or raw generation files. It is a database
+backup, not a backup of workspace/store, registry or other volumes. Back those up separately.
+
+Stop/restart/upgrade interrupt web, SSH and registry connections. Mend does not delete or stop
+workspace containers, but active work can lose connectivity and may need reconnection. None of these
+commands deletes volumes, calls `down -v`, or prunes Docker resources. Do not run another Compose
+client or mutate image tags concurrently with Mend; the filesystem lock coordinates Mend commands,
+not arbitrary Docker clients.
 
 ## Docker and health
 
@@ -240,6 +325,7 @@ pnpm --filter @sealant/mend exec vitest run src/server-setup.test.ts src/server-
 pnpm --filter @sealant/mend exec vitest run --testTimeout=15000
 # Opt-in real Engine checks use unique test names, never the standard Mend resources:
 MEND_DOCKER_TEST_CONTEXT=default pnpm --filter @sealant/mend exec vitest run src/server-docker-protocol.test.ts
+pnpm --filter @sealant/mend exec vitest run src/server-setup.test.ts src/server-store.test.ts src/server-runtime.test.ts src/server-lifecycle.test.ts src/help.test.ts
 # Preload official postgres:17-alpine in a local daemon that can bind-mount this worktree's temp files:
 MEND_DOCKER_TEST_CONTEXT=default pnpm --filter @sealant/mend exec vitest run src/server-postgres-bootstrap.test.ts
 pnpm --filter @sealant/mend typecheck
@@ -276,6 +362,14 @@ test inputs, not shipped CLI assets. Setup downloads the two assets from the sel
 unless `--assets-dir DIR` supplies `compose.v1.yaml` and `postgres-init.sh`. Supplied files pass the
 same contract checks and are copied into the private generation. The source directory is not
 retained or needed on reruns. Fresh setup with local assets requires an explicit `--version`.
+
+Lifecycle tests invoke public `serverCommand` with the production process runtime, a separate local
+Docker protocol fixture executable, real HTTP listeners and real files. They check order, exact
+pins/generations, failure recovery, backup permissions and no rollback after target startup. Runtime
+tests stream a 16 MiB dump directly to disk and exercise exclusive creation, partial failure and
+bounded capture. These are deterministic protocol tests, not a claim of live image/migration
+acceptance. That acceptance uses two genuinely stamped canonical candidate images and the public CLI
+flags above; changing a health response to an invented version is not an upgrade test.
 
 `--offline` forbids GitHub requests and runs Compose with `--pull never --no-build`. Preload both
 `postgres:17-alpine` and `ghcr.io/sealant-sh/mend:VERSION` in the selected daemon. The Mend image's

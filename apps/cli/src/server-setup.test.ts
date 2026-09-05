@@ -789,7 +789,7 @@ describe("mend server setup", () => {
     ).toBe(false);
   });
 
-  it("changes only the Mend server pin on an explicit upgrade", async () => {
+  it("directs changed setup pins to upgrade without changing the installation", async () => {
     const configDir = temporaryDirectory("upgrade");
     const first = makeRuntime({ configDir });
     expect(await serverCommand(["setup"], first.runtime)).toEqual({ _tag: "ok" });
@@ -802,22 +802,22 @@ describe("mend server setup", () => {
       daemon: first.daemon,
       healthBody: '{"status":"ok","version":"0.24.0"}',
     });
-    expect(await serverCommand(["setup", "--version", "latest"], upgraded.runtime)).toEqual({
-      _tag: "ok",
+    expect(await serverCommand(["setup", "--version", "latest"], upgraded.runtime)).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining("mend server upgrade --version latest"),
     });
     const next = readEnv(activeFile(configDir, "server.env"));
-    expect(activeDirectory(configDir)).not.toBe(previous);
+    expect(activeDirectory(configDir)).toBe(previous);
     expect(readEnv(path.join(previous, "server.env"))).toEqual(secrets);
 
-    expect(next.get("MEND_VERSION")).toBe("0.24.0");
+    expect(next.get("MEND_VERSION")).toBe("0.23.0");
     expect(next.get("MEND_IMAGE_REPOSITORY")).toBe("ghcr.io/sealant-sh/mend");
     expect(next.get("SEALANT_SERVICE_KEY")).toBe(secrets.get("SEALANT_SERVICE_KEY"));
     expect(next.get("SEALANT_DB_PASSWORD")).toBe(secrets.get("SEALANT_DB_PASSWORD"));
-    expect(upgraded.randomSizes).toEqual([24]);
+    expect(upgraded.randomSizes).toEqual([]);
     expect(fs.readFileSync(path.join(configDir, "identity.env"), "utf8")).toBe(identity);
-    expect(upgraded.fetched).toContain(
-      "https://api.github.com/repos/sealant-sh/Mend/releases/latest",
-    );
+    expect(upgraded.fetched).toEqual([]);
+    expect(upgraded.commands).toEqual([]);
     expect([...next.keys()].some((key) => key.includes("SEALANT_VERSION"))).toBe(false);
   });
 

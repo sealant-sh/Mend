@@ -6,7 +6,12 @@ import * as path from "node:path";
 
 import { claimServerDockerVolumes } from "./server-docker-volumes.ts";
 import { probeServerRegistry } from "./server-registry-probe.ts";
-import { runServerProcess, serverComposeArgs, serverProcessDeadlines } from "./server-runtime.ts";
+import {
+  runServerProcess,
+  serverComposeArgs,
+  serverProcessDeadlines,
+  type ServerProcessOptions,
+} from "./server-runtime.ts";
 import {
   withServerStore,
   ServerStoreError,
@@ -40,7 +45,7 @@ interface FetchOutput {
   readonly error?: string;
 }
 
-/** Runtime operations used by `mend server setup`; tests replace only process and network edges. */
+/** Runtime operations for local server management; the historical name remains compatible. */
 export interface ServerSetupRuntime {
   /** Directory where setup persists compose, configuration, and secrets. */
   readonly configDir: string;
@@ -48,11 +53,11 @@ export interface ServerSetupRuntime {
   readonly platform: NodeJS.Platform;
   /** Version of this CLI, used for a fresh server pin. */
   readonly cliVersion: string;
-  /** Run without a shell. Enforce supplied deadlines and await termination, including on timeout. */
+  /** Run without a shell; enforce deadlines and await group termination; capture bounded output or stream stdout to an exclusive private file. */
   run(
     command: string,
     args: ReadonlyArray<string>,
-    options?: { readonly timeoutMs: number },
+    options?: ServerProcessOptions,
   ): Promise<CommandOutput>;
   /** Fetch text with a bounded request timeout. */
   fetchText(url: string, timeoutMs: number): Promise<FetchOutput>;
@@ -64,7 +69,7 @@ export interface ServerSetupRuntime {
   writeLine(line: string): void;
 }
 
-/** Observable result of a server command. Expected setup failures do not reject. */
+/** Observable result of a server command. Expected lifecycle failures do not reject. */
 export type ServerCommandResult =
   | { readonly _tag: "ok" }
   | { readonly _tag: "error"; readonly message: string };
@@ -156,7 +161,12 @@ const parsePort = (value: string, flag: string): number => {
 const parseVersion = (value: string): string => {
   const normalized = value.startsWith("v") ? value.slice(1) : value;
   if (normalized === "latest") return normalized;
-  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(normalized)) {
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?$/.exec(normalized);
+  const prerelease = match?.[4]?.split(".") ?? [];
+  if (
+    match === null ||
+    prerelease.some((part) => !/^[0-9A-Za-z-]+$/.test(part) || /^0\d+$/.test(part))
+  ) {
     throw setupError('--version must be "latest" or an exact Mend version such as 0.23.0.');
   }
   return normalized;
@@ -1038,6 +1048,15 @@ const setupServer = async (
   const existing = storeValue(readServerInstallation(store));
   const savedIdentity = storeValue(store.readIdentity());
   const savedSecrets = savedIdentity === null ? null : parseSecrets(savedIdentity);
+  if (
+    existing !== null &&
+    options.version !== undefined &&
+    options.version !== existing.config.serverVersion
+  ) {
+    throw setupError(
+      `Setup retains Mend ${existing.config.serverVersion}. Use mend server upgrade --version ${options.version} to change the server pin.`,
+    );
+  }
   const selectedContext = await selectDockerContext(
     runtime,
     options.context ?? existing?.config.dockerContext,
@@ -1085,11 +1104,326 @@ const setupServer = async (
   );
 };
 
+const serverVersionParts = (version: string) => {
+  const separator = version.indexOf("-");
+  return {
+    core: (separator < 0 ? version : version.slice(0, separator)).split("."),
+    pre: separator < 0 ? [] : version.slice(separator + 1).split("."),
+  };
+};
+
+const compareNumericIdentifiers = (x: string, y: string): number => {
+  if (BigInt(x) === BigInt(y)) return 0;
+  return BigInt(x) < BigInt(y) ? -1 : 1;
+};
+
+const compareServerVersions = (left: string, right: string): number => {
+  const a = serverVersionParts(left);
+  const b = serverVersionParts(right);
+  for (let index = 0; index < 3; index += 1) {
+    const order = compareNumericIdentifiers(a.core[index] ?? "0", b.core[index] ?? "0");
+    if (order !== 0) return order;
+  }
+  if (a.pre.length === 0 || b.pre.length === 0) {
+    if (a.pre.length === b.pre.length) return 0;
+    return a.pre.length === 0 ? 1 : -1;
+  }
+  for (let index = 0; index < Math.max(a.pre.length, b.pre.length); index += 1) {
+    const x = a.pre[index];
+    const y = b.pre[index];
+    if (x === undefined || y === undefined) {
+      if (x === y) return 0;
+      return x === undefined ? -1 : 1;
+    }
+    if (x === y) continue;
+    const xn = /^\d+$/.test(x);
+    const yn = /^\d+$/.test(y);
+    if (xn && yn) return compareNumericIdentifiers(x, y);
+    if (xn !== yn) return xn ? -1 : 1;
+    return x < y ? -1 : 1;
+  }
+  return 0;
+};
+
+const composeCommand = async (
+  runtime: ServerSetupRuntime,
+  installation: ServerInstallation,
+  args: ReadonlyArray<string>,
+): Promise<CommandOutput> => {
+  const output = await runtime.run(
+    "docker",
+    serverComposeArgs(
+      { directory: installation.directory, dockerContext: installation.config.dockerContext },
+      args,
+    ),
+  );
+  if (output.status !== 0)
+    throw commandFailure(`Docker Compose ${args[0] ?? "command"} failed`, output);
+  return output;
+};
+
+const interruptionNotice = (runtime: ServerSetupRuntime): void =>
+  runtime.writeLine(
+    "Connections will be interrupted. Workspace containers and data are retained, but active work can lose connectivity and may need reconnection. Mend does not stop workspace containers.",
+  );
+
+const startInstallation = async (
+  runtime: ServerSetupRuntime,
+  installation: ServerInstallation,
+): Promise<void> => {
+  await composeCommand(runtime, installation, [
+    "up",
+    "-d",
+    "--wait",
+    "--pull",
+    "never",
+    "--no-build",
+  ]);
+  await probeHealth(runtime, installation.config.appUrl, installation.config.serverVersion);
+  runtime.writeLine(
+    `Mend ${installation.config.serverVersion} is reachable at ${installation.config.appUrl}`,
+  );
+};
+
+const parseUpgradeOptions = (args: ReadonlyArray<string>): SetupOptions => {
+  for (let index = 0; index < args.length; index += 1) {
+    const flag = args[index];
+    if (flag === "--offline") continue;
+    if (flag !== "--version" && flag !== "--assets-dir")
+      throw setupError(`Unknown server upgrade option "${flag}".`);
+    index += 1;
+  }
+  const options = parseSetupOptions(args);
+  if (options.version === undefined)
+    throw setupError(
+      "Upgrade requires --version TARGET. Use --version latest only to request the latest release explicitly.",
+    );
+  return options;
+};
+
+const upgradeServer = async (
+  args: ReadonlyArray<string>,
+  runtime: ServerSetupRuntime,
+  store: ServerStore,
+  existing: ServerInstallation,
+): Promise<void> => {
+  const options = parseUpgradeOptions(args);
+  const version = await resolveServerVersion(runtime, options, existing.config);
+  const order = compareServerVersions(version, existing.config.serverVersion);
+  if (order < 0)
+    throw setupError(
+      `Refusing downgrade from ${existing.config.serverVersion} to ${version}. Database migrations may not be reversible.`,
+    );
+  if (order === 0) {
+    runtime.writeLine(
+      `Mend is already pinned to ${version}. Use mend server start to retry startup; no upgrade was performed.`,
+    );
+    return;
+  }
+  const previous = storeValue(store.readActive());
+  if (previous === null) throw setupError("The active server generation is missing.");
+  const assets = await resolveAssets(runtime, version, existing, store, options);
+  const config: ServerConfig = { ...existing.config, serverVersion: version };
+  const secrets = parseSecrets(previous.files.identity);
+  const files = {
+    identity: previous.files.identity,
+    config: `${JSON.stringify(config, null, 2)}\n`,
+    env: renderSecrets(secrets, config),
+    ...assets,
+  };
+  // Parse the proposed pair before publication. Identity bytes come only from the old generation.
+  const parsed = parseServerConfig(files.config);
+  if (renderSecrets(parseSecrets(files.env), parsed) !== files.env)
+    throw setupError("Invalid upgrade configuration.");
+  await checkLocalImages(runtime, config, options.offline ? "local" : "pull-missing");
+  await checkComposeImages(runtime, existing);
+  const target = storeValue(store.prepare(files));
+  const installation = { directory: target.directory, config };
+  await checkComposeImages(runtime, installation);
+  const running = await composeCommand(runtime, existing, [
+    "ps",
+    "--status",
+    "running",
+    "--services",
+  ]);
+  const appWasRunning = running.stdout.trim().split(/\s+/).includes("mend");
+  const backup = storeValue(store.createBackup(previous, target));
+  interruptionNotice(runtime);
+  runtime.writeLine(
+    `Upgrade recovery files: ${backup.directory}. Keep the previous generation: ${previous.directory}`,
+  );
+  try {
+    await composeCommand(runtime, existing, ["stop", "--timeout", "30", "mend"]);
+    await composeCommand(runtime, existing, [
+      "up",
+      "-d",
+      "--wait",
+      "--pull",
+      "never",
+      "--no-build",
+      "postgres",
+    ]);
+    const dumped = await runtime.run(
+      "docker",
+      serverComposeArgs({ directory: previous.directory, dockerContext: config.dockerContext }, [
+        "exec",
+        "-T",
+        "postgres",
+        "pg_dumpall",
+        "--username=postgres",
+      ]),
+      { stdoutFile: backup.partialFile },
+    );
+    // Dump stderr can include SQL or credentials. Do not put it in a terminal error.
+    if (dumped.status !== 0)
+      throw setupError("Database backup failed. The partial dump is not a usable backup.");
+    storeValue(backup.complete());
+    storeValue(store.activate(target));
+  } catch (cause) {
+    // No target startup has been attempted. Even a failed activation fsync may have moved active.
+    const restored = store.activate(previous);
+    let recovery = "Previous pin retained; the app was already stopped.";
+    if (restored._tag === "error")
+      recovery =
+        "Could not reselect the previous generation. Inspect active before retrying any command.";
+    else if (appWasRunning) {
+      try {
+        await startInstallation(runtime, existing);
+        recovery = "Previous pin and app recovered.";
+      } catch {
+        recovery =
+          "Previous pin retained, but the old app could not recover. Run mend server start after fixing Docker.";
+      }
+    }
+    const reason = cause instanceof Error ? cause.message : "Upgrade preparation failed.";
+    throw setupError(
+      `${reason} ${recovery} Recovery files: ${backup.directory}. Target startup was not attempted.`,
+    );
+  }
+  // Activation is the write-ahead boundary: after this point assume migrations may have run.
+  // Never select the old generation or restore its database in response to any startup failure.
+  try {
+    await startInstallation(runtime, installation);
+  } catch {
+    throw setupError(
+      `Mend ${version} startup or exact-version health failed; migrations may have begun. The target pin remains active. Do NOT downgrade or restore the database automatically. Run mend server logs --tail 100 and mend server status; fix the target, then mend server start --offline. Previous generation: ${previous.directory}. Target generation: ${target.directory}. Database backup and recovery record: ${backup.directory}.`,
+    );
+  }
+  runtime.writeLine(`Upgraded to ${version}. Retained database backup: ${backup.directory}`);
+};
+
+const serverStatus = async (
+  runtime: ServerSetupRuntime,
+  installation: ServerInstallation,
+): Promise<void> => {
+  runtime.writeLine(
+    `Pinned Mend ${installation.config.serverVersion} at ${installation.config.appUrl}`,
+  );
+  runtime.writeLine(`Active generation: ${installation.directory}`);
+  const state = await composeCommand(runtime, installation, ["ps", "--all"]);
+  runtime.writeLine(state.stdout.trim() || "No Compose containers found. Run mend server start.");
+  const running = await composeCommand(runtime, installation, [
+    "ps",
+    "--status",
+    "running",
+    "--services",
+  ]);
+  if (!running.stdout.trim().split(/\s+/).includes("mend")) {
+    runtime.writeLine("Mend is stopped. No health claim was made.");
+    return;
+  }
+  const response = await runtime.fetchText(`${installation.config.appUrl}/api/health`, 2_000);
+  let fields: ReadonlyMap<string, unknown> | null = null;
+  try {
+    fields = ownFields(JSON.parse(response.body));
+  } catch {
+    /* Invalid health is not readiness. */
+  }
+  if (
+    response.error !== undefined ||
+    response.status < 200 ||
+    response.status >= 300 ||
+    fields?.get("status") !== "ok" ||
+    fields.get("version") !== installation.config.serverVersion
+  ) {
+    throw setupError(
+      `Mend is running but exact-version health for ${installation.config.serverVersion} was not observed. Check mend server logs --tail 100.`,
+    );
+  }
+  runtime.writeLine(
+    `Mend ${installation.config.serverVersion} is reachable at ${installation.config.appUrl}`,
+  );
+};
+
+const manageServer = async (
+  command: string,
+  args: ReadonlyArray<string>,
+  runtime: ServerSetupRuntime,
+  store: ServerStore,
+): Promise<void> => {
+  const installation = storeValue(readServerInstallation(store));
+  if (installation === null)
+    throw setupError(
+      "No Mend server is configured. Run mend server setup explicitly to install one.",
+    );
+  if (command === "upgrade") return upgradeServer(args, runtime, store, installation);
+  if (command === "logs") {
+    let tail = 100;
+    if (args.length > 0) tail = args.length === 2 && args[0] === "--tail" ? Number(args[1]) : NaN;
+    if (
+      !Number.isInteger(tail) ||
+      tail < 1 ||
+      tail > 1000 ||
+      (args[1] !== undefined && !/^\d+$/.test(args[1]))
+    ) {
+      throw setupError(
+        "usage: mend server logs [--tail N], where N is 1..1000. Follow is not supported.",
+      );
+    }
+    const output = await composeCommand(runtime, installation, [
+      "logs",
+      "--no-color",
+      "--tail",
+      String(tail),
+    ]);
+    runtime.writeLine(output.stdout.trimEnd());
+    if (output.stderr !== "") runtime.writeLine(output.stderr.trimEnd());
+    return;
+  }
+  if (
+    args.length !== 0 &&
+    !(
+      (command === "start" || command === "restart") &&
+      args.length === 1 &&
+      args[0] === "--offline"
+    )
+  ) {
+    throw setupError(
+      `usage: mend server ${command}${command === "start" || command === "restart" ? " [--offline]" : ""}`,
+    );
+  }
+  if (command === "status") return serverStatus(runtime, installation);
+  if (command === "stop") {
+    interruptionNotice(runtime);
+    await composeCommand(runtime, installation, ["stop", "--timeout", "30"]);
+    runtime.writeLine(
+      "Mend and Postgres stopped. Volumes, configuration and workspace containers are retained.",
+    );
+    return;
+  }
+  await checkLocalImages(runtime, installation.config);
+  if (command === "restart") {
+    interruptionNotice(runtime);
+    await composeCommand(runtime, installation, ["stop", "--timeout", "30", "mend"]);
+  }
+  await startInstallation(runtime, installation);
+};
+
 /** Capture host configuration once; all child commands use the controlled server environment. */
-export const nodeServerSetupRuntime = (): ServerSetupRuntime => {
+export const nodeServerRuntime = (): ServerSetupRuntime => {
   const environment = { ...process.env };
   const home = os.homedir();
-  const configHome = process.env["XDG_CONFIG_HOME"] ?? path.join(home, ".config");
+  const configHome = environment["XDG_CONFIG_HOME"] ?? path.join(home, ".config");
   return {
     configDir: path.join(configHome, "mend"),
     platform: process.platform,
@@ -1113,18 +1447,32 @@ export const nodeServerSetupRuntime = (): ServerSetupRuntime => {
   };
 };
 
+/** Compatibility name for callers predating the lifecycle command family. */
+export const nodeServerSetupRuntime = nodeServerRuntime;
+
 /** Run the `mend server` command family through a supplied or real runtime. */
 export const serverCommand = async (
   args: ReadonlyArray<string>,
-  runtime: ServerSetupRuntime = nodeServerSetupRuntime(),
+  runtime: ServerSetupRuntime = nodeServerRuntime(),
 ): Promise<ServerCommandResult> => {
   const [command, ...rest] = args;
-  if (command !== "setup") {
-    return { _tag: "error", message: "usage: mend server setup [options]" };
+  if (
+    command === undefined ||
+    !["setup", "status", "start", "stop", "restart", "logs", "upgrade"].includes(command)
+  ) {
+    return {
+      _tag: "error",
+      message: "usage: mend server <setup|status|start|stop|restart|logs|upgrade> [options]",
+    };
   }
   try {
-    const result = await withServerStore(runtime.configDir, async (store) =>
-      setupServer(rest, runtime, store),
+    const result = await withServerStore(
+      runtime.configDir,
+      async (store) => {
+        if (command === "setup") await setupServer(rest, runtime, store);
+        else await manageServer(command, rest, runtime, store);
+      },
+      { create: command === "setup" },
     );
     return result._tag === "error"
       ? { _tag: "error", message: result.error.message }
@@ -1132,6 +1480,6 @@ export const serverCommand = async (
   } catch (cause) {
     if (cause instanceof ServerSetupError) return { _tag: "error", message: cause.message };
     const detail = cause instanceof Error ? cause.message : String(cause);
-    return { _tag: "error", message: `Server setup failed unexpectedly: ${detail}` };
+    return { _tag: "error", message: `Server command failed unexpectedly: ${detail}` };
   }
 };

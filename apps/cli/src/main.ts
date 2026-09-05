@@ -2578,6 +2578,7 @@ _mend() {
     'attach:reattach to a running session' 'stop:stop the agent — record and review remain'
     'shell:open a shell in a live session workspace'
     'service:reachable ports — add, list, stop'
+    'server:local server setup, lifecycle and upgrades'
     'keys:the machine Mend deploy key — init, show, share'
     'skills:skill libraries — list, push'
     'accounts:your connected accounts on the platform'
@@ -2593,6 +2594,18 @@ _mend() {
     return
   fi
   case $words[2] in
+    server)
+      if (( CURRENT == 3 )); then
+        compadd setup status start stop restart logs upgrade
+      else
+        case $words[3] in
+          setup) compadd -- --version --assets-dir --offline --context --port --ssh-port --registry-port --bind --url --origin --docker-socket ;;
+          upgrade) compadd -- --version --assets-dir --offline ;;
+          start|restart) compadd -- --offline ;;
+          logs) compadd -- --tail ;;
+        esac
+      fi
+      ;;
     shell|attach|stop|continue|resume|rejoin)
       local -a sessions
       sessions=(\${(f)"$(command mend __complete session 2>/dev/null | tr '\\t' ':')"})
@@ -2606,10 +2619,24 @@ _mend "$@"
 const BASH_COMPLETIONS = `_mend() {
   local cur=\${COMP_WORDS[COMP_CWORD]}
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "adopt codex claude opencode run attach stop shell service keys skills pair doctor continue resume rejoin refresh projects sessions status ui help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "adopt codex claude opencode run attach stop shell service server keys skills pair doctor continue resume rejoin refresh projects sessions status ui help" -- "$cur") )
     return
   fi
   case \${COMP_WORDS[1]} in
+    server)
+      local options=""
+      if [ "$COMP_CWORD" -eq 2 ]; then
+        options="setup status start stop restart logs upgrade"
+      else
+        case \${COMP_WORDS[2]} in
+          setup) options="--version --assets-dir --offline --context --port --ssh-port --registry-port --bind --url --origin --docker-socket" ;;
+          upgrade) options="--version --assets-dir --offline" ;;
+          start|restart) options="--offline" ;;
+          logs) options="--tail" ;;
+        esac
+      fi
+      COMPREPLY=( $(compgen -W "$options" -- "$cur") )
+      ;;
     shell|attach|stop|continue|resume|rejoin)
       COMPREPLY=( $(compgen -W "$(command mend __complete session 2>/dev/null | cut -f1)" -- "$cur") )
       ;;

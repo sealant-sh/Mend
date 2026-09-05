@@ -17,6 +17,44 @@ diffs, reveal whitespace, select line ranges, add line or whole-change comments,
 evidence, and draft a follow-up for the same session. Press `y` to deliver a pending follow-up and
 relaunch that session, or `o` to continue the review in the web app.
 
+## Local server
+
+On Linux or macOS with local Docker and Compose v2:
+
+```sh
+mend server setup
+mend server status
+mend server logs --tail 100
+mend server stop
+mend server start
+mend server restart
+```
+
+Setup preserves the existing server pin even when this CLI is newer. To change the pin, use
+`mend server upgrade --version TARGET`; `latest` is accepted only when explicitly requested. Upgrade
+checks release assets and image labels before stopping app writers, then makes a private Postgres
+database backup before target startup. Once migrations may have started, failures retain the target
+pin rather than automatically downgrading or restoring the database.
+
+For local release assets and preloaded images:
+
+```sh
+mend server setup --version 0.23.0 --assets-dir ./release-0.23.0 --offline --registry-port 5501
+mend server upgrade --version 0.24.0 --assets-dir ./release-0.24.0 --offline
+```
+
+Each asset directory must contain `compose.v1.yaml` and `postgres-init.sh`. Mend copies them into an
+immutable private generation; the source directory is not needed afterward. Preload official
+`postgres:17-alpine` and canonical `ghcr.io/sealant-sh/mend:VERSION`. Image labels and health must
+report that exact version. `--offline` forbids GitHub requests and Docker pulls. Start/restart
+always reuse local images and retained assets. The loopback registry defaults to port 5000; choose a
+free `--registry-port` when another registry, such as Sealant's, already uses it.
+
+Stop/restart/upgrade interrupt connections. Workspace containers and data remain, but active work
+may lose connectivity and need reconnection. No volumes are deleted. Status/logs never start an
+installation or change its configuration. See [SERVER-RUNTIME.md](SERVER-RUNTIME.md) for the backup
+layout, lock recovery, and migration-failure procedure.
+
 ## Getting started
 
 Once per machine, in this order:
