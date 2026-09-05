@@ -194,57 +194,67 @@ describe("server lifecycle", { timeout: 30_000 }, () => {
     },
   );
 
-  it("preserves the generation and pin across CLI updates, setup reruns, status/logs and stop/start/restart", async () => {
-    const f = await fixture();
-    expect(await f.setup()).toEqual({ _tag: "ok" });
-    const before = f.files();
-    const directory = f.active();
-    fs.rmSync(f.assets, { recursive: true });
-    expect(await serverCommand(["setup", "--offline"], f.runtime)).toEqual({ _tag: "ok" });
-    expect(await serverCommand(["setup", "--version", "0.24.0"], f.runtime)).toMatchObject({
-      _tag: "error",
-      message: expect.stringContaining("upgrade"),
-    });
-    fs.chmodSync(f.configDir, 0o750);
-    for (const command of [
-      ["status"],
-      ["logs", "--tail", "37"],
-      ["stop"],
-      ["status"],
-      ["start", "--offline"],
-      ["restart"],
-    ]) {
-      expect(await serverCommand(command, f.runtime)).toEqual({ _tag: "ok" });
-      expect(f.files()).toEqual(before);
-      expect(f.active()).toBe(directory);
-    }
-    expect(fs.statSync(f.configDir).mode & 0o777).toBe(0o750);
-    expect(f.state()).toMatchObject({ version: "0.23.0", appRunning: true, postgresRunning: true });
-    expect(f.lines).toContain("Mend is stopped. No health claim was made.");
-    expect(f.lines.some((line) => line.includes("active work can lose connectivity"))).toBe(true);
-    expect(f.calls().some((call) => call.command.join(" ") === "logs --no-color --tail 37")).toBe(
-      true,
-    );
-    expect(
-      f
-        .calls()
-        .filter((call) => call.directory !== null)
-        .every((call) => call.directory === directory),
-    ).toBe(true);
-    expect(
-      f
-        .calls()
-        .every(
-          (call) =>
-            !call.poisoned &&
-            !call.args.includes("down") &&
-            !call.args.includes("prune") &&
-            (!call.args.includes("pull") || call.args.at(-1)?.includes("/mend-registry-probe/")),
-        ),
-    ).toBe(true);
-    expect(fs.readdirSync(path.join(f.configDir, "generations"))).toHaveLength(1);
-    expect(f.fetched.every((request) => request.endsWith("/api/health"))).toBe(true);
-  });
+  // This sequence combines setup, reruns, and lifecycle commands, each spawning real protocol
+  // processes. Its aggregate CI budget is separate from the unchanged per-command deadlines.
+  it(
+    "preserves the generation and pin across CLI updates, setup reruns, status/logs and stop/start/restart",
+    { timeout: 120_000 },
+    async () => {
+      const f = await fixture();
+      expect(await f.setup()).toEqual({ _tag: "ok" });
+      const before = f.files();
+      const directory = f.active();
+      fs.rmSync(f.assets, { recursive: true });
+      expect(await serverCommand(["setup", "--offline"], f.runtime)).toEqual({ _tag: "ok" });
+      expect(await serverCommand(["setup", "--version", "0.24.0"], f.runtime)).toMatchObject({
+        _tag: "error",
+        message: expect.stringContaining("upgrade"),
+      });
+      fs.chmodSync(f.configDir, 0o750);
+      for (const command of [
+        ["status"],
+        ["logs", "--tail", "37"],
+        ["stop"],
+        ["status"],
+        ["start", "--offline"],
+        ["restart"],
+      ]) {
+        expect(await serverCommand(command, f.runtime)).toEqual({ _tag: "ok" });
+        expect(f.files()).toEqual(before);
+        expect(f.active()).toBe(directory);
+      }
+      expect(fs.statSync(f.configDir).mode & 0o777).toBe(0o750);
+      expect(f.state()).toMatchObject({
+        version: "0.23.0",
+        appRunning: true,
+        postgresRunning: true,
+      });
+      expect(f.lines).toContain("Mend is stopped. No health claim was made.");
+      expect(f.lines.some((line) => line.includes("active work can lose connectivity"))).toBe(true);
+      expect(f.calls().some((call) => call.command.join(" ") === "logs --no-color --tail 37")).toBe(
+        true,
+      );
+      expect(
+        f
+          .calls()
+          .filter((call) => call.directory !== null)
+          .every((call) => call.directory === directory),
+      ).toBe(true);
+      expect(
+        f
+          .calls()
+          .every(
+            (call) =>
+              !call.poisoned &&
+              !call.args.includes("down") &&
+              !call.args.includes("prune") &&
+              (!call.args.includes("pull") || call.args.at(-1)?.includes("/mend-registry-probe/")),
+          ),
+      ).toBe(true);
+      expect(fs.readdirSync(path.join(f.configDir, "generations"))).toHaveLength(1);
+      expect(f.fetched.every((request) => request.endsWith("/api/health"))).toBe(true);
+    },
+  );
 
   it.each([
     ["logs", "--follow"],
