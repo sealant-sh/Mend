@@ -11,6 +11,11 @@ import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } fro
 
 import type { AgentShareHandle, ShareEvent } from "./agent-share.ts";
 import {
+  deriveAdoptOffer,
+  submitDashboardAdoption,
+  type AdoptOffer,
+} from "./dashboard-adoption.ts";
+import {
   deriveHarnesses,
   deriveProjects,
   advanceFromBase,
@@ -33,7 +38,6 @@ import {
   removeSession,
   replaceSession,
   WORKBENCH_KEY,
-  type ProjectDto,
   type ProjectItem,
   type SelectableRow,
   type ServiceDto,
@@ -491,13 +495,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
    * The cwd has a Git origin the store doesn't know: offer to adopt that URL once per dashboard
    * run. Client filesystem paths never cross the server boundary.
    */
-  const [adoptOffer, setAdoptOffer] = useState<{
-    /** The network Git URL the server clones. */
-    readonly source: string;
-    readonly name: string;
-    /** ←→ toggles how the server authenticates to the remote. */
-    readonly modeIndex: number;
-  } | null>(null);
+  const [adoptOffer, setAdoptOffer] = useState<AdoptOffer | null>(null);
   const adoptOfferDecided = useRef(false);
   const [reviewing, setReviewing] = useState<{
     readonly session: SessionDto;
@@ -571,14 +569,8 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   useEffect(() => {
     if (data === undefined || adoptOfferDecided.current) return;
     if (homeProject !== undefined) return;
-    const facts = cwdFacts(ctx.cwd);
-    if (facts.repoRoot === null || facts.originUrl === null) return;
     adoptOfferDecided.current = true;
-    setAdoptOffer({
-      source: facts.originUrl,
-      name: normalizeProjectName(facts.repoRoot.split("/").at(-1) ?? "project"),
-      modeIndex: 0,
-    });
+    setAdoptOffer(deriveAdoptOffer(cwdFacts(ctx.cwd)));
     // homeProject/data identity is enough; ctx.cwd never changes in a run.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, homeProject]);
@@ -795,12 +787,8 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   ] as const;
 
   const adoptMutation = useMutation({
-    mutationFn: (offer: {
-      readonly source: string;
-      readonly name: string;
-      readonly modeIndex: number;
-    }) =>
-      ctx.api<ProjectDto>("POST", "/projects", {
+    mutationFn: (offer: AdoptOffer) =>
+      submitDashboardAdoption(ctx.api, {
         name: offer.name,
         source: offer.source,
         gitAuthMode: ADOPT_AUTH_MODES[offer.modeIndex]?.mode ?? "ambient",
@@ -814,8 +802,13 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       setBusy(null);
       say(errorText(error));
     },
-    onSuccess: (project) => {
+    onSuccess: (result) => {
       setBusy(null);
+      if (result.kind === "invalid-source") {
+        say(result.message);
+        return;
+      }
+      const project = result.project;
       say(`adopted · ${project.name} — n starts a worktree`);
       setProjectKey(project.id);
       setSessionKey(null);
@@ -1231,7 +1224,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         adoptMutation.mutate(adoptOffer);
       } else if (key.name === "escape" || key.name === "q") {
         setAdoptOffer(null);
-        say("not adopted — mend adopt does it any time");
+        say("not adopted · use mend adopt <url> any time");
       } else if (
         key.name === "right" ||
         key.name === "l" ||
@@ -1638,7 +1631,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           border
           borderStyle="rounded"
           borderColor={COBALT}
-          title=" adopt this repository? "
+          title=" adopt this repository URL? "
           titleAlignment="left"
           backgroundColor={SURFACE}
           flexDirection="column"

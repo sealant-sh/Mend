@@ -30,17 +30,38 @@ export type GitAuthMode = typeof GitAuthMode.Type;
 
 /** The recovery guidance shown wherever project adoption accepts a repository source. */
 export const REPOSITORY_CLONE_URL_GUIDANCE =
-  "Use an HTTP(S), SSH, or SCP-style Git URL. Local paths and file:// URLs are not supported.";
+  "Use an HTTP(S), SSH, SCP-style, or git:// repository URL. Local paths and file:// URLs are not supported.";
 
 const isScpStyleGitUrl = (value: string): boolean =>
-  /^(?:[^@\s/:]+@)?(?:\[[0-9a-fA-F:]+\]|[a-zA-Z0-9.-]+):[^\s\\]+$/.test(value);
+  /^(?:[^@\s/:[\]]+@)?(?:\[[0-9a-fA-F:]+\]|[a-zA-Z0-9][a-zA-Z0-9.-]*):[^:\s\\][^\s\\]*$/.test(
+    value,
+  );
 
 /** Return the caller-visible problem with a repository clone URL, or null when it is accepted. */
 export const repositoryCloneUrlIssue = (value: string): string | null => {
-  if (value === "" || value !== value.trim() || /\s/.test(value)) {
+  // Git parses the original bytes, not WHATWG URL's repaired spelling. Exclude
+  // options, control characters, backslashes and drive-relative Windows paths
+  // before considering SCP syntax. A one-letter host needs an explicit URL.
+  if (
+    value === "" ||
+    value.startsWith("-") ||
+    /[\s\\\p{Cc}]/u.test(value) ||
+    /^[a-z]:/i.test(value) ||
+    /^file:/i.test(value)
+  ) {
     return REPOSITORY_CLONE_URL_GUIDANCE;
   }
-  if (!value.includes("://") && isScpStyleGitUrl(value)) return null;
+  if (!value.includes("://")) {
+    // The first path character cannot be ':': Git interprets host::path as
+    // an external transport helper, not an SSH repository.
+    return !/^(?:https?|ssh|git):/i.test(value) && isScpStyleGitUrl(value)
+      ? null
+      : REPOSITORY_CLONE_URL_GUIDANCE;
+  }
+  // Require the actual network spelling; URL would repair http:/ and http:///.
+  if (!/^(?:https?|ssh|git):\/\/[^/]+\//.test(value)) {
+    return REPOSITORY_CLONE_URL_GUIDANCE;
+  }
   let url: URL;
   try {
     url = new URL(value);

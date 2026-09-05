@@ -505,7 +505,7 @@ export class Store extends Context.Service<
         const storePath = path.join(projectDir, "repo.git");
         const attempt = Effect.gen(function* () {
           yield* Effect.sync(() => fs.mkdirSync(config.root, { recursive: true }));
-          yield* git(["clone", "--bare", source, storePath], config.root, remoteEnv);
+          yield* git(["clone", "--bare", "--", source, storePath], config.root, remoteEnv);
           // Bare clones don't fetch new branches by default — make later syncs sane.
           yield* git(
             ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
@@ -918,6 +918,7 @@ export class Store extends Context.Service<
               "--depth",
               "1",
               ...(ref === null ? [] : ["--branch", ref]),
+              "--",
               source,
               clonePath,
             ],

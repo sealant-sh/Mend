@@ -11,7 +11,7 @@ import {
   RepositoryCloneUrl,
   type RepositoryCloneUrl as RepositoryCloneUrlValue,
 } from "@mend/domain/workbench";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Result } from "effect";
 
 import { Store, StoreConfig } from "../src/store.ts";
 
@@ -114,6 +114,101 @@ const withStore = async <A, E>(
 };
 
 describe("Store", () => {
+  it("terminates clone options for actual network adoption and reference clones", async () => {
+    await withStore((tmp, _origin, source) =>
+      Effect.gen(function* () {
+        const store = yield* Store;
+        const trace = path.join(tmp, "clone.trace");
+        const env = { GIT_TERMINAL_PROMPT: "0", GIT_TRACE: trace };
+        const adopted = yield* store.adopt("args", source, env);
+        const reference = yield* store.cloneReference("args", source, "main", env);
+        expect(reference.headSha).toBe(adopted.headSha);
+        expect(fs.readFileSync(path.join(reference.path, "README.md"), "utf8")).toBe("# fixture\n");
+        const commands = fs.readFileSync(trace, "utf8");
+        expect(commands).toContain(`clone --bare -- ${source} ${adopted.storePath}`);
+        expect(commands).toContain(`clone --depth 1 --branch main -- ${source} ${reference.path}`);
+      }),
+    );
+  });
+
+  it("reports actual Git clone transport failures with positional sources", async () => {
+    await withStore((tmp, _origin, source) =>
+      Effect.gen(function* () {
+        const store = yield* Store;
+        const missing = RepositoryCloneUrl.make(`${source}-missing`);
+        const adopted = yield* store
+          .adopt("missing", missing, { GIT_TERMINAL_PROMPT: "0" })
+          .pipe(Effect.result);
+        expect(Result.isFailure(adopted)).toBe(true);
+        if (Result.isFailure(adopted)) {
+          expect(adopted.failure._tag).toBe("AdoptError");
+          expect(adopted.failure.cause.args).toEqual([
+            "clone",
+            "--bare",
+            "--",
+            missing,
+            path.join(tmp, "store/missing/repo.git"),
+          ]);
+          expect(adopted.failure.cause.exitCode).toBe(128);
+          expect(adopted.failure.cause.stderr).toContain(
+            "access denied or repository not exported",
+          );
+        }
+        expect(fs.existsSync(path.join(tmp, "store/missing/repo.git"))).toBe(false);
+
+        const reference = yield* store
+          .cloneReference("missing", missing, null, {})
+          .pipe(Effect.result);
+        expect(Result.isFailure(reference)).toBe(true);
+        if (Result.isFailure(reference)) {
+          expect(reference.failure._tag).toBe("ReferenceCloneError");
+          expect(reference.failure.cause.args).toEqual([
+            "clone",
+            "--depth",
+            "1",
+            "--",
+            missing,
+            path.join(tmp, "store/_references/missing"),
+          ]);
+          expect(reference.failure.cause.exitCode).toBe(128);
+          expect(reference.failure.cause.stderr).toContain(
+            "access denied or repository not exported",
+          );
+        }
+      }),
+    );
+  });
+
+  it("never consumes a reference source as a clone option", async () => {
+    await withStore((tmp) =>
+      Effect.gen(function* () {
+        const store = yield* Store;
+        // Reference sources also allow local paths. This option-shaped value must
+        // be a positional source; disabling transports keeps the test offline.
+        const source = "--upload-pack=foo@host:repo";
+        const result = yield* store
+          .cloneReference("option", source, null, {
+            GIT_ALLOW_PROTOCOL: "",
+            GIT_TERMINAL_PROMPT: "0",
+          })
+          .pipe(Effect.result);
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure.cause.args).toEqual([
+            "clone",
+            "--depth",
+            "1",
+            "--",
+            source,
+            path.join(tmp, "store/_references/option"),
+          ]);
+          expect(result.failure.cause.stderr).toContain("transport 'ssh' not allowed");
+          expect(result.failure.cause.stderr).not.toContain("usage: git clone");
+        }
+      }),
+    );
+  });
+
   it("adopts, worktrees, checkpoints, and slices", async () => {
     await withStore((tmp, _origin, source) =>
       Effect.gen(function* () {
