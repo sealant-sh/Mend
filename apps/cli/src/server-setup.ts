@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -71,6 +72,9 @@ interface SetupOptions {
   readonly appPort: number | undefined;
   readonly sshPort: number | undefined;
   readonly dockerSocket: string | undefined;
+  readonly registryPort: number | undefined;
+  readonly assetsDir: string | undefined;
+  readonly offline: boolean;
 }
 
 /** Parsed server configuration shared by setup and lifecycle commands. */
@@ -87,6 +91,7 @@ export interface ServerConfig {
   readonly allowedOrigins: ReadonlyArray<string>;
   readonly appPort: number;
   readonly sshPort: number;
+  readonly registryPort: number;
 }
 
 interface ServerSecrets {
@@ -172,6 +177,9 @@ const SETUP_FLAGS = new Set([
   "--port",
   "--ssh-port",
   "--docker-socket",
+  "--registry-port",
+  "--assets-dir",
+  "--offline",
 ]);
 
 const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
@@ -181,6 +189,11 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     if (flag === undefined) continue;
     if (!flag.startsWith("--")) throw setupError(`Unexpected server setup argument "${flag}".`);
     if (!SETUP_FLAGS.has(flag)) throw setupError(`Unknown server setup option "${flag}".`);
+    if (flag === "--offline") {
+      if (values.has(flag)) throw setupError("--offline may be supplied only once.");
+      values.set(flag, ["true"]);
+      continue;
+    }
     const [value, valueIndex] = nextFlagValue(args, index, flag);
     index = valueIndex;
     const previous = values.get(flag) ?? [];
@@ -194,6 +207,7 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
   const version = flagValue("--version");
   const appPort = flagValue("--port");
   const sshPort = flagValue("--ssh-port");
+  const registryPort = flagValue("--registry-port");
   const origins = values.get("--origin");
   return {
     context: flagValue("--context"),
@@ -204,6 +218,10 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     appPort: appPort === undefined ? undefined : parsePort(appPort, "--port"),
     sshPort: sshPort === undefined ? undefined : parsePort(sshPort, "--ssh-port"),
     dockerSocket: flagValue("--docker-socket"),
+    registryPort:
+      registryPort === undefined ? undefined : parsePort(registryPort, "--registry-port"),
+    assetsDir: flagValue("--assets-dir"),
+    offline: values.has("--offline"),
   };
 };
 
@@ -273,10 +291,16 @@ const checkExposurePair = (bind: string, appUrl: string, requireExplicitUrl: boo
 const validateExposure = (
   existing: ServerConfig | null,
   options: SetupOptions,
-): Pick<ServerConfig, "bind" | "appUrl" | "allowedOrigins" | "appPort" | "sshPort"> => {
+): Pick<
+  ServerConfig,
+  "bind" | "appUrl" | "allowedOrigins" | "appPort" | "sshPort" | "registryPort"
+> => {
   const appPort = options.appPort ?? existing?.appPort ?? DEFAULT_APP_PORT;
   const sshPort = options.sshPort ?? existing?.sshPort ?? DEFAULT_SSH_PORT;
-  if (appPort === sshPort) throw setupError("--port and --ssh-port must use different ports.");
+  const registryPort = options.registryPort ?? existing?.registryPort ?? 5000;
+  if (new Set([appPort, sshPort, registryPort]).size !== 3) {
+    throw setupError("--port, --ssh-port and --registry-port must use different ports.");
+  }
 
   const bind = options.bind ?? existing?.bind ?? DEFAULT_BIND;
   if (net.isIP(bind) === 0) {
@@ -292,7 +316,7 @@ const validateExposure = (
   const allowedOrigins = [
     ...new Set((requestedOrigins ?? inheritedOrigins).filter((origin) => origin !== appUrl)),
   ];
-  return { bind, appUrl, allowedOrigins, appPort, sshPort };
+  return { bind, appUrl, allowedOrigins, appPort, sshPort, registryPort };
 };
 
 const parseServerConfig = (raw: string): ServerConfig => {
@@ -334,6 +358,7 @@ const parseServerConfig = (raw: string): ServerConfig => {
     ),
     appPort: requiredInteger(fields, "appPort"),
     sshPort: requiredInteger(fields, "sshPort"),
+    registryPort: fields.has("registryPort") ? requiredInteger(fields, "registryPort") : 5000,
   };
   if (config.schemaVersion !== CONFIG_SCHEMA_VERSION || config.assetContract !== ASSET_CONTRACT) {
     throw setupError(
@@ -342,6 +367,7 @@ const parseServerConfig = (raw: string): ServerConfig => {
   }
   parsePort(String(config.appPort), "Server config appPort");
   parsePort(String(config.sshPort), "Server config sshPort");
+  parsePort(String(config.registryPort), "Server config registryPort");
   validateExposure(null, {
     context: undefined,
     version: undefined,
@@ -351,6 +377,9 @@ const parseServerConfig = (raw: string): ServerConfig => {
     appPort: config.appPort,
     sshPort: config.sshPort,
     dockerSocket: undefined,
+    registryPort: config.registryPort,
+    assetsDir: undefined,
+    offline: false,
   });
   return config;
 };
@@ -668,7 +697,7 @@ const renderSecrets = (secrets: ServerSecrets, config: ServerConfig): string => 
     `MEND_BIND_HOST=${composeBind}`,
     `MEND_PORT=${config.appPort}`,
     `MEND_SSH_PORT=${config.sshPort}`,
-    "MEND_REGISTRY_PORT=5000",
+    `MEND_REGISTRY_PORT=${config.registryPort}`,
     `SEALANT_SSH_HOST=${sshHost}`,
     "MEND_STORE_VOLUME_NAME=mend-store",
     "MEND_CONTROL_VOLUME_NAME=mend-control",
@@ -765,7 +794,13 @@ const resolveServerVersion = async (
   options: SetupOptions,
   existing: ServerConfig | null,
 ): Promise<string> => {
+  if (existing === null && options.assetsDir !== undefined && options.version === undefined) {
+    throw setupError("A fresh --assets-dir setup requires an explicit --version.");
+  }
   const requested = options.version ?? existing?.serverVersion ?? runtime.cliVersion;
+  if (options.offline && requested === "latest") {
+    throw setupError("--offline requires an exact --version, not latest.");
+  }
   const version =
     requested === "latest" ? await resolveLatestVersion(runtime) : parseVersion(requested);
   if (version === "latest" || version === "unknown") {
@@ -825,7 +860,24 @@ const resolveAssets = async (
   serverVersion: string,
   existing: ServerInstallation | null,
   store: ServerStore,
+  options: SetupOptions,
 ): Promise<{ readonly compose: string; readonly postgresInit: string }> => {
+  if (options.assetsDir !== undefined) {
+    try {
+      const [compose, postgresInit] = await Promise.all([
+        readFile(path.join(options.assetsDir, COMPOSE_ASSET), "utf8"),
+        readFile(path.join(options.assetsDir, POSTGRES_INIT_ASSET), "utf8"),
+      ]);
+      validateComposeAsset(compose);
+      validatePostgresAsset(postgresInit);
+      return { compose, postgresInit };
+    } catch (cause) {
+      if (cause instanceof ServerSetupError) throw cause;
+      throw setupError(
+        "Could not read release assets from --assets-dir. Supply compose.v1.yaml and postgres-init.sh.",
+      );
+    }
+  }
   if (
     existing?.config.serverVersion === serverVersion &&
     existing.config.assetContract === ASSET_CONTRACT
@@ -834,6 +886,8 @@ const resolveAssets = async (
     if (generation !== null)
       return { compose: generation.files.compose, postgresInit: generation.files.postgresInit };
   }
+  if (options.offline)
+    throw setupError("--offline needs --assets-dir or the retained assets for this exact version.");
   const [compose, postgresInit] = await Promise.all([
     downloadAsset(runtime, serverVersion, COMPOSE_ASSET),
     downloadAsset(runtime, serverVersion, POSTGRES_INIT_ASSET),
@@ -843,10 +897,44 @@ const resolveAssets = async (
   return { compose, postgresInit };
 };
 
+const checkLocalImages = async (
+  runtime: ServerSetupRuntime,
+  config: ServerConfig,
+): Promise<void> => {
+  const image = `ghcr.io/sealant-sh/mend:${config.serverVersion}`;
+  const mend = await runtime.run("docker", [
+    "--context",
+    config.dockerContext,
+    "image",
+    "inspect",
+    image,
+    "--format",
+    '{{index .Config.Labels "org.opencontainers.image.version"}}',
+  ]);
+  if (mend.status !== 0) throw commandFailure(`Preload ${image} before continuing`, mend);
+  if (mend.stdout.trim() !== config.serverVersion) {
+    throw setupError(
+      `Image ${image} must carry org.opencontainers.image.version=${config.serverVersion}.`,
+    );
+  }
+  const postgres = await runtime.run("docker", [
+    "--context",
+    config.dockerContext,
+    "image",
+    "inspect",
+    "postgres:17-alpine",
+    "--format",
+    "{{.Id}}",
+  ]);
+  if (postgres.status !== 0)
+    throw commandFailure("Preload postgres:17-alpine before continuing", postgres);
+};
+
 const startCompose = async (
   runtime: ServerSetupRuntime,
   config: ServerConfig,
   generation: ServerGeneration,
+  offline: boolean,
 ): Promise<void> => {
   const compose = await runtime.run(
     "docker",
@@ -854,6 +942,7 @@ const startCompose = async (
       "up",
       "-d",
       "--wait",
+      ...(offline ? ["--pull", "never", "--no-build"] : []),
     ]),
   );
   if (compose.status !== 0) throw commandFailure("Mend containers did not start", compose);
@@ -890,11 +979,12 @@ const setupServer = async (
     }),
     ...validateExposure(existing?.config ?? null, options),
   };
-  const assets = await resolveAssets(runtime, serverVersion, existing, store);
+  const assets = await resolveAssets(runtime, serverVersion, existing, store, options);
+  if (options.offline) await checkLocalImages(runtime, config);
   const secrets = savedSecrets ?? createSecrets(runtime);
   const generation = persistSetup(store, config, secrets, assets);
   runtime.writeLine(`Using Docker context "${config.dockerContext}" (${config.dockerEndpoint})`);
-  await startCompose(runtime, config, generation);
+  await startCompose(runtime, config, generation, options.offline);
   await probeHealth(runtime, config.appUrl, config.serverVersion);
   runtime.writeLine(`Mend ${config.serverVersion} is reachable at ${config.appUrl}`);
   runtime.writeLine(

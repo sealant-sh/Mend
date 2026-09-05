@@ -72,6 +72,8 @@ const makeRuntime = (
     readonly healthStatus?: number;
     readonly healthBody?: string;
     readonly operatingSystem?: string;
+    readonly imageVersion?: string;
+    readonly imageStatus?: number;
   } = {},
 ): RuntimeControl => {
   const commands: Array<readonly [string, ReadonlyArray<string>]> = [];
@@ -118,6 +120,13 @@ const makeRuntime = (
           status: options.composeVersionStatus ?? 0,
           stdout: options.composeVersionStatus === 1 ? "" : "2.35.0\n",
           stderr: options.composeVersionStatus === 1 ? "compose unavailable" : "",
+        };
+      }
+      if (args.includes("image")) {
+        return {
+          status: options.imageStatus ?? 0,
+          stdout: options.imageVersion ?? "0.23.0",
+          stderr: "",
         };
       }
       if (args.includes("info")) {
@@ -191,6 +200,80 @@ const activeFile = (configDir: string, name: string): string =>
   path.join(activeDirectory(configDir), name);
 
 describe("mend server setup", () => {
+  it("copies offline assets, persists a free registry port, and no longer needs the source", async () => {
+    const control = makeRuntime();
+    const assets = temporaryDirectory("assets");
+    fs.mkdirSync(assets, { recursive: true });
+    fs.writeFileSync(path.join(assets, "compose.v1.yaml"), composeAsset);
+    fs.writeFileSync(path.join(assets, "postgres-init.sh"), postgresAsset);
+    expect(
+      await serverCommand(
+        [
+          "setup",
+          "--assets-dir",
+          assets,
+          "--offline",
+          "--version",
+          "0.23.0",
+          "--registry-port",
+          "5501",
+        ],
+        control.runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    const generation = activeDirectory(control.runtime.configDir);
+    fs.rmSync(assets, { recursive: true });
+    expect(await serverCommand(["setup", "--offline"], control.runtime)).toEqual({ _tag: "ok" });
+    expect(activeDirectory(control.runtime.configDir)).toBe(generation);
+    expect(
+      readEnv(activeFile(control.runtime.configDir, "server.env")).get("MEND_REGISTRY_PORT"),
+    ).toBe("5501");
+    expect(control.fetched.every((url) => url.endsWith("/api/health"))).toBe(true);
+    for (const [, args] of control.commands.filter(([, commandArgs]) =>
+      commandArgs.includes("up"),
+    )) {
+      expect(args.slice(-3)).toEqual(["--pull", "never", "--no-build"]);
+    }
+    expect(control.commands.some(([, args]) => args.includes("pull"))).toBe(false);
+  });
+
+  it.each([
+    ["--offline", "--version", "latest"],
+    ["--assets-dir", "/missing"],
+    ["--offline", "--version", "0.23.0"],
+    ["--registry-port", "0"],
+    ["--registry-port", "65536"],
+    ["--registry-port", "3105"],
+    ["--registry-port", "2222"],
+  ])("rejects invalid/offline inputs before activation: %j", async (...flags) => {
+    const control = makeRuntime();
+    expect((await serverCommand(["setup", ...flags], control.runtime))._tag).toBe("error");
+    expect(control.fetched).toEqual([]);
+    expect(fs.existsSync(path.join(control.runtime.configDir, "active"))).toBe(false);
+  });
+
+  it.each([
+    { imageVersion: "0.24.0" },
+    { imageStatus: 1 },
+    { healthBody: '{"status":"ok","version":"0.24.0"}' },
+  ])("refuses offline image/readiness mismatches: %j", async (options) => {
+    const control = makeRuntime(options);
+    const result = await serverCommand(
+      [
+        "setup",
+        "--version",
+        "0.23.0",
+        "--offline",
+        "--assets-dir",
+        path.resolve("test-fixtures/docker"),
+      ],
+      control.runtime,
+    );
+    expect(result._tag).toBe("error");
+    expect(control.fetched.every((url) => url.endsWith("/api/health"))).toBe(true);
+    expect(control.lines.some((line) => line.includes("is reachable"))).toBe(false);
+  });
+
   it.each([
     "{}",
     "<html>OK</html>",

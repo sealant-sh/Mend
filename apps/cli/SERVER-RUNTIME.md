@@ -128,5 +128,23 @@ containers, and is explicitly skipped if the plugin is absent.
 
 `test-fixtures/docker` copies the deployment contract's Compose and Postgres files from
 `../Mend-bundle/deploy/docker` at `1c2018b`. These are test inputs, not shipped CLI assets. Setup
-still downloads the two assets from the selected GitHub release. No offline CLI flag, workflow
-change, release upload, image build, or live deployment acceptance is included in this change.
+downloads the two assets from the selected GitHub release unless `--assets-dir DIR` supplies
+`compose.v1.yaml` and `postgres-init.sh`. Supplied files pass the same contract checks and are
+copied into the private generation. The source directory is not retained or needed on reruns. Fresh
+setup with local assets requires an explicit `--version`.
+
+`--offline` forbids GitHub requests and runs Compose with `--pull never --no-build`. Preload both
+`postgres:17-alpine` and `ghcr.io/sealant-sh/mend:VERSION` in the selected daemon. The Mend image's
+`org.opencontainers.image.version` label and the health response must equal the exact pin. Local
+health probes still run. This flag controls installation network access, not the running server's
+workspace/provider traffic.
+
+`--registry-port` persists the loopback registry port, default `5000`. App, SSH and registry ports
+must be valid and distinct. For a host already running Sealant's registry, choose a free port:
+
+```sh
+mend server setup --version 0.23.0 --assets-dir ./release-assets --offline --registry-port 5501
+mend server setup --offline
+```
+
+No release upload, image build, or live deployment acceptance is included in these unit checks.

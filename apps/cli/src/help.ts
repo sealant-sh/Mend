@@ -566,7 +566,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     section: "this machine",
     summary: "install or repair the local Mend server",
     synopsis: [
-      "[--context <name>] [--version <version|latest>] [--bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--docker-socket <path>]",
+      "[--context <name>] [--version <version|latest>] [--bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--registry-port <n>] [--docker-socket <path>] [--assets-dir <dir>] [--offline]",
     ],
     description: [
       "Checks a local Unix-socket Docker context and the Compose plugin, downloads the compose and Postgres initialization assets for one Mend release, preserves existing data and secrets, and starts the server. Re-running repairs the same pinned version. Use --version only when you intend to change the server version.",
@@ -591,6 +591,18 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       },
       { flag: "--port <n>", text: "external web port. Default: 3105" },
       { flag: "--ssh-port <n>", text: "external workspace SSH port. Default: 2222" },
+      {
+        flag: "--registry-port <n>",
+        text: "loopback registry port. Default: 5000; all three ports must differ",
+      },
+      {
+        flag: "--assets-dir <dir>",
+        text: "copy compose.v1.yaml and postgres-init.sh from a release directory; fresh setup requires --version",
+      },
+      {
+        flag: "--offline",
+        text: "use retained or supplied assets and preloaded images only; no GitHub requests or Docker pulls; exact image label and health version required",
+      },
       { flag: "--docker-socket <path>", text: "daemon-side socket mount override for diagnostics" },
     ],
     examples: [
