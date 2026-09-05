@@ -5,8 +5,9 @@
  *   MEND_TEST_IMAGE=ghcr.io/sealant-sh/mend:0.23.0 MEND_TEST_VERSION=0.23.0 \
  *     node scripts/check-packaged-server.mjs
  * The image must already be built/loaded or published. Nothing retags or substitutes it.
+ * Set MEND_TEST_OFFLINE=1 for preloaded Mend and Postgres images, with no setup pulls.
  *
- * Required public setup contract: --version, --assets-dir, --port, --ssh-port,
+ * Required public setup contract: --version, --assets-dir, --offline, --port, --ssh-port,
  * --registry-port, --url. Assets come from deploy/docker, validated by setup exactly
  * like release downloads. Required lifecycle commands: server restart, stop, start.
  * Missing commands/flags FAIL acceptance; there is no direct-Compose fallback.
@@ -20,6 +21,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -27,6 +29,7 @@ import {
   readlink,
   realpath,
   rm,
+  rmdir,
   stat,
   writeFile,
 } from "node:fs/promises";
@@ -39,15 +42,21 @@ import {
   assertFreshDocker,
   assertHealth,
   assertWorkspaceMounts,
+  cleanupOwnedVolumes,
+  createVolumeLedger,
   dockerFingerprint,
+  isolatedClientEnvironment,
   isInside,
   ownsComposeContainer,
+  ownsWorkspaceContainer,
+  readPrivateIdentity,
 } from "./packaged-server-assertions.mjs";
 
 const repo = await realpath(fileURLToPath(new URL("../", import.meta.url)));
 const assets = join(repo, "deploy/docker");
 const version = process.env.MEND_TEST_VERSION;
 const image = process.env.MEND_TEST_IMAGE;
+const offline = process.env.MEND_TEST_OFFLINE === "1";
 const originalHome = homedir();
 const runId = randomUUID();
 const fixtureName = `mend-acceptance-${runId}`;
@@ -67,19 +76,13 @@ let setupAttempted = false;
 let cleanupFailed = false;
 const containers = new Set();
 const networks = new Map();
-const volumes = new Map();
+let volumes;
 
-// Keep Docker's credential/context configuration, never Mend/harness credentials.
-// Setup deliberately excludes DOCKER_HOST/CONTEXT; acceptance must inspect the same daemon.
-const env = Object.fromEntries(
-  ["PATH", "USER", "LOGNAME", "XDG_RUNTIME_DIR", "TMPDIR", "TMP", "TEMP"].flatMap((key) =>
-    process.env[key] === undefined ? [] : [[key, process.env[key]]],
-  ),
-);
-env.HOME = originalHome;
-env.DOCKER_CONFIG = process.env.DOCKER_CONFIG || join(originalHome, ".docker");
-env.CI = "1";
-env.NO_COLOR = "1";
+// Only read-only Docker preflight uses the original home. Every subsequent client gets a
+// private HOME/XDG tree, no agent socket, no Git overrides, and no Mend/harness credentials.
+// Docker alone retains its context/credential configuration; no login/context-use is run.
+const dockerConfig = process.env.DOCKER_CONFIG || join(originalHome, ".docker");
+let env = isolatedClientEnvironment(process.env, originalHome, dockerConfig);
 
 function check(condition, message) {
   // Do not let assertion diffs accidentally render identity.env, tokens, or HTTP bodies.
@@ -242,17 +245,7 @@ async function collectOwned() {
   for (const item of now.containers) {
     if (initialIds.has(item.Id)) continue;
     const fixture = item.Config?.Labels?.["sh.sealant.mend.acceptance"] === runId;
-    const workspace =
-      item.HostConfig?.Mounts?.some(
-        (mount) =>
-          mount.Type === "volume" &&
-          mount.Source === "mend-store" &&
-          mount.VolumeOptions?.Subpath?.startsWith(`${projectName}/`),
-      ) ||
-      item.Mounts?.some(
-        (mount) =>
-          mount.Type === "bind" && mount.Source.startsWith(`/var/lib/mend/store/${projectName}/`),
-      );
+    const workspace = ownsWorkspaceContainer(item, initialIds, projectName);
     if (fixture || workspace) containers.add(item.Id);
   }
   const usedVolumes = new Set(
@@ -265,15 +258,7 @@ async function collectOwned() {
       Object.values(item.NetworkSettings.Networks).map((network) => network.NetworkID),
     ),
   );
-  for (const item of now.volumes) {
-    if (initial.volumes.some((old) => old.Name === item.Name)) continue;
-    if (
-      (usedVolumes.has(item.Name) && item.Labels?.["com.docker.compose.project"] === "mend") ||
-      item.Labels?.["sh.sealant.mend.acceptance"] === runId
-    ) {
-      if (!volumes.has(item.Name)) volumes.set(item.Name, hash(JSON.stringify(item)));
-    }
-  }
+  volumes.collect(now.volumes, usedVolumes, await readPrivateIdentity(configRoot));
   for (const item of now.networks) {
     if (initial.networks.some((old) => old.Id === item.Id)) continue;
     if (usedNetworks.has(item.Id) && item.Labels?.["com.docker.compose.project"] === "mend")
@@ -295,6 +280,14 @@ async function idle() {
   check(
     compose.every((item) => item.State.Running && item.State.Health?.Status === "healthy"),
     "Both idle product containers must be healthy",
+  );
+  const identity = await readPrivateIdentity(configRoot);
+  check(
+    ["mend-store", "mend-control"].every((name) => {
+      const volume = now.volumes.find((item) => item.Name === name);
+      return volume && volumes.canRemove(volume, identity);
+    }),
+    "External store/control volumes must belong to the unchanged private installation identity",
   );
   const initialIds = new Set(initial.containers.map((item) => item.Id));
   check(
@@ -371,16 +364,20 @@ async function cleanup() {
   }
   if (activeChildren.size) await pause(1000);
   if (setupAttempted || fixtureId) await collectOwned();
-  // Stop the owned control plane first so it cannot reprovision a workspace during cleanup.
-  const current = initial && configRoot ? await snapshot() : null;
-  const owned = (current?.containers.filter((item) => containers.has(item.Id)) ?? []).toSorted(
-    (a, b) =>
-      Number(b.Config?.Labels?.["com.docker.compose.service"] === "mend") -
-      Number(a.Config?.Labels?.["com.docker.compose.service"] === "mend"),
-  );
-  for (const item of owned) {
-    const result = await start("docker", ["--context", context, "rm", "-f", item.Id]).result;
-    if (!result.ok) cleanupFailed = true;
+  // Remove the owned control plane first, then learn any last workspace it provisioned
+  // between the first inventory and shutdown. Concurrent unrelated containers stay untouched.
+  for (let pass = 0; pass < 2; pass++) {
+    const current = initial && configRoot ? await snapshot() : null;
+    const owned = (current?.containers.filter((item) => containers.has(item.Id)) ?? []).toSorted(
+      (a, b) =>
+        Number(b.Config?.Labels?.["com.docker.compose.service"] === "mend") -
+        Number(a.Config?.Labels?.["com.docker.compose.service"] === "mend"),
+    );
+    for (const item of owned) {
+      const result = await start("docker", ["--context", context, "rm", "-f", item.Id]).result;
+      if (!result.ok) cleanupFailed = true;
+    }
+    if (pass === 0 && (setupAttempted || fixtureId)) await collectOwned();
   }
   const remainingNetworkIds = networks.size
     ? new Set(lines(await docker(["network", "ls", "-q", "--no-trunc"])))
@@ -390,17 +387,21 @@ async function cleanup() {
     const result = await start("docker", ["--context", context, "network", "rm", id]).result;
     if (!result.ok) cleanupFailed = true;
   }
-  for (const [name, fingerprint] of volumes) {
-    const result = await start("docker", ["--context", context, "volume", "inspect", name]).result;
-    if (!result.ok) continue;
-    if (hash(JSON.stringify(JSON.parse(result.output)[0])) !== fingerprint) {
-      cleanupFailed = true;
-      continue;
-    }
-    // Docker refuses in-use volumes; never force deletion or remove their foreign users.
-    if (!(await start("docker", ["--context", context, "volume", "rm", name]).result).ok)
-      cleanupFailed = true;
-  }
+  if (
+    volumes &&
+    !(await cleanupOwnedVolumes(volumes, {
+      list: async () => lines(await docker(["volume", "ls", "-q"])),
+      identity: () => readPrivateIdentity(configRoot),
+      inspect: async (name) => {
+        const result = await start("docker", ["--context", context, "volume", "inspect", name])
+          .result;
+        return result.ok ? JSON.parse(result.output) : undefined;
+      },
+      remove: async (name) =>
+        (await start("docker", ["--context", context, "volume", "rm", name]).result).ok,
+    }))
+  )
+    cleanupFailed = true;
   if (setupAttempted) {
     const remaining = await snapshot();
     try {
@@ -436,7 +437,14 @@ async function cleanup() {
     if (scratch)
       console.error(`Private installation retained at ${scratch}; do not publish its files.`);
   } else if (scratch) await rm(scratch, { recursive: true, force: true });
-  if (lock) await rm(lock, { recursive: true });
+  if (lock) {
+    const current = await lstat(lock.path);
+    check(
+      current.dev === lock.dev && current.ino === lock.ino,
+      "Acceptance lock was replaced; retaining it",
+    );
+    await rmdir(lock.path); // Never recursively remove another owner's lock or unexpected files.
+  }
 }
 
 for (const signal of ["SIGINT", "SIGTERM"])
@@ -462,6 +470,11 @@ async function main() {
     "MEND_TEST_IMAGE must be the official Mend repository tagged with MEND_TEST_VERSION",
   );
   check(
+    process.env.MEND_TEST_OFFLINE === undefined ||
+      ["0", "1"].includes(process.env.MEND_TEST_OFFLINE),
+    "MEND_TEST_OFFLINE must be 0 or 1",
+  );
+  check(
     !process.env.DOCKER_HOST && !process.env.DOCKER_CONTEXT,
     "Unset DOCKER_HOST/DOCKER_CONTEXT; select the intended local daemon with docker context use first",
   );
@@ -473,6 +486,7 @@ async function main() {
     "Acceptance requires a local Unix Docker context for loopback probes",
   );
   initial = await snapshot();
+  volumes = createVolumeLedger(initial.volumes, runId);
   assertFreshDocker(initial); // Nothing above this line mutates Docker or the filesystem.
   console.log(
     "PASS read-only fresh-install gate; existing unrelated Docker resources will not be touched",
@@ -481,7 +495,8 @@ async function main() {
   check(daemon.length > 0, "Docker daemon identity is missing");
   const lockPath = join(tmpdir(), `mend-packaged-acceptance-${hash(daemon).slice(0, 20)}.lock`);
   await mkdir(lockPath, { mode: 0o700 }); // Exclusive; never steal another test's lock.
-  lock = lockPath;
+  const lockInfo = await lstat(lockPath);
+  lock = { path: lockPath, dev: lockInfo.dev, ino: lockInfo.ino };
   scratch = await mkdtemp(join(tmpdir(), "mend-packaged-acceptance-"));
   check(
     isInside(repo, await realpath(scratch)) === false,
@@ -489,8 +504,7 @@ async function main() {
   );
   const home = join(scratch, "home");
   await mkdir(home, { mode: 0o700 });
-  env.HOME = home;
-  env.XDG_CONFIG_HOME = join(home, ".config");
+  env = isolatedClientEnvironment(process.env, home, dockerConfig);
   env.npm_config_cache = join(scratch, "npm-cache");
   env.npm_config_userconfig = join(scratch, "empty.npmrc");
   await writeFile(env.npm_config_userconfig, "", { mode: 0o600 });
@@ -588,7 +602,16 @@ async function main() {
   );
   stage = "required CLI contract";
   const setupHelp = await cli(["help", "server", "setup"]);
-  for (const flag of ["--assets-dir", "--registry-port", "--ssh-port", "--version", "--url"])
+  for (const flag of [
+    "--assets-dir",
+    "--offline",
+    "--context",
+    "--port",
+    "--registry-port",
+    "--ssh-port",
+    "--version",
+    "--url",
+  ])
     check(setupHelp.includes(flag), `Integration required: server setup help must expose ${flag}`);
   for (const command of ["restart", "stop", "start"])
     check(
@@ -600,6 +623,9 @@ async function main() {
   const setupArgs = [
     "server",
     "setup",
+    "--context",
+    context,
+    ...(offline ? ["--offline"] : []),
     "--version",
     version,
     "--assets-dir",
@@ -745,11 +771,7 @@ async function main() {
   stage = "network Git fixture";
   const source = join(scratch, "source");
   await mkdir(source);
-  const git = (args, cwd = source) =>
-    run("git", args, {
-      cwd,
-      environment: { ...env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
-    });
+  const git = (args, cwd = source) => run("git", args, { cwd });
   await git(["init", "-b", "main"]);
   await writeFile(join(source, "README.md"), "Packaged product acceptance fixture\n");
   await git(["add", "README.md"]);
@@ -778,7 +800,7 @@ async function main() {
     volumeInfo.Labels?.["sh.sealant.mend.acceptance"] === runId,
     "Fixture volume ownership must match",
   );
-  volumes.set(fixtureVolume, hash(JSON.stringify(volumeInfo)));
+  await collectOwned();
   const networkIds = Object.values(mend.NetworkSettings.Networks).map((item) => item.NetworkID);
   check(
     networkIds.length === 1 && networks.has(networkIds[0]),
@@ -832,6 +854,7 @@ async function main() {
   const project = projects[0];
   check(
     project.name === projectName &&
+      project.storePath === `/var/lib/mend/store/${projectName}/repo.git` &&
       project.originUrl === sourceUrl &&
       project.adoptedSha === baseSha,
     "CLI adoption must preserve network source and fixture Git identity",
@@ -1046,7 +1069,7 @@ async function main() {
   const beforeRestart = (await idle()).find(
     (item) => item.Config.Labels["com.docker.compose.service"] === "mend",
   );
-  await cli(["server", "restart"], { timeout: 600_000 });
+  await cli(["server", "restart", "--offline"], { timeout: 600_000 });
   await retained();
   const afterRestart = (await idle()).find(
     (item) => item.Config.Labels["com.docker.compose.service"] === "mend",
@@ -1070,7 +1093,7 @@ async function main() {
     /* Stopped listener. */
   }
   check(!reachable, "Stopped server must not answer healthy");
-  await cli(["server", "start"], { timeout: 600_000 });
+  await cli(["server", "start", "--offline"], { timeout: 600_000 });
   await retained();
   console.log(
     "PASS setup rerun, actual restart, stop/start retained account, identity, config pin, SSH key, project, worktree, Git, checkpoint, change and record",
