@@ -207,14 +207,24 @@ describe("mend server setup", () => {
     const control = makeRuntime();
     const { configDir } = control.runtime;
     const events: string[] = [];
+    let preparedDirectory: string | undefined;
     const runtime: ServerSetupRuntime = {
       ...control.runtime,
       run: async (command, args, options) => {
+        if (args.includes("config") && args.includes("--images")) {
+          preparedDirectory = args[args.indexOf("--project-directory") + 1];
+        }
         const mutation =
           args[3] === "create" || ["import", "push", "pull", "rm"].includes(args[3] ?? "");
         const compose = args.includes("up");
         if (mutation || compose) {
-          const directory = activeDirectory(configDir);
+          if (preparedDirectory === undefined) throw new Error("Expected a prepared generation");
+          const directory = preparedDirectory;
+          if (args[2] === "volume") {
+            expect(fs.existsSync(path.join(configDir, "active"))).toBe(false);
+          } else {
+            expect(activeDirectory(configDir)).toBe(directory);
+          }
           const identity = fs.readFileSync(path.join(configDir, "identity.env"));
           expect(fs.readFileSync(path.join(directory, "identity.env"))).toEqual(identity);
           expect(fs.readdirSync(directory).toSorted()).toEqual([
@@ -370,12 +380,18 @@ describe("mend server setup", () => {
       false,
     );
     const identity = fs.readFileSync(path.join(control.runtime.configDir, "identity.env"));
-    const generation = activeDirectory(control.runtime.configDir);
+    expect(fs.existsSync(path.join(control.runtime.configDir, "active"))).toBe(false);
+    const prepared = fs.readdirSync(path.join(control.runtime.configDir, "generations"));
+    expect(prepared).toHaveLength(1);
+    const preparedName = prepared[0];
+    if (preparedName === undefined) throw new Error("Expected a retained prepared generation");
+    const generation = path.join(control.runtime.configDir, "generations", preparedName);
     control.daemon.response = () => undefined;
     expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
     expect(control.randomSizes).toEqual([256, 24]);
     expect(fs.readFileSync(path.join(control.runtime.configDir, "identity.env"))).toEqual(identity);
-    expect(activeDirectory(control.runtime.configDir)).toBe(generation);
+    expect(activeDirectory(control.runtime.configDir)).not.toBe(generation);
+    expect(fs.readFileSync(path.join(generation, "identity.env"))).toEqual(identity);
   });
 
   it.each(["push", "pull"])(
@@ -965,9 +981,9 @@ describe("mend server setup", () => {
       expect(first.commands.some(([, args]) => args.includes("up") || args.includes("pull"))).toBe(
         false,
       );
-      const second = makeRuntime({ configDir });
+      const second = makeRuntime({ configDir, daemon: first.daemon });
       expect(await serverCommand(flags, second.runtime)).toEqual({ _tag: "ok" });
-      expect(second.randomCalls()).toBe(0);
+      expect(second.randomSizes).toEqual([24]);
       expect(fs.readFileSync(activeFile(configDir, "identity.env"), "utf8")).toBe(identity);
     },
   );

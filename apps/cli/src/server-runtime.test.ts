@@ -296,7 +296,7 @@ describe.skipIf(!composeAvailable)(
         ["setup", "--port", "4111", ...(scenario.offline ? ["--offline"] : [])],
         {
           ...initial,
-          run: async (command, args) => {
+          run: async (command, args, options) => {
             if (args.includes("config")) {
               events.push("config");
               target = args[args.indexOf("--project-directory") + 1];
@@ -304,7 +304,12 @@ describe.skipIf(!composeAvailable)(
               expect(fs.realpathSync(path.join(configDir, "active"))).toBe(previous);
               return runServerProcess(command, args, process.env);
             }
-            if (args.includes("image") || args.includes("pull")) {
+            if (
+              args[2] === "pull" ||
+              (args[2] === "image" &&
+                args[3] === "inspect" &&
+                ["ghcr.io/sealant-sh/mend:0.23.0", "postgres:17-alpine"].includes(args[4] ?? ""))
+            ) {
               expect(events[0]).toBe("config");
               expect(fs.realpathSync(path.join(configDir, "active"))).toBe(previous);
               const pulling = args.includes("pull");
@@ -328,7 +333,7 @@ describe.skipIf(!composeAvailable)(
               runningGeneration = fs.realpathSync(path.join(configDir, "active"));
               expect(runningGeneration).toBe(target);
             }
-            return initial.run(command, args);
+            return initial.run(command, args, options);
           },
         },
       );
