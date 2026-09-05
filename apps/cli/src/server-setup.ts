@@ -1,10 +1,16 @@
-import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { runServerProcess, serverComposeArgs } from "./server-runtime.ts";
+import {
+  withServerStore,
+  ServerStoreError,
+  type ServerStore,
+  type ServerStoreResult,
+  type ServerGeneration,
+} from "./server-store.ts";
 import { cliVersion } from "./version.ts";
 
 const CONFIG_SCHEMA_VERSION = 1;
@@ -16,6 +22,7 @@ const DEFAULT_BIND = "127.0.0.1";
 const COMPOSE_ASSET = "compose.v1.yaml";
 const POSTGRES_INIT_ASSET = "postgres-init.sh";
 const RELEASE_BASE = "https://github.com/sealant-sh/Mend/releases/download";
+const LATEST_RELEASE_URL = "https://api.github.com/repos/sealant-sh/Mend/releases/latest";
 
 interface CommandOutput {
   readonly status: number | null;
@@ -66,13 +73,15 @@ interface SetupOptions {
   readonly dockerSocket: string | undefined;
 }
 
-interface ServerConfig {
+/** Parsed server configuration shared by setup and lifecycle commands. */
+export interface ServerConfig {
   readonly schemaVersion: number;
   readonly assetContract: string;
   readonly serverVersion: string;
   readonly dockerContext: string;
   readonly dockerEndpoint: string;
   readonly dockerSocket: string;
+  readonly dockerSocketSource: "detected" | "override";
   readonly bind: string;
   readonly appUrl: string;
   readonly allowedOrigins: ReadonlyArray<string>;
@@ -181,20 +190,20 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     previous.push(value);
     values.set(flag, previous);
   }
-  const valueOf = (flag: string): string | undefined => values.get(flag)?.[0];
-  const version = valueOf("--version");
-  const appPort = valueOf("--port");
-  const sshPort = valueOf("--ssh-port");
+  const flagValue = (flag: string): string | undefined => values.get(flag)?.[0];
+  const version = flagValue("--version");
+  const appPort = flagValue("--port");
+  const sshPort = flagValue("--ssh-port");
   const origins = values.get("--origin");
   return {
-    context: valueOf("--context"),
+    context: flagValue("--context"),
     version: version === undefined ? undefined : parseVersion(version),
-    bind: valueOf("--bind"),
-    url: valueOf("--url"),
+    bind: flagValue("--bind"),
+    url: flagValue("--url"),
     origins: origins === undefined ? undefined : origins,
     appPort: appPort === undefined ? undefined : parsePort(appPort, "--port"),
     sshPort: sshPort === undefined ? undefined : parsePort(sshPort, "--ssh-port"),
-    dockerSocket: valueOf("--docker-socket"),
+    dockerSocket: flagValue("--docker-socket"),
   };
 };
 
@@ -306,13 +315,18 @@ const parseServerConfig = (raw: string): ServerConfig => {
   if (serverVersion === "latest") {
     throw setupError("Server config is corrupt: serverVersion must be an exact pinned version.");
   }
+  const dockerSocketSource = fields.get("dockerSocketSource");
+  if (dockerSocketSource !== "detected" && dockerSocketSource !== "override") {
+    throw setupError("Server config is corrupt: dockerSocketSource must be detected or override.");
+  }
   const config: ServerConfig = {
     schemaVersion: requiredInteger(fields, "schemaVersion"),
     assetContract: requiredString(fields, "assetContract"),
     serverVersion,
     dockerContext: requiredString(fields, "dockerContext"),
     dockerEndpoint: requiredString(fields, "dockerEndpoint"),
-    dockerSocket: requiredString(fields, "dockerSocket"),
+    dockerSocket: parseDockerSocketPath(requiredString(fields, "dockerSocket")),
+    dockerSocketSource,
     bind: requiredString(fields, "bind"),
     appUrl: parseHttpOrigin(requiredString(fields, "appUrl"), "Server config appUrl"),
     allowedOrigins: origins.map((origin) =>
@@ -494,7 +508,7 @@ const compareApiVersions = (left: string, right: string): number => {
   return leftMajor === rightMajor ? leftMinor - rightMinor : leftMajor - rightMajor;
 };
 
-const checkDocker = async (runtime: ServerSetupRuntime, context: string): Promise<void> => {
+const checkDocker = async (runtime: ServerSetupRuntime, context: string): Promise<string> => {
   const version = await runtime.run("docker", [
     "--context",
     context,
@@ -527,13 +541,21 @@ const checkDocker = async (runtime: ServerSetupRuntime, context: string): Promis
   if (compose.status !== 0 || compose.stdout.trim() === "") {
     throw commandFailure("Docker Compose v2 plugin is required", compose);
   }
+  const info = await runtime.run("docker", [
+    "--context",
+    context,
+    "info",
+    "--format",
+    "{{.OperatingSystem}}",
+  ]);
+  if (info.status !== 0 || info.stdout.trim() === "") {
+    throw commandFailure("Could not identify the Docker runtime; check the selected context", info);
+  }
+  return info.stdout.trim();
 };
 
 const resolveLatestVersion = async (runtime: ServerSetupRuntime): Promise<string> => {
-  const response = await runtime.fetchText(
-    "https://api.github.com/repos/sealant-sh/Mend/releases/latest",
-    15_000,
-  );
+  const response = await runtime.fetchText(LATEST_RELEASE_URL, 15_000);
   if (response.error !== undefined || response.status !== 200) {
     throw setupError(
       `Could not resolve the latest Mend server release: ${response.error ?? `HTTP ${response.status}`}.`,
@@ -621,12 +643,8 @@ const downloadAsset = async (
   return response.body;
 };
 
-const renderSecrets = (secrets: ServerSecrets, config: ServerConfig): string => {
-  const sshHost = parseUrl(config.appUrl, "Server config appUrl").hostname.replace(/^\[|\]$/g, "");
-  const composeBind = net.isIP(config.bind) === 6 ? `[${config.bind}]` : config.bind;
-  return [
-    `MEND_VERSION=${config.serverVersion}`,
-    "MEND_IMAGE_REPOSITORY=ghcr.io/sealant-sh/mend",
+const renderIdentity = (secrets: ServerSecrets): string =>
+  [
     `MEND_POSTGRES_ADMIN_PASSWORD=${secrets.postgresAdminPassword}`,
     `MEND_DB_PASSWORD=${secrets.mendDatabasePassword}`,
     `SEALANT_DB_PASSWORD=${secrets.sealantDatabasePassword}`,
@@ -635,6 +653,16 @@ const renderSecrets = (secrets: ServerSecrets, config: ServerConfig): string => 
     `SEALANT_CREDENTIALS_KEY=${secrets.sealantCredentialsKey}`,
     `SEALANT_SERVICE_KEY=${secrets.sealantServiceKey}`,
     `WORKSPACE_SSH_GATEWAY_TOKEN=${secrets.workspaceSshGatewayToken}`,
+    "",
+  ].join("\n");
+
+const renderSecrets = (secrets: ServerSecrets, config: ServerConfig): string => {
+  const sshHost = parseUrl(config.appUrl, "Server config appUrl").hostname.replace(/^\[|\]$/g, "");
+  const composeBind = net.isIP(config.bind) === 6 ? `[${config.bind}]` : config.bind;
+  return [
+    `MEND_VERSION=${config.serverVersion}`,
+    "MEND_IMAGE_REPOSITORY=ghcr.io/sealant-sh/mend",
+    ...renderIdentity(secrets).trimEnd().split("\n"),
     `APP_URL=${config.appUrl}`,
     `MEND_ALLOWED_ORIGINS=${JSON.stringify(config.allowedOrigins)}`,
     `MEND_BIND_HOST=${composeBind}`,
@@ -649,110 +677,86 @@ const renderSecrets = (secrets: ServerSecrets, config: ServerConfig): string => 
   ].join("\n");
 };
 
-let temporaryFileSequence = 0;
-
-const writeAtomic = (file: string, content: string, mode: number): void => {
-  temporaryFileSequence += 1;
-  const temporary = `${file}.tmp-${process.pid}-${temporaryFileSequence}`;
-  try {
-    fs.writeFileSync(temporary, content, { encoding: "utf8", flag: "wx", mode });
-    fs.renameSync(temporary, file);
-    fs.chmodSync(file, mode);
-  } catch (cause) {
-    fs.rmSync(temporary, { force: true });
-    const detail = cause instanceof Error ? cause.message : String(cause);
-    throw setupError(`Could not write ${file} atomically: ${detail}`);
-  }
+const storeValue = <T>(result: ServerStoreResult<T>): T => {
+  if (result._tag === "error") throw result.error;
+  return result.value;
 };
 
-const loadExisting = (
-  configDir: string,
-): { readonly config: ServerConfig; readonly secrets: ServerSecrets } | null => {
-  const configFile = path.join(configDir, "server.json");
-  const envFile = path.join(configDir, "server.env");
-  const composeFile = path.join(configDir, "compose.yaml");
-  const initFile = path.join(configDir, "postgres-init.sh");
-  const configExists = fs.existsSync(configFile);
-  const relatedExists = [envFile, composeFile, initFile].some((file) => fs.existsSync(file));
-  if (!configExists) {
-    if (relatedExists) {
-      throw setupError(
-        `Server config is incomplete in ${configDir}. server.json is missing; restore or remove the interrupted setup files before retrying.`,
-      );
-    }
-    return null;
-  }
-  if (!fs.existsSync(envFile)) {
-    throw setupError(`Server config is corrupt: ${envFile} is missing. Restore it before setup.`);
-  }
+/** Parsed active deployment. Credentials remain in private files, not the lifecycle result. */
+export interface ServerInstallation {
+  readonly config: ServerConfig;
+  readonly directory: string;
+}
+
+/** Read and validate a complete active generation while holding the lifecycle lock. */
+export const readServerInstallation = (
+  store: ServerStore,
+): ServerStoreResult<ServerInstallation | null> => {
   try {
-    const config = parseServerConfig(fs.readFileSync(configFile, "utf8"));
-    const env = fs.readFileSync(envFile, "utf8");
-    const secrets = parseSecrets(env);
-    if (env !== renderSecrets(secrets, config)) {
+    const generation = storeValue(store.readActive());
+    if (generation === null) return { _tag: "ok", value: null };
+    const config = parseServerConfig(generation.files.config);
+    const secrets = parseSecrets(generation.files.env);
+    if (
+      generation.files.env !== renderSecrets(secrets, config) ||
+      generation.files.identity !== renderIdentity(secrets)
+    ) {
       throw setupError(
-        "Server secrets are corrupt: server.env does not match the persisted server config.",
+        "Server secrets are corrupt: server.env does not match the persisted server config and identity.",
       );
     }
-    return { config, secrets };
+    validateComposeAsset(generation.files.compose);
+    validatePostgresAsset(generation.files.postgresInit);
+    return { _tag: "ok", value: { config, directory: generation.directory } };
   } catch (cause) {
-    if (cause instanceof ServerSetupError) throw cause;
-    const detail = cause instanceof Error ? cause.message : String(cause);
-    throw setupError(`Could not read server config in ${configDir}: ${detail}`);
+    return {
+      _tag: "error",
+      error: new ServerStoreError(
+        cause instanceof Error ? cause.message : "Could not read server installation.",
+      ),
+    };
   }
 };
 
 const persistSetup = (
-  runtime: ServerSetupRuntime,
+  store: ServerStore,
   config: ServerConfig,
   secrets: ServerSecrets,
   assets: { readonly compose: string; readonly postgresInit: string },
-): void => {
-  try {
-    fs.mkdirSync(runtime.configDir, { recursive: true, mode: 0o700 });
-    fs.chmodSync(runtime.configDir, 0o700);
-  } catch (cause) {
-    const detail = cause instanceof Error ? cause.message : String(cause);
-    throw setupError(`Could not prepare ${runtime.configDir}: ${detail}`);
-  }
-  writeAtomic(path.join(runtime.configDir, "compose.yaml"), assets.compose, 0o600);
-  writeAtomic(path.join(runtime.configDir, "postgres-init.sh"), assets.postgresInit, 0o700);
-  writeAtomic(path.join(runtime.configDir, "server.env"), renderSecrets(secrets, config), 0o600);
-  writeAtomic(
-    path.join(runtime.configDir, "server.json"),
-    `${JSON.stringify(config, null, 2)}\n`,
-    0o600,
+): ServerGeneration =>
+  storeValue(
+    store.commit({
+      identity: renderIdentity(secrets),
+      config: `${JSON.stringify(config, null, 2)}\n`,
+      env: renderSecrets(secrets, config),
+      ...assets,
+    }),
   );
-};
-
-const readReusableAssets = (
-  configDir: string,
-): { readonly compose: string; readonly postgresInit: string } | null => {
-  const composeFile = path.join(configDir, "compose.yaml");
-  const initFile = path.join(configDir, "postgres-init.sh");
-  if (!fs.existsSync(composeFile) || !fs.existsSync(initFile)) return null;
-  const compose = fs.readFileSync(composeFile, "utf8");
-  const postgresInit = fs.readFileSync(initFile, "utf8");
-  validateComposeAsset(compose);
-  validatePostgresAsset(postgresInit);
-  return { compose, postgresInit };
-};
 
 const probeHealth = async (
   runtime: ServerSetupRuntime,
   appUrl: string,
-  dockerContext: string,
+  expectedVersion: string,
 ): Promise<void> => {
   const healthUrl = `${appUrl}/api/health`;
   let lastFailure = "request did not complete";
   for (let attempt = 0; attempt < 30; attempt += 1) {
     const response = await runtime.fetchText(healthUrl, 2_000);
-    if (response.error === undefined && response.status >= 200 && response.status < 300) return;
     lastFailure = response.error ?? `HTTP ${response.status}`;
+    if (response.error === undefined && response.status >= 200 && response.status < 300) {
+      try {
+        const decoded: unknown = JSON.parse(response.body);
+        const fields = ownFields(decoded);
+        if (fields?.get("status") === "ok" && fields.get("version") === expectedVersion) return;
+        lastFailure = `health response must report status ok and version ${expectedVersion}`;
+      } catch {
+        lastFailure = "health response is not valid JSON";
+      }
+    }
     if (attempt < 29) await runtime.sleep(2_000);
   }
   throw setupError(
-    `Mend started, but ${healthUrl} did not answer successfully (${lastFailure}). Check: docker --context ${dockerContext} compose -p mend logs.`,
+    `Mend started, but ${healthUrl} did not answer successfully (${lastFailure}). Check the Mend container logs in Docker, then retry mend server setup.`,
   );
 };
 
@@ -770,12 +774,25 @@ const resolveServerVersion = async (
   return version;
 };
 
+const parseDockerSocketPath = (socket: string): string => {
+  if (!path.isAbsolute(socket) || /[\r\n$'"#:\\]/.test(socket)) {
+    throw setupError(
+      "--docker-socket must be an absolute path without line breaks or Compose interpolation characters.",
+    );
+  }
+  return socket;
+};
+
 const resolveDockerSocket = (
   runtime: ServerSetupRuntime,
   options: SetupOptions,
   existing: ServerConfig | null,
-  selectedContext: { readonly name: string; readonly endpoint: string },
-): string => {
+  selectedContext: {
+    readonly name: string;
+    readonly endpoint: string;
+    readonly operatingSystem: string;
+  },
+): Pick<ServerConfig, "dockerSocket" | "dockerSocketSource"> => {
   const contextWasReplaced =
     options.context !== undefined &&
     existing !== null &&
@@ -786,29 +803,36 @@ const resolveDockerSocket = (
   } catch {
     throw setupError(`Docker context "${selectedContext.name}" returned an invalid Unix endpoint.`);
   }
-  const socket =
+  const override =
     options.dockerSocket ??
-    (contextWasReplaced ? undefined : existing?.dockerSocket) ??
-    (runtime.platform === "darwin" ? "/var/run/docker.sock" : endpointSocket);
-  if (!path.isAbsolute(socket) || /[\r\n]/.test(socket)) {
-    throw setupError("--docker-socket must be an absolute path with no line breaks.");
-  }
-  return socket;
+    (!contextWasReplaced && existing?.dockerSocketSource === "override"
+      ? existing.dockerSocket
+      : undefined);
+  const detected =
+    runtime.platform === "darwin" ||
+    selectedContext.operatingSystem === "Docker Desktop" ||
+    selectedContext.name === "desktop-linux"
+      ? "/var/run/docker.sock"
+      : endpointSocket;
+  return {
+    dockerSocket: parseDockerSocketPath(override ?? detected),
+    dockerSocketSource: override === undefined ? "detected" : "override",
+  };
 };
 
 const resolveAssets = async (
   runtime: ServerSetupRuntime,
   serverVersion: string,
-  existing: ServerConfig | null,
+  existing: ServerInstallation | null,
+  store: ServerStore,
 ): Promise<{ readonly compose: string; readonly postgresInit: string }> => {
-  if (existing?.serverVersion === serverVersion && existing.assetContract === ASSET_CONTRACT) {
-    try {
-      const reusable = readReusableAssets(runtime.configDir);
-      if (reusable !== null) return reusable;
-    } catch (cause) {
-      if (!(cause instanceof ServerSetupError)) throw cause;
-      runtime.writeLine("Stored server assets are invalid; downloading the pinned release again.");
-    }
+  if (
+    existing?.config.serverVersion === serverVersion &&
+    existing.config.assetContract === ASSET_CONTRACT
+  ) {
+    const generation = storeValue(store.readActive());
+    if (generation !== null)
+      return { compose: generation.files.compose, postgresInit: generation.files.postgresInit };
   }
   const [compose, postgresInit] = await Promise.all([
     downloadAsset(runtime, serverVersion, COMPOSE_ASSET),
@@ -819,40 +843,39 @@ const resolveAssets = async (
   return { compose, postgresInit };
 };
 
-const startCompose = async (runtime: ServerSetupRuntime, config: ServerConfig): Promise<void> => {
-  const compose = await runtime.run("docker", [
-    "--context",
-    config.dockerContext,
-    "compose",
-    "--project-name",
-    "mend",
-    "--project-directory",
-    runtime.configDir,
-    "--env-file",
-    path.join(runtime.configDir, "server.env"),
-    "-f",
-    path.join(runtime.configDir, "compose.yaml"),
-    "up",
-    "-d",
-    "--wait",
-  ]);
+const startCompose = async (
+  runtime: ServerSetupRuntime,
+  config: ServerConfig,
+  generation: ServerGeneration,
+): Promise<void> => {
+  const compose = await runtime.run(
+    "docker",
+    serverComposeArgs({ directory: generation.directory, dockerContext: config.dockerContext }, [
+      "up",
+      "-d",
+      "--wait",
+    ]),
+  );
   if (compose.status !== 0) throw commandFailure("Mend containers did not start", compose);
 };
 
 const setupServer = async (
   args: ReadonlyArray<string>,
   runtime: ServerSetupRuntime,
+  store: ServerStore,
 ): Promise<void> => {
   if (runtime.platform !== "linux" && runtime.platform !== "darwin") {
     throw setupError(`mend server setup supports Linux and macOS, not ${runtime.platform}.`);
   }
   const options = parseSetupOptions(args);
-  const existing = loadExisting(runtime.configDir);
+  const existing = storeValue(readServerInstallation(store));
+  const savedIdentity = storeValue(store.readIdentity());
+  const savedSecrets = savedIdentity === null ? null : parseSecrets(savedIdentity);
   const selectedContext = await selectDockerContext(
     runtime,
     options.context ?? existing?.config.dockerContext,
   );
-  await checkDocker(runtime, selectedContext.name);
+  const operatingSystem = await checkDocker(runtime, selectedContext.name);
 
   const serverVersion = await resolveServerVersion(runtime, options, existing?.config ?? null);
   const config: ServerConfig = {
@@ -861,45 +884,34 @@ const setupServer = async (
     serverVersion,
     dockerContext: selectedContext.name,
     dockerEndpoint: selectedContext.endpoint,
-    dockerSocket: resolveDockerSocket(runtime, options, existing?.config ?? null, selectedContext),
+    ...resolveDockerSocket(runtime, options, existing?.config ?? null, {
+      ...selectedContext,
+      operatingSystem,
+    }),
     ...validateExposure(existing?.config ?? null, options),
   };
-  const secrets = existing?.secrets ?? createSecrets(runtime);
-  const assets = await resolveAssets(runtime, serverVersion, existing?.config ?? null);
-
-  persistSetup(runtime, config, secrets, assets);
+  const assets = await resolveAssets(runtime, serverVersion, existing, store);
+  const secrets = savedSecrets ?? createSecrets(runtime);
+  const generation = persistSetup(store, config, secrets, assets);
   runtime.writeLine(`Using Docker context "${config.dockerContext}" (${config.dockerEndpoint})`);
-  await startCompose(runtime, config);
-  await probeHealth(runtime, config.appUrl, config.dockerContext);
+  await startCompose(runtime, config, generation);
+  await probeHealth(runtime, config.appUrl, config.serverVersion);
   runtime.writeLine(`Mend ${config.serverVersion} is reachable at ${config.appUrl}`);
   runtime.writeLine(
     `Open ${config.appUrl}, create the first account, then run: mend login --url ${config.appUrl}`,
   );
 };
 
-const nodeServerSetupRuntime = (): ServerSetupRuntime => {
+/** Capture host configuration once; all child commands use the controlled server environment. */
+export const nodeServerSetupRuntime = (): ServerSetupRuntime => {
+  const environment = { ...process.env };
   const home = os.homedir();
   const configHome = process.env["XDG_CONFIG_HOME"] ?? path.join(home, ".config");
   return {
     configDir: path.join(configHome, "mend"),
     platform: process.platform,
     cliVersion: cliVersion(),
-    run: (command, args) =>
-      new Promise<CommandOutput>((resolve) => {
-        const child = spawn(command, [...args], { stdio: ["ignore", "pipe", "pipe"] });
-        let stdout = "";
-        let stderr = "";
-        child.stdout.on("data", (chunk: Buffer) => {
-          stdout += chunk.toString();
-        });
-        child.stderr.on("data", (chunk: Buffer) => {
-          stderr += chunk.toString();
-        });
-        child.once("error", (error) =>
-          resolve({ status: null, stdout, stderr, error: error.message }),
-        );
-        child.once("close", (status) => resolve({ status, stdout, stderr }));
-      }),
+    run: (command, args) => runServerProcess(command, args, environment),
     fetchText: async (url, timeoutMs) => {
       try {
         const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
@@ -928,8 +940,12 @@ export const serverCommand = async (
     return { _tag: "error", message: "usage: mend server setup [options]" };
   }
   try {
-    await setupServer(rest, runtime);
-    return { _tag: "ok" };
+    const result = await withServerStore(runtime.configDir, async (store) =>
+      setupServer(rest, runtime, store),
+    );
+    return result._tag === "error"
+      ? { _tag: "error", message: result.error.message }
+      : { _tag: "ok" };
   } catch (cause) {
     if (cause instanceof ServerSetupError) return { _tag: "error", message: cause.message };
     const detail = cause instanceof Error ? cause.message : String(cause);

@@ -70,6 +70,8 @@ const makeRuntime = (
     readonly composeUpStatus?: number;
     readonly assetFailure?: string;
     readonly healthStatus?: number;
+    readonly healthBody?: string;
+    readonly operatingSystem?: string;
   } = {},
 ): RuntimeControl => {
   const commands: Array<readonly [string, ReadonlyArray<string>]> = [];
@@ -118,6 +120,13 @@ const makeRuntime = (
           stderr: options.composeVersionStatus === 1 ? "compose unavailable" : "",
         };
       }
+      if (args.includes("info")) {
+        return {
+          status: 0,
+          stdout: options.operatingSystem ?? "Docker Engine - Community",
+          stderr: "",
+        };
+      }
       if (args.includes("compose") && args.includes("up")) {
         return {
           status: options.composeUpStatus ?? 0,
@@ -130,7 +139,10 @@ const makeRuntime = (
     fetchText: async (url) => {
       fetched.push(url);
       if (url.endsWith("/api/health")) {
-        return { status: options.healthStatus ?? 200, body: "{}" };
+        return {
+          status: options.healthStatus ?? 200,
+          body: options.healthBody ?? JSON.stringify({ status: "ok", version: "0.23.0" }),
+        };
       }
       if (url.endsWith("/compose.v1.yaml")) {
         return options.assetFailure === "compose"
@@ -173,8 +185,37 @@ const readEnv = (file: string): ReadonlyMap<string, string> => {
 };
 
 const modeOf = (file: string): number => fs.statSync(file).mode & 0o777;
+const activeDirectory = (configDir: string): string =>
+  path.join(configDir, fs.readlinkSync(path.join(configDir, "active")));
+const activeFile = (configDir: string, name: string): string =>
+  path.join(activeDirectory(configDir), name);
 
 describe("mend server setup", () => {
+  it.each([
+    "{}",
+    "<html>OK</html>",
+    "{",
+    "null",
+    '{"status":"ok","version":"0.99.0"}',
+    '{"status":"failed","version":"0.23.0"}',
+  ])("rejects false health success: %s", async (healthBody) => {
+    const control = makeRuntime({ healthBody });
+    expect(await serverCommand(["setup"], control.runtime)).toMatchObject({ _tag: "error" });
+    expect(control.lines.some((line) => line.includes("is reachable at"))).toBe(false);
+  });
+
+  it("uses the daemon-side socket on Linux Docker Desktop, including renamed contexts", async () => {
+    const control = makeRuntime({
+      operatingSystem: "Docker Desktop",
+      inspectedEndpoint: "unix:///home/alice/.docker/desktop/docker.sock",
+    });
+    expect(await serverCommand(["setup", "--context", "my-desktop"], control.runtime)).toEqual({
+      _tag: "ok",
+    });
+    expect(
+      readEnv(activeFile(control.runtime.configDir, "server.env")).get("DOCKER_SOCKET_PATH"),
+    ).toBe("/var/run/docker.sock");
+  });
   it("creates a pinned localhost installation and starts compose through the selected context", async () => {
     const control = makeRuntime();
 
@@ -183,11 +224,12 @@ describe("mend server setup", () => {
     expect(result).toEqual({ _tag: "ok" });
     expect(control.randomCalls()).toBe(1);
     expect(modeOf(control.runtime.configDir)).toBe(0o700);
-    expect(modeOf(path.join(control.runtime.configDir, "server.json"))).toBe(0o600);
-    expect(modeOf(path.join(control.runtime.configDir, "server.env"))).toBe(0o600);
-    expect(modeOf(path.join(control.runtime.configDir, "postgres-init.sh"))).toBe(0o700);
+    expect(modeOf(activeDirectory(control.runtime.configDir))).toBe(0o700);
+    expect(modeOf(activeFile(control.runtime.configDir, "server.json"))).toBe(0o600);
+    expect(modeOf(activeFile(control.runtime.configDir, "server.env"))).toBe(0o600);
+    expect(modeOf(activeFile(control.runtime.configDir, "postgres-init.sh"))).toBe(0o700);
     expect(
-      JSON.parse(fs.readFileSync(path.join(control.runtime.configDir, "server.json"), "utf8")),
+      JSON.parse(fs.readFileSync(activeFile(control.runtime.configDir, "server.json"), "utf8")),
     ).toMatchObject({
       serverVersion: "0.23.0",
       dockerContext: "default",
@@ -198,7 +240,7 @@ describe("mend server setup", () => {
       appPort: 3105,
       sshPort: 2222,
     });
-    const env = readEnv(path.join(control.runtime.configDir, "server.env"));
+    const env = readEnv(activeFile(control.runtime.configDir, "server.env"));
     expect(env.get("MEND_IMAGE_REPOSITORY")).toBe("ghcr.io/sealant-sh/mend");
     expect(env.get("MEND_VERSION")).toBe("0.23.0");
     expect(env.get("MEND_STORE_VOLUME_NAME")).toBe("mend-store");
@@ -228,9 +270,9 @@ describe("mend server setup", () => {
         "WORKSPACE_SSH_GATEWAY_TOKEN",
       ].toSorted(),
     );
-    expect(fs.readFileSync(path.join(control.runtime.configDir, "compose.yaml"), "utf8")).toContain(
-      "mend-postgres",
-    );
+    expect(
+      fs.readFileSync(activeFile(control.runtime.configDir, "compose.yaml"), "utf8"),
+    ).toContain("mend-postgres");
     expect(control.lines).toContain("Mend 0.23.0 is reachable at http://localhost:3105");
     expect(control.lines.at(-1)).toContain("mend login --url http://localhost:3105");
 
@@ -242,11 +284,11 @@ describe("mend server setup", () => {
       "--project-name",
       "mend",
       "--project-directory",
-      control.runtime.configDir,
+      activeDirectory(control.runtime.configDir),
       "--env-file",
-      path.join(control.runtime.configDir, "server.env"),
+      activeFile(control.runtime.configDir, "server.env"),
       "-f",
-      path.join(control.runtime.configDir, "compose.yaml"),
+      activeFile(control.runtime.configDir, "compose.yaml"),
       "up",
       "-d",
       "--wait",
@@ -265,7 +307,8 @@ describe("mend server setup", () => {
     ).toEqual({
       _tag: "ok",
     });
-    const envBefore = fs.readFileSync(path.join(configDir, "server.env"), "utf8");
+    const generationBefore = activeDirectory(configDir);
+    const envBefore = fs.readFileSync(activeFile(configDir, "server.env"), "utf8");
 
     const second = makeRuntime({
       configDir,
@@ -276,14 +319,18 @@ describe("mend server setup", () => {
 
     expect(second.randomCalls()).toBe(0);
     expect(second.fetched.filter((url) => !url.endsWith("/api/health"))).toEqual([]);
-    expect(fs.readFileSync(path.join(configDir, "server.env"), "utf8")).toBe(envBefore);
-    expect(JSON.parse(fs.readFileSync(path.join(configDir, "server.json"), "utf8"))).toMatchObject({
-      serverVersion: "0.23.0",
-      dockerContext: "default",
-      appUrl: "http://localhost:4111",
-      appPort: 4111,
-      sshPort: 2333,
-    });
+    expect(activeDirectory(configDir)).toBe(generationBefore);
+    expect(fs.readdirSync(path.join(configDir, "generations"))).toHaveLength(1);
+    expect(fs.readFileSync(activeFile(configDir, "server.env"), "utf8")).toBe(envBefore);
+    expect(JSON.parse(fs.readFileSync(activeFile(configDir, "server.json"), "utf8"))).toMatchObject(
+      {
+        serverVersion: "0.23.0",
+        dockerContext: "default",
+        appUrl: "http://localhost:4111",
+        appPort: 4111,
+        sshPort: 2333,
+      },
+    );
     expect(second.commands[0]?.[1]).toContain("inspect");
     expect(
       second.commands.some(([, args]) => args.includes("context") && args.includes("ls")),
@@ -294,13 +341,16 @@ describe("mend server setup", () => {
     const configDir = temporaryDirectory("upgrade");
     const first = makeRuntime({ configDir });
     expect(await serverCommand(["setup"], first.runtime)).toEqual({ _tag: "ok" });
-    const secrets = readEnv(path.join(configDir, "server.env"));
+    const secrets = readEnv(activeFile(configDir, "server.env"));
+    const previous = activeDirectory(configDir);
 
-    const upgraded = makeRuntime({ configDir });
+    const upgraded = makeRuntime({ configDir, healthBody: '{"status":"ok","version":"0.24.0"}' });
     expect(await serverCommand(["setup", "--version", "latest"], upgraded.runtime)).toEqual({
       _tag: "ok",
     });
-    const next = readEnv(path.join(configDir, "server.env"));
+    const next = readEnv(activeFile(configDir, "server.env"));
+    expect(activeDirectory(configDir)).not.toBe(previous);
+    expect(readEnv(path.join(previous, "server.env"))).toEqual(secrets);
 
     expect(next.get("MEND_VERSION")).toBe("0.24.0");
     expect(next.get("MEND_IMAGE_REPOSITORY")).toBe("ghcr.io/sealant-sh/mend");
@@ -318,7 +368,7 @@ describe("mend server setup", () => {
     const missingResult = await serverCommand(["setup", "--bind", "0.0.0.0"], missingUrl.runtime);
     expect(missingResult).toMatchObject({ _tag: "error" });
     if (missingResult._tag === "error") expect(missingResult.message).toContain("explicit --url");
-    expect(fs.existsSync(missingUrl.runtime.configDir)).toBe(false);
+    expect(fs.existsSync(path.join(missingUrl.runtime.configDir, "active"))).toBe(false);
 
     const mismatched = makeRuntime();
     const mismatchResult = await serverCommand(
@@ -344,7 +394,7 @@ describe("mend server setup", () => {
         exposed.runtime,
       ),
     ).toEqual({ _tag: "ok" });
-    const env = readEnv(path.join(exposed.runtime.configDir, "server.env"));
+    const env = readEnv(activeFile(exposed.runtime.configDir, "server.env"));
     expect(env.get("MEND_ALLOWED_ORIGINS")).toBe('["https://mend.example.test"]');
   });
 
@@ -357,12 +407,13 @@ describe("mend server setup", () => {
     expect(invalidResult).toMatchObject({ _tag: "error" });
     if (invalidResult._tag === "error")
       expect(invalidResult.message).toContain("no credentials, path");
-    expect(fs.existsSync(invalid.runtime.configDir)).toBe(false);
+    expect(fs.existsSync(path.join(invalid.runtime.configDir, "active"))).toBe(false);
 
     const configDir = temporaryDirectory("corrupt");
-    fs.mkdirSync(configDir, { recursive: true });
-    fs.writeFileSync(path.join(configDir, "server.json"), '{"schemaVersion":');
-    fs.writeFileSync(path.join(configDir, "server.env"), "BETTER_AUTH_SECRET=short\n");
+    expect(await serverCommand(["setup"], makeRuntime({ configDir }).runtime)).toEqual({
+      _tag: "ok",
+    });
+    fs.writeFileSync(activeFile(configDir, "server.json"), '{"schemaVersion":');
     const corrupt = makeRuntime({ configDir });
     const corruptResult = await serverCommand(["setup"], corrupt.runtime);
     expect(corruptResult).toMatchObject({ _tag: "error" });
@@ -374,7 +425,7 @@ describe("mend server setup", () => {
     const configDir = temporaryDirectory("truncated-secrets");
     const first = makeRuntime({ configDir });
     expect(await serverCommand(["setup"], first.runtime)).toEqual({ _tag: "ok" });
-    const envFile = path.join(configDir, "server.env");
+    const envFile = activeFile(configDir, "server.env");
     fs.writeFileSync(
       envFile,
       fs
@@ -413,7 +464,7 @@ describe("mend server setup", () => {
     expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
 
     expect(
-      JSON.parse(fs.readFileSync(path.join(control.runtime.configDir, "server.json"), "utf8")),
+      JSON.parse(fs.readFileSync(activeFile(control.runtime.configDir, "server.json"), "utf8")),
     ).toMatchObject({
       dockerContext: "orbstack",
       dockerEndpoint: "unix:///Users/alice/.orbstack/run/docker.sock",
@@ -437,7 +488,7 @@ describe("mend server setup", () => {
       _tag: "ok",
     });
 
-    const env = readEnv(path.join(control.runtime.configDir, "server.env"));
+    const env = readEnv(activeFile(control.runtime.configDir, "server.env"));
     expect(env.get("DOCKER_SOCKET_PATH")).toBe("/var/run/docker.sock");
     expect(
       control.commands
@@ -457,7 +508,7 @@ describe("mend server setup", () => {
       ),
     ).toEqual({ _tag: "ok" });
 
-    const env = readEnv(path.join(control.runtime.configDir, "server.env"));
+    const env = readEnv(activeFile(control.runtime.configDir, "server.env"));
     expect(env.get("DOCKER_SOCKET_PATH")).toBe(socket);
   });
 
@@ -468,7 +519,7 @@ describe("mend server setup", () => {
 
     expect(result).toMatchObject({ _tag: "error" });
     if (result._tag === "error") expect(result.message).toContain("remote SSH/TCP daemons");
-    expect(fs.existsSync(control.runtime.configDir)).toBe(false);
+    expect(fs.existsSync(path.join(control.runtime.configDir, "active"))).toBe(false);
     expect(control.commands).toHaveLength(1);
   });
 
@@ -478,21 +529,21 @@ describe("mend server setup", () => {
     expect(missingResult).toMatchObject({ _tag: "error" });
     if (missingResult._tag === "error")
       expect(missingResult.message).toContain("docker is not installed");
-    expect(fs.existsSync(missing.runtime.configDir)).toBe(false);
+    expect(fs.existsSync(path.join(missing.runtime.configDir, "active"))).toBe(false);
 
     const stopped = makeRuntime({ dockerVersionStatus: 1 });
     const stoppedResult = await serverCommand(["setup"], stopped.runtime);
     expect(stoppedResult).toMatchObject({ _tag: "error" });
     if (stoppedResult._tag === "error")
       expect(stoppedResult.message).toContain("Cannot connect to the Docker daemon");
-    expect(fs.existsSync(stopped.runtime.configDir)).toBe(false);
+    expect(fs.existsSync(path.join(stopped.runtime.configDir, "active"))).toBe(false);
 
     const oldApi = makeRuntime({ dockerVersion: "1.44 1.44" });
     const oldResult = await serverCommand(["setup"], oldApi.runtime);
     expect(oldResult).toMatchObject({ _tag: "error" });
     if (oldResult._tag === "error") expect(oldResult.message).toContain("Docker API >= 1.45");
     expect(oldApi.randomCalls()).toBe(0);
-    expect(fs.existsSync(oldApi.runtime.configDir)).toBe(false);
+    expect(fs.existsSync(path.join(oldApi.runtime.configDir, "active"))).toBe(false);
 
     const noCompose = makeRuntime({ composeVersionStatus: 1 });
     const composeResult = await serverCommand(["setup"], noCompose.runtime);
@@ -500,7 +551,7 @@ describe("mend server setup", () => {
     if (composeResult._tag === "error")
       expect(composeResult.message).toContain("Compose v2 plugin");
     expect(noCompose.randomCalls()).toBe(0);
-    expect(fs.existsSync(noCompose.runtime.configDir)).toBe(false);
+    expect(fs.existsSync(path.join(noCompose.runtime.configDir, "active"))).toBe(false);
   });
 
   it("leaves no state when release download is interrupted", async () => {
@@ -510,8 +561,76 @@ describe("mend server setup", () => {
 
     expect(result).toMatchObject({ _tag: "error" });
     if (result._tag === "error") expect(result.message).toContain("connection interrupted");
-    expect(fs.existsSync(control.runtime.configDir)).toBe(false);
+    expect(fs.existsSync(path.join(control.runtime.configDir, "active"))).toBe(false);
+    expect(control.randomCalls()).toBe(0);
+    expect(fs.existsSync(path.join(control.runtime.configDir, "server.lock"))).toBe(false);
     expect(control.commands.some(([, args]) => args.includes("up"))).toBe(false);
+  });
+
+  it("reuses the first identity after a filesystem failure before activating a generation", async () => {
+    const configDir = temporaryDirectory("first-write-failure");
+    fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
+    fs.mkdirSync(path.join(configDir, "generations"), { mode: 0o500 });
+    const first = makeRuntime({ configDir });
+    const result = await serverCommand(["setup"], first.runtime);
+    expect(result._tag).toBe("error");
+    expect(first.randomCalls()).toBe(1);
+    const identity = fs.readFileSync(path.join(configDir, "identity.env"), "utf8");
+    expect(fs.existsSync(path.join(configDir, "active"))).toBe(false);
+    expect(fs.existsSync(path.join(configDir, "server.lock"))).toBe(false);
+    expect(first.commands.some(([, args]) => args.includes("up"))).toBe(false);
+    fs.chmodSync(path.join(configDir, "generations"), 0o700);
+    const second = makeRuntime({ configDir });
+    expect(await serverCommand(["setup"], second.runtime)).toEqual({ _tag: "ok" });
+    expect(second.randomCalls()).toBe(0);
+    expect(fs.readFileSync(activeFile(configDir, "identity.env"), "utf8")).toBe(identity);
+    expect(fs.readFileSync(path.join(configDir, "identity.env"), "utf8")).toBe(identity);
+  });
+
+  it("refuses an unrecognised flat installation instead of generating another identity", async () => {
+    const control = makeRuntime();
+    fs.mkdirSync(control.runtime.configDir, { recursive: true });
+    const original = "existing unreleased credentials\n";
+    fs.writeFileSync(path.join(control.runtime.configDir, "server.env"), original);
+    const result = await serverCommand(["setup"], control.runtime);
+    expect(result._tag).toBe("error");
+    expect(control.randomCalls()).toBe(0);
+    expect(control.commands).toEqual([]);
+    expect(fs.readFileSync(path.join(control.runtime.configDir, "server.env"), "utf8")).toBe(
+      original,
+    );
+  });
+
+  it("redetects daemon sockets but retains explicit overrides on reruns", async () => {
+    const configDir = temporaryDirectory("socket-rerun");
+    const first = makeRuntime({
+      configDir,
+      inspectedEndpoint: "unix:///run/user/1000/docker.sock",
+    });
+    expect(await serverCommand(["setup", "--context", "local"], first.runtime)).toEqual({
+      _tag: "ok",
+    });
+    expect(readEnv(activeFile(configDir, "server.env")).get("DOCKER_SOCKET_PATH")).toBe(
+      "/run/user/1000/docker.sock",
+    );
+    const identity = fs.readFileSync(path.join(configDir, "identity.env"), "utf8");
+    const desktop = makeRuntime({
+      configDir,
+      operatingSystem: "Docker Desktop",
+      inspectedEndpoint: "unix:///home/alice/.docker/desktop/docker.sock",
+    });
+    expect(await serverCommand(["setup"], desktop.runtime)).toEqual({ _tag: "ok" });
+    expect(readEnv(activeFile(configDir, "server.env")).get("DOCKER_SOCKET_PATH")).toBe(
+      "/var/run/docker.sock",
+    );
+    expect(
+      await serverCommand(["setup", "--docker-socket", "/custom/socket"], desktop.runtime),
+    ).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["setup"], desktop.runtime)).toEqual({ _tag: "ok" });
+    expect(readEnv(activeFile(configDir, "server.env")).get("DOCKER_SOCKET_PATH")).toBe(
+      "/custom/socket",
+    );
+    expect(fs.readFileSync(path.join(configDir, "identity.env"), "utf8")).toBe(identity);
   });
 
   it("does not report the advertised URL reachable when every health request fails", async () => {

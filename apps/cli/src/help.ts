@@ -571,7 +571,8 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     description: [
       "Checks a local Unix-socket Docker context and the Compose plugin, downloads the compose and Postgres initialization assets for one Mend release, preserves existing data and secrets, and starts the server. Re-running repairs the same pinned version. Use --version only when you intend to change the server version.",
       "The default listens only on localhost at http://localhost:3105. Non-local access requires both --bind and --url. Every extra browser origin must be named with --origin; setup never guesses from the request Host header or network interfaces.",
-      "On macOS, Docker Desktop and OrbStack expose a client-side proxy socket, but containers reach the daemon at /var/run/docker.sock. --docker-socket is a diagnostic override for other local layouts.",
+      "Docker Desktop on Linux and macOS, and OrbStack on macOS, expose client-side proxy sockets. Containers use the daemon-side /var/run/docker.sock. --docker-socket overrides detection and is retained on reruns.",
+      "Setup holds an exclusive process lock through startup and health checks. A busy lock reports its owner and manual recovery steps. Never remove a live lock. Private configuration uses immutable generations and an atomic active pointer; failed attempts retain credentials and never delete Docker volumes.",
     ],
     options: [
       {
