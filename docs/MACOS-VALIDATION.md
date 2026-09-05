@@ -103,14 +103,32 @@ OrbStack need separate observations; one passing combination does not prove the 
 
 ## Evidence ledger
 
-| Check                                              | Observation                                                  |
-| -------------------------------------------------- | ------------------------------------------------------------ |
-| Generic volume/socket/port probe on Linux amd64    | Passed, Docker Engine 29.7.2                                 |
-| Sealant 0.28.0 containerized-launcher E2E on Linux | Passed, including controller replacement and strict subpaths |
-| Same prerequisite probe on macOS                   | Not yet run                                                  |
-| Packaged Mend session on macOS                     | Not yet run                                                  |
-| Installed VS Code and MacBook-to-Mini flow         | Not yet run                                                  |
-| Packaged Mend rerun/restart/upgrade checks         | Awaiting implementation and execution                        |
+| Check                                                  | Observation                                                      |
+| ------------------------------------------------------ | ---------------------------------------------------------------- |
+| Generic volume/socket/port probe on Linux amd64        | Passed, Docker Engine 29.7.2                                     |
+| Sealant 0.28.0 containerized-launcher E2E on Linux     | Passed, including controller replacement and strict subpaths     |
+| Same prerequisite probe on macOS                       | Not yet run                                                      |
+| Packaged Mend session on macOS                         | Not yet run                                                      |
+| Installed VS Code and MacBook-to-Mini flow             | Not yet run                                                      |
+| Packaged CLI, session, record, and native SSH on Linux | Passed; private client config and container-pinned gateway trust |
+| Packaged rerun/restart/stop-start/upgrade on Linux     | Passed; same-source two-image upgrade and retained data          |
+| Packaged Mend rerun/restart/upgrade on macOS           | Not yet run                                                      |
+
+The Linux installed-product run on 2026-09-06 used a packed CLI from this stack (the unreleased
+source manifest still read `0.22.0`), not a historical npm release:
+
+```sh
+MEND_TEST_IMAGE=ghcr.io/sealant-sh/mend:0.0.0-acceptance.local.20260906 \
+MEND_TEST_VERSION=0.0.0-acceptance.local.20260906 \
+MEND_TEST_UPGRADE_IMAGE=ghcr.io/sealant-sh/mend:0.23.0-packaging.20260906.1 \
+MEND_TEST_UPGRADE_VERSION=0.23.0-packaging.20260906.1 \
+MEND_TEST_OFFLINE=1 node scripts/check-packaged-server.mjs
+```
+
+The locally built images have genuine, distinct version stamps but the same server source. This
+proves upgrade mechanics and retention, not historical migration compatibility, restore, or
+target-startup failure recovery. Native SSH read the committed workspace file; no installed editor
+or port-forwarding claim follows.
 
 Record new evidence with exact versions and commands. Do not include private keys, provider tokens,
 Docker credential files, or environment dumps in reports.
