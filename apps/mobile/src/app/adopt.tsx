@@ -1,9 +1,10 @@
 // Adopt a project — the server host's GitHub CLI answers with repos to tap
-// (its credentials, not Mend's), or any clone URL / server path typed by
-// hand. Same verb, same endpoint as web and CLI; the clone lands in the
+// (its credentials, not Mend's), or any network Git clone URL typed by hand.
+// Same verb and endpoint as web and CLI; the clone lands in the
 // central store and sessions get worktrees from there. The confirm step is a
 // sticky bar: picking a repo never requires scrolling back to act.
 
+import { repositoryCloneUrlIssue } from "@mend/domain/workbench";
 import { useRouter } from "expo-router";
 import { Check } from "lucide-react-native";
 import { useEffect, useState } from "react";
@@ -23,7 +24,7 @@ import { fontFamilies, radius, useEvidenceTheme } from "@/theme/evidence";
 /** The server's STORE_NAME rule, mirrored for the inline hint. */
 const STORE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
-/** owner/Repo.Name, repo.git, /path/to/Repo → a usable store name. */
+/** owner/Repo.Name or repo.git to a usable store name. */
 const inferName = (source: string): string => {
   const base =
     source
@@ -123,6 +124,7 @@ export default function AdoptScreen() {
   const adopt = useAdoptProject();
 
   const source = selected === null ? manualSource.trim() : `${selected.url}.git`;
+  const sourceIssue = source === "" ? null : repositoryCloneUrlIssue(source);
   const nameOk = STORE_NAME.test(name);
 
   const pick = (repo: GhRepoDto) => {
@@ -142,7 +144,7 @@ export default function AdoptScreen() {
   };
 
   const submit = () => {
-    if (source === "" || !nameOk || adopt.isPending) return;
+    if (source === "" || sourceIssue !== null || !nameOk || adopt.isPending) return;
     Keyboard.dismiss();
     adopt.mutate({ name, source }, { onSuccess: () => router.back() });
   };
@@ -231,10 +233,10 @@ export default function AdoptScreen() {
           </Panel>
         )}
 
-        <SectionLabel>any source</SectionLabel>
+        <SectionLabel>clone URL</SectionLabel>
         <Panel>
           <View style={{ padding: 16, gap: 8 }}>
-            <UiText>Clone URL, or an absolute path on the server machine</UiText>
+            <UiText>HTTP(S), SSH, or SCP-style Git URL</UiText>
             <TextInput
               value={manualSource}
               onChangeText={typeSource}
@@ -244,6 +246,11 @@ export default function AdoptScreen() {
               autoCorrect={false}
               style={inputStyle}
             />
+            {sourceIssue === null ? null : (
+              <MonoText tone="danger" size={11}>
+                {sourceIssue}
+              </MonoText>
+            )}
           </View>
         </Panel>
       </Screen>
@@ -281,7 +288,9 @@ export default function AdoptScreen() {
               <EvButton
                 label={adopt.isPending ? "Adopting…" : "Adopt"}
                 onPress={submit}
-                style={nameOk && !adopt.isPending ? undefined : { opacity: 0.5 }}
+                style={
+                  nameOk && sourceIssue === null && !adopt.isPending ? undefined : { opacity: 0.5 }
+                }
               />
             </View>
             {name !== "" && !nameOk ? (

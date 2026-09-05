@@ -10,6 +10,7 @@ import {
   AutomationChoice,
   GitAuthMode,
   Project,
+  RepositoryCloneUrl,
   Session,
   SessionProcess,
   Worktree,
@@ -33,13 +34,12 @@ export class SettingsFailure extends Schema.TaggedErrorClass<SettingsFailure>()(
 ) {}
 
 /**
- * Adoption: clone `source` (URL or local path) into the store under `name`.
- * `source` is any git URL — GitHub, GitLab, self-hosted, ssh://, a local path.
+ * Adoption: clone one network Git URL into the store under `name`.
  * Omitted `gitAuthMode` means `ambient` (the login user's git setup).
  */
 export class AdoptProject extends Schema.Class<AdoptProject>("AdoptProject")({
   name: Schema.String,
-  source: Schema.String,
+  source: RepositoryCloneUrl,
   gitAuthMode: Schema.optional(GitAuthMode),
 }) {}
 

@@ -29,16 +29,21 @@
   ],
   "main": "./dist/extension.js",
   "scripts": {
-    "build": "tsgo -p tsconfig.build.json",
+    "build": "tsgo -p tsconfig.json --noEmit && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap",
     "lint": "oxlint . --no-error-on-unmatched-pattern",
     "package": "vsce package --no-dependencies",
     "typecheck": "tsgo -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@mend/domain": "workspace:*",
+    "@mend/workspace-ssh": "workspace:*"
   },
   "devDependencies": {
     "@mend/typescript": "workspace:*",
     "@types/node": "catalog:",
     "@types/vscode": "^1.100.0",
     "@vscode/vsce": "^3.9.2",
+    "esbuild": "catalog:",
     "typescript": "catalog:"
   },
   "contributes": {
@@ -192,20 +197,10 @@
           "default": "",
           "description": "Mend server URL. Empty uses the Mend CLI configuration, then http://localhost:3105."
         },
-        "mend.remoteSshHost": {
+        "mend.workspaceSshHost": {
           "type": "string",
           "default": "",
-          "description": "Existing ~/.ssh/config host alias used to open worktrees on a remote Mend machine."
-        },
-        "mend.workspaceSshGateway": {
-          "type": "string",
-          "default": "",
-          "description": "Sealant workspace SSH gateway, as host:port or an ~/.ssh/config alias (e.g. 10.0.0.214:2222). When set, opening a session opens its WORKSPACE over SSH: same worktree files, but the integrated terminal runs inside the workspace, where Mend observes agents you run by hand. Your SSH public key must be registered with Sealant."
-        },
-        "mend.workspaceSshUsernamePrefix": {
-          "type": "string",
-          "default": "ws",
-          "description": "Username prefix the workspace SSH gateway expects; the SSH username is <prefix>-<workspace id>."
+          "description": "Optional SSH hostname override for the configured Mend server. Leave empty to use the hostname from mend.serverUrl. The server still supplies the published SSH port."
         }
       }
     }

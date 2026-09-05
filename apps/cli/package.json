@@ -41,6 +41,8 @@
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@mend/domain": "workspace:*",
+    "@mend/workspace-ssh": "workspace:*",
     "@opentui/core": "^0.5.1",
     "@opentui/react": "^0.5.1",
     "@tanstack/react-query": "catalog:",

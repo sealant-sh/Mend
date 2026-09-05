@@ -28,6 +28,46 @@ export const resolveAutomation = (choice: AutomationChoice, settingsDefault: boo
 export const GitAuthMode = Schema.Literals(["ambient", "mend-key", "bridge"]);
 export type GitAuthMode = typeof GitAuthMode.Type;
 
+/** The recovery guidance shown wherever project adoption accepts a repository source. */
+export const REPOSITORY_CLONE_URL_GUIDANCE =
+  "Use an HTTP(S), SSH, or SCP-style Git URL. Local paths and file:// URLs are not supported.";
+
+const isScpStyleGitUrl = (value: string): boolean =>
+  /^(?:[^@\s/:]+@)?(?:\[[0-9a-fA-F:]+\]|[a-zA-Z0-9.-]+):[^\s\\]+$/.test(value);
+
+/** Return the caller-visible problem with a repository clone URL, or null when it is accepted. */
+export const repositoryCloneUrlIssue = (value: string): string | null => {
+  if (value === "" || value !== value.trim() || /\s/.test(value)) {
+    return REPOSITORY_CLONE_URL_GUIDANCE;
+  }
+  if (!value.includes("://") && isScpStyleGitUrl(value)) return null;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return REPOSITORY_CLONE_URL_GUIDANCE;
+  }
+  if (
+    (url.protocol !== "http:" &&
+      url.protocol !== "https:" &&
+      url.protocol !== "ssh:" &&
+      url.protocol !== "git:") ||
+    url.hostname === "" ||
+    url.pathname === "" ||
+    url.pathname === "/"
+  ) {
+    return REPOSITORY_CLONE_URL_GUIDANCE;
+  }
+  return null;
+};
+
+/** A network Git clone URL accepted for project adoption. */
+export const RepositoryCloneUrl = Schema.String.pipe(
+  Schema.check(Schema.makeFilter((value: string) => repositoryCloneUrlIssue(value) ?? undefined)),
+  Schema.brand("RepositoryCloneUrl"),
+);
+export type RepositoryCloneUrl = typeof RepositoryCloneUrl.Type;
+
 /** What a workspace git transport op is doing, named by its remote command. */
 export type GitTransportKind = "fetch" | "push" | "archive";
 
@@ -41,7 +81,7 @@ export class Project extends Schema.Class<Project>("Project")({
   id: ProjectId,
   /** Short name; also the store directory name. */
   name: Schema.String,
-  /** Where the repo was adopted from — a remote URL or a local path. Null for bare-created repos. */
+  /** Network Git URL used for adoption. Null only for legacy bare-created repositories. */
   originUrl: Schema.NullOr(Schema.String),
   /** Absolute path of the bare repo inside the store: `<storeRoot>/<name>/repo.git`. */
   storePath: Schema.String,

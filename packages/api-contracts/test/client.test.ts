@@ -1,9 +1,31 @@
+import { Schema } from "effect";
 import * as SchemaAST from "effect/SchemaAST";
 import { HttpApi } from "effect/unstable/httpapi";
 import { describe, expect, it } from "vitest";
 
 import { MendApi } from "../src/api.ts";
 import { errorStatusByTag } from "../src/client.ts";
+import { AdoptProject } from "../src/workbench-views.ts";
+
+describe("AdoptProject", () => {
+  const decode = Schema.decodeUnknownSync(AdoptProject);
+
+  it("accepts GitHub selection URLs and SSH clone spellings", () => {
+    expect(decode({ name: "mend", source: "https://github.com/sealant-sh/Mend" }).source).toBe(
+      "https://github.com/sealant-sh/Mend",
+    );
+    expect(decode({ name: "mend", source: "git@github.com:sealant-sh/Mend.git" }).source).toBe(
+      "git@github.com:sealant-sh/Mend.git",
+    );
+  });
+
+  it.each(["/srv/repos/mend", "../mend", "file:///srv/repos/mend"])(
+    "rejects local source %s at API ingestion",
+    (source) => {
+      expect(() => decode({ name: "mend", source })).toThrow(/Local paths and file:\/\//);
+    },
+  );
+});
 
 describe("errorStatusByTag", () => {
   it("derives every declared error's status from the contract itself", () => {

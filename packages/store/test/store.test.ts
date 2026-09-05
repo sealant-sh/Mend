@@ -1,10 +1,16 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
 import * as fs from "node:fs";
+import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
 import { describe, expect, it } from "@effect/vitest";
 import { SessionId } from "@mend/domain";
+import {
+  RepositoryCloneUrl,
+  type RepositoryCloneUrl as RepositoryCloneUrlValue,
+} from "@mend/domain/workbench";
 import { Effect, Layer } from "effect";
 
 import { Store, StoreConfig } from "../src/store.ts";
@@ -40,28 +46,81 @@ const makeOrigin = (dir: string) => {
   run("commit", "-m", "initial");
 };
 
-const withStore = <A, E>(work: (tmp: string) => Effect.Effect<A, E, Store>): Promise<A> => {
+const reservePort = async (): Promise<number> => {
+  const server = net.createServer();
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("No test port available.");
+  server.close();
+  await once(server, "close");
+  return address.port;
+};
+
+const waitForPort = async (port: number): Promise<void> => {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const connected = await new Promise<boolean>((resolve) => {
+      const socket = net.createConnection({ host: "127.0.0.1", port });
+      socket.once("connect", () => {
+        socket.destroy();
+        resolve(true);
+      });
+      socket.once("error", () => resolve(false));
+    });
+    if (connected) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Git test server did not listen on ${port}.`);
+};
+
+const withStore = async <A, E>(
+  work: (
+    tmp: string,
+    origin: string,
+    source: RepositoryCloneUrlValue,
+  ) => Effect.Effect<A, E, Store>,
+): Promise<A> => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mend-store-test-"));
-  const storeLayer = Store.layer.pipe(Layer.provide(StoreConfig.layerFor(path.join(tmp, "store"))));
-  return Effect.runPromise(
-    work(tmp).pipe(
-      Effect.provide(storeLayer),
-      Effect.ensuring(Effect.sync(() => fs.rmSync(tmp, { recursive: true, force: true }))),
-      Effect.orDie,
-    ),
+  const origin = path.join(tmp, "origin");
+  makeOrigin(origin);
+  const port = await reservePort();
+  const daemon = spawn(
+    "git",
+    [
+      "daemon",
+      "--reuseaddr",
+      "--export-all",
+      `--base-path=${tmp}`,
+      "--listen=127.0.0.1",
+      `--port=${port}`,
+      tmp,
+    ],
+    { stdio: "ignore" },
   );
+  try {
+    await waitForPort(port);
+    const source = RepositoryCloneUrl.make(`git://127.0.0.1:${port}/origin`);
+    const storeLayer = Store.layer.pipe(
+      Layer.provide(StoreConfig.layerFor(path.join(tmp, "store"))),
+    );
+    return await Effect.runPromise(
+      work(tmp, origin, source).pipe(Effect.provide(storeLayer), Effect.orDie),
+    );
+  } finally {
+    daemon.kill();
+    if (daemon.exitCode === null) await once(daemon, "exit");
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 };
 
 describe("Store", () => {
   it("adopts, worktrees, checkpoints, and slices", async () => {
-    await withStore((tmp) =>
+    await withStore((tmp, _origin, source) =>
       Effect.gen(function* () {
         const store = yield* Store;
-        const origin = path.join(tmp, "origin");
-        makeOrigin(origin);
 
         // Adopt: bare clone in the store, default branch discovered.
-        const adopted = yield* store.adopt("fixture", origin, { GIT_TERMINAL_PROMPT: "0" });
+        const adopted = yield* store.adopt("fixture", source, { GIT_TERMINAL_PROMPT: "0" });
         expect(adopted.defaultBranch).toBe("main");
         expect(fs.existsSync(adopted.storePath)).toBe(true);
 
@@ -160,12 +219,10 @@ describe("Store", () => {
   });
 
   it("keeps the store group-writable so a root-side git cannot lock uid 1000 out", async () => {
-    await withStore((tmp) =>
+    await withStore((_tmp, _origin, source) =>
       Effect.gen(function* () {
         const store = yield* Store;
-        const origin = path.join(tmp, "origin");
-        makeOrigin(origin);
-        const adopted = yield* store.adopt("fixture", origin, { GIT_TERMINAL_PROMPT: "0" });
+        const adopted = yield* store.adopt("fixture", source, { GIT_TERMINAL_PROMPT: "0" });
 
         const shared = () =>
           execFileSync("git", ["config", "--get", "core.sharedRepository"], {
@@ -200,11 +257,9 @@ describe("Store", () => {
   });
 
   it("freshens bases from origin, lists branches, and refreshes", async () => {
-    await withStore((tmp) =>
+    await withStore((_tmp, origin, source) =>
       Effect.gen(function* () {
         const store = yield* Store;
-        const origin = path.join(tmp, "origin");
-        makeOrigin(origin);
         const runOrigin = (...args: ReadonlyArray<string>) =>
           execFileSync("git", [...args], {
             cwd: origin,
@@ -217,7 +272,7 @@ describe("Store", () => {
             },
           });
 
-        const adopted = yield* store.adopt("fixture", origin, { GIT_TERMINAL_PROMPT: "0" });
+        const adopted = yield* store.adopt("fixture", source, { GIT_TERMINAL_PROMPT: "0" });
 
         // Origin moves on after adoption: main advances, a feature branch appears.
         fs.writeFileSync(path.join(origin, "app.ts"), "export const answer = 42\n");

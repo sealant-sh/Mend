@@ -1,3 +1,4 @@
+import { repositoryCloneUrlIssue } from "@mend/domain/workbench";
 import { useContextMenu } from "@mend/ui/context-menu";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
@@ -87,13 +88,20 @@ function AdoptForm() {
   const gitKey = createdKey ?? (access?.key.exists === true ? access.key : null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const trimmedSource = source.trim();
+  const sourceIssue = trimmedSource === "" ? null : repositoryCloneUrlIssue(trimmedSource);
+  const displayedError = error ?? sourceIssue;
 
   const submit = async () => {
-    if (source === "") return;
+    if (trimmedSource === "") return;
+    if (sourceIssue !== null) {
+      setError(sourceIssue);
+      return;
+    }
     setPending(true);
     setError(null);
     try {
-      await adoptProject(name === "" ? inferName(source) : name, source, auth);
+      await adoptProject(name === "" ? inferName(trimmedSource) : name, trimmedSource, auth);
       await queryClient.invalidateQueries(trpc.projects.pathFilter());
       setName("");
       setSource("");
@@ -122,7 +130,7 @@ function AdoptForm() {
         <input
           value={source}
           onChange={(event) => setSource(event.target.value)}
-          placeholder="git URL (GitHub, GitLab, self-hosted, ssh://) or absolute path"
+          placeholder="Git URL (HTTP(S), SSH, or git@host:owner/repo.git)"
           className="min-w-64 flex-1 rounded-lg border border-input bg-background px-3 py-2 font-mono text-xs text-foreground placeholder:text-faint"
         />
         <input
@@ -133,7 +141,7 @@ function AdoptForm() {
         />
         <button
           type="button"
-          disabled={pending || source === ""}
+          disabled={pending || trimmedSource === "" || sourceIssue !== null}
           onClick={() => void submit()}
           className="rounded-xl bg-primary px-4 py-2 font-sans text-sm font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-opacity disabled:opacity-50"
         >
@@ -162,9 +170,9 @@ function AdoptForm() {
           <GitKeyCard gitKey={gitKey} />
         </div>
       )}
-      {error !== null && (
+      {displayedError !== null && (
         <p className="mt-3 border-l-2 border-[var(--sw-red)] pl-2 font-mono text-xs text-danger">
-          {error}
+          {displayedError}
         </p>
       )}
       <p className="mt-3 text-xs text-muted-foreground">

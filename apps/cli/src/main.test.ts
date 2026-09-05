@@ -153,6 +153,18 @@ const expectFastExit = async (
   expect(outcome, stderr()).toEqual({ kind: "exit", code: 0 });
 };
 
+describe("mend adopt", () => {
+  it.each(["/tmp/repository", "../repository", "file:///tmp/repository"])(
+    "rejects local source %s before an API call",
+    async (source) => {
+      const cli = startCli("http://127.0.0.1:9", ["adopt", source]);
+      const exit = await cli.exited;
+      expect(exit.code).toBe(1);
+      expect(cli.stderr()).toContain("Local paths and file:// URLs are not supported");
+    },
+  );
+});
+
 describe("Mend CLI session selection", () => {
   const retained = (request: IncomingMessage, response: ServerResponse): boolean => {
     if (request.url?.startsWith("/api/sessions?retained") === true) {

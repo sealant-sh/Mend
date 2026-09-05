@@ -104,12 +104,3 @@ export class ConnectionStore {
     return true;
   }
 }
-
-export const isLoopbackServer = (connection: MendConnection): boolean => {
-  try {
-    const host = new URL(connection.url).hostname;
-    return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
-  } catch {
-    return false;
-  }
-};

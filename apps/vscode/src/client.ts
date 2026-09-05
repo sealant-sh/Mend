@@ -58,7 +58,7 @@ const parseSession = (value: unknown): Session => {
     worktree: stringField(value, "worktree"),
     branch: stringField(value, "branch"),
     status: parseSessionStatus(value["status"]),
-    // Tolerant: an older server omits the field; the workspace open then falls back.
+    // Tolerant: an older server may omit the field; editor open can resume to obtain an id.
     sealantWorkspaceId:
       typeof value["sealantWorkspaceId"] === "string" ? value["sealantWorkspaceId"] : null,
     createdAt: stringField(value, "createdAt"),
@@ -223,19 +223,32 @@ export class MendClient {
     const value = await this.request("/workspace-ssh");
     if (!isRecord(value)) throw new Error("Mend returned an invalid workspace-ssh view.");
     const gateway = value["gateway"];
-    const keys = Array.isArray(value["keys"]) ? value["keys"] : [];
+    const keys = value["keys"];
+    if (!Array.isArray(keys)) throw new Error("Mend returned invalid workspace SSH keys.");
+    let parsedGateway: WorkspaceSshView["gateway"] = null;
+    if (gateway !== null) {
+      if (!isRecord(gateway)) {
+        throw new Error("Mend returned invalid workspace SSH gateway metadata.");
+      }
+      const host = gateway["host"];
+      const port = gateway["port"];
+      const usernamePrefix = gateway["usernamePrefix"];
+      if (
+        typeof host !== "string" ||
+        host === "" ||
+        typeof port !== "number" ||
+        !Number.isInteger(port) ||
+        port < 1 ||
+        port > 65_535 ||
+        typeof usernamePrefix !== "string" ||
+        !/^[a-zA-Z0-9._-]+$/.test(usernamePrefix)
+      ) {
+        throw new Error("Mend returned invalid workspace SSH gateway metadata.");
+      }
+      parsedGateway = { host, port, usernamePrefix };
+    }
     return {
-      gateway:
-        isRecord(gateway) &&
-        typeof gateway["host"] === "string" &&
-        typeof gateway["port"] === "number" &&
-        typeof gateway["usernamePrefix"] === "string"
-          ? {
-              host: gateway["host"],
-              port: gateway["port"],
-              usernamePrefix: gateway["usernamePrefix"],
-            }
-          : null,
+      gateway: parsedGateway,
       keys: keys.filter(isRecord).map((key) => ({
         sshKeyId: stringField(key, "sshKeyId"),
         name: stringField(key, "name"),
