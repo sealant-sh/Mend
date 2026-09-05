@@ -26,4 +26,4 @@ jobs:
       - name: Check packaging contracts, supervision, and acceptance helpers
         run:
           node --test scripts/bundle-packaging.test.mjs scripts/process-supervisor.test.mjs
-          scripts/check-packaged-server.test.mjs
+          scripts/check-packaged-server.test.mjs scripts/release-publication.test.mjs

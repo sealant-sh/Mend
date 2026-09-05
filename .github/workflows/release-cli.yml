@@ -22,7 +22,7 @@ jobs:
 
   npm:
     name: Publish @sealant/mend
-    needs: images
+    needs: [images, github-release]
     # Github-hosted runner on purpose: the OIDC id-token should be minted on
     # infrastructure GitHub controls.
     runs-on: ubuntu-latest
@@ -60,9 +60,10 @@ jobs:
 
   # Attach setup assets at the canonical /releases/download/vVERSION URLs.
   github-release:
-    name: GitHub release
-    needs: npm
+    name: Publish and verify setup assets
+    needs: images
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
@@ -86,6 +87,9 @@ jobs:
 
           ---
 
+          npm publication follows verification of these public setup assets. The stable latest
+          pointers advance only after npm publication succeeds.
+
           **Artifacts of this release**
           - npm: [\`@sealant/mend@$VERSION\`](https://www.npmjs.com/package/@sealant/mend/v/$VERSION)
           - \`ghcr.io/sealant-sh/mend-api:$VERSION\` — API tier (contract, engine, workers)
@@ -101,21 +105,42 @@ jobs:
           VERSION="${VERSION#v}"
           flags=()
           if [[ "$VERSION" == *-* ]]; then flags+=(--prerelease); fi
-          gh release create "$GITHUB_REF_NAME" "${flags[@]}" \
-            deploy/docker/compose.v1.yaml \
-            deploy/docker/postgres-init.sh \
-            deploy/docker/setup-contract.v1.json \
-            install.sh \
-            --title "Mend ${VERSION}" \
-            --notes-file release-notes.md \
-            --verify-tag
+          assets=(deploy/docker/compose.v1.yaml deploy/docker/postgres-init.sh deploy/docker/setup-contract.v1.json install.sh)
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            # Retry partial uploads without replacing an already published asset.
+            existing="$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name')"
+            for source in "${assets[@]}"; do
+              if ! grep -Fqx "${source##*/}" <<< "$existing"; then
+                gh release upload "$GITHUB_REF_NAME" "$source"
+              fi
+            done
+          else
+            gh release create "$GITHUB_REF_NAME" "${flags[@]}" "${assets[@]}" \
+              --title "Mend ${VERSION}" \
+              --notes-file release-notes.md \
+              --latest=false \
+              --verify-tag
+          fi
+      - name: Verify anonymous setup downloads before npm publication
+        run: |
+          set -euo pipefail
+          downloads="$(mktemp -d)"
+          trap 'rm -rf "$downloads"' EXIT
+          for source in deploy/docker/compose.v1.yaml deploy/docker/postgres-init.sh deploy/docker/setup-contract.v1.json install.sh; do
+            asset="${source##*/}"
+            curl -q --fail --location --retry 6 --retry-all-errors --retry-delay 5 \
+              --connect-timeout 10 --max-time 60 \
+              "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$asset" \
+              --output "$downloads/$asset"
+            cmp "$source" "$downloads/$asset"
+          done
 
   promote-images:
-    name: Promote verified stable images
-    needs: github-release
+    name: Promote the complete stable release
+    needs: [npm, github-release]
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
       - uses: docker/setup-buildx-action@v3
@@ -125,6 +150,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Update latest after release publication
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           version="${GITHUB_REF_NAME#cli-}"
           version="${version#v}"
@@ -133,3 +160,4 @@ jobs:
             repository="ghcr.io/$GITHUB_REPOSITORY_OWNER/$image"
             docker buildx imagetools create --tag "$repository:latest" "$repository:$version"
           done
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --latest
