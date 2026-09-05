@@ -32,6 +32,7 @@
     "build": "tsgo -p tsconfig.json --noEmit && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap",
     "lint": "oxlint . --no-error-on-unmatched-pattern",
     "package": "vsce package --no-dependencies",
+    "test": "vitest run",
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
   "dependencies": {
@@ -44,7 +45,8 @@
     "@types/vscode": "^1.100.0",
     "@vscode/vsce": "^3.9.2",
     "esbuild": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   },
   "contributes": {
     "viewsContainers": {

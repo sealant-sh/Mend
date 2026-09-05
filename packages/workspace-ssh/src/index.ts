@@ -330,9 +330,7 @@ const readOptionalKey = (keyPath: string): WorkspaceSshResult<WorkspaceSshKeyMat
   const publicPath = publicKeyPath(keyPath);
   const read = readText(publicPath);
   if (read.ok === false) return failure(read.error);
-  return success(
-    read.value.trim() === "" ? null : keyMaterial(read.value, publicPath, "existing"),
-  );
+  return success(read.value.trim() === "" ? null : keyMaterial(read.value, publicPath, "existing"));
 };
 
 const agentKey = (): WorkspaceSshKeyMaterial | null => {
