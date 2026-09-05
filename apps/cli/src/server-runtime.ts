@@ -15,10 +15,13 @@ export const serverProcessDeadlines = {
   ordinary: 30_000,
   pull: 10 * 60_000,
   startup: 3 * 60_000,
+  stop: 90_000,
+  dump: 15 * 60_000,
   composeWaitSeconds: 120,
 } as const;
 /** Optional exclusive, durable private stdout destination. stderr always remains bounded. */
 export interface ServerProcessOptions {
+  /** Finite wall-clock budget, defaulting to ordinary commands even with a stdout file. */
   readonly timeoutMs?: number;
   readonly stdoutFile?: string;
 }

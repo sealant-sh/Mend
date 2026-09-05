@@ -142,7 +142,10 @@ Use these existing owners rather than duplicating setup internals:
   releases its lock. The host init reaps orphaned descendants. Captured stdout is bounded to 4 MiB
   and stderr to 64 KiB; overflow terminates the group and returns failure. Setup allows ten minutes
   for online image pulls plus three minutes for startup, or just three minutes offline. Compose also
-  receives `--wait-timeout 120`.
+  receives `--wait-timeout 120`. Lifecycle startup has three minutes, stop has 90 seconds,
+  release-image pulls have ten minutes, and `pg_dumpall` has fifteen minutes. A private stdout file
+  does not disable the deadline or stderr limit. It is fsynced and closed after process termination,
+  including on failure; incomplete output remains a private partial file.
 - `server-docker-volumes.ts`: setup calls
   `claimServerDockerVolumes(runtime, { dockerContext, identityBytes })` with
   `Buffer.from(generation.files.identity)` after preparing the complete generation, before any
@@ -153,19 +156,19 @@ Use these existing owners rather than duplicating setup internals:
   Print all `cleanupWarnings` on either result. An `error` blocks the reachable/setup-success
   message and keeps the installation for retry.
 
-### PR5 handoff
+### Lifecycle ownership and registry verification
 
-This change wires setup only. The parent lifecycle work must call `verifyServerDockerVolumes` while
-holding `withServerStore`, after validating the selected installation and reading its persisted
-identity, before lifecycle Compose commands. Pass the saved context and exact `identity.env` bytes.
-Treat absent identity or either absent volume as an error. Never use the claim helper as a fallback
-from start, stop, status, logs, or upgrade.
+Every lifecycle command calls `verifyServerDockerVolumes` under `withServerStore`, after validating
+its selected installation and reading exact persisted `identity.env` bytes through `ServerStore`.
+Verification precedes lifecycle Compose calls. Missing identity, missing volumes, conflicting
+labels, and failed inspections are errors. Lifecycle commands never fall back to the claim helper.
+Status and logs perform read-only ownership checks and never allocate Docker resources.
 
-In `startInstallation`, call `probeServerRegistry` after app health and before reporting success,
-with the same arguments and warning/error handling as setup above. Every start gets a fresh nonce.
-The runtime must forward probe deadlines, not discard the third `run` argument. Ownership helpers
-return tagged results and never log credentials; the registry helper returns tagged results plus
-cleanup warnings. No PR5 lifecycle commands or upgrade policy are implemented here.
+`startInstallation` probes the registry after app health and before reporting success, including
+upgrade startup and old-app recovery before target startup. Every attempt draws a fresh nonce and
+forwards probe deadlines. Both success and failure print cleanup warnings; a failed roundtrip cannot
+produce startup success. A registry failure after target startup retains the target pin, just like a
+startup timeout or health failure.
 
 Low-level store file values are private serialized bytes. Upgrade parses and renders its complete
 proposed config/env pair, preserves identity bytes, then uses `prepare` to fsync an immutable target
@@ -191,12 +194,13 @@ mend server upgrade --version 0.24.0 --assets-dir ./release-0.24.0 --offline
 mend server upgrade --version latest # explicit GitHub resolution and pull of missing images
 ```
 
-Start and restart never download assets or pull images, with or without `--offline`. They require
-preloaded images with the saved version label and exact-version health. Status and logs hold the
-same lock but never rewrite configuration, change permissions, or start containers. Status reports
-stopped containers without making a health claim. If Mend is running, one bounded health request
-must match the saved pin. Missing installations produce a readable error without creating a
-configuration directory or running setup.
+Start and restart never download assets or pull release images, with or without `--offline`. They
+require preloaded images with the saved version label, exact-version health, and a registry
+roundtrip using their own tiny imported image. Status and logs hold the same lock but never rewrite
+configuration, change permissions, or start containers. Status reports stopped containers without
+making a health claim. If Mend is running, one bounded health request must match the saved pin.
+Missing installations produce a readable error without creating a configuration directory or running
+setup.
 
 Updating the CLI does not change an existing server pin. Setup repairs the same version; a changed
 `--version`, including `latest`, directs the user to upgrade. Upgrades require `--version`; latest
@@ -219,13 +223,14 @@ Upgrade proceeds under the installation lock:
    per-database consistent snapshots while Mend's writers are stopped, not a cross-database snapshot
    in the presence of unrelated writes. PostgreSQL stays running for the dump.
 4. Activate the target only after the backup completes. This is the write-ahead migration boundary.
-   Start it with `--pull never --no-build` and require exact-version health.
+   Start it with `--pull never --no-build`, bounded Compose wait, exact-version health, and a
+   successful registry roundtrip.
 
 If assets, images, generation preparation, or recovery-directory creation fail, the old pin and app
-are untouched. If stop, backup, or activation fails before target startup, reselect the exact old
-generation and attempt to recover the old app only if it was running before the upgrade. Recovery
-failure is reported with `mend server start` guidance. If Postgres was stopped, a failed backup may
-leave Postgres running; it does not start a previously stopped app.
+are untouched. If stop, backup, or activation fails or times out before target startup, reselect the
+exact old generation and attempt to recover the old app only if it was running before the upgrade.
+Recovery failure is reported with `mend server start` guidance. If Postgres was stopped, a failed
+backup may leave Postgres running; it does not start a previously stopped app.
 
 Once target startup has been attempted, any failure retains the new target, old generation, and
 completed backup. **Never automatically downgrade or restore the database.** Run:
@@ -365,11 +370,14 @@ retained or needed on reruns. Fresh setup with local assets requires an explicit
 
 Lifecycle tests invoke public `serverCommand` with the production process runtime, a separate local
 Docker protocol fixture executable, real HTTP listeners and real files. They check order, exact
-pins/generations, failure recovery, backup permissions and no rollback after target startup. Runtime
-tests stream a 16 MiB dump directly to disk and exercise exclusive creation, partial failure and
-bounded capture. These are deterministic protocol tests, not a claim of live image/migration
-acceptance. That acceptance uses two genuinely stamped canonical candidate images and the public CLI
-flags above; changing a health response to an invented version is not an upgrade test.
+pins/generations, failure recovery, ownership under lock, read-only status/logs, fresh registry
+probes, backup permissions and no rollback after target startup. A real stalled dump with an
+inherited-pipe descendant must terminate before old-app recovery and lock release. A real target
+startup timeout must retain the target. Runtime tests stream a 16 MiB dump directly to disk and
+exercise exclusive creation, partial failure and bounded capture. These are deterministic protocol
+tests, not a claim of live image/migration acceptance. That acceptance uses two genuinely stamped
+canonical candidate images and the public CLI flags above; changing a health response to an invented
+version is not an upgrade test.
 
 `--offline` forbids GitHub requests and runs Compose with `--pull never --no-build`. Preload both
 `postgres:17-alpine` and `ghcr.io/sealant-sh/mend:VERSION` in the selected daemon. The Mend image's

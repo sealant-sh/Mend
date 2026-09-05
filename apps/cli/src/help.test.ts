@@ -159,6 +159,13 @@ describe("man pages", () => {
     const recovery = renderManPage(upgrade, "0.23.0");
     expect(recovery).toContain("pg_dumpall");
     expect(recovery).toContain("never automatically downgrades or restores");
+    for (const name of ["setup", "start", "restart", "upgrade"]) {
+      const doc = findCommand(["server", name]);
+      if (doc === null) throw new Error("Server help missing");
+      const text = renderCommand(doc, 120).replace(/\s+/g, " ");
+      expect(text).toContain("loopback registry");
+      expect(text).not.toContain("no GitHub requests or Docker pulls");
+    }
   });
   it("escapes roff and names every page", () => {
     const page = renderManPage(findCommand(["service", "run"])!, "0.17.0");

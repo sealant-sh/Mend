@@ -46,9 +46,11 @@ mend server upgrade --version 0.24.0 --assets-dir ./release-0.24.0 --offline
 Each asset directory must contain `compose.v1.yaml` and `postgres-init.sh`. Mend copies them into an
 immutable private generation; the source directory is not needed afterward. Preload official
 `postgres:17-alpine` and canonical `ghcr.io/sealant-sh/mend:VERSION`. Image labels and health must
-report that exact version. `--offline` forbids GitHub requests and Docker pulls. Start/restart
-always reuse local images and retained assets. The loopback registry defaults to port 5000; choose a
-free `--registry-port` when another registry, such as Sealant's, already uses it.
+report that exact version. `--offline` forbids GitHub requests and release-image pulls.
+Start/restart always reuse local release images and retained assets. Startup still verifies the
+loopback registry by importing, pushing, removing and pulling its own tiny probe image. The registry
+defaults to port 5000; choose a free `--registry-port` when another registry, such as Sealant's,
+already uses it.
 
 Stop/restart/upgrade interrupt connections. Workspace containers and data remain, but active work
 may lose connectivity and need reconnection. No volumes are deleted. Status/logs never start an

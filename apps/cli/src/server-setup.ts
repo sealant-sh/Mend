@@ -4,7 +4,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { claimServerDockerVolumes } from "./server-docker-volumes.ts";
+import { claimServerDockerVolumes, verifyServerDockerVolumes } from "./server-docker-volumes.ts";
 import { probeServerRegistry } from "./server-registry-probe.ts";
 import {
   runServerProcess,
@@ -1090,14 +1090,7 @@ const setupServer = async (
   runtime.writeLine(`Using Docker context "${config.dockerContext}" (${config.dockerEndpoint})`);
   await startCompose(runtime, config, generation);
   await probeHealth(runtime, config.appUrl, config.serverVersion);
-  const registry = await probeServerRegistry(runtime, {
-    dockerContext: config.dockerContext,
-    registryPort: config.registryPort,
-    nonce: runtime.randomBytes(24).toString("hex"),
-    temporaryDirectory: path.resolve(runtime.configDir),
-  });
-  for (const warning of registry.cleanupWarnings) runtime.writeLine(`Warning: ${warning.message}`);
-  if (registry._tag === "error") throw setupError(registry.error.message);
+  await verifyRegistry(runtime, config);
   runtime.writeLine(`Mend ${config.serverVersion} is reachable at ${config.appUrl}`);
   runtime.writeLine(
     `Open ${config.appUrl}, create the first account, then run: mend login --url ${config.appUrl}`,
@@ -1154,10 +1147,22 @@ const composeCommand = async (
     "docker",
     serverComposeArgs(
       { directory: installation.directory, dockerContext: installation.config.dockerContext },
-      args,
+      args.flatMap((arg) =>
+        arg === "--wait"
+          ? [arg, "--wait-timeout", String(serverProcessDeadlines.composeWaitSeconds)]
+          : [arg],
+      ),
     ),
+    {
+      timeoutMs:
+        args[0] === "up"
+          ? serverProcessDeadlines.startup
+          : args[0] === "stop"
+            ? serverProcessDeadlines.stop
+            : serverProcessDeadlines.ordinary,
+    },
   );
-  if (output.status !== 0)
+  if (output.status !== 0 || output.error !== undefined)
     throw commandFailure(`Docker Compose ${args[0] ?? "command"} failed`, output);
   return output;
 };
@@ -1166,6 +1171,17 @@ const interruptionNotice = (runtime: ServerSetupRuntime): void =>
   runtime.writeLine(
     "Connections will be interrupted. Workspace containers and data are retained, but active work can lose connectivity and may need reconnection. Mend does not stop workspace containers.",
   );
+
+const verifyRegistry = async (runtime: ServerSetupRuntime, config: ServerConfig): Promise<void> => {
+  const registry = await probeServerRegistry(runtime, {
+    dockerContext: config.dockerContext,
+    registryPort: config.registryPort,
+    nonce: runtime.randomBytes(24).toString("hex"),
+    temporaryDirectory: path.resolve(runtime.configDir),
+  });
+  for (const warning of registry.cleanupWarnings) runtime.writeLine(`Warning: ${warning.message}`);
+  if (registry._tag === "error") throw setupError(registry.error.message);
+};
 
 const startInstallation = async (
   runtime: ServerSetupRuntime,
@@ -1180,6 +1196,7 @@ const startInstallation = async (
     "--no-build",
   ]);
   await probeHealth(runtime, installation.config.appUrl, installation.config.serverVersion);
+  await verifyRegistry(runtime, installation.config);
   runtime.writeLine(
     `Mend ${installation.config.serverVersion} is reachable at ${installation.config.appUrl}`,
   );
@@ -1272,11 +1289,13 @@ const upgradeServer = async (
         "pg_dumpall",
         "--username=postgres",
       ]),
-      { stdoutFile: backup.partialFile },
+      { stdoutFile: backup.partialFile, timeoutMs: serverProcessDeadlines.dump },
     );
     // Dump stderr can include SQL or credentials. Do not put it in a terminal error.
-    if (dumped.status !== 0)
-      throw setupError("Database backup failed. The partial dump is not a usable backup.");
+    if (dumped.status !== 0 || dumped.error !== undefined)
+      throw setupError(
+        "Database backup failed or timed out. The partial dump is not a usable backup.",
+      );
     storeValue(backup.complete());
     storeValue(store.activate(target));
   } catch (cause) {
@@ -1306,7 +1325,7 @@ const upgradeServer = async (
     await startInstallation(runtime, installation);
   } catch {
     throw setupError(
-      `Mend ${version} startup or exact-version health failed; migrations may have begun. The target pin remains active. Do NOT downgrade or restore the database automatically. Run mend server logs --tail 100 and mend server status; fix the target, then mend server start --offline. Previous generation: ${previous.directory}. Target generation: ${target.directory}. Database backup and recovery record: ${backup.directory}.`,
+      `Mend ${version} startup, exact-version health or registry verification failed; migrations may have begun. The target pin remains active. Do NOT downgrade or restore the database automatically. Run mend server logs --tail 100 and mend server status; fix the target, then mend server start --offline. Previous generation: ${previous.directory}. Target generation: ${target.directory}. Database backup and recovery record: ${backup.directory}.`,
     );
   }
   runtime.writeLine(`Upgraded to ${version}. Retained database backup: ${backup.directory}`);
@@ -1366,6 +1385,14 @@ const manageServer = async (
     throw setupError(
       "No Mend server is configured. Run mend server setup explicitly to install one.",
     );
+  // Lifecycle commands only verify. Missing volumes must never become allocation permission.
+  const identity = storeValue(store.readIdentity());
+  if (identity === null) throw setupError("The persisted server identity is missing.");
+  const ownership = await verifyServerDockerVolumes(runtime, {
+    dockerContext: installation.config.dockerContext,
+    identityBytes: Buffer.from(identity),
+  });
+  if (ownership._tag === "error") throw setupError(ownership.error.message);
   if (command === "upgrade") return upgradeServer(args, runtime, store, installation);
   if (command === "logs") {
     let tail = 100;

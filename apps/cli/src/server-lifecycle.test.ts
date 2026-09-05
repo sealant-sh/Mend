@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
@@ -6,6 +6,8 @@ import * as path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { SERVER_VOLUME_OWNER_LABEL } from "./server-docker-volumes.ts";
+import { serverProcessDeadlines, type ServerProcessOptions } from "./server-runtime.ts";
 import { nodeServerRuntime, serverCommand, type ServerSetupRuntime } from "./server-setup.ts";
 
 interface DaemonState {
@@ -23,6 +25,7 @@ interface Call {
   readonly active: string | null;
   readonly appRunning: boolean;
   readonly poisoned: boolean;
+  readonly locked: boolean;
 }
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -52,6 +55,10 @@ const fixture = async () => {
     path.join(root, "docker"),
   );
   fs.chmodSync(path.join(root, "docker"), 0o700);
+  fs.copyFileSync(
+    new URL("../test-fixtures/docker-protocol.ts", import.meta.url),
+    path.join(root, "docker-protocol.ts"),
+  );
   const server = http.createServer((_request, response) => {
     const current = state();
     response.writeHead(current.appRunning ? 200 : 503);
@@ -87,8 +94,16 @@ const fixture = async () => {
   }
   const lines: Array<string> = [];
   const fetched: Array<string> = [];
+  const runCalls: Array<{
+    readonly args: ReadonlyArray<string>;
+    readonly options: ServerProcessOptions | undefined;
+  }> = [];
   const runtime: ServerSetupRuntime = {
     ...base,
+    run: (command, args, options) => {
+      runCalls.push({ args, options });
+      return base.run(command, args, options);
+    },
     configDir,
     cliVersion: "99.0.0",
     sleep: async () => undefined,
@@ -160,6 +175,7 @@ const fixture = async () => {
     setup,
     upgrade,
     assets,
+    runCalls,
   };
 };
 
@@ -222,7 +238,7 @@ describe("server lifecycle through public command, real processes, HTTP and file
             !call.poisoned &&
             !call.args.includes("down") &&
             !call.args.includes("prune") &&
-            !call.args.includes("pull"),
+            (!call.args.includes("pull") || call.args.at(-1)?.includes("/mend-registry-probe/")),
         ),
     ).toBe(true);
     expect(fs.readdirSync(path.join(f.configDir, "generations"))).toHaveLength(1);
@@ -244,7 +260,14 @@ describe("server lifecycle through public command, real processes, HTTP and file
     const before = f.files();
     const count = f.calls().length;
     expect((await serverCommand(command, f.runtime))._tag).toBe("error");
-    expect(f.calls()).toHaveLength(count);
+    expect(
+      f
+        .calls()
+        .slice(count)
+        .every(
+          (call) => call.args[2] === "volume" && ["ls", "inspect"].includes(call.args[3] ?? ""),
+        ),
+    ).toBe(true);
     expect(f.files()).toEqual(before);
   });
 
@@ -271,6 +294,7 @@ describe("server lifecycle through public command, real processes, HTTP and file
   it("resolves latest only on explicit online upgrade", async () => {
     const f = await fixture();
     expect(await f.setup()).toEqual({ _tag: "ok" });
+    f.update({ images: { "0.23.0": "0.23.0" } });
     const requests: Array<string> = [];
     const runtime: ServerSetupRuntime = {
       ...f.runtime,
@@ -289,6 +313,9 @@ describe("server lifecycle through public command, real processes, HTTP and file
       "https://api.github.com/repos/sealant-sh/Mend/releases/latest",
     ]);
     expect(f.state().version).toBe("0.24.0");
+    expect(f.runCalls.find((call) => call.args[2] === "pull")?.options?.timeoutMs).toBe(
+      serverProcessDeadlines.pull,
+    );
   });
 
   it("backs up with writers stopped before selecting and starting the exact target", async () => {
@@ -327,6 +354,18 @@ describe("server lifecycle through public command, real processes, HTTP and file
       command: ["exec", "-T", "postgres", "pg_dumpall", "--username=postgres"],
     });
     expect(calls[start]?.active).toBe(path.relative(f.configDir, target));
+    expect(f.runCalls.find((call) => call.args.includes("pg_dumpall"))?.options?.timeoutMs).toBe(
+      serverProcessDeadlines.dump,
+    );
+    expect(
+      f.runCalls
+        .filter((call) => call.args.includes("--wait"))
+        .every(
+          (call) =>
+            call.args.includes("--wait-timeout") &&
+            call.options?.timeoutMs === serverProcessDeadlines.startup,
+        ),
+    ).toBe(true);
     const backupRoot = path.join(f.configDir, "backups");
     const backupName = fs.readdirSync(backupRoot)[0];
     if (backupName === undefined) throw new Error("No backup");
@@ -421,15 +460,13 @@ describe("server lifecycle through public command, real processes, HTTP and file
     ).toBe(true);
   });
 
-  it.each(["target-start", "health-mismatch"])(
+  it.each(["target-start", "health-mismatch", "target-registry"])(
     "never rolls back after %s once target migrations may have begun",
     async (failure) => {
       const f = await fixture();
       expect(await f.setup()).toEqual({ _tag: "ok" });
       const old = f.active();
-      f.update(
-        failure === "health-mismatch" ? { healthVersion: "0.23.0" } : { fail: "target-start" },
-      );
+      f.update(failure === "health-mismatch" ? { healthVersion: "0.23.0" } : { fail: failure });
       expect(await f.upgrade()).toMatchObject({
         _tag: "error",
         message: expect.stringContaining("migrations may have begun"),
@@ -485,6 +522,16 @@ describe("server lifecycle through public command, real processes, HTTP and file
         }
       }
       await settled;
+      // The killed CLI cannot run cleanup. Terminate its separate Docker group explicitly.
+      const marker = path.join(f.root, "target-started");
+      if (fs.existsSync(marker)) {
+        const dockerPid = Number(fs.readFileSync(marker, "utf8"));
+        try {
+          process.kill(-dockerPid, "SIGKILL");
+        } catch {
+          /* already stopped */
+        }
+      }
     }
     const target = f.active();
     expect(f.files()["server.env"]).toContain("MEND_VERSION=0.24.0");
@@ -499,6 +546,216 @@ describe("server lifecycle through public command, real processes, HTTP and file
     });
     expect(f.calls()).toHaveLength(count);
     expect(f.active()).toBe(target);
+  });
+
+  it.each(["start", "restart", "stop", "status", "logs", "upgrade"])(
+    "verifies ownership under lock before lifecycle Compose (%s)",
+    async (command) => {
+      const f = await fixture();
+      expect(await f.setup()).toEqual({ _tag: "ok" });
+      const file = path.join(f.root, "docker-protocol.json");
+      const saved: { volumes: Array<[string, Record<string, string>]> } = JSON.parse(
+        fs.readFileSync(file, "utf8"),
+      );
+      for (const [name, labels] of saved.volumes) {
+        if (name === "mend-control") labels[SERVER_VOLUME_OWNER_LABEL] = "foreign-identity";
+      }
+      fs.writeFileSync(file, JSON.stringify(saved));
+      const count = f.calls().length;
+      const before = f.files();
+      const result = await serverCommand(
+        command === "upgrade"
+          ? [command, "--version", "0.24.0", "--assets-dir", f.assets, "--offline"]
+          : [command],
+        f.runtime,
+      );
+      expect(result).toMatchObject({
+        _tag: "error",
+        message: expect.stringContaining("ownership"),
+      });
+      expect(
+        f
+          .calls()
+          .slice(count)
+          .every(
+            (call) =>
+              call.locked &&
+              call.args[2] === "volume" &&
+              ["ls", "inspect"].includes(call.args[3] ?? ""),
+          ),
+      ).toBe(true);
+      expect(f.files()).toEqual(before);
+      expect(f.state().appRunning).toBe(true);
+      saved.volumes = saved.volumes.filter(([name]) => name !== "mend-control");
+      fs.writeFileSync(file, JSON.stringify(saved));
+      expect((await serverCommand([command], f.runtime))._tag).toBe("error");
+      expect(
+        f
+          .calls()
+          .slice(count)
+          .some((call) => call.args[3] === "create" || call.directory !== null),
+      ).toBe(false);
+    },
+  );
+
+  it("status and logs allocate nothing; each start probes with fresh nonces and forwards deadlines", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    const count = f.calls().length;
+    expect(await serverCommand(["status"], f.runtime)).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["logs"], f.runtime)).toEqual({ _tag: "ok" });
+    expect(
+      f
+        .calls()
+        .slice(count)
+        .every(
+          (call) =>
+            call.locked &&
+            (call.args[2] === "volume" || ["ps", "logs"].includes(call.command[0] ?? "")),
+        ),
+    ).toBe(true);
+    for (const command of ["start", "restart"])
+      expect(await serverCommand([command], f.runtime)).toEqual({ _tag: "ok" });
+    const imports = f.runCalls.filter((call) => call.args[3] === "import");
+    expect(imports).toHaveLength(3);
+    expect(new Set(imports.map((call) => call.args.at(-1))).size).toBe(3);
+    expect(imports.every((call) => call.options?.timeoutMs === 60_000)).toBe(true);
+    expect(
+      f.runCalls.some((call) => call.args[3] === "rm" && call.options?.timeoutMs === 15_000),
+    ).toBe(true);
+    const starts = f.runCalls.filter((call) => call.args.includes("up"));
+    expect(
+      starts.every(
+        (call) =>
+          call.options?.timeoutMs === serverProcessDeadlines.startup &&
+          call.args.includes("--wait-timeout"),
+      ),
+    ).toBe(true);
+  });
+
+  it.each(["start", "restart"])(
+    "does not report %s success when the registry fails, and prints cleanup warnings",
+    async (command) => {
+      const f = await fixture();
+      expect(await f.setup()).toEqual({ _tag: "ok" });
+      f.lines.splice(0);
+      f.update({ fail: "registry-push-cleanup" });
+      expect(await serverCommand([command], f.runtime)).toMatchObject({
+        _tag: "error",
+        message: expect.stringContaining("registry"),
+      });
+      expect(f.lines.some((line) => line.includes("is reachable"))).toBe(false);
+      expect(f.lines.some((line) => line.startsWith("Warning:"))).toBe(true);
+      f.lines.splice(0);
+      f.update({ fail: "registry-cleanup" });
+      expect(await serverCommand([command], f.runtime)).toEqual({ _tag: "ok" });
+      expect(f.lines.some((line) => line.startsWith("Warning:"))).toBe(true);
+    },
+  );
+
+  it("terminates a real stalled dump and its descendant before old-app recovery or lock release", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    const old = f.active();
+    f.update({ fail: "backup-stall" });
+    const pidsFile = path.join(f.root, "dump-pids.json");
+    let terminated = false;
+    const runtime: ServerSetupRuntime = {
+      ...f.runtime,
+      run: async (command, args, options) => {
+        if (!args.includes("pg_dumpall")) return f.runtime.run(command, args, options);
+        expect(options?.timeoutMs).toBe(serverProcessDeadlines.dump);
+        const output = await f.runtime.run(command, args, { ...options, timeoutMs: 1000 });
+        const pids: { parent: number; child: number } = JSON.parse(
+          fs.readFileSync(pidsFile, "utf8"),
+        );
+        expect(() => process.kill(pids.parent, 0)).toThrow();
+        const state = spawnSync("ps", ["-o", "stat=", "-p", String(pids.child)], {
+          encoding: "utf8",
+        }).stdout.trim();
+        expect(state === "" || state.startsWith("Z")).toBe(true);
+        expect(fs.existsSync(path.join(f.configDir, "server.lock"))).toBe(true);
+        expect(f.state().appRunning).toBe(false);
+        expect(output).toMatchObject({
+          status: null,
+          stdout: "",
+          error: "Process timed out after 1000ms",
+        });
+        terminated = true;
+        return output;
+      },
+    };
+    const running = serverCommand(
+      ["upgrade", "--version", "0.24.0", "--assets-dir", f.assets, "--offline"],
+      runtime,
+    );
+    try {
+      await expect.poll(() => fs.existsSync(pidsFile), { timeout: 5000 }).toBe(true);
+      expect(await serverCommand(["status"], f.runtime)).toMatchObject({
+        _tag: "error",
+        message: expect.stringContaining("busy"),
+      });
+      expect(await running).toMatchObject({
+        _tag: "error",
+        message: expect.stringContaining("Previous pin and app recovered"),
+      });
+    } finally {
+      await running;
+    }
+    expect(terminated).toBe(true);
+    expect(f.active()).toBe(old);
+    expect(f.state().appRunning).toBe(true);
+    expect(
+      f
+        .calls()
+        .filter((call) => call.command[0] === "up")
+        .every((call) => call.directory === old),
+    ).toBe(true);
+    const backups = path.join(f.configDir, "backups");
+    const backup = path.join(backups, fs.readdirSync(backups)[0] ?? "missing");
+    expect(fs.statSync(path.join(backup, "database.sql.partial")).mode & 0o777).toBe(0o600);
+    expect(fs.readFileSync(path.join(backup, "database.sql.partial"), "utf8")).toContain(
+      "CREATE DATABASE",
+    );
+    expect(fs.existsSync(path.join(backup, "database.sql"))).toBe(false);
+    expect(fs.existsSync(path.join(f.configDir, "server.lock"))).toBe(false);
+    expect(await serverCommand(["status"], f.runtime)).toEqual({ _tag: "ok" });
+  });
+
+  it("retains the target after a real startup timeout instead of rolling back across migrations", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    const old = f.active();
+    f.update({ fail: "target-pause" });
+    const runtime: ServerSetupRuntime = {
+      ...f.runtime,
+      run: (command, args, options) => {
+        if (args.includes("up") && f.active() !== old) {
+          expect(options?.timeoutMs).toBe(serverProcessDeadlines.startup);
+          return f.runtime.run(command, args, { ...options, timeoutMs: 1000 });
+        }
+        return f.runtime.run(command, args, options);
+      },
+    };
+    expect(
+      await serverCommand(
+        ["upgrade", "--version", "0.24.0", "--assets-dir", f.assets, "--offline"],
+        runtime,
+      ),
+    ).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining("migrations may have begun"),
+    });
+    const target = f.active();
+    expect(target).not.toBe(old);
+    const pid = Number(fs.readFileSync(path.join(f.root, "target-started"), "utf8"));
+    expect(() => process.kill(pid, 0)).toThrow();
+    const calls = f.calls();
+    const attempted = calls.findIndex(
+      (call) => call.directory === target && call.command[0] === "up",
+    );
+    expect(calls.slice(attempted).every((call) => call.directory !== old)).toBe(true);
+    expect(fs.existsSync(path.join(f.configDir, "server.lock"))).toBe(false);
   });
 
   it("status and start refuse a health version different from the saved pin without rewriting it", async () => {

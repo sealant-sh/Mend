@@ -93,14 +93,23 @@ it("a completed command is not subsequently timed out", async () => {
 });
 
 it(
-  "applies a finite production deadline even when options are absent",
+  "applies the default deadline with absent options or only a private stdout destination",
   async () => {
-    const result = await nodeServerSetupRuntime().run(process.execPath, [
-      "-e",
-      "console.log(process.pid); setInterval(() => {}, 1000)",
+    const runtime = nodeServerSetupRuntime();
+    const file = path.join(temporary(), "default-timeout.partial");
+    const args = ["-e", "console.log(process.pid); setInterval(() => {}, 1000)"];
+    const [captured, streamed] = await Promise.all([
+      runtime.run(process.execPath, args),
+      runtime.run(process.execPath, args, { stdoutFile: file }),
     ]);
-    expect(result.error).toBe(`Process timed out after ${serverProcessDeadlines.ordinary}ms`);
-    expect(() => process.kill(Number(result.stdout.trim()), 0)).toThrow();
+    for (const result of [captured, streamed]) {
+      expect(result.error).toBe(`Process timed out after ${serverProcessDeadlines.ordinary}ms`);
+      expect(result.status).toBeNull();
+    }
+    expect(streamed.stdout).toBe("");
+    expect(() => process.kill(Number(captured.stdout.trim()), 0)).toThrow();
+    expect(() => process.kill(Number(fs.readFileSync(file, "utf8").trim()), 0)).toThrow();
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
   },
   serverProcessDeadlines.ordinary + 5000,
 );

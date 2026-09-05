@@ -609,7 +609,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       },
       {
         flag: "--offline",
-        text: "use retained or supplied assets and preloaded images only; no GitHub requests or Docker pulls; exact image label and health version required",
+        text: "use retained or supplied assets and preloaded images only; no GitHub requests or release-image pulls; exact image label, health version and a loopback registry roundtrip required",
       },
       { flag: "--docker-socket <path>", text: "daemon-side socket mount override for diagnostics" },
     ],
@@ -644,10 +644,13 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "start the selected server generation",
     synopsis: ["[--offline]"],
     description: [
-      "Reuses the saved context, generation, credentials and exact pin. Uses preloaded images only, with no pulls or asset downloads, even without --offline. Exact image label and health version are required.",
+      "Reuses the saved context, generation, credentials and exact pin. Uses preloaded release images, with no release-image pulls or asset downloads, even without --offline. Exact image label, health version and a loopback registry roundtrip are required.",
     ],
     options: [
-      { flag: "--offline", text: "explicitly request the default no-download, no-pull behavior" },
+      {
+        flag: "--offline",
+        text: "use local release images and assets; still probe the loopback registry",
+      },
     ],
     see: ["server status", "server upgrade"],
   },
@@ -667,10 +670,13 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "restart Mend using the same generation and pin",
     synopsis: ["[--offline]"],
     description: [
-      "Checks preloaded images before stopping Mend, then starts the saved generation and verifies exact-version health. Postgres stays running. Connections are interrupted; workspace containers and data remain, but active work may need reconnection.",
+      "Checks preloaded images before stopping Mend, then starts the saved generation and verifies exact-version health and a loopback registry roundtrip. Postgres stays running. Connections are interrupted; workspace containers and data remain, but active work may need reconnection.",
     ],
     options: [
-      { flag: "--offline", text: "explicitly request the default no-download, no-pull behavior" },
+      {
+        flag: "--offline",
+        text: "use local release images and assets; still probe the loopback registry",
+      },
     ],
     see: ["server status", "server logs"],
   },
@@ -706,7 +712,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       },
       {
         flag: "--offline",
-        text: "no GitHub requests or Docker pulls; target assets and exact-version images must be available locally",
+        text: "no GitHub requests or release-image pulls; target assets and exact-version images must be local; still probe the loopback registry",
       },
     ],
     examples: [

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import type { ServerProcessOutput } from "../src/server-runtime.ts";
+import type { ServerProcessOptions, ServerProcessOutput } from "../src/server-runtime.ts";
 
 type Labels = Readonly<Record<string, string>> | null;
 interface Image {
@@ -45,7 +45,7 @@ export class DockerProtocol {
   run(
     command: string,
     args: ReadonlyArray<string>,
-    options?: { readonly timeoutMs: number },
+    options?: ServerProcessOptions,
   ): ServerProcessOutput | undefined {
     if (command !== "docker" || args[0] !== "--context") return undefined;
     const [kind, operation] = args.slice(2);
@@ -108,7 +108,7 @@ export class DockerProtocol {
       }
     }
     if (kind === "image") {
-      if (options === undefined || options.timeoutMs <= 0)
+      if (options?.timeoutMs === undefined || options.timeoutMs <= 0)
         return failed("Probe requires a deadline");
       const reference = args.at(-1) ?? "";
       if (operation === "ls") {
