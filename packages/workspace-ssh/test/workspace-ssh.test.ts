@@ -408,7 +408,13 @@ describe("workspace SSH key identity", () => {
       { encoding: "utf8", timeout: 5_000 },
     );
     expect(probe.error).toBeUndefined();
-    expect(probe.stderr).toContain(key.value.fingerprint);
+    // Older OpenSSH versions load the identity before this proxy closes, but log no fingerprint.
+    // A nonnegative type proves loading; OpenSSH doubles backslashes in diagnostic paths.
+    const loadedIdentityPaths = Array.from(
+      probe.stderr.matchAll(/^debug1: identity file (.+) type \d+\r?$/gm),
+      ([, identity]) => identity,
+    );
+    expect(loadedIdentityPaths, probe.stderr).toContain(privatePath.replaceAll("\\", "\\\\"));
     expect(probe.stderr).not.toContain("unknown key %");
   });
 
