@@ -417,6 +417,8 @@ describe("mend help", () => {
       "rejoin",
       "projects",
       "sessions",
+      "server",
+      "server setup",
       "completions",
       "version",
     ]) {
@@ -433,6 +435,14 @@ describe("mend help", () => {
     expect(byHelp.stdout()).toContain("mend service run · ");
     expect(byHelp.stdout()).toContain("--no-connect");
     expect(byFlag.stdout()).toBe(byHelp.stdout());
+  });
+
+  it("routes server setup help without touching Docker or login configuration", async () => {
+    const cli = startCli("http://127.0.0.1:1", ["server", "setup", "--help"]);
+    const outcome = await cli.exited;
+    expect(outcome.code).toBe(0);
+    expect(cli.stdout()).toContain("mend server setup · install or repair the local Mend server");
+    expect(cli.stdout()).toContain("--docker-socket <path>");
   });
 
   it("quotes the catalog's synopsis in a usage error", async () => {

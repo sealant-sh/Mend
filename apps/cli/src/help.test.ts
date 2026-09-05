@@ -53,6 +53,7 @@ describe("findCommand", () => {
   it("resolves aliases, subcommands, and the longest match", () => {
     expect(findCommand(["claude"])?.name).toBe("codex");
     expect(findCommand(["service", "run"])?.name).toBe("service run");
+    expect(findCommand(["server", "setup"])?.name).toBe("server setup");
     expect(findCommand(["service", "run", "web"])?.name).toBe("service run");
     expect(findCommand(["status"])?.name).toBe("sessions");
     expect(findCommand(["service"])).toBeNull();
@@ -62,6 +63,7 @@ describe("findCommand", () => {
 
   it("groups a family", () => {
     expect(commandGroup("service").map((doc) => doc.name)).toContain("service logs");
+    expect(commandGroup("server").map((doc) => doc.name)).toEqual(["server setup"]);
     expect(commandGroup("login")).toEqual([]);
   });
 });
