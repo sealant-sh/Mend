@@ -7,6 +7,7 @@ import * as path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { DockerProtocol } from "../test-fixtures/docker-protocol.ts";
 import { runServerProcess, serverComposeArgs } from "./server-runtime.ts";
 import { nodeServerSetupRuntime, serverCommand, type ServerSetupRuntime } from "./server-setup.ts";
 
@@ -22,39 +23,82 @@ afterEach(() => {
 
 const fixtureAsset = (file: string): string =>
   fs.readFileSync(new URL(`../test-fixtures/docker/${file}`, import.meta.url), "utf8");
-const setupRuntime = (configDir: string): ServerSetupRuntime => ({
-  ...nodeServerSetupRuntime(),
-  configDir,
-  cliVersion: "0.23.0",
-  randomBytes,
-  writeLine: () => undefined,
-  sleep: async () => undefined,
-  run: async (_command, args) => ({
-    status: 0,
-    stderr: "",
-    stdout:
-      args[0] === "context"
-        ? "unix:///var/run/docker.sock"
-        : args.includes("info")
-          ? "Docker Engine - Community"
-          : args.includes("image")
-            ? "0.23.0"
-            : args.includes("compose")
-              ? args.includes("config")
-                ? "ghcr.io/sealant-sh/mend:0.23.0\npostgres:17-alpine\n"
-                : "2.35.0"
-              : "1.45 1.47",
-  }),
-  fetchText: async (url) =>
-    url.endsWith("/api/health")
-      ? { status: 200, body: '{"status":"ok","version":"0.23.0"}' }
-      : {
-          status: 200,
-          body: fixtureAsset(
-            url.endsWith("/compose.v1.yaml") ? "compose.v1.yaml" : "postgres-init.sh",
-          ),
-        },
+const setupRuntime = (configDir: string): ServerSetupRuntime => {
+  const daemon = new DockerProtocol();
+  return {
+    ...nodeServerSetupRuntime(),
+    configDir,
+    cliVersion: "0.23.0",
+    randomBytes,
+    writeLine: () => undefined,
+    sleep: async () => undefined,
+    run: async (command, args, options) =>
+      daemon.run(command, args, options) ?? {
+        status: 0,
+        stderr: "",
+        stdout:
+          args[0] === "context"
+            ? "unix:///var/run/docker.sock"
+            : args.includes("info")
+              ? "Docker Engine - Community"
+              : args.includes("image")
+                ? "0.23.0"
+                : args.includes("compose")
+                  ? args.includes("config")
+                    ? "ghcr.io/sealant-sh/mend:0.23.0\npostgres:17-alpine\n"
+                    : "2.35.0"
+                  : "1.45 1.47",
+      },
+    fetchText: async (url) =>
+      url.endsWith("/api/health")
+        ? { status: 200, body: '{"status":"ok","version":"0.23.0"}' }
+        : {
+            status: 200,
+            body: fixtureAsset(
+              url.endsWith("/compose.v1.yaml") ? "compose.v1.yaml" : "postgres-init.sh",
+            ),
+          },
+  };
+};
+
+it("the production setup runtime waits for a timed-out process to terminate before returning", async () => {
+  const result = await nodeServerSetupRuntime().run(
+    process.execPath,
+    [
+      "-e",
+      "console.log(process.pid); process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)",
+    ],
+    { timeoutMs: 500 },
+  );
+  expect(result).toMatchObject({ status: null, error: "Process timed out after 500ms" });
+  const pid = Number(result.stdout.trim());
+  expect(pid).toBeGreaterThan(0);
+  expect(() => process.kill(pid, 0)).toThrow();
 });
+
+it("returns spawn failures and clears deadlines without rejecting", async () => {
+  const result = await runServerProcess("/no-such-mend-test-program", [], process.env, {
+    timeoutMs: 1000,
+  });
+  expect(result.error).toContain("ENOENT");
+});
+
+it("a completed command is not subsequently timed out", async () => {
+  expect(
+    await runServerProcess(process.execPath, ["-e", "console.log('done')"], process.env, {
+      timeoutMs: 5000,
+    }),
+  ).toEqual({ status: 0, stdout: "done\n", stderr: "" });
+});
+
+it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+  "refuses invalid timeout %s before spawning",
+  async (timeoutMs) => {
+    expect(
+      await runServerProcess("/no-such-mend-test-program", [], process.env, { timeoutMs }),
+    ).toEqual({ status: null, stdout: "", stderr: "", error: "Invalid process timeout" });
+  },
+);
 
 it("passes only the server allowlist to a real child process", async () => {
   const result = await runServerProcess(
@@ -392,8 +436,8 @@ describe.skipIf(!composeAvailable)(
         },
         configs: { "postgres-init": { file: path.join(directory, "postgres-init.sh") } },
         volumes: {
-          "mend-store": { name: "mend-store" },
-          "mend-control": { name: "mend-control" },
+          "mend-store": { name: "mend-store", external: true },
+          "mend-control": { name: "mend-control", external: true },
           "mend-postgres": { name: "mend_mend-postgres" },
         },
       });

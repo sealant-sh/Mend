@@ -13,12 +13,23 @@ export interface ServerProcessOutput {
  * Run Docker with a controlled environment. Shell interpolation and COMPOSE_* / DOCKER_HOST
  * cannot override persisted configuration. Context credentials still come from Docker's config.
  * Capture the parent environment once at the lifecycle command boundary and pass it here.
+ * A supplied timeout kills the child and waits for close before returning; no command keeps
+ * running while its caller starts cleanup.
  */
 export const runServerProcess = (
   command: string,
   args: ReadonlyArray<string>,
   parentEnvironment: NodeJS.ProcessEnv,
+  options?: { readonly timeoutMs: number },
 ): Promise<ServerProcessOutput> => {
+  if (options !== undefined && (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0)) {
+    return Promise.resolve({
+      status: null,
+      stdout: "",
+      stderr: "",
+      error: "Invalid process timeout",
+    });
+  }
   const env: NodeJS.ProcessEnv = {};
   for (const key of [
     "PATH",
@@ -45,8 +56,22 @@ export const runServerProcess = (
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString();
     });
-    child.once("error", (error) => resolve({ status: null, stdout, stderr, error: error.message }));
-    child.once("close", (status) => resolve({ status, stdout, stderr }));
+    let failure: string | undefined;
+    const timer =
+      options === undefined
+        ? undefined
+        : setTimeout(() => {
+            failure = `Process timed out after ${options.timeoutMs}ms`;
+            child.kill("SIGKILL");
+          }, options.timeoutMs);
+    // Even spawn errors emit close. Cleanup must not race a still-running Docker command.
+    child.once("error", (error) => {
+      failure ??= error.message;
+    });
+    child.once("close", (status) => {
+      globalThis.clearTimeout(timer);
+      resolve({ status, stdout, stderr, ...(failure === undefined ? {} : { error: failure }) });
+    });
   });
 };
 

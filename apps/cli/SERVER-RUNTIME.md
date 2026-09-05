@@ -65,17 +65,19 @@ this change does not implement them.
 
 An interruption before activation leaves the old active generation intact. On first installation,
 the independently saved identity survives even if no generation was activated. Rerunning uses that
-identity without calling the random source again. Partial generations and temporary files are
-retained, never selected implicitly or removed automatically. Missing or corrupt identity with
-existing state is an error, not permission to regenerate credentials.
+identity without generating credentials again. Each registry probe still draws a fresh nonce.
+Partial generations and temporary files are retained, never selected implicitly or removed
+automatically. Missing or corrupt identity with existing state is an error, not permission to
+regenerate credentials.
 
 An interruption after activation leaves a complete selected generation. Compose or health failure
 also retains it. Retrying `up` uses the same project, volumes, pin, and credentials. There is no
 claim that the filesystem transaction and Docker startup are atomic together.
 
-This is a local POSIX-filesystem protocol for Linux/macOS, not a distributed lock. Use one
-installation directory per daemon. Separate configuration directories do not coordinate ownership of
-the fixed `mend` Compose project and canonical volumes.
+This is a local POSIX-filesystem protocol for Linux/macOS, not a distributed lock. The Docker
+ownership claim below rejects different identities targeting the same fixed `mend` project and
+canonical volumes. Keep one configuration directory per daemon. Copies of the same identity pass
+ownership verification but do not share a filesystem lock; do not operate those copies concurrently.
 
 ## Lifecycle integration
 
@@ -91,7 +93,32 @@ Use these existing owners rather than duplicating setup internals:
 - `server-runtime.ts`: `serverComposeArgs({ directory, dockerContext }, command)` supplies the
   explicit context, project `mend`, project directory, env file, and Compose file. Always pass the
   immutable directory from the selected generation, not the moving `active` symlink.
-  `runServerProcess` is the controlled child-process implementation.
+  `runServerProcess` is the controlled child-process implementation. Its optional `{ timeoutMs }`
+  kills the child on expiry and waits for `close` before returning a failure, so registry cleanup
+  cannot race an outstanding import or pull.
+- `server-docker-volumes.ts`: setup calls
+  `claimServerDockerVolumes(runtime, { dockerContext, identityBytes })` with
+  `Buffer.from(generation.files.identity)` after committing the complete generation, before any
+  Docker mutation other than the claim itself or any Compose deployment command. Read-only
+  capability checks and offline image inspection can precede persistence.
+- `server-registry-probe.ts`: after Compose and app health, setup calls
+  `probeServerRegistry(runtime, { dockerContext, registryPort, nonce: runtime.randomBytes(24).toString("hex"), temporaryDirectory: path.resolve(runtime.configDir) })`.
+  Print all `cleanupWarnings` on either result. An `error` blocks the reachable/setup-success
+  message and keeps the installation for retry.
+
+### PR5 handoff
+
+This change wires setup only. The parent lifecycle work must call `verifyServerDockerVolumes` while
+holding `withServerStore`, after validating the selected installation and reading its persisted
+identity, before lifecycle Compose commands. Pass the saved context and exact `identity.env` bytes.
+Treat absent identity or either absent volume as an error. Never use the claim helper as a fallback
+from start, stop, status, logs, or upgrade.
+
+In `startInstallation`, call `probeServerRegistry` after app health and before reporting success,
+with the same arguments and warning/error handling as setup above. Every start gets a fresh nonce.
+The runtime must forward probe deadlines, not discard the third `run` argument. Ownership helpers
+return tagged results and never log credentials; the registry helper returns tagged results plus
+cleanup warnings. No PR5 lifecycle commands or upgrade policy are implemented here.
 
 Low-level store file values are private serialized bytes. A future upgrade must parse and render its
 complete proposed config/env pair before `prepare`, preserve `identity`, and perform its own upgrade
@@ -116,9 +143,8 @@ Linux Docker Desktop is identified from the selected daemon's `OperatingSystem`,
 `desktop-linux` context also recognised. Desktop and macOS runtimes mount the daemon-side
 `/var/run/docker.sock`, not the host context proxy. Local Linux Engine uses its Unix endpoint.
 Detected sockets are recalculated on reruns. An explicit `--docker-socket` is recorded as an
-override and retained unless the context is replaced or another override is supplied. No speculative
-Docker Desktop registry rejection is added here; actual deployment acceptance remains responsible
-for exercising daemon-side registry connectivity.
+override and retained unless the context is replaced or another override is supplied. Docker Desktop
+acceptance depends on an actual Engine registry roundtrip, not an operating-system heuristic.
 
 Before activation, the resolved Compose images must be exactly `ghcr.io/sealant-sh/mend:VERSION` and
 `postgres:17-alpine`. The Mend image must carry `org.opencontainers.image.version` equal to the
@@ -126,13 +152,49 @@ requested pin, even for online setup and even after a pull. A cached wrong label
 silently replaced. Asset text checks alone do not establish what Compose will run.
 
 Success requires a 2xx `/api/health` response containing JSON with `status: "ok"` and `version`
-exactly matching the saved pin. Extra health fields are allowed. HTML, malformed JSON, missing
-fields, and wrong versions never produce a reachable-version claim.
+exactly matching the saved pin, followed by a successful Engine registry roundtrip. Extra health
+fields are allowed. HTML, malformed JSON, missing fields, wrong versions, or registry failure never
+produce a reachable-version claim.
+
+### Docker data ownership
+
+The anchor is `mend-store`. Its immutable `dev.sealant.mend.installation` label is the SHA-256 of
+the exact persisted `identity.env` bytes. Setup lists resources successfully before concluding
+absence, refuses unowned legacy Mend data, and creates the anchor with that label. Docker's atomic
+named create preserves the first writer's labels; setup inspects afterward to establish ownership.
+Only then may it claim `mend-control` with the same label. Matching retries do not recreate volumes.
+Mismatches, missing labels, failed inspections, and malformed replies stop setup. Restore the
+original configuration or choose a clean daemon; never delete or relabel existing data to proceed.
+
+Both canonical volumes must be `external: true` in the release Compose template with their canonical
+name substitutions. Setup validates that contract on downloaded, supplied, and retained assets
+before Docker mutations. It accepts the release template's explicit declarations, not arbitrary
+user-authored YAML. Compose owns the remaining volumes as before. Labels establish identity
+continuity, not a mutex or protection against an administrator editing Docker state.
+
+### Registry roundtrip and cleanup
+
+The probe imports a tiny nonce-labelled image, pushes to
+`127.0.0.1:REGISTRY_PORT/mend-registry-probe/NONCE:probe`, removes the local tag, pulls it back, and
+checks both the image ID and nonce label. No build tool or external base image is needed. Each
+command has a 60-second budget; cleanup commands have 15 seconds. The tar is mode `0600` inside a
+private `0700` temporary child of `configDir`. The helper removes that child on success and failure.
+Local tag cleanup verifies ownership first and never uses force, prune, or image-ID deletion.
+Cleanup warnings do not hide the primary failure. The tiny remote manifest remains because bundle
+manifest deletion is disabled; the probe never changes registry configuration or widens its binding.
+
+The guard modules own Docker protocol parsing and resource cleanup rather than putting those
+mechanics into setup or duplicating them in lifecycle commands. Existing setup's exception handling
+remains confined to its command/store boundary; the new helpers expose expected failures as values.
+Error fields use explicit declarations so the existing Node strip-only child tests can import them.
 
 ## Reproduce the checks
 
 ```sh
-pnpm --filter @sealant/mend exec vitest run src/server-setup.test.ts src/server-store.test.ts src/server-runtime.test.ts
+pnpm --filter @sealant/mend exec vitest run src/server-setup.test.ts src/server-store.test.ts src/server-runtime.test.ts src/server-docker-volumes.test.ts src/server-registry-probe.test.ts
+pnpm --filter @sealant/mend exec vitest run --testTimeout=15000
+# Opt-in real Engine checks use unique test names, never the standard Mend resources:
+MEND_DOCKER_TEST_CONTEXT=default pnpm --filter @sealant/mend exec vitest run src/server-docker-protocol.test.ts
 pnpm --filter @sealant/mend typecheck
 pnpm --filter @sealant/mend lint
 pnpm format:fix
@@ -148,18 +210,27 @@ online and offline setup. Process-edge fakes record pulls and starts and verify 
 generation remains selected until image checks pass. These tests need the Compose plugin, but no
 daemon or containers, and are explicitly skipped if the plugin is absent.
 
-`test-fixtures/docker` copies the deployment contract's Compose and Postgres files from
-`../Mend-bundle/deploy/docker` at `1c2018b`. These are test inputs, not shipped CLI assets. Setup
-downloads the two assets from the selected GitHub release unless `--assets-dir DIR` supplies
-`compose.v1.yaml` and `postgres-init.sh`. Supplied files pass the same contract checks and are
-copied into the private generation. The source directory is not retained or needed on reruns. Fresh
-setup with local assets requires an explicit `--version`.
+Public `serverCommand` tests share `test-fixtures/docker-protocol.ts`, a stateful Engine protocol
+fixture with immutable named-volume labels and distinct local/remote image tags. They check
+persist-before-mutation ordering, cross-config identity rejection, same-identity retries,
+corruption, private probe files, fresh nonces, registry failures, and cleanup warnings without
+mocking modules. The separate opt-in Docker tests check atomic claims, competing identities, and a
+real loopback registry roundtrip. The full CLI suite needs a 15-second test budget for existing
+login polling.
+
+`test-fixtures/docker` copies the Compose and ownership contract from
+`../Mend-packaging/deploy/docker` at `91e1cf6`; Postgres init is unchanged from `1c2018b`. These are
+test inputs, not shipped CLI assets. Setup downloads the two assets from the selected GitHub release
+unless `--assets-dir DIR` supplies `compose.v1.yaml` and `postgres-init.sh`. Supplied files pass the
+same contract checks and are copied into the private generation. The source directory is not
+retained or needed on reruns. Fresh setup with local assets requires an explicit `--version`.
 
 `--offline` forbids GitHub requests and runs Compose with `--pull never --no-build`. Preload both
 `postgres:17-alpine` and `ghcr.io/sealant-sh/mend:VERSION` in the selected daemon. The Mend image's
 `org.opencontainers.image.version` label and the health response must equal the exact pin. Local
-health probes still run. This flag controls installation network access, not the running server's
-workspace/provider traffic.
+health and Engine loopback registry probes still run. Offline setup never pulls release images, but
+does push/remove/pull its own tiny local registry probe. This flag controls installation network
+access, not the running server's workspace/provider traffic.
 
 `--registry-port` persists the loopback registry port, default `5000`. App, SSH and registry ports
 must be valid and distinct. For a host already running Sealant's registry, choose a free port:

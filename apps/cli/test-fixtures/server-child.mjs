@@ -5,6 +5,7 @@ import * as path from "node:path";
 
 import { serverCommand } from "../src/server-setup.ts";
 import { withServerStore } from "../src/server-store.ts";
+import { DockerProtocol } from "./docker-protocol.ts";
 
 const [configDir, operation = "setup", rendezvous = ""] = process.argv.slice(2);
 if (!configDir) throw new Error("config directory required");
@@ -31,6 +32,7 @@ if (operation === "oversized-generation") {
   });
   console.log(JSON.stringify(result));
 } else {
+  const daemon = new DockerProtocol();
   const runtime = {
     configDir,
     platform: process.platform,
@@ -38,7 +40,9 @@ if (operation === "oversized-generation") {
     randomBytes,
     sleep,
     writeLine: (line) => console.log(line),
-    run: async (_command, args) => {
+    run: async (command, args, options) => {
+      const protocol = daemon.run(command, args, options);
+      if (protocol !== undefined) return protocol;
       let stdout = "";
       if (args[0] === "context") {
         await pause("context");

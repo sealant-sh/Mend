@@ -86,9 +86,13 @@ configs:
     file: ./postgres-init.sh
 
 volumes:
+  # Setup claims these volumes before Compose starts, so a different installation cannot
+  # silently replace credentials while adopting existing data.
   mend-store:
+    external: true
     name: ${MEND_STORE_VOLUME_NAME:-mend-store}
   mend-control:
+    external: true
     name: ${MEND_CONTROL_VOLUME_NAME:-mend-control}
   mend-config:
   mend-ssh:

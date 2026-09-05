@@ -1,39 +1,22 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { DockerProtocol } from "../test-fixtures/docker-protocol.ts";
+import { SERVER_VOLUME_OWNER_LABEL } from "./server-docker-volumes.ts";
 import { serverCommand, type ServerSetupRuntime } from "./server-setup.ts";
 
-const composeAsset = `name: mend
-services:
-  mend:
-    image: \${MEND_IMAGE_REPOSITORY}:\${MEND_VERSION}
-    volumes:
-      - \${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
-      - mend-store:/var/lib/mend/store
-      - mend-control:/run/sealant/sockets
-  postgres:
-    image: postgres:17-alpine
-volumes:
-  mend-store:
-  mend-control:
-  mend-config:
-  mend-ssh:
-  mend-rabbitmq:
-  mend-registry:
-  mend-postgres:
-`;
-
-const postgresAsset = `#!/bin/sh
-# Creates mend and sealant_control_plane with separate users.
-printf '%s %s' "$MEND_DB_PASSWORD" "$SEALANT_DB_PASSWORD"
-CREATE ROLE mend
-CREATE ROLE sealant
-CREATE DATABASE mend
-`;
+const composeAsset = fs.readFileSync(
+  new URL("../test-fixtures/docker/compose.v1.yaml", import.meta.url),
+  "utf8",
+);
+const postgresAsset = fs.readFileSync(
+  new URL("../test-fixtures/docker/postgres-init.sh", import.meta.url),
+  "utf8",
+);
 
 const temporaryDirectories: Array<string> = [];
 
@@ -54,12 +37,16 @@ interface RuntimeControl {
   readonly commands: ReadonlyArray<readonly [string, ReadonlyArray<string>]>;
   readonly fetched: ReadonlyArray<string>;
   readonly lines: ReadonlyArray<string>;
+  readonly randomSizes: ReadonlyArray<number>;
+  readonly daemon: DockerProtocol;
   readonly randomCalls: () => number;
 }
 
 const makeRuntime = (
   options: {
     readonly configDir?: string;
+    readonly daemon?: DockerProtocol;
+    readonly composeAsset?: string;
     readonly platform?: "linux" | "darwin";
     readonly contextList?: string;
     readonly contextListStatus?: number;
@@ -79,7 +66,8 @@ const makeRuntime = (
   const commands: Array<readonly [string, ReadonlyArray<string>]> = [];
   const fetched: Array<string> = [];
   const lines: Array<string> = [];
-  let randomCallCount = 0;
+  const randomSizes: number[] = [];
+  const daemon = options.daemon ?? new DockerProtocol();
   const contextList =
     options.contextList ??
     `${JSON.stringify({ Name: "default", DockerEndpoint: "unix:///var/run/docker.sock", Current: true })}\n`;
@@ -88,8 +76,10 @@ const makeRuntime = (
     configDir: options.configDir ?? temporaryDirectory(),
     platform: options.platform ?? "linux",
     cliVersion: "0.23.0",
-    run: async (command, args) => {
+    run: async (command, args, processOptions) => {
       commands.push([command, args]);
+      const protocol = daemon.run(command, args, processOptions);
+      if (protocol !== undefined) return protocol;
       if (args[0] === "context" && args[1] === "ls") {
         return {
           status: options.contextListStatus ?? 0,
@@ -167,7 +157,7 @@ const makeRuntime = (
       if (url.endsWith("/compose.v1.yaml")) {
         return options.assetFailure === "compose"
           ? { status: 0, body: "", error: "connection interrupted" }
-          : { status: 200, body: composeAsset };
+          : { status: 200, body: options.composeAsset ?? composeAsset };
       }
       if (url.endsWith("/postgres-init.sh")) {
         return options.assetFailure === "postgres"
@@ -180,7 +170,7 @@ const makeRuntime = (
       return { status: 404, body: "" };
     },
     randomBytes: (size) => {
-      randomCallCount += 1;
+      randomSizes.push(size);
       return randomBytes(size);
     },
     sleep: async () => undefined,
@@ -191,7 +181,9 @@ const makeRuntime = (
     commands,
     fetched,
     lines,
-    randomCalls: () => randomCallCount,
+    randomSizes,
+    daemon,
+    randomCalls: () => randomSizes.length,
   };
 };
 
@@ -211,6 +203,280 @@ const activeFile = (configDir: string, name: string): string =>
   path.join(activeDirectory(configDir), name);
 
 describe("mend server setup", () => {
+  it("persists the complete generation before claiming daemon data; retries retain identity and use fresh probes", async () => {
+    const control = makeRuntime();
+    const { configDir } = control.runtime;
+    const events: string[] = [];
+    const runtime: ServerSetupRuntime = {
+      ...control.runtime,
+      run: async (command, args, options) => {
+        const mutation =
+          args[3] === "create" || ["import", "push", "pull", "rm"].includes(args[3] ?? "");
+        const compose = args.includes("up");
+        if (mutation || compose) {
+          const directory = activeDirectory(configDir);
+          const identity = fs.readFileSync(path.join(configDir, "identity.env"));
+          expect(fs.readFileSync(path.join(directory, "identity.env"))).toEqual(identity);
+          expect(fs.readdirSync(directory).toSorted()).toEqual([
+            "compose.yaml",
+            "identity.env",
+            "postgres-init.sh",
+            "server.env",
+            "server.json",
+          ]);
+          if (compose || args[2] === "image") {
+            const owner = createHash("sha256").update(identity).digest("hex");
+            expect(control.daemon.volumes.get("mend-store")).toEqual({
+              [SERVER_VOLUME_OWNER_LABEL]: owner,
+            });
+            expect(control.daemon.volumes.get("mend-control")).toEqual({
+              [SERVER_VOLUME_OWNER_LABEL]: owner,
+            });
+          }
+          events.push(compose ? "compose" : (args[3] ?? ""));
+        }
+        return control.runtime.run(command, args, options);
+      },
+      fetchText: async (url, timeout) => {
+        if (url.endsWith("/api/health")) events.push("health");
+        return control.runtime.fetchText(url, timeout);
+      },
+    };
+    expect(await serverCommand(["setup", "--registry-port", "5501"], runtime)).toEqual({
+      _tag: "ok",
+    });
+    const identity = fs.readFileSync(path.join(configDir, "identity.env"));
+    const generation = activeDirectory(configDir);
+    const env = fs.readFileSync(path.join(generation, "server.env"));
+    expect(events).toEqual([
+      "create",
+      "create",
+      "compose",
+      "health",
+      "import",
+      "push",
+      "rm",
+      "pull",
+      "rm",
+    ]);
+    events.length = 0;
+    expect(await serverCommand(["setup"], runtime)).toEqual({ _tag: "ok" });
+    expect(events).toEqual(["compose", "health", "import", "push", "rm", "pull", "rm"]);
+    expect(fs.readFileSync(path.join(configDir, "identity.env"))).toEqual(identity);
+    expect(fs.readFileSync(path.join(generation, "server.env"))).toEqual(env);
+    expect(activeDirectory(configDir)).toBe(generation);
+    expect(control.randomSizes).toEqual([256, 24, 24]);
+    expect(control.daemon.remote.size).toBe(2);
+    expect(control.daemon.local.size).toBe(0);
+    for (const { file } of control.daemon.archives) {
+      expect(path.dirname(path.dirname(file))).toBe(configDir);
+      expect(fs.existsSync(path.dirname(file))).toBe(false);
+    }
+    for (const ref of control.daemon.remote.keys())
+      expect(ref).toMatch(/^127\.0\.0\.1:5501\/mend-registry-probe\/[a-f0-9]{48}:probe$/);
+  });
+
+  it("a different configDir identity cannot operate an existing daemon's data", async () => {
+    const daemon = new DockerProtocol();
+    const first = makeRuntime({ daemon });
+    expect(await serverCommand(["setup"], first.runtime)).toEqual({ _tag: "ok" });
+    const identity = fs.readFileSync(path.join(first.runtime.configDir, "identity.env"));
+    const volumes = [...daemon.volumes];
+    const manifests = [...daemon.remote];
+    const second = makeRuntime({ daemon });
+    const result = await serverCommand(["setup"], second.runtime);
+    expect(result).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining("Restore the original Mend identity/configuration"),
+    });
+    expect(fs.readFileSync(path.join(second.runtime.configDir, "identity.env"))).not.toEqual(
+      identity,
+    );
+    expect(fs.readFileSync(path.join(first.runtime.configDir, "identity.env"))).toEqual(identity);
+    expect([...daemon.volumes]).toEqual(volumes);
+    expect([...daemon.remote]).toEqual(manifests);
+    expect(
+      second.commands.some(
+        ([, args]) => args.includes("up") || args.includes("create") || args[2] === "image",
+      ),
+    ).toBe(false);
+    expect(second.randomSizes).toEqual([256]);
+    expect(second.lines).toEqual([]);
+    expect(await serverCommand(["setup"], first.runtime)).toEqual({ _tag: "ok" });
+  });
+
+  it("matches the packaging ownership contract", () => {
+    const contract: unknown = JSON.parse(
+      fs.readFileSync(
+        new URL("../test-fixtures/docker/setup-contract.v1.json", import.meta.url),
+        "utf8",
+      ),
+    );
+    expect(contract).toMatchObject({
+      canonicalVolumes: { store: "mend-store", control: "mend-control" },
+      volumeOwnership: {
+        anchor: "mend-store",
+        label: SERVER_VOLUME_OWNER_LABEL,
+        identity: "SHA-256 of the persisted identity.env bytes",
+        externalVolumes: ["mend-store", "mend-control"],
+      },
+    });
+  });
+
+  it.each(["missing-identity", "corrupt-identity", "corrupt-env", "corrupt-compose"])(
+    "refuses %s without replacing credentials or touching daemon data",
+    async (damage) => {
+      const first = makeRuntime();
+      expect(await serverCommand(["setup"], first.runtime)).toEqual({ _tag: "ok" });
+      const { configDir } = first.runtime;
+      const identityFile = path.join(configDir, "identity.env");
+      const identity = fs.readFileSync(identityFile);
+      const generation = activeDirectory(configDir);
+      const envFile = path.join(generation, "server.env");
+      if (damage === "missing-identity") fs.unlinkSync(identityFile);
+      if (damage === "corrupt-identity") fs.writeFileSync(identityFile, "truncated\n");
+      if (damage === "corrupt-env") fs.writeFileSync(envFile, "truncated\n");
+      if (damage === "corrupt-compose")
+        fs.writeFileSync(
+          path.join(generation, "compose.yaml"),
+          composeAsset.replace("external: true", "external: false"),
+        );
+      const before = [...first.daemon.volumes];
+      const retry = makeRuntime({ configDir, daemon: first.daemon });
+      expect((await serverCommand(["setup"], retry.runtime))._tag).toBe("error");
+      expect(retry.randomSizes).toEqual([]);
+      expect(retry.commands).toEqual([]);
+      expect([...first.daemon.volumes]).toEqual(before);
+      expect(fs.readFileSync(path.join(generation, "identity.env"))).toEqual(identity);
+      if (damage === "missing-identity") expect(fs.existsSync(identityFile)).toBe(false);
+      else
+        expect(fs.readFileSync(identityFile)).toEqual(
+          damage === "corrupt-identity" ? Buffer.from("truncated\n") : identity,
+        );
+      if (damage === "corrupt-env") expect(fs.readFileSync(envFile, "utf8")).toBe("truncated\n");
+    },
+  );
+
+  it("retains the committed identity after a failed volume claim and retries without regeneration", async () => {
+    const control = makeRuntime();
+    control.daemon.response = (args) =>
+      args[3] === "inspect" ? { status: 1, stdout: "", stderr: "permission denied" } : undefined;
+    expect(await serverCommand(["setup"], control.runtime)).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining("Docker volume ownership check failed"),
+    });
+    expect([...control.daemon.volumes.keys()]).toEqual(["mend-store"]);
+    expect(control.commands.some(([, args]) => args.includes("up") || args[2] === "image")).toBe(
+      false,
+    );
+    const identity = fs.readFileSync(path.join(control.runtime.configDir, "identity.env"));
+    const generation = activeDirectory(control.runtime.configDir);
+    control.daemon.response = () => undefined;
+    expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
+    expect(control.randomSizes).toEqual([256, 24]);
+    expect(fs.readFileSync(path.join(control.runtime.configDir, "identity.env"))).toEqual(identity);
+    expect(activeDirectory(control.runtime.configDir)).toBe(generation);
+  });
+
+  it.each(["push", "pull"])(
+    "registry %s failure never reports setup success and remains retryable with original credentials",
+    async (operation) => {
+      const control = makeRuntime();
+      control.daemon.response = (args, timeout) =>
+        args[3] === operation || (timeout === 15_000 && args[3] === "rm")
+          ? {
+              status: 1,
+              stdout: "",
+              stderr: timeout === 15_000 ? "cleanup image busy" : "Engine loopback unreachable",
+            }
+          : undefined;
+      const result = await serverCommand(["setup"], control.runtime);
+      expect(result).toMatchObject({
+        _tag: "error",
+        message: expect.stringContaining(`Docker registry probe failed (${operation})`),
+      });
+      expect(result).toMatchObject({
+        message: expect.stringContaining("Do not widen the registry binding"),
+      });
+      expect(
+        control.lines.some((line) => line.includes("is reachable") || line.includes("mend login")),
+      ).toBe(false);
+      if (operation === "push")
+        expect(
+          control.lines.some(
+            (line) => line.startsWith("Warning:") && line.includes("cleanup image busy"),
+          ),
+        ).toBe(true);
+      const identity = fs.readFileSync(path.join(control.runtime.configDir, "identity.env"));
+      const generation = activeDirectory(control.runtime.configDir);
+      control.daemon.response = () => undefined;
+      expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
+      expect(fs.readFileSync(path.join(control.runtime.configDir, "identity.env"))).toEqual(
+        identity,
+      );
+      expect(activeDirectory(control.runtime.configDir)).toBe(generation);
+      expect(control.randomSizes).toEqual([256, 24, 24]);
+    },
+  );
+
+  it("prints cleanup warnings even when the registry roundtrip succeeds", async () => {
+    const control = makeRuntime();
+    control.daemon.response = (args, timeout) =>
+      timeout === 15_000 && args[3] === "rm"
+        ? { status: 1, stdout: "", stderr: "cleanup image busy" }
+        : undefined;
+    expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
+    expect(
+      control.lines.some(
+        (line) => line.startsWith("Warning:") && line.includes("cleanup image busy"),
+      ),
+    ).toBe(true);
+    expect(control.daemon.remote.size).toBe(1);
+  });
+
+  it.each([
+    composeAsset.replaceAll("    external: true\n", ""),
+    composeAsset.replace("external: true", "external: false"),
+    composeAsset.replaceAll("${MEND_STORE_VOLUME_NAME:-mend-store}", "unclaimed-store"),
+    composeAsset.replaceAll("${MEND_CONTROL_VOLUME_NAME:-mend-control}", "unclaimed-control"),
+    composeAsset.replace("  mend-store:\n", "  mend-store:\n    labels:\n      external: true\n"),
+    composeAsset.replace("  mend-store:\n", "  mend-store: &other\n"),
+    `${composeAsset}\nvolumes: {}\n`,
+    `${composeAsset}\n  mend-store:\n    external: false\n`,
+  ])(
+    "rejects assets without the external volume contract before persistence or claim",
+    async (asset) => {
+      const control = makeRuntime({ composeAsset: asset });
+      expect(await serverCommand(["setup"], control.runtime)).toMatchObject({
+        _tag: "error",
+        message: expect.stringContaining("external: true"),
+      });
+      expect(control.randomSizes).toEqual([]);
+      expect(control.daemon.calls).toEqual([]);
+      expect(fs.existsSync(path.join(control.runtime.configDir, "active"))).toBe(false);
+    },
+  );
+
+  it("checks the same external volume contract on locally supplied assets", async () => {
+    const assets = temporaryDirectory("invalid-assets");
+    fs.mkdirSync(assets, { recursive: true });
+    fs.writeFileSync(
+      path.join(assets, "compose.v1.yaml"),
+      composeAsset.replace("external: true", "external: false"),
+    );
+    fs.writeFileSync(path.join(assets, "postgres-init.sh"), postgresAsset);
+    const control = makeRuntime();
+    expect(
+      await serverCommand(
+        ["setup", "--version", "0.23.0", "--assets-dir", assets],
+        control.runtime,
+      ),
+    ).toMatchObject({ _tag: "error", message: expect.stringContaining("external: true") });
+    expect(control.daemon.calls).toEqual([]);
+    expect(control.randomSizes).toEqual([]);
+    expect(control.fetched).toEqual([]);
+  });
+
   it("copies offline assets, persists a free registry port, and no longer needs the source", async () => {
     const control = makeRuntime();
     const assets = temporaryDirectory("assets");
@@ -245,7 +511,12 @@ describe("mend server setup", () => {
     )) {
       expect(args.slice(-3)).toEqual(["--pull", "never", "--no-build"]);
     }
-    expect(control.commands.some(([, args]) => args.includes("pull"))).toBe(false);
+    // Offline still probes the local registry, but never pulls release images.
+    const pulls = control.commands.filter(([, args]) => args.includes("pull"));
+    expect(pulls).toHaveLength(2);
+    expect(
+      pulls.every(([, args]) => args.at(-1)?.startsWith("127.0.0.1:5501/mend-registry-probe/")),
+    ).toBe(true);
   });
 
   it.each([
@@ -316,7 +587,7 @@ describe("mend server setup", () => {
     const result = await serverCommand(["setup"], control.runtime);
 
     expect(result).toEqual({ _tag: "ok" });
-    expect(control.randomCalls()).toBe(1);
+    expect(control.randomSizes).toEqual([256, 24]);
     expect(modeOf(control.runtime.configDir)).toBe(0o700);
     expect(modeOf(activeDirectory(control.runtime.configDir))).toBe(0o700);
     expect(modeOf(activeFile(control.runtime.configDir, "server.json"))).toBe(0o600);
@@ -406,19 +677,22 @@ describe("mend server setup", () => {
     });
     const generationBefore = activeDirectory(configDir);
     const envBefore = fs.readFileSync(activeFile(configDir, "server.env"), "utf8");
+    const identityBefore = fs.readFileSync(path.join(configDir, "identity.env"), "utf8");
 
     const second = makeRuntime({
       configDir,
+      daemon: first.daemon,
       contextList: `${JSON.stringify({ Name: "other", DockerEndpoint: "unix:///tmp/other.sock", Current: true })}\n`,
       inspectedEndpoint: "unix:///var/run/docker.sock",
     });
     expect(await serverCommand(["setup"], second.runtime)).toEqual({ _tag: "ok" });
 
-    expect(second.randomCalls()).toBe(0);
+    expect(second.randomSizes).toEqual([24]);
     expect(second.fetched.filter((url) => !url.endsWith("/api/health"))).toEqual([]);
     expect(activeDirectory(configDir)).toBe(generationBefore);
     expect(fs.readdirSync(path.join(configDir, "generations"))).toHaveLength(1);
     expect(fs.readFileSync(activeFile(configDir, "server.env"), "utf8")).toBe(envBefore);
+    expect(fs.readFileSync(path.join(configDir, "identity.env"), "utf8")).toBe(identityBefore);
     expect(JSON.parse(fs.readFileSync(activeFile(configDir, "server.json"), "utf8"))).toMatchObject(
       {
         serverVersion: "0.23.0",
@@ -441,7 +715,12 @@ describe("mend server setup", () => {
     const secrets = readEnv(activeFile(configDir, "server.env"));
     const previous = activeDirectory(configDir);
 
-    const upgraded = makeRuntime({ configDir, healthBody: '{"status":"ok","version":"0.24.0"}' });
+    const identity = fs.readFileSync(path.join(configDir, "identity.env"), "utf8");
+    const upgraded = makeRuntime({
+      configDir,
+      daemon: first.daemon,
+      healthBody: '{"status":"ok","version":"0.24.0"}',
+    });
     expect(await serverCommand(["setup", "--version", "latest"], upgraded.runtime)).toEqual({
       _tag: "ok",
     });
@@ -453,7 +732,8 @@ describe("mend server setup", () => {
     expect(next.get("MEND_IMAGE_REPOSITORY")).toBe("ghcr.io/sealant-sh/mend");
     expect(next.get("SEALANT_SERVICE_KEY")).toBe(secrets.get("SEALANT_SERVICE_KEY"));
     expect(next.get("SEALANT_DB_PASSWORD")).toBe(secrets.get("SEALANT_DB_PASSWORD"));
-    expect(upgraded.randomCalls()).toBe(0);
+    expect(upgraded.randomSizes).toEqual([24]);
+    expect(fs.readFileSync(path.join(configDir, "identity.env"), "utf8")).toBe(identity);
     expect(upgraded.fetched).toContain(
       "https://api.github.com/repos/sealant-sh/Mend/releases/latest",
     );
@@ -707,7 +987,7 @@ describe("mend server setup", () => {
     fs.chmodSync(path.join(configDir, "generations"), 0o700);
     const second = makeRuntime({ configDir });
     expect(await serverCommand(["setup"], second.runtime)).toEqual({ _tag: "ok" });
-    expect(second.randomCalls()).toBe(0);
+    expect(second.randomSizes).toEqual([24]);
     expect(fs.readFileSync(activeFile(configDir, "identity.env"), "utf8")).toBe(identity);
     expect(fs.readFileSync(path.join(configDir, "identity.env"), "utf8")).toBe(identity);
   });
@@ -768,5 +1048,7 @@ describe("mend server setup", () => {
       expect(result.message).toContain("did not answer successfully (HTTP 503)");
     expect(control.lines.some((line) => line.includes("is reachable at"))).toBe(false);
     expect(control.fetched.filter((url) => url.endsWith("/api/health"))).toHaveLength(30);
+    expect(control.daemon.calls.some(({ args }) => args[2] === "image")).toBe(false);
+    expect(control.randomSizes).toEqual([256]);
   });
 });

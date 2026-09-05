@@ -4,6 +4,8 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { claimServerDockerVolumes } from "./server-docker-volumes.ts";
+import { probeServerRegistry } from "./server-registry-probe.ts";
 import { runServerProcess, serverComposeArgs } from "./server-runtime.ts";
 import {
   withServerStore,
@@ -46,11 +48,15 @@ export interface ServerSetupRuntime {
   readonly platform: NodeJS.Platform;
   /** Version of this CLI, used for a fresh server pin. */
   readonly cliVersion: string;
-  /** Run a command without a shell and capture its result. */
-  run(command: string, args: ReadonlyArray<string>): Promise<CommandOutput>;
+  /** Run without a shell. Enforce supplied deadlines and await termination, including on timeout. */
+  run(
+    command: string,
+    args: ReadonlyArray<string>,
+    options?: { readonly timeoutMs: number },
+  ): Promise<CommandOutput>;
   /** Fetch text with a bounded request timeout. */
   fetchText(url: string, timeoutMs: number): Promise<FetchOutput>;
-  /** Generate cryptographic bytes. Setup calls this once for a new installation. */
+  /** Generate installation credentials once and a fresh registry probe nonce on every attempt. */
   randomBytes(size: number): Buffer;
   /** Wait between advertised health probes. */
   sleep(milliseconds: number): Promise<void>;
@@ -615,6 +621,36 @@ const validateComposeAsset = (body: string): void => {
     .map((match) => match[1])
     .filter((name) => name !== undefined)
     .toSorted((left, right) => left.localeCompare(right));
+  // This is the release template contract, not a general YAML parser. Accept only the two
+  // explicit external declarations; reject duplicate sections, aliases and extra volume options.
+  const volumeSections = body.split(/^volumes:[ \t]*$/m);
+  const volumeBlock = (volumeSections[1] ?? "").split(/^\S/m)[0] ?? "";
+  const volumeDeclarations = [
+    ...volumeBlock.matchAll(/^ {2}([\w-]+):[^\n]*\n((?:(?: {4}[^\n]*|[ \t]*(?:#[^\n]*)?)\n)*)/gm),
+  ];
+  for (const [name, variable] of [
+    ["mend-store", "MEND_STORE_VOLUME_NAME"],
+    ["mend-control", "MEND_CONTROL_VOLUME_NAME"],
+  ]) {
+    const declarations = volumeDeclarations.filter((match) => match[1] === name);
+    const properties = (declarations[0]?.[2] ?? "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "" && !line.startsWith("#"));
+    if (
+      volumeSections.length !== 2 ||
+      [...body.matchAll(/^volumes:/gm)].length !== 1 ||
+      declarations.length !== 1 ||
+      declarations[0]?.[0].split("\n")[0] !== `  ${name}:` ||
+      properties.length !== 2 ||
+      !properties.includes("external: true") ||
+      !properties.includes(`name: \${${variable}:-${name}}`)
+    ) {
+      throw setupError(
+        `Downloaded ${COMPOSE_ASSET} must declare ${name} as external: true with its canonical name. Use release assets with the Docker volume ownership contract.`,
+      );
+    }
+  }
   const requiredFragments = [
     "name: mend",
     "image: postgres:17-alpine",
@@ -1020,13 +1056,24 @@ const setupServer = async (
   const secrets = savedSecrets ?? createSecrets(runtime);
   const generation = persistSetup(store, config, secrets, assets);
   await checkComposeImages(runtime, { directory: generation.directory, config });
-  // Docker ownership claim integration point: identity and the complete generation are durable,
-  // but active is unchanged. Claim here before checkLocalImages can pull or Compose can start.
+  const ownership = await claimServerDockerVolumes(runtime, {
+    dockerContext: config.dockerContext,
+    identityBytes: Buffer.from(generation.files.identity),
+  });
+  if (ownership._tag === "error") throw setupError(ownership.error.message);
   await checkLocalImages(runtime, config, options.offline ? "local" : "pull-missing");
   storeValue(store.activate(generation));
   runtime.writeLine(`Using Docker context "${config.dockerContext}" (${config.dockerEndpoint})`);
   await startCompose(runtime, config, generation);
   await probeHealth(runtime, config.appUrl, config.serverVersion);
+  const registry = await probeServerRegistry(runtime, {
+    dockerContext: config.dockerContext,
+    registryPort: config.registryPort,
+    nonce: runtime.randomBytes(24).toString("hex"),
+    temporaryDirectory: path.resolve(runtime.configDir),
+  });
+  for (const warning of registry.cleanupWarnings) runtime.writeLine(`Warning: ${warning.message}`);
+  if (registry._tag === "error") throw setupError(registry.error.message);
   runtime.writeLine(`Mend ${config.serverVersion} is reachable at ${config.appUrl}`);
   runtime.writeLine(
     `Open ${config.appUrl}, create the first account, then run: mend login --url ${config.appUrl}`,
@@ -1042,7 +1089,7 @@ export const nodeServerSetupRuntime = (): ServerSetupRuntime => {
     configDir: path.join(configHome, "mend"),
     platform: process.platform,
     cliVersion: cliVersion(),
-    run: (command, args) => runServerProcess(command, args, environment),
+    run: (command, args, options) => runServerProcess(command, args, environment, options),
     fetchText: async (url, timeoutMs) => {
       try {
         const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
