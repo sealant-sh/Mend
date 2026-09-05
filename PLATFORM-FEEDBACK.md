@@ -7,9 +7,9 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
-## ✅ 2026-09-03 · 0.26.0 · Workspace-scoped Docker on Kubernetes, refused at create where absent
+## ✅ 2026-09-03 · 0.27.0 · Workspace-scoped Docker on Kubernetes, refused at create where absent
 
-**Implemented at the source (sealant#223); Mend adopts it when the next SDK ships.** Mend sends
+**Shipped in Sealant 0.27.0 (sealant#223); Mend pins it and maps the refusal.** Mend sends
 `services.docker: true` by default and the Kubernetes adapter refused it at launch, so the cluster's
 Mend settings had Docker switched off and every project that needs compose or testcontainers was
 blocked there.
