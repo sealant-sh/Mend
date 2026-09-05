@@ -69,8 +69,8 @@ offline startup use `--pull never --no-build`, so startup cannot replace a check
 or building. Image rejection leaves any old active generation and running containers untouched.
 
 The Docker ownership claim integration point is after durable preparation and read-only config
-checks, before image checks that may pull. Ownership claims and registry probes are separate work;
-this change does not implement them.
+checks, before image checks that may pull. `server-docker-volumes.ts` owns the claim protocol;
+`server-registry-probe.ts` owns the post-health Engine roundtrip.
 
 An interruption before activation leaves the old active generation intact. On first installation,
 the independently saved identity survives even if no generation was activated. Rerunning uses that
@@ -139,7 +139,7 @@ Use these existing owners rather than duplicating setup internals:
   receives `--wait-timeout 120`.
 - `server-docker-volumes.ts`: setup calls
   `claimServerDockerVolumes(runtime, { dockerContext, identityBytes })` with
-  `Buffer.from(generation.files.identity)` after committing the complete generation, before any
+  `Buffer.from(generation.files.identity)` after preparing the complete generation, before any
   Docker mutation other than the claim itself or any Compose deployment command. Read-only
   capability checks and offline image inspection can precede persistence.
 - `server-registry-probe.ts`: after Compose and app health, setup calls
@@ -205,7 +205,11 @@ absence, refuses unowned legacy Mend data, and creates the anchor with that labe
 named create preserves the first writer's labels; setup inspects afterward to establish ownership.
 Only then may it claim `mend-control` with the same label. Matching retries do not recreate volumes.
 Mismatches, missing labels, failed inspections, and malformed replies stop setup. Restore the
-original configuration or choose a clean daemon; never delete or relabel existing data to proceed.
+original configuration or choose a clean daemon; never delete or relabel existing data to proceed. A
+similarly named container or network can coexist only when its inspected Compose label and name
+prove a different project namespace, such as `mend-dev`. Exact reserved Mend names still cause
+refusal, regardless of a foreign label. Unlabelled, mismatched, or inconclusive evidence never
+grants an exemption; the canonical volume guards remain unchanged.
 
 Both canonical volumes must be `external: true` in the release Compose template with their canonical
 name substitutions. Setup validates that contract on downloaded, supplied, and retained assets
