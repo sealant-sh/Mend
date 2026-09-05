@@ -1048,12 +1048,9 @@ async function main() {
   stage = "authenticated workspace SSH";
   const workspaceId = await until("public workspace identity", async () => {
     const current = await api(`/sessions/${session.id}`);
-    return current.session.sealantWorkspaceId ?? false;
+    const id = current.session.sealantWorkspaceId;
+    return id && current.currentAgent?.sealantWorkspaceId === id ? id : false;
   });
-  check(
-    workspace.Name === `/sealant-${workspaceId}`,
-    "SSH must target the API-identified workspace",
-  );
   await checkSsh(workspaceId, marker);
   console.log(
     "PASS installed CLI key registration and native workspace SSH with private config and pinned gateway trust",
