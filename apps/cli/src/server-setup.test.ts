@@ -671,7 +671,7 @@ describe("mend server setup", () => {
     expect(modeOf(activeDirectory(control.runtime.configDir))).toBe(0o700);
     expect(modeOf(activeFile(control.runtime.configDir, "server.json"))).toBe(0o600);
     expect(modeOf(activeFile(control.runtime.configDir, "server.env"))).toBe(0o600);
-    expect(modeOf(activeFile(control.runtime.configDir, "postgres-init.sh"))).toBe(0o700);
+    expect(modeOf(activeFile(control.runtime.configDir, "postgres-init.sh"))).toBe(0o755);
     expect(
       JSON.parse(fs.readFileSync(activeFile(control.runtime.configDir, "server.json"), "utf8")),
     ).toMatchObject({

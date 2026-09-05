@@ -13,7 +13,7 @@ export type ServerStoreResult<T> =
   | { readonly _tag: "ok"; readonly value: T }
   | { readonly _tag: "error"; readonly error: ServerStoreError };
 
-/** Complete private deployment files, committed together. Identity must never change. */
+/** Complete deployment files, committed together. Only postgresInit is public; identity never changes. */
 export interface ServerFiles {
   readonly identity: string;
   readonly config: string;
@@ -32,9 +32,9 @@ export interface ServerGeneration {
 export interface ServerStore {
   readIdentity(): ServerStoreResult<string | null>;
   readActive(): ServerStoreResult<ServerGeneration | null>;
-  /** Retains all generations, reuses identical active files, and refuses identity replacement. */
+  /** Retains generations, reuses compatible identical active files, and refuses identity replacement. */
   commit(files: ServerFiles): ServerStoreResult<ServerGeneration>;
-  /** Durably prepare identity and files without selecting; reuse identical active files. */
+  /** Prepare without selecting; identical active files require compatible init permissions for reuse. */
   prepare(files: ServerFiles): ServerStoreResult<ServerGeneration>;
   /** Select a retained generation from this store without rewriting it. */
   activate(generation: ServerGeneration): ServerStoreResult<void>;
@@ -93,6 +93,8 @@ const writeDurable = (file: string, content: string, mode = 0o600): void => {
   const fd = fs.openSync(file, "wx", mode);
   try {
     fs.writeFileSync(fd, content, "utf8");
+    // Creation modes are masked by umask, but the bind-mounted init must be executable by UID 70.
+    fs.fchmodSync(fd, mode);
     fs.fsyncSync(fd);
   } finally {
     fs.closeSync(fd);
@@ -256,7 +258,7 @@ const prepareGeneration = (paths: StorePaths, files: ServerFiles): ServerGenerat
     writeDurable(
       path.join(directory, fileNames[key]),
       files[key],
-      key === "postgresInit" ? 0o700 : 0o600,
+      key === "postgresInit" ? 0o755 : 0o600,
     );
   }
   syncDirectory(directory);
@@ -293,7 +295,13 @@ const prepareFiles = (paths: StorePaths, files: ServerFiles): ServerGeneration =
     throw new ServerStoreError("Server identity already exists; refusing to replace credentials.");
   }
   const active = readActive(paths);
-  if (active !== null && fileKeys.every((key) => files[key] === active.files[key])) return active;
+  if (
+    active !== null &&
+    fileKeys.every((key) => files[key] === active.files[key]) &&
+    (fs.statSync(path.join(active.directory, fileNames.postgresInit)).mode & 0o7777) === 0o755
+  )
+    return active;
+  // Never chmod a retained generation. Old private init scripts need a new snapshot, not new credentials.
   // Publish identity before preparing any generation. A crash here cannot orphan credentials.
   if (identity === null) publishIdentity(paths, files.identity);
   return prepareGeneration(paths, files);

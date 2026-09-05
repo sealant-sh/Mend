@@ -9,6 +9,7 @@ import { DockerProtocol } from "./docker-protocol.ts";
 
 const [configDir, operation = "setup", rendezvous = ""] = process.argv.slice(2);
 if (!configDir) throw new Error("config directory required");
+if (operation === "private-umask") process.umask(0o077);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const pause = async (phase) => {
   if (!rendezvous) return;

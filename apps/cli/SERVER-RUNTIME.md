@@ -20,7 +20,13 @@ mend/
       postgres-init.sh
 ```
 
-Directories are private, mode `0700`. Files are `0600`, except `postgres-init.sh`, mode `0700`.
+Directories are private, mode `0700`. Credentials and config files are `0600`, including
+`identity.env`, `server.env`, `server.json`, and `compose.yaml`. The public `postgres-init.sh` is
+`0755`, even under a `077` umask. It contains only environment references, not credential values,
+and Compose bind-mounts that file read-only. The official `postgres:17-alpine` entrypoint runs it as
+the container's `postgres` user, UID 70, not the host owner. Mode `0700` denies that user access.
+The individual file mount does not expose its private host parent directories.
+
 Generation immutability is an application rule: Mend never rewrites a generation. The owner can
 still edit files, so reads validate config, secrets, identity consistency, and the asset contract.
 Backups must protect these credentials and include the Docker volumes. Do not log raw store files.
@@ -42,7 +48,10 @@ stale lock. Do not remove `identity.env`, `active`, generations, or volumes to r
 `ServerStore.prepare(files)` performs these steps while locked, without changing `active`:
 
 1. Refuse an identity different from the saved identity.
-2. Return the active generation unchanged when all files match.
+2. Return the active generation unchanged when all file contents match and `postgres-init.sh` has
+   mode `0755`. Incompatible init permissions require a new immutable generation, even for identical
+   contents. Preserve the saved identity, old generation bytes and modes, and active pointer until
+   activation. Never repair permissions by changing a retained generation.
 3. On the first preparation, write and fsync a private identity file, then publish it using an
    exclusive hard link. Never rename over an existing identity. Fsync the installation directory.
 4. Write the full generation with exclusive file creation. Fsync each file, the generation
@@ -73,6 +82,33 @@ regenerate credentials.
 An interruption after activation leaves a complete selected generation. Compose or health failure
 also retains it. Retrying `up` uses the same project, volumes, pin, and credentials. There is no
 claim that the filesystem transaction and Docker startup are atomic together.
+
+### Partial Postgres initialization
+
+The official Postgres image runs init scripts only for an empty data directory. The old `0700`
+script could fail with `Permission denied` after `initdb` had already written `PG_VERSION`. A retry
+can then skip initialization while the `mend` or `sealant` role and its database are still missing.
+A healthy Postgres process alone does not establish that either application database exists.
+
+Rerunning setup with the fixed CLI prepares a `0755` generation using the same credentials. It does
+not reset Postgres, restore a backup, or automatically replay the init script against existing data.
+Retain all database contents, even when the first initialization failed.
+
+Manual recovery requires an operator:
+
+1. Confirm the saved Docker context, installation identity, and owned Postgres container. Inspect
+   its logs for the init failure. Keep `identity.env` and all generations.
+2. Stop application writers and take a database backup or a consistent volume snapshot before
+   changing database state. Do not remove volumes, clear `PGDATA`, or delete `PG_VERSION` to force
+   initialization.
+3. Inspect both roles and databases as the existing Postgres administrator. If bootstrap is
+   incomplete, review the new generation's init script and explicitly run it inside that owned
+   Postgres container with the saved administrator and application password environment. The script
+   creates missing roles/databases and sets role passwords; it does not repair an existing
+   database's ownership or migrate application schemas. Resolve any such conflicts separately.
+4. Verify password-authenticated connections as `mend` to `mend` and as `sealant` to
+   `sealant_control_plane`, including database ownership, before restarting application writers. If
+   the cluster itself cannot start, retain it and use operator-directed Postgres recovery.
 
 This is a local POSIX-filesystem protocol for Linux/macOS, not a distributed lock. The Docker
 ownership claim below rejects different identities targeting the same fixed `mend` project and
@@ -200,6 +236,8 @@ pnpm --filter @sealant/mend exec vitest run src/server-setup.test.ts src/server-
 pnpm --filter @sealant/mend exec vitest run --testTimeout=15000
 # Opt-in real Engine checks use unique test names, never the standard Mend resources:
 MEND_DOCKER_TEST_CONTEXT=default pnpm --filter @sealant/mend exec vitest run src/server-docker-protocol.test.ts
+# Preload official postgres:17-alpine in a local daemon that can bind-mount this worktree's temp files:
+MEND_DOCKER_TEST_CONTEXT=default pnpm --filter @sealant/mend exec vitest run src/server-postgres-bootstrap.test.ts
 pnpm --filter @sealant/mend typecheck
 pnpm --filter @sealant/mend lint
 pnpm format:fix
@@ -220,8 +258,13 @@ fixture with immutable named-volume labels and distinct local/remote image tags.
 persist-before-mutation ordering, cross-config identity rejection, same-identity retries,
 corruption, private probe files, fresh nonces, registry failures, and cleanup warnings without
 mocking modules. The separate opt-in Docker tests check atomic claims, competing identities, and a
-real loopback registry roundtrip. The full CLI suite needs a 15-second test budget for existing
-login polling.
+real loopback registry roundtrip. The separate official-Postgres test mounts the store-generated
+init file read-only, uses a uniquely named and labelled container with tmpfs data and no published
+ports, and checks password-authenticated connections and ownership for both databases and roles. It
+creates the container before starting it, verifies its ownership label, and cleans up only the
+acquired container ID. It never uses canonical Mend resources or removes the cached image. Store
+regressions also cover a `077` umask and same-content retries with incompatible init modes. The full
+CLI suite needs a 15-second test budget for existing login polling.
 
 `test-fixtures/docker` copies the Compose and ownership contract from
 `../Mend-packaging/deploy/docker` at `91e1cf6`; Postgres init is unchanged from `1c2018b`. These are

@@ -54,6 +54,7 @@ const waitFor = async (file: string): Promise<void> => {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 };
+const modeOf = (file: string): number => fs.statSync(file).mode & 0o7777;
 const activeDirectory = (root: string): string => fs.realpathSync(path.join(root, "active"));
 const identityAt = (root: string): string =>
   fs.readFileSync(path.join(root, "identity.env"), "utf8");
@@ -77,6 +78,67 @@ afterEach(async () => {
 });
 
 describe("server filesystem transactions", () => {
+  it("writes public init permissions under a private umask without exposing credentials or directories", async () => {
+    const root = temporary();
+    expect((await launch([root, "private-umask"]).done).code).toBe(0);
+    const generation = activeDirectory(root);
+    for (const directory of [root, path.join(root, "generations"), generation]) {
+      expect(modeOf(directory)).toBe(0o700);
+    }
+    expect(modeOf(path.join(root, "identity.env"))).toBe(0o600);
+    for (const file of ["identity.env", "server.json", "server.env", "compose.yaml"]) {
+      expect(modeOf(path.join(generation, file))).toBe(0o600);
+    }
+    expect(modeOf(path.join(generation, "postgres-init.sh"))).toBe(0o755);
+  });
+
+  it.each([0o700, 0o600, 0o644, 0o750, 0o777, 0o4755])(
+    "prepares a new identical generation for incompatible init mode %i without mutating the old one",
+    async (mode) => {
+      const root = temporary();
+      const result = await withServerStore(root, async (store) => {
+        const first = store.commit(files);
+        if (first._tag === "error") throw first.error;
+        const oldScript = path.join(first.value.directory, "postgres-init.sh");
+        fs.chmodSync(oldScript, mode);
+        const oldStat = fs.statSync(oldScript);
+        const identityStat = fs.statSync(path.join(root, "identity.env"));
+        const prepared = store.prepare(files);
+        if (prepared._tag === "error") throw prepared.error;
+        expect(prepared.value.directory).not.toBe(first.value.directory);
+        expect(prepared.value.files).toEqual(first.value.files);
+        expect(activeDirectory(root)).toBe(first.value.directory);
+        // Reads may update atime; inode, content timestamps and permissions must not change.
+        expect(fs.statSync(oldScript)).toMatchObject({
+          ino: oldStat.ino,
+          mode: oldStat.mode,
+          mtimeMs: oldStat.mtimeMs,
+          ctimeMs: oldStat.ctimeMs,
+        });
+        expect(fs.statSync(path.join(root, "identity.env"))).toMatchObject({
+          ino: identityStat.ino,
+          mode: identityStat.mode,
+          mtimeMs: identityStat.mtimeMs,
+          ctimeMs: identityStat.ctimeMs,
+        });
+        for (const file of fs.readdirSync(first.value.directory)) {
+          expect(fs.readFileSync(path.join(prepared.value.directory, file))).toEqual(
+            fs.readFileSync(path.join(first.value.directory, file)),
+          );
+        }
+        expect(
+          fs.statSync(path.join(prepared.value.directory, "postgres-init.sh")).mode & 0o7777,
+        ).toBe(0o755);
+        expect(store.activate(prepared.value)._tag).toBe("ok");
+        expect(store.commit(files)).toEqual(prepared);
+        expect(identityAt(root)).toBe(files.identity);
+        expect(fs.statSync(oldScript).mode & 0o7777).toBe(mode);
+        expect(fs.readdirSync(path.join(root, "generations"))).toHaveLength(2);
+      });
+      if (result._tag === "error") throw result.error;
+    },
+  );
+
   it("retains generations, reuses identical files, and refuses to overwrite identity", async () => {
     const root = temporary();
     const result = await withServerStore(root, async (store) => {
