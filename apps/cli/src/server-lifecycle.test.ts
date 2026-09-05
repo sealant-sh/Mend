@@ -179,7 +179,8 @@ const fixture = async () => {
   };
 };
 
-describe("server lifecycle through public command, real processes, HTTP and files", () => {
+// Each operation spawns real processes; full lifecycle sequences need more time on CI.
+describe("server lifecycle", { timeout: 30_000 }, () => {
   it.each(["status", "start", "stop", "restart", "logs", "upgrade"])(
     "keeps unconfigured %s readable without creating state",
     async (command) => {
