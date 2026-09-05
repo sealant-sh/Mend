@@ -33,16 +33,15 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc src/main.ts src/dashboard.tsx --outDir dist --module nodenext --target es2023 --types node --skipLibCheck --allowImportingTsExtensions --rewriteRelativeImportExtensions --jsx react-jsx --jsxImportSource @opentui/react && pnpm run man",
+    "build": "node scripts/build.mjs && pnpm run man",
     "lint": "oxlint . --no-error-on-unmatched-pattern",
     "man": "node --experimental-strip-types scripts/man.ts",
     "prepack": "pnpm run build",
     "test": "vitest run --passWithNoTests",
+    "test:package": "node scripts/test-package.mjs",
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@mend/domain": "workspace:*",
-    "@mend/workspace-ssh": "workspace:*",
     "@opentui/core": "^0.5.1",
     "@opentui/react": "^0.5.1",
     "@tanstack/react-query": "catalog:",
@@ -51,10 +50,13 @@
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
+    "@mend/domain": "workspace:*",
     "@mend/typescript": "workspace:*",
+    "@mend/workspace-ssh": "workspace:*",
     "@types/node": "catalog:",
     "@types/qrcode": "catalog:",
     "@types/react": "catalog:",
+    "esbuild": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },

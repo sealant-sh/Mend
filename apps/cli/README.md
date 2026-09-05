@@ -125,6 +125,21 @@ whether it was started from the `mend` dashboard or a one-shot CLI command. Mend
 foreground-process hint rather than claiming lifecycle authority, so Herdr continues to derive
 working, idle, and blocked from its native agent screen rules.
 
+## Building and checking the npm package
+
+`pnpm --filter @sealant/mend typecheck` uses tsgo without emission.
+`pnpm --filter @sealant/mend build` bundles the CLI and its private workspace dependencies with
+esbuild, follows transitive imports, and generates the man pages. Split chunks stay directly in
+`dist/` so package-relative version reads work. Only declared public runtime dependencies remain
+external. The dashboard still loads OpenTUI lazily; ordinary commands do not require its native
+runtime. Source files remain runnable by the existing tests.
+
+`pnpm --filter @sealant/mend test:package` packs the CLI and uses npm to install the tarball into a
+fresh directory outside the checkout. It needs registry access. The smoke test checks the published
+files and runs server-independent commands with OpenTUI temporarily removed. Set
+`MEND_KEEP_PACKAGE_TEST=1` to retain the printed directory and installed package for inspection.
+Neither installation nor the build installs or starts a Mend server.
+
 ## How it works
 
 Every session runs in its own git worktree over the adopted repository, inside a recorded workspace.
