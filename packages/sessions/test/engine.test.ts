@@ -1,5 +1,7 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
 import * as fs from "node:fs";
+import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -72,6 +74,7 @@ import {
   ProjectEnvironmentSnapshot,
   ProjectEnvironmentVariable,
   ProjectSecretsSnapshot,
+  RepositoryCloneUrl,
   Service,
   ServiceForward,
   ServiceObservation,
@@ -113,7 +116,7 @@ import type {
   SessionOptions,
   Workspace,
 } from "@sealant/sdk";
-import { Duration, Effect, Fiber, Layer, Schedule, Stream } from "effect";
+import { Duration, Effect, Fiber, Layer, Schedule, Stream, type Scope } from "effect";
 
 /** Every platform method dies — these tests exercise the platform-free paths. */
 const sealantDeadLayer = Layer.succeed(SealantClient, {
@@ -1364,7 +1367,71 @@ const checkpointsLayer = (world: World) =>
     withWorktreeLock: (_worktreeId, effect) => effect,
   });
 
-/** A throwaway origin repo with one commit, adopted into a tmp store. */
+const reserveGitPort = async () => {
+  const server = net.createServer();
+  try {
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("No Git fixture port available.");
+    }
+    return address.port;
+  } finally {
+    if (server.listening) {
+      const closed = once(server, "close");
+      server.close();
+      await closed;
+    }
+  }
+};
+
+/** Keep the real network origin alive until the engine and its test scope close. */
+const serveGitOrigin = (tmp: string) =>
+  Effect.gen(function* () {
+    const port = yield* Effect.promise(reserveGitPort);
+    const server = yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        const daemon = spawn(
+          "git",
+          [
+            "daemon",
+            "--reuseaddr",
+            "--export-all",
+            "--verbose",
+            `--base-path=${tmp}`,
+            "--listen=127.0.0.1",
+            `--port=${port}`,
+            tmp,
+          ],
+          { stdio: ["ignore", "ignore", "pipe"] },
+        );
+        const closed = new Promise<void>((resolve) => daemon.once("close", () => resolve()));
+        const ready = new Promise<void>((resolve, reject) => {
+          let stderr = "";
+          daemon.once("error", reject);
+          daemon.once("exit", (code, signal) => {
+            reject(new Error(`Git fixture exited before readiness: ${code ?? signal}\n${stderr}`));
+          });
+          daemon.stderr.setEncoding("utf8");
+          daemon.stderr.on("data", (chunk: string) => {
+            stderr += chunk;
+            if (stderr.includes("Ready to rumble")) resolve();
+          });
+        });
+        return { daemon, closed, ready };
+      }),
+      ({ daemon, closed }) =>
+        Effect.promise(async () => {
+          daemon.kill();
+          await closed;
+        }),
+    );
+    yield* Effect.promise(() => server.ready).pipe(Effect.timeout("5 seconds"));
+    return RepositoryCloneUrl.make(`git://127.0.0.1:${port}/origin`);
+  });
+
+/** A throwaway origin repo with one commit, adopted over Git into a tmp store. */
 const setup = (tmp: string, world: World) => {
   const origin = path.join(tmp, "origin");
   const run = (...args: ReadonlyArray<string>) =>
@@ -1385,12 +1452,13 @@ const setup = (tmp: string, world: World) => {
   run("commit", "-m", "initial");
 
   return Effect.gen(function* () {
+    const source = yield* serveGitOrigin(tmp);
     const store = yield* Store;
-    const adopted = yield* store.adopt("fixture", origin, { GIT_TERMINAL_PROMPT: "0" });
+    const adopted = yield* store.adopt("fixture", source, { GIT_TERMINAL_PROMPT: "0" });
     const project = new Project({
       id: ProjectId.make("proj-1"),
       name: "fixture",
-      originUrl: origin,
+      originUrl: source,
       storePath: adopted.storePath,
       defaultBranch: adopted.defaultBranch,
       adoptedSha: Sha.make(adopted.headSha),
@@ -1411,7 +1479,10 @@ const setup = (tmp: string, world: World) => {
 };
 
 const withEngine = <A, E>(
-  work: (world: World, tmp: string) => Effect.Effect<A, E, SessionEngine | Store | WorktreesRepo>,
+  work: (
+    world: World,
+    tmp: string,
+  ) => Effect.Effect<A, E, SessionEngine | Store | WorktreesRepo | Scope.Scope>,
   options: {
     readonly sealantLayer?: Layer.Layer<SealantClient>;
     readonly protocolHostLayer?: Layer.Layer<ProtocolHost>;
@@ -1497,6 +1568,7 @@ const withEngine = <A, E>(
   return Effect.runPromise(
     work(world, tmp).pipe(
       Effect.provide(Layer.mergeAll(engineLayer, storeLayer, worktreesLayer(world))),
+      Effect.scoped,
       Effect.ensuring(Effect.sync(() => fs.rmSync(tmp, { recursive: true, force: true }))),
       Effect.orDie,
     ),
