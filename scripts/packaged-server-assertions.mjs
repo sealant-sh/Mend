@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { lstat, readFile, readdir, readlink, realpath } from "node:fs/promises";
+import {
+  lstat,
+  mkdtemp,
+  readFile,
+  readdir,
+  readlink,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 
 const projectLabel = "com.docker.compose.project";
@@ -467,6 +477,152 @@ export async function verifyUpgradeBackup(configRoot, previousGeneration, target
     /^-- PostgreSQL database cluster dump complete$/m.test(sql),
     "Cluster dump must have a completion marker",
   );
+}
+
+/** Failed commands only. Separate from the installation scratch so cleanup cannot erase evidence.
+ * Never upload this directory to CI artifacts. Successful acceptance removes even expected refusals.
+ */
+export function createFailedCommandDiagnostics() {
+  let directory;
+  let sequence = 0;
+  return {
+    async record(metadata, stdout, stderr) {
+      directory ??= mkdtemp(join(tmpdir(), "mend-packaged-failed-"));
+      const root = await directory;
+      const prefix = join(root, `FAILED-${++sequence}`);
+      await Promise.all([
+        writeFile(`${prefix}.json`, JSON.stringify(metadata), { mode: 0o600, flag: "wx" }),
+        writeFile(`${prefix}.stdout`, stdout, { mode: 0o600, flag: "wx" }),
+        writeFile(`${prefix}.stderr`, stderr, { mode: 0o600, flag: "wx" }),
+      ]);
+    },
+    async finish(failed) {
+      if (!directory) return undefined;
+      const root = await directory;
+      if (failed) return root;
+      await rm(root, { recursive: true, force: true });
+      return undefined;
+    },
+  };
+}
+
+const immutableDockerId = (value) =>
+  typeof value === "string" && value.length === 64 && /^[a-f0-9]+$/.test(value);
+const decimal = (value) =>
+  typeof value === "string" && value.length > 0 && value.length <= 20 && !/\D/.test(value);
+const stringArray = (value) =>
+  Array.isArray(value) &&
+  value.length > 0 &&
+  value.every((part) => typeof part === "string" && !part.includes("\0"));
+
+function declaredHealthCommand(container) {
+  const test = container.Config?.Healthcheck?.Test;
+  if (!stringArray(test)) return undefined;
+  if (test[0] === "CMD" && test.length > 1 && test[1]) return test.slice(1).join(" ");
+  if (test[0] !== "CMD-SHELL" || test.length !== 2 || !test[1]) return undefined;
+  const shell = container.Config.Shell;
+  if (
+    shell != null &&
+    (!Array.isArray(shell) || (shell.length && (!stringArray(shell) || !shell[0])))
+  )
+    return undefined;
+  return [...(shell?.length ? shell : ["/bin/sh", "-c"]), test[1]].join(" ");
+}
+
+const fail = (reason) => assert.ok(false, `Docker install events inconclusive: ${reason}`);
+
+/**
+ * Docker flattens exec argv with spaces in Action; compare that exact representation, never
+ * substrings, tokenization or shell normalization. Events cannot prove the exec's initiator or
+ * distinguish argv arrays with identical flattened text. This is declared-command evidence only.
+ * Query bounded context around [since, until); context events do not themselves assert mutation.
+ * Docker retains only 256 historical events: a full page or incomplete chain is inconclusive.
+ * TimeNano is formatted as a STRING by the caller to avoid JSON's lossy nanosecond numbers.
+ */
+export function assertInstallDockerEvents(
+  text,
+  initial,
+  { since, until, captureSince, captureUntil },
+) {
+  const bounds = [captureSince, since, until, captureUntil].map((value) => Date.parse(value));
+  if (
+    bounds.some((value) => !Number.isSafeInteger(value)) ||
+    bounds.some((value, index) => index > 0 && value < bounds[index - 1]) ||
+    bounds[1] >= bounds[2] ||
+    bounds[1] - bounds[0] > 60_000 ||
+    bounds[3] - bounds[2] > 10_000
+  )
+    fail("invalid bounded observation window");
+  const [first, start, end, last] = bounds.map((value) => BigInt(value) * 1_000_000n);
+  if (typeof text !== "string" || !Array.isArray(initial?.containers)) fail("malformed input");
+  const rows = text.split("\n").filter((line) => line.trim());
+  if (rows.length >= 256)
+    fail("historical event limit reached; completeness cannot be established");
+  const containers = new Map();
+  for (const container of initial.containers) {
+    if (!immutableDockerId(container?.Id) || containers.has(container.Id))
+      fail("malformed initial inventory");
+    containers.set(container.Id, declaredHealthCommand(container));
+  }
+  const events = rows.map((line) => {
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      fail("malformed event JSON");
+    }
+    if (
+      !event ||
+      typeof event.Type !== "string" ||
+      typeof event.Action !== "string" ||
+      !event.Actor ||
+      typeof event.Actor.ID !== "string" ||
+      !event.Actor.Attributes ||
+      typeof event.Actor.Attributes !== "object" ||
+      Array.isArray(event.Actor.Attributes) ||
+      !Object.values(event.Actor.Attributes).every((value) => typeof value === "string") ||
+      !decimal(event.timeNano)
+    )
+      fail("malformed event data");
+    const time = BigInt(event.timeNano);
+    if (time < first || time >= last) fail("event outside capture bounds");
+    return { ...event, time, inWindow: time >= start && time < end };
+  });
+  for (let i = 1; i < events.length; i++)
+    if (events[i].time < events[i - 1].time) fail("events out of order");
+  const relevant = new Set();
+  for (const event of events.filter((item) => item.inWindow)) {
+    if (event.Type !== "container" || !containers.has(event.Actor.ID))
+      fail("unknown resource or event type in install window");
+    if (!/^(exec_create: |exec_start: |exec_die$)/.test(event.Action))
+      fail("non-healthcheck lifecycle event in install window");
+    if (!immutableDockerId(event.Actor.Attributes.execID)) fail("missing or malformed exec ID");
+    relevant.add(event.Actor.Attributes.execID);
+  }
+  const chains = new Map();
+  for (const event of events) {
+    const id = event.Actor.Attributes.execID;
+    if (!relevant.has(id)) continue;
+    const command = containers.get(event.Actor.ID);
+    if (event.Type !== "container" || !command)
+      fail("exec has no pre-existing declared healthcheck");
+    const previous = chains.get(id);
+    if (previous && previous.container !== event.Actor.ID) fail("exec ID changed containers");
+    if (event.Action === `exec_create: ${command}` && !previous)
+      chains.set(id, { container: event.Actor.ID, phase: "created" });
+    else if (event.Action === `exec_start: ${command}` && previous?.phase === "created")
+      previous.phase = "started";
+    else if (
+      event.Action === "exec_die" &&
+      previous?.phase === "started" &&
+      decimal(event.Actor.Attributes.exitCode)
+    )
+      previous.phase = "completed";
+    else fail("unknown command, unmatched exec ID or invalid healthcheck sequence");
+  }
+  if ([...chains.values()].some((chain) => chain.phase !== "completed"))
+    fail("healthcheck sequence incomplete within bounded capture");
+  return { healthchecks: chains.size };
 }
 
 /** Retain only structural Docker facts suitable for non-secret install/persistence comparisons. */

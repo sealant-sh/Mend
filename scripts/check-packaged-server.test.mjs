@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  lstat,
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -13,11 +23,13 @@ import {
   assertFreshDocker,
   assertHealth,
   assertImagePin,
+  assertInstallDockerEvents,
   assertUpgradeRetention,
   assertWorkspaceMounts,
   cleanupOwnedVolumes,
   createVolumeLedger,
   createDiagnosticProbe,
+  createFailedCommandDiagnostics,
   dockerFingerprint,
   installationOwnerLabel,
   isolatedClientEnvironment,
@@ -115,6 +127,84 @@ else process.exit(90);
       );
       assert.deepEqual((await readdir(scratch)).toSorted(), ["calls", "docker", "inventory"]);
     }
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("entrypoint retains failed-command output privately after installation cleanup, printing only its path", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "mend-command-failure-test-"));
+  const script = fileURLToPath(new URL("./check-packaged-server.mjs", import.meta.url));
+  try {
+    // No real Docker or packing. Fail the first pack command after the read-only gate.
+    await writeFile(
+      join(scratch, "docker"),
+      `#!/usr/bin/env node
+const args = process.argv.slice(2);
+const command = args[0] === '--context' ? args.slice(2) : args;
+if (command.join(' ') === 'context show') console.log('default');
+else if (command.join(' ') === 'context inspect default') console.log(JSON.stringify([{Endpoints:{docker:{Host:'unix:///var/run/docker.sock'}}}]));
+else if (command[0] === 'info') console.log('synthetic-failure-test');
+else if (command[0] === 'ps' || command[1] === 'ls') console.log('');
+else process.exit(90);
+`,
+      { mode: 0o700 },
+    );
+    await writeFile(
+      join(scratch, "pnpm"),
+      `#!/usr/bin/env node
+process.stdout.write('private-stdout-token');
+process.stderr.write('private-stderr-token');
+process.exitCode = 17;
+`,
+      { mode: 0o700 },
+    );
+    let reportedPath;
+    await assert.rejects(
+      exec(process.execPath, [script], {
+        env: {
+          ...process.env,
+          PATH: `${scratch}:${process.env.PATH}`,
+          HOME: scratch,
+          TMPDIR: scratch,
+          DOCKER_HOST: "",
+          DOCKER_CONTEXT: "",
+          MEND_TEST_UPGRADE_IMAGE: undefined,
+          MEND_TEST_UPGRADE_VERSION: undefined,
+          MEND_TEST_UPGRADE_ASSETS: undefined,
+          MEND_TEST_OFFLINE: undefined,
+          MEND_TEST_VERSION: "1.2.3",
+          MEND_TEST_IMAGE: "ghcr.io/sealant-sh/mend:1.2.3",
+        },
+      }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /pnpm failed/);
+        assert.doesNotMatch(
+          error.stdout + error.stderr,
+          /private-stdout-token|private-stderr-token/,
+        );
+        reportedPath = error.stderr.match(/diagnostics retained at ([^;]+);/)?.[1];
+        assert.ok(reportedPath && isInside(scratch, reportedPath));
+        return true;
+      },
+    );
+    assert.equal((await lstat(reportedPath)).mode & 0o777, 0o700);
+    const names = await readdir(scratch);
+    assert.equal(names.length, 3); // Tools and diagnostics only. Installation and lock removed.
+    const metadata = JSON.parse(await readFile(join(reportedPath, "FAILED-1.json"), "utf8"));
+    assert.equal(metadata.command, "pnpm");
+    assert.equal(metadata.code, 17);
+    for (const name of await readdir(reportedPath))
+      assert.equal((await lstat(join(reportedPath, name))).mode & 0o777, 0o600);
+    assert.equal(
+      await readFile(join(reportedPath, "FAILED-1.stdout"), "utf8"),
+      "private-stdout-token",
+    );
+    assert.equal(
+      await readFile(join(reportedPath, "FAILED-1.stderr"), "utf8"),
+      "private-stderr-token",
+    );
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
@@ -640,6 +730,251 @@ test("Docker fingerprint is ordering-independent, secret-free, and detects resta
     original,
     dockerFingerprint({ ...first, volumes: [{ Name: "store", CreatedAt: "tomorrow" }] }),
   );
+});
+
+const healthContainerId = "a".repeat(64);
+const healthExecId = "b".repeat(64);
+const eventWindow = {
+  captureSince: "2026-09-06T00:00:00.000Z",
+  since: "2026-09-06T00:01:00.000Z",
+  until: "2026-09-06T00:01:10.000Z",
+  captureUntil: "2026-09-06T00:01:15.000Z",
+};
+const healthInventory = (Test = ["CMD-SHELL", "pg_isready -U mend -d mend"], Shell) => ({
+  ...empty(),
+  containers: [{ Id: healthContainerId, Config: { Healthcheck: { Test }, Shell } }],
+});
+const healthEvent = (
+  Action,
+  offset = 61,
+  execID = healthExecId,
+  container = healthContainerId,
+) => ({
+  Type: "container",
+  Action,
+  Actor: {
+    ID: container,
+    Attributes: { execID, ...(Action === "exec_die" ? { exitCode: "0" } : {}) },
+  },
+  timeNano: String(
+    BigInt(Date.parse(eventWindow.captureSince)) * 1_000_000n + BigInt(offset) * 1_000_000_000n,
+  ),
+});
+const healthSequence = (
+  command = "/bin/sh -c pg_isready -U mend -d mend",
+  offsets = [61, 62, 63],
+) =>
+  [`exec_create: ${command}`, `exec_start: ${command}`, "exec_die"].map((action, index) =>
+    healthEvent(action, offsets[index]),
+  );
+const assertEvents = (events, inventory = healthInventory(), window = eventWindow) =>
+  assertInstallDockerEvents(
+    events.map((event) => JSON.stringify(event)).join("\n"),
+    inventory,
+    window,
+  );
+
+// Synthetic fixtures only. Failure messages must never include real command text or IDs.
+function rejectsEvents(events, inventory = healthInventory(), window = eventWindow) {
+  assert.throws(
+    () => assertEvents(events, inventory, window),
+    (error) => {
+      assert.match(error.message, /Docker install events inconclusive/);
+      assert.doesNotMatch(error.message, /pg_isready|private-token|aaaaaaaa|bbbbbbbb/);
+      return true;
+    },
+  );
+}
+
+test("install events permit exact CMD, default CMD-SHELL and configured-shell healthcheck chains", () => {
+  assert.deepEqual(assertEvents([]), { healthchecks: 0 });
+  for (const [declaredTest, shell, command] of [
+    [
+      ["CMD-SHELL", "pg_isready -U mend -d mend"],
+      undefined,
+      "/bin/sh -c pg_isready -U mend -d mend",
+    ],
+    [["CMD-SHELL", "pg_isready -U mend -d mend"], [], "/bin/sh -c pg_isready -U mend -d mend"],
+    [
+      ["CMD", "node", "-e", "fetch('http://localhost/health')"],
+      undefined,
+      "node -e fetch('http://localhost/health')",
+    ],
+    [
+      ["CMD-SHELL", "test -f /healthy"],
+      ["/bin/bash", "-o", "pipefail", "-c"],
+      "/bin/bash -o pipefail -c test -f /healthy",
+    ],
+  ]) {
+    assert.deepEqual(assertEvents(healthSequence(command), healthInventory(declaredTest, shell)), {
+      healthchecks: 1,
+    });
+  }
+  const concurrent = healthSequence().flatMap((event) => [
+    event,
+    {
+      ...event,
+      Actor: { ...event.Actor, Attributes: { ...event.Actor.Attributes, execID: "c".repeat(64) } },
+    },
+  ]);
+  assert.deepEqual(assertEvents(concurrent), { healthchecks: 2 });
+  const unhealthy = healthSequence();
+  unhealthy[2].Actor.Attributes.exitCode = "1";
+  assert.deepEqual(assertEvents(unhealthy), { healthchecks: 1 });
+});
+
+test("bounded context correlates edge-crossing healthchecks without asserting out-of-window activity", () => {
+  for (const offsets of [
+    [58, 59, 61],
+    [59, 61, 62],
+    [68, 69, 72],
+    [69, 71, 72],
+  ])
+    assert.deepEqual(assertEvents(healthSequence(undefined, offsets)), { healthchecks: 1 });
+  const outside = [healthEvent("restart", 1), healthEvent("destroy", 70)];
+  assert.deepEqual(assertEvents(outside), { healthchecks: 0 });
+  rejectsEvents([healthEvent("restart", 60)]); // Inclusive start, exclusive end.
+  rejectsEvents([healthSequence()[2]]); // No create/start inside the lookback.
+  rejectsEvents(healthSequence().slice(0, 2)); // No die before the bounded capture ends.
+});
+
+test("install events reject mutation, unknown resources and undeclared exec commands", () => {
+  for (const action of [
+    "create",
+    "destroy",
+    "remove",
+    "restart",
+    "start",
+    "stop",
+    "die",
+    "kill",
+    "pause",
+    "unpause",
+    "update",
+    "rename",
+    "health_status: healthy",
+    "unknown",
+  ])
+    rejectsEvents([healthEvent(action)]);
+  for (const Type of ["image", "volume", "network", "daemon", "unknown"])
+    rejectsEvents([{ ...healthSequence()[0], Type }]);
+  rejectsEvents(
+    healthSequence().map((event) => ({ ...event, Actor: { ...event.Actor, ID: "d".repeat(64) } })),
+  );
+  for (const command of [
+    "/bin/sh -c pg_isready -U mend -d mend; touch /private-token",
+    "pg_isready -U mend -d mend",
+    "/bin/sh -c  pg_isready -U mend -d mend",
+    "node -e private-token",
+    "rm -rf /data",
+  ])
+    rejectsEvents(healthSequence(command));
+  for (const Test of [
+    undefined,
+    [],
+    ["NONE"],
+    ["CMD"],
+    ["CMD", ""],
+    ["BOGUS", "x"],
+    ["CMD-SHELL", "x", "extra"],
+    ["CMD", 123],
+  ])
+    rejectsEvents(healthSequence(), healthInventory(Test === undefined ? null : Test));
+  for (const shell of ["/bin/sh -c", [12], ["/bin/bash", "-c"]])
+    rejectsEvents(healthSequence(), healthInventory(undefined, shell));
+});
+
+test("install events reject unmatched, reused, cross-container and malformed exec IDs", () => {
+  for (const index of [0, 1, 2]) {
+    const events = healthSequence();
+    events[index].Actor.Attributes.execID = "c".repeat(64);
+    rejectsEvents(events);
+  }
+  for (const execID of [undefined, "", "short", 123, `${healthExecId}\n`]) {
+    const events = healthSequence();
+    events[0].Actor.Attributes.execID = execID;
+    rejectsEvents(events);
+  }
+  const events = healthSequence();
+  events[1].Actor.ID = "d".repeat(64);
+  const inventory = healthInventory();
+  inventory.containers.push({ ...inventory.containers[0], Id: "d".repeat(64) });
+  rejectsEvents(events, inventory);
+  rejectsEvents([healthSequence()[0], ...healthSequence()]);
+  rejectsEvents([healthSequence()[1], healthSequence()[2]]);
+  rejectsEvents([healthSequence()[0], healthSequence()[2]]);
+  rejectsEvents([...healthSequence(), healthSequence(undefined, [64, 65, 66])[2]]);
+  rejectsEvents([...healthSequence(), ...healthSequence(undefined, [64, 65, 66])]);
+  const wrongStart = healthSequence();
+  wrongStart[1].Action += " private-token";
+  rejectsEvents(wrongStart);
+});
+
+test("install event parsing fails closed on malformed data, timestamps, windows and full history", () => {
+  for (const malformed of [
+    null,
+    [],
+    {},
+    { ...healthSequence()[0], Actor: null },
+    { ...healthSequence()[0], Actor: { ID: healthContainerId, Attributes: [] } },
+    { ...healthSequence()[0], timeNano: 123 },
+    { ...healthSequence()[0], timeNano: "bad" },
+    { ...healthSequence()[0], timeNano: `${healthSequence()[0].timeNano}\n` },
+    { ...healthSequence()[0], timeNano: "9".repeat(50) },
+  ])
+    rejectsEvents([malformed]);
+  for (const exitCode of [undefined, "unknown", 0, "0\n"]) {
+    const events = healthSequence();
+    events[2].Actor.Attributes.exitCode = exitCode;
+    rejectsEvents(events);
+  }
+  for (const text of ["private-token invalid JSON", "{", undefined])
+    assert.throws(
+      () => assertInstallDockerEvents(text, healthInventory(), eventWindow),
+      /inconclusive/,
+    );
+  rejectsEvents(healthSequence().toReversed());
+  rejectsEvents([healthEvent("restart", -1)]);
+  rejectsEvents([healthEvent("restart", 75)]);
+  rejectsEvents([], healthInventory(), { ...eventWindow, since: "bad" });
+  rejectsEvents([], healthInventory(), { ...eventWindow, until: eventWindow.captureSince });
+  rejectsEvents([], healthInventory(), { ...eventWindow, captureSince: "2026-09-05T23:00:00Z" });
+  rejectsEvents([], { containers: [null] });
+  rejectsEvents([], { containers: [{ Id: `${healthContainerId}\n` }] });
+  rejectsEvents([], healthInventory(), { ...eventWindow, until: eventWindow.since });
+  rejectsEvents([], {
+    containers: [...healthInventory().containers, ...healthInventory().containers],
+  });
+  rejectsEvents(Array.from({ length: 256 }, () => healthEvent("restart", 1)));
+});
+
+test("private FAILED diagnostics preserve raw bytes with restrictive modes and delete on success", async () => {
+  const diagnostics = createFailedCommandDiagnostics();
+  assert.equal(await diagnostics.finish(true), undefined);
+  const raw = Buffer.from([0, 255, 13, 10, 65]);
+  let root;
+  try {
+    await diagnostics.record(
+      { command: "synthetic", args: ["private-token"], code: 17 },
+      raw,
+      Buffer.from("private-stderr"),
+    );
+    root = await diagnostics.finish(true);
+    assert.equal((await lstat(root)).mode & 0o777, 0o700);
+    assert.deepEqual((await readdir(root)).toSorted(), [
+      "FAILED-1.json",
+      "FAILED-1.stderr",
+      "FAILED-1.stdout",
+    ]);
+    for (const name of await readdir(root))
+      assert.equal((await lstat(join(root, name))).mode & 0o777, 0o600);
+    assert.deepEqual(await readFile(join(root, "FAILED-1.stdout")), raw);
+    assert.equal(await readFile(join(root, "FAILED-1.stderr"), "utf8"), "private-stderr");
+    assert.equal(await diagnostics.finish(false), undefined);
+    await assert.rejects(lstat(root), { code: "ENOENT" });
+  } finally {
+    if (root) await rm(root, { recursive: true, force: true });
+  }
 });
 
 const inputs = (version = "0.23.0") => ({

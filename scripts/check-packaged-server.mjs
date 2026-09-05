@@ -45,11 +45,13 @@ import {
   assertFreshDocker,
   assertHealth,
   assertImagePin,
+  assertInstallDockerEvents,
   assertUpgradeRetention,
   assertWorkspaceMounts,
   cleanupOwnedVolumes,
   createVolumeLedger,
   createDiagnosticProbe,
+  createFailedCommandDiagnostics,
   dockerFingerprint,
   isolatedClientEnvironment,
   isInside,
@@ -74,6 +76,7 @@ const fixtureVolume = `${fixtureName}-git`;
 const projectName = `acceptance-${runId}`;
 const marker = `packaged-proof-${runId}`;
 const activeChildren = new Set();
+const failedCommands = createFailedCommandDiagnostics();
 let interrupted = false;
 let stage = "read-only preflight";
 let scratch;
@@ -110,9 +113,16 @@ function start(command, args, options = {}) {
     detached: true,
   });
   activeChildren.add(child);
-  let output = "";
-  let bytes = 0;
+  const stdout = [];
+  const stderr = [];
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
+  let terminated = false;
+  let spawnError;
+  const commandStage = stage;
+  const limit = 16 * 1024 * 1024;
   const terminate = () => {
+    terminated = true;
     try {
       process.kill(-child.pid, "SIGKILL");
     } catch {
@@ -122,24 +132,43 @@ function start(command, args, options = {}) {
   const timer = setTimeout(terminate, timeout);
   child.stdout.on("data", (chunk) => {
     probe.accept(chunk);
-    bytes += chunk.length;
-    if (bytes > 16 * 1024 * 1024) terminate();
-    else output += chunk.toString();
+    stdout.push(chunk.subarray(0, Math.max(0, limit - stdoutBytes)));
+    stdoutBytes += chunk.length;
+    if (stdoutBytes > limit) terminate();
   });
-  // Match only a script-selected diagnostic; retain no stderr in the result or logs.
-  child.stderr.on("data", (chunk) => probe.accept(chunk));
+  child.stderr.on("data", (chunk) => {
+    probe.accept(chunk);
+    stderr.push(chunk.subarray(0, Math.max(0, limit - stderrBytes)));
+    stderrBytes += chunk.length;
+    if (stderrBytes > limit) terminate();
+  });
   const result = new Promise((resolve) => {
-    child.once("error", () => resolve({ ok: false, output: "" }));
-    child.once("close", (code) =>
-      resolve({
-        ok: code === 0 && bytes <= 16 * 1024 * 1024,
-        output,
-        diagnosticMatched: probe.matched(),
-      }),
-    );
-  }).finally(() => {
+    child.once("error", (error) => {
+      spawnError = String(error);
+    });
+    child.once("close", (code, signal) => resolve({ code, signal }));
+  }).then(async ({ code, signal }) => {
     clearTimeout(timer);
     activeChildren.delete(child);
+    const ok = code === 0 && !terminated && !spawnError;
+    const output = Buffer.concat(stdout);
+    if (!ok)
+      await failedCommands.record(
+        {
+          stage: commandStage,
+          command,
+          args,
+          code,
+          signal,
+          spawnError,
+          terminated,
+          stdoutTruncated: stdoutBytes > limit,
+          stderrTruncated: stderrBytes > limit,
+        },
+        output,
+        Buffer.concat(stderr),
+      );
+    return { ok, output: output.toString(), diagnosticMatched: probe.matched() };
   });
   return { result, terminate };
 }
@@ -550,6 +579,7 @@ async function main() {
   stage = "pack/install";
   const beforeInstall = dockerFingerprint(await snapshot());
   const installStarted = new Date().toISOString();
+  const captureStarted = new Date(Date.parse(installStarted) - 60_000).toISOString();
   // pnpm materializes catalog/workspace specifiers; npm packs the resulting release
   // directory itself. No manifest editing, source imports, or dependency substitutions.
   const prepared = join(scratch, "prepared");
@@ -612,19 +642,30 @@ async function main() {
     dockerFingerprint(await snapshot()) === beforeInstall,
     "Packing, npm installation, help and version must not change Docker",
   );
+  const installEnded = new Date().toISOString();
+  // Bounded context lets a healthcheck cross either edge of the asserted window. Missing
+  // context or Docker's 256-event history cap fails inconclusively, never silently passes.
+  await pause(5000);
+  const captureEnded = new Date().toISOString();
   const installEvents = await docker([
     "events",
     "--since",
-    installStarted,
+    captureStarted,
     "--until",
-    new Date().toISOString(),
+    captureEnded,
     "--format",
-    "{{json .}}",
+    '{"Type":{{json .Type}},"Action":{{json .Action}},"Actor":{{json .Actor}},"timeNano":"{{.TimeNano}}"}',
   ]);
-  check(
-    installEvents.trim() === "",
-    "Docker events observed during npm install/help/version; no no-mutation claim can be made",
-  );
+  const observedEvents = assertInstallDockerEvents(installEvents, initial, {
+    since: installStarted,
+    until: installEnded,
+    captureSince: captureStarted,
+    captureUntil: captureEnded,
+  });
+  if (observedEvents.healthchecks)
+    console.log(
+      `OBSERVED ${observedEvents.healthchecks} correlated pre-existing declared healthcheck commands; Docker events do not identify their initiator`,
+    );
   assertFreshDocker(await snapshot());
   console.log(
     "PASS npm-packed CLI installed outside checkout; help/version/default invocation made no Docker changes",
@@ -1271,4 +1312,14 @@ try {
     console.error("Cleanup failed; retained resources need manual ownership review");
   }
   if (cleanupFailed || interrupted) process.exitCode = 1;
+  try {
+    const diagnosticPath = await failedCommands.finish(process.exitCode === 1);
+    if (diagnosticPath)
+      console.error(
+        `Private FAILED command diagnostics retained at ${diagnosticPath}; local inspection only, never upload to CI or publish these files.`,
+      );
+  } catch {
+    process.exitCode = 1;
+    console.error("Private command diagnostic storage failed; raw output withheld");
+  }
 }
