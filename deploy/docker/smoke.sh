@@ -6,7 +6,7 @@ SCRIPT_DIR=$(
   unset CDPATH
   cd -- "$(dirname -- "$0")" && pwd
 )
-TOKEN="mend-bundle-smoke-$$-$(date +%s)"
+TOKEN="mend-bundle-smoke-$(node -p 'crypto.randomUUID()')"
 PROJECT=$(printf '%s' "$TOKEN" | tr -c 'a-z0-9_-' '-')
 ENV_FILE=$(mktemp "${TMPDIR:-/tmp}/$PROJECT.env.XXXXXX")
 PROBE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/$PROJECT.registry.XXXXXX")
@@ -72,6 +72,8 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+docker volume create --label "dev.sealant.mend.smoke=$TOKEN" "$STORE_VOLUME" >/dev/null
+docker volume create --label "dev.sealant.mend.smoke=$TOKEN" "$CONTROL_VOLUME" >/dev/null
 compose up --detach --wait --wait-timeout 240
 
 running=$(compose ps --services --status running | sort)

@@ -83,6 +83,8 @@ test("named-volume lowering and persistence paths stay aligned", () => {
   assert.equal(mend.environment.SEALANT_MOUNT_ALLOWED_STORE_ROOTS, "/var/lib/mend/store");
   assert.equal(compose.volumes["mend-store"].name, "mend-test-store");
   assert.equal(compose.volumes["mend-control"].name, "mend-test-control");
+  assert.equal(compose.volumes["mend-store"].external, true);
+  assert.equal(compose.volumes["mend-control"].external, true);
 
   const mounts = new Map(mend.volumes.map((volume) => [volume.target, volume.source]));
   assert.equal(mounts.get("/var/lib/mend/store"), "mend-store");

@@ -13,6 +13,13 @@
     "store": "mend-store",
     "control": "mend-control"
   },
+  "volumeOwnership": {
+    "anchor": "mend-store",
+    "label": "dev.sealant.mend.installation",
+    "identity": "SHA-256 of the persisted identity.env bytes",
+    "externalVolumes": ["mend-store", "mend-control"],
+    "policy": "Setup claims the anchor before creating other volumes or starting Compose. Reject mismatched ownership and existing unclaimed Mend data; never replace credentials to adopt it."
+  },
   "dockerVolumeMappings": [
     {
       "logicalRoot": "/var/lib/mend/store",
