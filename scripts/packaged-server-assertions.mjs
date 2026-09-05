@@ -72,19 +72,81 @@ function projectSubpath(subpath, projectName) {
     .every((part) => part && part !== "." && part !== ".." && !part.includes("\\"));
 }
 
-/** A store volume alone is shared infrastructure, not workspace ownership evidence. */
-export function ownsWorkspaceContainer(container, initialIds, projectName) {
-  const store = (container.HostConfig?.Mounts ?? []).filter(
-    (mount) => mount.Source === "mend-store",
-  );
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function workspaceStoreMount(mount, store, projectName) {
+  if (mount.Type !== "volume") return false;
+  const subpath = mount.VolumeOptions?.Subpath;
+  if (mount.Target !== "/run/mend" && projectSubpath(subpath, projectName)) return true;
+  if (typeof subpath !== "string") return false;
+  const sessionId = subpath.slice("_run/sessions/".length);
   return (
-    !initialIds.has(container.Id) &&
-    store.some((mount) => mount.VolumeOptions?.Subpath === `${projectName}/repo.git`) &&
-    store.every(
-      (mount) =>
-        mount.Type === "volume" && projectSubpath(mount.VolumeOptions?.Subpath, projectName),
+    sessionId.length === 36 &&
+    uuidPattern.test(sessionId) &&
+    subpath === `_run/sessions/${sessionId}` &&
+    mount.Target === "/run/mend" &&
+    mount.ReadOnly === true &&
+    store.some(
+      (home) =>
+        home.Type === "volume" &&
+        home.Target === "/workspace/harness-home" &&
+        home.VolumeOptions?.Subpath === `${projectName}/sessions/${sessionId}/harness-home`,
     )
   );
+}
+
+function actualMountMatchesSpec(actual, mount) {
+  return (
+    actual.Type === "volume" &&
+    actual.Name === mount.Source &&
+    actual.Destination === mount.Target &&
+    (mount.Target !== "/run/mend" || actual.RW === false)
+  );
+}
+
+/** Acceptance and cleanup use the same project and correlated helper mount boundary. */
+function workspaceMountsAreValid(container, projectName) {
+  const specs = container.HostConfig?.Mounts ?? [];
+  const mounts = container.Mounts ?? [];
+  const store = specs.filter((mount) => mount.Source === "mend-store");
+  const control = specs.filter((mount) => mount.Source === "mend-control");
+  const scoped = [...store, ...control];
+  return (
+    store.some((mount) => mount.VolumeOptions?.Subpath === `${projectName}/repo.git`) &&
+    store.some((mount) => mount.VolumeOptions?.Subpath === `${projectName}/worktrees`) &&
+    store.every((mount) => workspaceStoreMount(mount, store, projectName)) &&
+    specs.every(
+      (mount) =>
+        (mount.Target !== "/run/mend" || mount.Source === "mend-store") &&
+        (mount.Target !== "/run/sealant" || mount.Source === "mend-control"),
+    ) &&
+    control.every(
+      (mount) =>
+        mount.Type === "volume" &&
+        mount.Target === "/run/sealant" &&
+        typeof mount.VolumeOptions?.Subpath === "string" &&
+        mount.VolumeOptions.Subpath.length === "sealant-".length + 36 &&
+        mount.VolumeOptions.Subpath.startsWith("sealant-") &&
+        uuidPattern.test(mount.VolumeOptions.Subpath.slice("sealant-".length)),
+    ) &&
+    scoped.every((mount) => mounts.some((actual) => actualMountMatchesSpec(actual, mount))) &&
+    mounts
+      .filter(
+        (mount) =>
+          mount.Name === "mend-store" ||
+          mount.Name === "mend-control" ||
+          mount.Destination === "/run/mend" ||
+          mount.Destination === "/run/sealant",
+      )
+      .every((actual) => scoped.some((mount) => actualMountMatchesSpec(actual, mount))) &&
+    !(container.HostConfig?.Binds ?? []).length &&
+    ![...specs, ...mounts].some((mount) => mount.Type === "bind")
+  );
+}
+
+/** A store volume alone is shared infrastructure, not workspace ownership evidence. */
+export function ownsWorkspaceContainer(container, initialIds, projectName) {
+  return !initialIds.has(container.Id) && workspaceMountsAreValid(container, projectName);
 }
 
 export const installationOwnerLabel = "dev.sealant.mend.installation";
@@ -234,44 +296,9 @@ export function assertHealth(body, version) {
 
 /** Assert Docker's actual volume mount and create-time subpath, never a host-store bind. */
 export function assertWorkspaceMounts(container, projectName) {
-  const specs = container.HostConfig?.Mounts ?? [];
-  const mounts = container.Mounts ?? [];
-  const store = specs.filter((mount) => mount.Source === "mend-store");
-  assert.ok(store.length >= 2, "Workspace needs store-backed worktrees and Git metadata mounts");
-  for (const mount of store) {
-    assert.equal(mount.Type, "volume", "Store mount must be a volume");
-    const subpath = mount.VolumeOptions?.Subpath;
-    assert.ok(
-      projectSubpath(subpath, projectName),
-      "Store mount must use this project's volume subpath",
-    );
-    assert.ok(
-      mounts.some(
-        (actual) =>
-          actual.Type === "volume" &&
-          actual.Name === "mend-store" &&
-          actual.Destination === mount.Target,
-      ),
-      "Docker actual mount must agree with the volume-subpath specification",
-    );
-  }
   assert.ok(
-    store.some((mount) => mount.VolumeOptions.Subpath === `${projectName}/repo.git`),
-    "Bare Git repository must be mounted",
-  );
-  assert.ok(
-    store.some((mount) => mount.VolumeOptions.Subpath === `${projectName}/worktrees`),
-    "Worktrees root must be mounted",
-  );
-  assert.ok(
-    !mounts.some(
-      (mount) =>
-        mount.Type === "bind" &&
-        (mount.Source.includes("/var/lib/mend") ||
-          mount.Destination.startsWith("/workspace") ||
-          mount.Destination.startsWith("/var/lib/mend")),
-    ),
-    "Workspace must not use host-store binds",
+    workspaceMountsAreValid(container, projectName),
+    "Workspace mounts must be project-scoped store volumes, UUID-correlated readonly helpers, or scoped control volumes, with no host binds",
   );
 }
 

@@ -324,22 +324,332 @@ test("health checks require the exact configured version", () => {
     assert.throws(() => assertHealth(value, "1.2.3"));
 });
 
+const sessionId = "9a3b4c5d-1234-4567-89ab-123456789abc";
+const otherSessionId = "9a3b4c5d-1234-4567-89ab-123456789abd";
+const workspaceId = "1a2b3c4d-5678-4901-abcd-123456789abc";
+
 function workspace() {
-  const mounts = ["repo.git", "worktrees", "sessions/id/harness-home"].map((suffix) => ({
+  const mounts = [
+    ["project/repo.git", "/var/lib/mend/store/project/repo.git"],
+    ["project/worktrees", "/workspace/.roots/workspace"],
+    [`project/sessions/${sessionId}/harness-home`, "/workspace/harness-home"],
+    [`_run/sessions/${sessionId}`, "/run/mend"],
+  ].map(([subpath, target]) => ({
     Type: "volume",
     Source: "mend-store",
-    Target: `/mounted/${suffix}`,
-    VolumeOptions: { Subpath: `project/${suffix}` },
+    Target: target,
+    ReadOnly: target === "/run/mend",
+    VolumeOptions: { Subpath: subpath },
   }));
+  mounts.push({
+    Type: "volume",
+    Source: "mend-control",
+    Target: "/run/sealant",
+    ReadOnly: false,
+    VolumeOptions: { Subpath: `sealant-${workspaceId}` },
+  });
   return {
+    Id: "new-workspace",
     HostConfig: { Mounts: mounts },
     Mounts: mounts.map((mount) => ({
       Type: "volume",
       Name: mount.Source,
       Destination: mount.Target,
+      RW: !mount.ReadOnly,
     })),
   };
 }
+
+test("actual workspace helper and control mounts pass acceptance and cleanup ownership", () => {
+  const candidate = workspace();
+  assert.doesNotThrow(() => assertWorkspaceMounts(candidate, "project"));
+  assert.equal(ownsWorkspaceContainer(candidate, new Set(), "project"), true);
+  assert.equal(ownsWorkspaceContainer(candidate, new Set([candidate.Id]), "project"), false);
+  assert.equal(ownsWorkspaceContainer(candidate, new Set(), "other"), false);
+});
+
+for (const subpath of [
+  "_run",
+  "_run/sessions",
+  "_run/other",
+  `_run/sessions/${otherSessionId}`,
+  `_run/sessions/${sessionId}/socket`,
+  `_run/sessions/${sessionId}/..`,
+  `_run//sessions/${sessionId}`,
+  `_run/sessions/${sessionId}/`,
+  `_run/sessions/./${sessionId}`,
+  `_run/sessions\\${sessionId}`,
+  `/_run/sessions/${sessionId}`,
+]) {
+  test(`helper mount rejects nonmatching or noncanonical subpath ${subpath}`, () => {
+    const candidate = workspace();
+    candidate.HostConfig.Mounts[3].VolumeOptions.Subpath = subpath;
+    assert.throws(() => assertWorkspaceMounts(candidate, "project"));
+    assert.equal(ownsWorkspaceContainer(candidate, new Set(), "project"), false);
+  });
+}
+
+const rejectedWorkspaceMounts = [
+  [
+    "writable helper",
+    (candidate) => {
+      candidate.HostConfig.Mounts[3].ReadOnly = false;
+    },
+  ],
+  [
+    "unspecified helper access",
+    (candidate) => {
+      delete candidate.HostConfig.Mounts[3].ReadOnly;
+    },
+  ],
+  [
+    "actually writable helper",
+    (candidate) => {
+      candidate.Mounts[3].RW = true;
+    },
+  ],
+  [
+    "unknown actual helper access",
+    (candidate) => {
+      delete candidate.Mounts[3].RW;
+    },
+  ],
+  [
+    "wrong helper target",
+    (candidate) => {
+      candidate.HostConfig.Mounts[3].Target = "/run/other";
+      candidate.Mounts[3].Destination = "/run/other";
+    },
+  ],
+  [
+    "helper on another volume",
+    (candidate) => {
+      candidate.HostConfig.Mounts[3].Source = "other-store";
+      candidate.Mounts[3].Name = "other-store";
+    },
+  ],
+  [
+    "project directory as helper",
+    (candidate) => {
+      candidate.HostConfig.Mounts[3].VolumeOptions.Subpath = "project/worktrees";
+    },
+  ],
+  [
+    "missing harness home",
+    (candidate) => {
+      candidate.HostConfig.Mounts.splice(2, 1);
+      candidate.Mounts.splice(2, 1);
+    },
+  ],
+  [
+    "other session's harness home",
+    (candidate) => {
+      candidate.HostConfig.Mounts[2].VolumeOptions.Subpath = `project/sessions/${otherSessionId}/harness-home`;
+    },
+  ],
+  [
+    "other project's harness home",
+    (candidate) => {
+      candidate.HostConfig.Mounts[2].VolumeOptions.Subpath = `other/sessions/${sessionId}/harness-home`;
+    },
+  ],
+  [
+    "wrong harness home target",
+    (candidate) => {
+      candidate.HostConfig.Mounts[2].Target = "/workspace/other-home";
+      candidate.Mounts[2].Destination = "/workspace/other-home";
+    },
+  ],
+  [
+    "non-UUID correlated session",
+    (candidate) => {
+      candidate.HostConfig.Mounts[2].VolumeOptions.Subpath =
+        "project/sessions/not-a-uuid/harness-home";
+      candidate.HostConfig.Mounts[3].VolumeOptions.Subpath = "_run/sessions/not-a-uuid";
+    },
+  ],
+  [
+    "bind helper spec",
+    (candidate) => {
+      candidate.HostConfig.Mounts[3].Type = "bind";
+    },
+  ],
+  [
+    "bind harness home spec",
+    (candidate) => {
+      candidate.HostConfig.Mounts[2].Type = "bind";
+    },
+  ],
+  [
+    "actual bind helper",
+    (candidate) => {
+      candidate.Mounts[3].Type = "bind";
+    },
+  ],
+  [
+    "missing actual helper",
+    (candidate) => {
+      candidate.Mounts.splice(3, 1);
+    },
+  ],
+  [
+    "wrong actual helper volume",
+    (candidate) => {
+      candidate.Mounts[3].Name = "other-store";
+    },
+  ],
+  [
+    "missing repository",
+    (candidate) => {
+      candidate.HostConfig.Mounts.splice(0, 1);
+      candidate.Mounts.splice(0, 1);
+    },
+  ],
+  [
+    "missing worktrees",
+    (candidate) => {
+      candidate.HostConfig.Mounts.splice(1, 1);
+      candidate.Mounts.splice(1, 1);
+    },
+  ],
+  [
+    "additional root store",
+    (candidate) => {
+      candidate.HostConfig.Mounts.push({
+        Type: "volume",
+        Source: "mend-store",
+        Target: "/extra-store",
+      });
+      candidate.Mounts.push({
+        Type: "volume",
+        Name: "mend-store",
+        Destination: "/extra-store",
+        RW: true,
+      });
+    },
+  ],
+  [
+    "unspecified actual root store",
+    (candidate) => {
+      candidate.Mounts.push({
+        Type: "volume",
+        Name: "mend-store",
+        Destination: "/extra-store",
+        RW: true,
+      });
+    },
+  ],
+  [
+    "root control",
+    (candidate) => {
+      delete candidate.HostConfig.Mounts[4].VolumeOptions;
+    },
+  ],
+  [
+    "empty control subpath",
+    (candidate) => {
+      candidate.HostConfig.Mounts[4].VolumeOptions.Subpath = "";
+    },
+  ],
+  [
+    "control traversal",
+    (candidate) => {
+      candidate.HostConfig.Mounts[4].VolumeOptions.Subpath = `sealant-${workspaceId}/..`;
+    },
+  ],
+  [
+    "arbitrary control child",
+    (candidate) => {
+      candidate.HostConfig.Mounts[4].VolumeOptions.Subpath = "sealant-not-a-uuid";
+    },
+  ],
+  [
+    "wrong control target",
+    (candidate) => {
+      candidate.HostConfig.Mounts[4].Target = "/run/other";
+      candidate.Mounts[4].Destination = "/run/other";
+    },
+  ],
+  [
+    "missing actual control",
+    (candidate) => {
+      candidate.Mounts.splice(4, 1);
+    },
+  ],
+  [
+    "unspecified actual root control",
+    (candidate) => {
+      candidate.Mounts.push({
+        Type: "volume",
+        Name: "mend-control",
+        Destination: "/extra-control",
+        RW: true,
+      });
+    },
+  ],
+  [
+    "additional actual host bind",
+    (candidate) => {
+      candidate.Mounts.push({
+        Type: "bind",
+        Source: "/tmp/foreign",
+        Destination: "/extra",
+        RW: true,
+      });
+    },
+  ],
+  [
+    "additional bind spec",
+    (candidate) => {
+      candidate.HostConfig.Mounts.push({ Type: "bind", Source: "/tmp/foreign", Target: "/extra" });
+    },
+  ],
+  [
+    "legacy host bind",
+    (candidate) => {
+      candidate.HostConfig.Binds = ["/tmp/foreign:/extra:ro"];
+    },
+  ],
+];
+
+for (const [name, invalidate] of rejectedWorkspaceMounts) {
+  test(`acceptance and ownership both reject ${name}`, () => {
+    const candidate = workspace();
+    invalidate(candidate);
+    assert.throws(() => assertWorkspaceMounts(candidate, "project"));
+    assert.equal(ownsWorkspaceContainer(candidate, new Set(), "project"), false);
+  });
+}
+
+test("helper correlation follows the mounted session UUID rather than the workspace UUID", () => {
+  const candidate = workspace();
+  candidate.HostConfig.Mounts[2].VolumeOptions.Subpath = `project/sessions/${otherSessionId}/harness-home`;
+  candidate.HostConfig.Mounts[3].VolumeOptions.Subpath = `_run/sessions/${otherSessionId}`;
+  assert.doesNotThrow(() => assertWorkspaceMounts(candidate, "project"));
+  assert.equal(ownsWorkspaceContainer(candidate, new Set(), "project"), true);
+});
+
+test("UUID matches cannot accept a trailing newline", () => {
+  for (const target of ["helper", "control"]) {
+    const candidate = workspace();
+    if (target === "helper") {
+      candidate.HostConfig.Mounts[2].VolumeOptions.Subpath = `project/sessions/${sessionId}\n/harness-home`;
+      candidate.HostConfig.Mounts[3].VolumeOptions.Subpath = `_run/sessions/${sessionId}\n`;
+    } else {
+      candidate.HostConfig.Mounts[4].VolumeOptions.Subpath = `sealant-${workspaceId}\n`;
+    }
+    assert.throws(() => assertWorkspaceMounts(candidate, "project"));
+    assert.equal(ownsWorkspaceContainer(candidate, new Set(), "project"), false);
+  }
+});
+
+test("project-only workspaces remain eligible without a helper mount", () => {
+  const candidate = workspace();
+  candidate.HostConfig.Mounts.splice(3, 1);
+  candidate.Mounts.splice(3, 1);
+  assert.doesNotThrow(() => assertWorkspaceMounts(candidate, "project"));
+  assert.equal(ownsWorkspaceContainer(candidate, new Set(), "project"), true);
+});
 
 test("mount evidence requires actual volumes AND nonempty project subpaths", () => {
   assert.doesNotThrow(() => assertWorkspaceMounts(workspace(), "project"));
