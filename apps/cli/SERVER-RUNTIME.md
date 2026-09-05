@@ -93,9 +93,14 @@ Use these existing owners rather than duplicating setup internals:
 - `server-runtime.ts`: `serverComposeArgs({ directory, dockerContext }, command)` supplies the
   explicit context, project `mend`, project directory, env file, and Compose file. Always pass the
   immutable directory from the selected generation, not the moving `active` symlink.
-  `runServerProcess` is the controlled child-process implementation. Its optional `{ timeoutMs }`
-  kills the child on expiry and waits for `close` before returning a failure, so registry cleanup
-  cannot race an outstanding import or pull.
+  `runServerProcess` is the controlled child-process implementation. Every command defaults to a
+  30-second deadline. `{ timeoutMs }` selects a finite operation-specific budget. Expiry sends
+  SIGKILL to the child's owned POSIX process group and waits for `close` to reap the direct child
+  and drain inherited pipes before returning. Descendants cannot keep running after the caller
+  releases its lock. The host init reaps orphaned descendants. Captured stdout is bounded to 4 MiB
+  and stderr to 64 KiB; overflow terminates the group and returns failure. Setup allows ten minutes
+  for online image pulls plus three minutes for startup, or just three minutes offline. Compose also
+  receives `--wait-timeout 120`.
 - `server-docker-volumes.ts`: setup calls
   `claimServerDockerVolumes(runtime, { dockerContext, identityBytes })` with
   `Buffer.from(generation.files.identity)` after committing the complete generation, before any

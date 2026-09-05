@@ -673,6 +673,8 @@ describe("mend server setup", () => {
       "up",
       "-d",
       "--wait",
+      "--wait-timeout",
+      "120",
       "--pull",
       "never",
       "--no-build",

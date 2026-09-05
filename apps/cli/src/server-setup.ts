@@ -6,7 +6,7 @@ import * as path from "node:path";
 
 import { claimServerDockerVolumes } from "./server-docker-volumes.ts";
 import { probeServerRegistry } from "./server-registry-probe.ts";
-import { runServerProcess, serverComposeArgs } from "./server-runtime.ts";
+import { runServerProcess, serverComposeArgs, serverProcessDeadlines } from "./server-runtime.ts";
 import {
   withServerStore,
   ServerStoreError,
@@ -943,7 +943,9 @@ const inspectImage = async (
   const args = ["--context", context, "image", "inspect", image, "--format", format];
   const inspected = await runtime.run("docker", args);
   if (inspected.status === 0 || policy === "local") return inspected;
-  const pulled = await runtime.run("docker", ["--context", context, "pull", image]);
+  const pulled = await runtime.run("docker", ["--context", context, "pull", image], {
+    timeoutMs: serverProcessDeadlines.pull,
+  });
   if (pulled.status !== 0) throw commandFailure(`Could not pull ${image}`, pulled);
   return runtime.run("docker", args);
 };
@@ -1013,10 +1015,13 @@ const startCompose = async (
       "up",
       "-d",
       "--wait",
+      "--wait-timeout",
+      String(serverProcessDeadlines.composeWaitSeconds),
       "--pull",
       "never",
       "--no-build",
     ]),
+    { timeoutMs: serverProcessDeadlines.startup },
   );
   if (compose.status !== 0) throw commandFailure("Mend containers did not start", compose);
 };

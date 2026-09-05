@@ -8,8 +8,9 @@ import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { DockerProtocol } from "../test-fixtures/docker-protocol.ts";
-import { runServerProcess, serverComposeArgs } from "./server-runtime.ts";
+import { runServerProcess, serverComposeArgs, serverProcessDeadlines } from "./server-runtime.ts";
 import { nodeServerSetupRuntime, serverCommand, type ServerSetupRuntime } from "./server-setup.ts";
+import { withServerStore } from "./server-store.ts";
 
 const roots: Array<string> = [];
 const temporary = (): string => {
@@ -91,7 +92,81 @@ it("a completed command is not subsequently timed out", async () => {
   ).toEqual({ status: 0, stdout: "done\n", stderr: "" });
 });
 
-it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+it(
+  "applies a finite production deadline even when options are absent",
+  async () => {
+    const result = await nodeServerSetupRuntime().run(process.execPath, [
+      "-e",
+      "console.log(process.pid); setInterval(() => {}, 1000)",
+    ]);
+    expect(result.error).toBe(`Process timed out after ${serverProcessDeadlines.ordinary}ms`);
+    expect(() => process.kill(Number(result.stdout.trim()), 0)).toThrow();
+  },
+  serverProcessDeadlines.ordinary + 5000,
+);
+
+it.each(["stalled", "exit"])(
+  "terminates the owned POSIX group before releasing the lock (%s leader)",
+  async (mode) => {
+    if (process.platform === "win32") return;
+    const root = temporary();
+    const pidsFile = path.join(root, "pids.json");
+    const running = withServerStore(root, async () => {
+      const output = await runServerProcess(
+        process.execPath,
+        [new URL("../test-fixtures/stalled-process.mjs", import.meta.url).pathname, pidsFile, mode],
+        process.env,
+        { timeoutMs: 1000 },
+      );
+      const pids: unknown = JSON.parse(fs.readFileSync(pidsFile, "utf8"));
+      if (
+        typeof pids !== "object" ||
+        pids === null ||
+        !("parent" in pids) ||
+        !("child" in pids) ||
+        typeof pids.parent !== "number" ||
+        typeof pids.child !== "number"
+      )
+        throw new Error("missing fixture PIDs");
+      const parentPid = pids.parent;
+      expect(() => process.kill(parentPid, 0)).toThrow(); // direct child has been reaped
+      // Orphaned grandchildren are reaped by the host init, not by Node. A zombie cannot run.
+      const state = spawnSync("ps", ["-o", "stat=", "-p", String(pids.child)], {
+        encoding: "utf8",
+      });
+      expect(state.stdout.trim() === "" || state.stdout.trim().startsWith("Z")).toBe(true);
+      expect(fs.existsSync(path.join(root, "server.lock"))).toBe(true);
+      return output;
+    });
+    await expect.poll(() => fs.existsSync(pidsFile)).toBe(true);
+    expect(await withServerStore(root, async () => undefined)).toMatchObject({
+      _tag: "error",
+      error: { message: expect.stringContaining("busy") },
+    });
+    expect(await running).toMatchObject({
+      _tag: "ok",
+      value: { status: null, error: "Process timed out after 1000ms" },
+    });
+    expect(await withServerStore(root, async () => "released")).toEqual({
+      _tag: "ok",
+      value: "released",
+    });
+  },
+);
+
+it.each(["stdout", "stderr"])("bounds captured %s from a real noisy process", async (stream) => {
+  const result = await runServerProcess(
+    process.execPath,
+    ["-e", `setInterval(() => process.${stream}.write('x'.repeat(65536)), 1)`],
+    process.env,
+  );
+  expect(result.status).toBe(null);
+  expect(result.error).toContain("capture limit");
+  expect(Buffer.byteLength(result.stdout)).toBeLessThanOrEqual(4 * 1024 * 1024);
+  expect(Buffer.byteLength(result.stderr)).toBeLessThanOrEqual(64 * 1024);
+});
+
+it.each([0, -1, 0.5, 2_147_483_648, Number.NaN, Number.POSITIVE_INFINITY])(
   "refuses invalid timeout %s before spawning",
   async (timeoutMs) => {
     expect(
