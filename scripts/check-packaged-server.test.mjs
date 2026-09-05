@@ -12,9 +12,12 @@ import { gitFixtureServer } from "./packaged-git-fixture.mjs";
 import {
   assertFreshDocker,
   assertHealth,
+  assertImagePin,
+  assertUpgradeRetention,
   assertWorkspaceMounts,
   cleanupOwnedVolumes,
   createVolumeLedger,
+  createDiagnosticProbe,
   dockerFingerprint,
   installationOwnerLabel,
   isolatedClientEnvironment,
@@ -22,13 +25,17 @@ import {
   ownsComposeContainer,
   ownsWorkspaceContainer,
   readPrivateIdentity,
+  readUpgradeInputs,
+  runPackagedUpgrade,
+  privateTreeFingerprint,
+  verifyUpgradeBackup,
 } from "./packaged-server-assertions.mjs";
 
 const exec = promisify(execFile);
 const empty = () => ({ containers: [], networks: [], volumes: [], images: [] });
 const projectLabel = "com.docker.compose.project";
 
-test("entrypoint refuses occupied Docker inventories before any mutation or CLI invocation", async () => {
+test("entrypoint refuses occupied Docker inventories with upgrade enabled or disabled before any mutation", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "mend-acceptance-gate-test-"));
   const script = fileURLToPath(new URL("./check-packaged-server.mjs", import.meta.url));
   try {
@@ -49,11 +56,14 @@ else if (command[1] === 'inspect') console.log(JSON.stringify(state[command[0] +
 else process.exit(90);
 `;
     await writeFile(join(scratch, "docker"), dockerScript, { mode: 0o700 });
-    for (const occupied of [
+    const inventories = [
       { containers: [{ Id: "container-id", Config: { Labels: { [projectLabel]: "mend" } } }] },
       { networks: [{ Id: "network-id", Name: "mend_default" }] },
       { volumes: [{ Name: "mend-store" }] },
-    ]) {
+    ];
+    for (const { occupied, upgrading } of inventories.flatMap((inventory) =>
+      [false, true].map((enabled) => ({ occupied: inventory, upgrading: enabled })),
+    )) {
       await writeFile(join(scratch, "inventory"), JSON.stringify({ ...empty(), ...occupied }));
       await writeFile(join(scratch, "calls"), "");
       await assert.rejects(
@@ -65,6 +75,10 @@ else process.exit(90);
             TMPDIR: scratch,
             DOCKER_HOST: "",
             DOCKER_CONTEXT: "",
+            MEND_TEST_UPGRADE_IMAGE: upgrading ? "ghcr.io/sealant-sh/mend:2.0.0" : undefined,
+            MEND_TEST_UPGRADE_VERSION: upgrading ? "2.0.0" : undefined,
+            MEND_TEST_UPGRADE_ASSETS: undefined,
+            MEND_TEST_OFFLINE: undefined,
             MEND_TEST_VERSION: "1.2.3",
             MEND_TEST_IMAGE: "ghcr.io/sealant-sh/mend:1.2.3",
           },
@@ -626,6 +640,244 @@ test("Docker fingerprint is ordering-independent, secret-free, and detects resta
     original,
     dockerFingerprint({ ...first, volumes: [{ Name: "store", CreatedAt: "tomorrow" }] }),
   );
+});
+
+const inputs = (version = "0.23.0") => ({
+  MEND_TEST_UPGRADE_IMAGE: `ghcr.io/sealant-sh/mend:${version}`,
+  MEND_TEST_UPGRADE_VERSION: version,
+});
+
+test("upgrade inputs are optional, paired, canonical and strictly newer, with current assets by default", () => {
+  const baseline = "0.0.0-acceptance.123.2";
+  assert.equal(readUpgradeInputs({}, "/assets", baseline), undefined);
+  assert.deepEqual(readUpgradeInputs(inputs(), "/assets", baseline), {
+    image: "ghcr.io/sealant-sh/mend:0.23.0",
+    version: "0.23.0",
+    assets: "/assets",
+  });
+  assert.equal(
+    readUpgradeInputs({ ...inputs(), MEND_TEST_UPGRADE_ASSETS: "/target" }, "/assets", baseline)
+      .assets,
+    "/target",
+  );
+  for (const invalid of [
+    { MEND_TEST_UPGRADE_IMAGE: inputs().MEND_TEST_UPGRADE_IMAGE },
+    { MEND_TEST_UPGRADE_VERSION: "0.23.0" },
+    { MEND_TEST_UPGRADE_ASSETS: "/orphan" },
+    { ...inputs(), MEND_TEST_UPGRADE_ASSETS: "" },
+    { ...inputs(), MEND_TEST_UPGRADE_IMAGE: "other/mend:0.23.0" },
+    { ...inputs(), MEND_TEST_UPGRADE_IMAGE: "ghcr.io/sealant-sh/mend:latest" },
+    ...[
+      "",
+      "latest",
+      "01.2.3",
+      "0.23.0-01",
+      "0.23.0-",
+      "0.23.0+build",
+      "0.0.0-acceptance.123.2",
+      "0.0.0-acceptance.123.1",
+    ].map(inputs),
+  ])
+    assert.throws(() => readUpgradeInputs(invalid, "/assets", baseline));
+  for (const [older, newer] of [
+    ["1.9.0", "1.10.0"],
+    ["1.0.0-beta.2", "1.0.0-beta.11"],
+    ["1.0.0-alpha", "1.0.0-alpha.1"],
+    ["1.0.0-rc.1", "1.0.0"],
+    ["1.0.0-1", "1.0.0-alpha"],
+    ["1.0.0-alpha", "1.0.0-beta"],
+  ]) {
+    assert.doesNotThrow(() => readUpgradeInputs(inputs(newer), "/assets", older));
+    assert.throws(() => readUpgradeInputs(inputs(older), "/assets", newer));
+  }
+});
+
+test("image pin evidence rejects retags and runtime-only health version overrides", () => {
+  const version = "0.23.0";
+  const tag = `ghcr.io/sealant-sh/mend:${version}`;
+  const image = {
+    Id: "sha256:target",
+    Config: {
+      Env: [`MEND_VERSION=${version}`],
+      Labels: { "org.opencontainers.image.version": version },
+    },
+  };
+  const container = { Image: image.Id, Config: { Image: tag, Env: image.Config.Env } };
+  assert.doesNotThrow(() => assertImagePin(container, image, tag, version));
+  for (const candidate of [
+    { ...image, Id: "sha256:other" },
+    { ...image, Config: { ...image.Config, Labels: {} } },
+    { ...image, Config: { ...image.Config, Env: ["MEND_VERSION=old"] } },
+  ])
+    assert.throws(() => assertImagePin(container, candidate, tag, version));
+  assert.throws(() =>
+    assertImagePin(
+      { ...container, Config: { ...container.Config, Image: "alias" } },
+      image,
+      tag,
+      version,
+    ),
+  );
+});
+
+test("upgrade retention changes only the generation and pin, never credentials or deployment", () => {
+  const previous = {
+    target: "old",
+    identity: "digest",
+    config: { serverVersion: "0.1.0", appPort: 1234 },
+    serverEnv: "SECRET=do-not-print\nMEND_VERSION=0.1.0\nOTHER=0.1.0\n",
+  };
+  const target = {
+    ...previous,
+    target: "new",
+    config: { ...previous.config, serverVersion: "0.2.0" },
+    serverEnv: previous.serverEnv.replace("MEND_VERSION=0.1.0", "MEND_VERSION=0.2.0"),
+  };
+  assert.doesNotThrow(() => assertUpgradeRetention(previous, target));
+  for (const candidate of [
+    { ...target, target: previous.target },
+    { ...target, identity: "changed" },
+    { ...target, config: { ...target.config, appPort: 4321 } },
+    { ...target, serverEnv: target.serverEnv.replace("do-not-print", "changed-secret") },
+    { ...target, serverEnv: target.serverEnv.replace("OTHER=0.1.0", "OTHER=0.2.0") },
+  ])
+    assert.throws(
+      () => assertUpgradeRetention(previous, candidate),
+      (error) => {
+        assert.doesNotMatch(String(error), /do-not-print|changed-secret/);
+        return true;
+      },
+    );
+});
+
+test("UpgradeFailure at the public CLI invocation boundary propagates with ownership collection and no retry/rollback", async () => {
+  const failure = new Error("UpgradeFailure");
+  const calls = [];
+  await assert.rejects(
+    runPackagedUpgrade(
+      { version: "0.2.0", assets: "/target assets" },
+      true,
+      async (args, options) => {
+        calls.push([args, options]);
+        throw failure;
+      },
+      async () => {
+        calls.push("collect-owned");
+      },
+    ),
+    (error) => error === failure,
+  );
+  assert.deepEqual(calls, [
+    [
+      ["server", "upgrade", "--version", "0.2.0", "--assets-dir", "/target assets", "--offline"],
+      { timeout: 600_000 },
+    ],
+    "collect-owned",
+  ]);
+  calls.length = 0;
+  await runPackagedUpgrade(
+    { version: "0.2.0", assets: "/target" },
+    false,
+    async (args) => {
+      calls.push(args);
+    },
+    async () => {
+      calls.push("collect-owned");
+    },
+  );
+  assert.ok(!calls[0].includes("--offline"));
+  assert.equal(calls[1], "collect-owned");
+  // This tests acceptance's command boundary only. It does not simulate a successful
+  // product upgrade or establish product target-startup recovery behavior.
+});
+
+test("refusal diagnostics match across chunks without returning raw stderr", () => {
+  const probe = createDiagnosticProbe("Refusing downgrade");
+  probe.accept(Buffer.from("secret-before\nRefusing down"));
+  assert.equal(probe.matched(), false);
+  probe.accept(Buffer.from("grade\nsecret-after"));
+  assert.equal(probe.matched(), true);
+  assert.doesNotMatch(JSON.stringify(probe), /secret/);
+  const unrelated = createDiagnosticProbe("Refusing downgrade");
+  unrelated.accept(Buffer.from("permission denied"));
+  assert.equal(unrelated.matched(), false);
+  const disabled = createDiagnosticProbe();
+  disabled.accept(Buffer.from("Refusing downgrade"));
+  assert.equal(disabled.matched(), false);
+});
+
+test("real backup reader requires private complete cluster SQL, roles and exact recovery links", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mend-backup-test-"));
+  const backups = join(root, "backups");
+  const directory = join(backups, "upgrade-11111111-1111-4111-8111-111111111111");
+  const sqlFile = join(directory, "database.sql");
+  const recoveryFile = join(directory, "recovery.json");
+  const sql = [
+    "CREATE DATABASE mend WITH TEMPLATE = template0;",
+    "CREATE DATABASE sealant_control_plane WITH TEMPLATE = template0;",
+    "CREATE ROLE mend;",
+    "CREATE ROLE sealant;",
+    "CREATE ROLE postgres;",
+    "-- PostgreSQL database cluster dump complete",
+    "",
+  ].join("\n");
+  const recovery = JSON.stringify({
+    previousGeneration: "/old",
+    targetGeneration: "/target",
+    database: "database.sql",
+  });
+  const verify = () => verifyUpgradeBackup(root, "/old", "/target");
+  try {
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    await writeFile(sqlFile, sql, { mode: 0o600 });
+    await writeFile(recoveryFile, recovery, { mode: 0o600 });
+    await verify();
+    const before = await privateTreeFingerprint(root);
+    assert.match(before, /^[a-f0-9]{64}$/);
+    for (const omitted of [
+      "CREATE DATABASE mend",
+      "CREATE DATABASE sealant_control_plane",
+      "CREATE ROLE mend",
+      "CREATE ROLE sealant",
+      "CREATE ROLE postgres",
+      "dump complete",
+    ]) {
+      await writeFile(
+        sqlFile,
+        sql
+          .split("\n")
+          .filter((line) => !line.includes(omitted))
+          .join("\n"),
+      );
+      await assert.rejects(verify);
+      assert.notEqual(await privateTreeFingerprint(root), before);
+    }
+    await writeFile(sqlFile, sql);
+    await writeFile(recoveryFile, recovery.replace("/old", "/wrong"));
+    await assert.rejects(verify);
+    await writeFile(recoveryFile, recovery);
+    await writeFile(join(directory, "database.sql.partial"), "secret-partial", { mode: 0o600 });
+    await assert.rejects(verify, /no partial/);
+    await rm(join(directory, "database.sql.partial"));
+    for (const path of [backups, directory, sqlFile, recoveryFile]) {
+      await chmod(path, path === backups || path === directory ? 0o755 : 0o644);
+      await assert.rejects(verify, /private/);
+      await chmod(path, path === backups || path === directory ? 0o700 : 0o600);
+    }
+    await verify();
+    assert.equal(await privateTreeFingerprint(root), before);
+    await rm(sqlFile);
+    const foreign = join(root, "foreign-sql");
+    await writeFile(foreign, sql, { mode: 0o600 });
+    await symlink(foreign, sqlFile);
+    await assert.rejects(verify, /regular files/);
+    const linked = await privateTreeFingerprint(root);
+    await rm(sqlFile);
+    await symlink("/nonexistent-outside-test", sqlFile);
+    assert.notEqual(await privateTreeFingerprint(root), linked);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("fixture serves a real network Git clone without host sharing or traversal", async () => {

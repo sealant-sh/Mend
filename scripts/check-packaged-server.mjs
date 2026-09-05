@@ -12,8 +12,11 @@
  * like release downloads. Required lifecycle commands: server restart, stop, start.
  * Missing commands/flags FAIL acceptance; there is no direct-Compose fallback.
  *
- * No upgrade claim: a second immutable version/image and a documented public upgrade
- * command with an offline asset source are needed before a real upgrade can be tested.
+ * Optional paired MEND_TEST_UPGRADE_IMAGE / MEND_TEST_UPGRADE_VERSION enable the real
+ * public two-image upgrade. MEND_TEST_UPGRADE_ASSETS defaults to deploy/docker.
+ * CI must build both canonical images from Dockerfile with genuine version stamps, not
+ * retag one image or override health ENV. Same-source fixtures prove upgrade mechanics
+ * and retention only, not historical schema migration or backup restore compatibility.
  * No macOS claim. SIGKILL cannot clean up; retained resources make the next run refuse.
  * Raw command output, HTTP bodies, credentials and Docker logs are never printed.
  */
@@ -41,15 +44,22 @@ import { fileURLToPath } from "node:url";
 import {
   assertFreshDocker,
   assertHealth,
+  assertImagePin,
+  assertUpgradeRetention,
   assertWorkspaceMounts,
   cleanupOwnedVolumes,
   createVolumeLedger,
+  createDiagnosticProbe,
   dockerFingerprint,
   isolatedClientEnvironment,
   isInside,
   ownsComposeContainer,
   ownsWorkspaceContainer,
   readPrivateIdentity,
+  readUpgradeInputs,
+  runPackagedUpgrade,
+  privateTreeFingerprint,
+  verifyUpgradeBackup,
 } from "./packaged-server-assertions.mjs";
 
 const repo = await realpath(fileURLToPath(new URL("../", import.meta.url)));
@@ -77,6 +87,7 @@ let cleanupFailed = false;
 const containers = new Set();
 const networks = new Map();
 let volumes;
+let upgrade;
 
 // Only read-only Docker preflight uses the original home. Every subsequent client gets a
 // private HOME/XDG tree, no agent socket, no Git overrides, and no Mend/harness credentials.
@@ -90,7 +101,8 @@ function check(condition, message) {
 }
 
 function start(command, args, options = {}) {
-  const { timeout = 120_000, cwd = scratch ?? repo, environment = env } = options;
+  const { timeout = 120_000, cwd = scratch ?? repo, environment = env, diagnostic } = options;
+  const probe = createDiagnosticProbe(diagnostic);
   const child = spawn(command, args, {
     cwd,
     env: environment,
@@ -109,15 +121,22 @@ function start(command, args, options = {}) {
   };
   const timer = setTimeout(terminate, timeout);
   child.stdout.on("data", (chunk) => {
+    probe.accept(chunk);
     bytes += chunk.length;
     if (bytes > 16 * 1024 * 1024) terminate();
     else output += chunk.toString();
   });
-  // Drain, but do not retain stderr: setup failures may include interpolated secrets.
-  child.stderr.resume();
+  // Match only a script-selected diagnostic; retain no stderr in the result or logs.
+  child.stderr.on("data", (chunk) => probe.accept(chunk));
   const result = new Promise((resolve) => {
     child.once("error", () => resolve({ ok: false, output: "" }));
-    child.once("close", (code) => resolve({ ok: code === 0 && bytes <= 16 * 1024 * 1024, output }));
+    child.once("close", (code) =>
+      resolve({
+        ok: code === 0 && bytes <= 16 * 1024 * 1024,
+        output,
+        diagnosticMatched: probe.matched(),
+      }),
+    );
   }).finally(() => {
     clearTimeout(timer);
     activeChildren.delete(child);
@@ -217,16 +236,17 @@ async function json(origin, route, options) {
   return response.json();
 }
 
-async function health(origin) {
-  await until("exact-version health", async () => {
+async function health(origin, expectedVersion = version) {
+  return until("exact-version health", async () => {
     try {
       const response = await fetch(`${origin}/api/health`, {
         signal: AbortSignal.timeout(3000),
         redirect: "error",
       });
       if (!response.ok) return false;
-      assertHealth(await response.json(), version);
-      return true;
+      const body = await response.json();
+      assertHealth(body, expectedVersion);
+      return body;
     } catch {
       return false;
     }
@@ -297,9 +317,9 @@ async function idle() {
   return compose;
 }
 
-async function installation() {
-  const target = await readlink(join(configRoot, "active"));
-  const directory = await realpath(join(configRoot, "active"));
+async function installation(expectedVersion = version, expectedAssets = assets, selected) {
+  const target = selected ?? (await readlink(join(configRoot, "active")));
+  const directory = await realpath(join(configRoot, target));
   check(
     target.startsWith("generations/gen-") && isInside(join(configRoot, "generations"), directory),
     "Setup must select an immutable generation",
@@ -328,18 +348,26 @@ async function installation() {
   );
   const config = JSON.parse(await readFile(join(directory, "server.json"), "utf8"));
   check(
-    config.serverVersion === version && config.assetContract === "mend-docker-v1",
+    config.serverVersion === expectedVersion && config.assetContract === "mend-docker-v1",
     "Saved config must pin the requested version and asset contract",
   );
   check(
-    values["compose.yaml"] === hash(await readFile(join(assets, "compose.v1.yaml"))),
+    values["compose.yaml"] === hash(await readFile(join(expectedAssets, "compose.v1.yaml"))),
     "Active Compose must be the supplied release asset",
   );
   check(
-    values["postgres-init.sh"] === hash(await readFile(join(assets, "postgres-init.sh"))),
+    values["postgres-init.sh"] === hash(await readFile(join(expectedAssets, "postgres-init.sh"))),
     "Active Postgres init must be the supplied release asset",
   );
-  return { target, fingerprint: hash(JSON.stringify(values)), identity: hash(identity), config };
+  const serverEnv = await readFile(join(directory, "server.env"), "utf8");
+  return {
+    target,
+    directory,
+    fingerprint: hash(JSON.stringify(values)),
+    identity: hash(identity),
+    config,
+    serverEnv,
+  };
 }
 
 async function sshIdentity(port) {
@@ -478,6 +506,7 @@ async function main() {
     !process.env.DOCKER_HOST && !process.env.DOCKER_CONTEXT,
     "Unset DOCKER_HOST/DOCKER_CONTEXT; select the intended local daemon with docker context use first",
   );
+  upgrade = readUpgradeInputs(process.env, assets, version);
   context = (await docker(["context", "show"])).trim();
   check(context.length > 0, "Docker context is missing");
   const endpoints = JSON.parse(await docker(["context", "inspect", context]));
@@ -618,6 +647,11 @@ async function main() {
       (await cli(["help", "server", command])).includes(`server ${command}`),
       `Integration required: mend server ${command}`,
     );
+  if (upgrade) {
+    const help = await cli(["help", "server", "upgrade"]);
+    for (const flag of ["--version", "--assets-dir", "--offline"])
+      check(help.includes(flag), `Integration required: server upgrade help must expose ${flag}`);
+  }
   const [port, sshPort, registryPort] = await freePorts();
   const origin = `http://127.0.0.1:${port}`;
   const setupArgs = [
@@ -647,19 +681,14 @@ async function main() {
   } finally {
     await collectOwned();
   }
-  await health(origin);
+  const baselineHealth = await health(origin);
   const compose = await idle();
   const mend = compose.find((item) => item.Config.Labels["com.docker.compose.service"] === "mend");
   const postgres = compose.find(
     (item) => item.Config.Labels["com.docker.compose.service"] === "postgres",
   );
-  check(mend.Config.Image === image, "Setup must run the requested official Mend tag");
   const imageInfo = JSON.parse(await docker(["image", "inspect", image]))[0];
-  check(
-    mend.Image === imageInfo.Id &&
-      imageInfo.Config.Labels?.["org.opencontainers.image.version"] === version,
-    "Image ID and OCI version must agree with the tested pin",
-  );
+  assertImagePin(mend, imageInfo, image, version);
   check(
     postgres.Config.Image === "postgres:17-alpine",
     "Postgres must be the contract's official image",
@@ -983,9 +1012,13 @@ async function main() {
     const head = (await gitRead(["rev-parse", detail.session.branch])).trim();
     const content = await gitRead(["show", `${head}:packaged-proof.txt`]);
     const ref = (await gitRead(["rev-parse", checkpoint.ref])).trim();
+    const checkpointContent = await gitRead(["show", `${ref}:packaged-proof.txt`]);
     const worktrees = await gitRead(["worktree", "list", "--porcelain"]);
     check(
-      head !== baseSha && content.trim() === marker && ref === checkpoint.sha,
+      head !== baseSha &&
+        content.trim() === marker &&
+        ref === checkpoint.sha &&
+        checkpointContent.trim() === marker,
       "Actual Git branch/file/checkpoint must match API evidence",
     );
     check(
@@ -993,7 +1026,7 @@ async function main() {
         worktrees.includes(`branch refs/heads/${detail.session.branch}`),
       "Durable Git worktree must remain registered",
     );
-    return hash(JSON.stringify({ head, content, ref, worktrees }));
+    return hash(JSON.stringify({ head, content, ref, checkpointContent, worktrees }));
   };
   const gitBefore = await gitState();
   console.log(
@@ -1016,14 +1049,20 @@ async function main() {
   });
   await idle();
 
-  async function retained() {
-    await health(origin);
-    const after = await installation();
+  async function retained(expected = saved, expectedAssets = assets) {
+    const observedHealth = await health(origin, expected.config.serverVersion);
+    const { version: _baselineVersion, ...baselineDeployment } = baselineHealth;
+    const { version: _observedVersion, ...observedDeployment } = observedHealth;
     check(
-      after.fingerprint === saved.fingerprint &&
+      JSON.stringify(observedDeployment) === JSON.stringify(baselineDeployment),
+      "Health deployment mode, store root and session channel must survive unchanged",
+    );
+    const after = await installation(expected.config.serverVersion, expectedAssets);
+    check(
+      after.fingerprint === expected.fingerprint &&
         after.identity === saved.identity &&
-        after.target === saved.target,
-      "Rerun/lifecycle must preserve the immutable generation, credentials and pin",
+        after.target === expected.target,
+      "Lifecycle must preserve the expected immutable generation, credentials and pin",
     );
     check(
       (await sshIdentity(sshPort)) === sshBefore,
@@ -1040,14 +1079,35 @@ async function main() {
     );
     const projectAfter = await api(`/projects/${project.id}?deadEnds=include`);
     check(
-      projectAfter.project?.adoptedSha === baseSha &&
+      projectAfter.project?.id === project.id &&
+        projectAfter.project.name === projectName &&
+        projectAfter.project.originUrl === sourceUrl &&
+        projectAfter.project.storePath === project.storePath &&
+        projectAfter.project.adoptedSha === baseSha &&
         projectAfter.worktrees?.some((item) => item.id === detail.session.worktreeId),
       "Project and worktree rows must survive",
     );
     const sessionAfter = await api(`/sessions/${session.id}`);
     check(
+      sessionAfter.session.id === detail.session.id &&
+        sessionAfter.session.status === "completed" &&
+        sessionAfter.session.sealantRunId === detail.session.sealantRunId &&
+        sessionAfter.session.worktreeId === detail.session.worktreeId &&
+        sessionAfter.session.baseSha === baseSha &&
+        sessionAfter.session.branch === detail.session.branch &&
+        sessionAfter.session.worktree === detail.session.worktree &&
+        sessionAfter.currentAgent?.id === detail.currentAgent.id &&
+        sessionAfter.currentAgent.exitCode === 0,
+      "Completed session, process and run identities must survive",
+    );
+    check(
       sessionAfter.checkpoints.some(
-        (item) => item.id === checkpoint.id && item.sha === checkpoint.sha,
+        (item) =>
+          item.id === checkpoint.id &&
+          item.sha === checkpoint.sha &&
+          item.ref === checkpoint.ref &&
+          item.seq === checkpoint.seq &&
+          item.sealantRunId === checkpoint.sealantRunId,
       ),
       "Checkpoint row must survive",
     );
@@ -1062,8 +1122,26 @@ async function main() {
     );
     await idle();
   }
+  stage = "CLI-only reads against the baseline server";
+  const beforeCliFiles = await privateTreeFingerprint(configRoot);
+  const beforeCliDocker = dockerFingerprint(await snapshot());
+  await cli(["--help"]);
+  await cli(["--version"]);
+  check(
+    (await cli(["version"])).includes(`server ${version} · ${origin}`),
+    "CLI-only version inspection must still report the baseline server",
+  );
+  check(
+    (await privateTreeFingerprint(configRoot)) === beforeCliFiles &&
+      dockerFingerprint(await snapshot()) === beforeCliDocker,
+    "CLI-only reads must not change the installation or Docker",
+  );
+  console.log(`PASS CLI ${manifest.version} reads left server ${version} unchanged`);
   stage = "idempotent setup rerun";
   await cli(setupArgs, { timeout: 600_000 });
+  await retained();
+  stage = "setup with installed CLI version independent of server pin";
+  await cli(["server", "setup", "--offline"], { timeout: 600_000 });
   await retained();
   stage = "public server restart";
   const beforeRestart = (await idle()).find(
@@ -1098,8 +1176,82 @@ async function main() {
   console.log(
     "PASS setup rerun, actual restart, stop/start retained account, identity, config pin, SSH key, project, worktree, Git, checkpoint, change and record",
   );
+  if (upgrade) {
+    stage = "public two-image server upgrade";
+    const beforeUpgrade = await privateTreeFingerprint(configRoot);
+    const backupNames = await readdir(join(configRoot, "backups")).catch((error) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    });
+    check(backupNames.length === 0, "Earlier operations must not create upgrade backups");
+    await runPackagedUpgrade(upgrade, offline, cli, collectOwned);
+    await health(origin, upgrade.version);
+    const target = await installation(upgrade.version, upgrade.assets);
+    assertUpgradeRetention(saved, target);
+    const old = await installation(version, assets, saved.target);
+    check(old.fingerprint === saved.fingerprint, "Previous generation must remain byte-identical");
+    const upgradedMend = (await idle()).find(
+      (item) => item.Config.Labels["com.docker.compose.service"] === "mend",
+    );
+    const targetImage = JSON.parse(await docker(["image", "inspect", upgrade.image]))[0];
+    assertImagePin(upgradedMend, targetImage, upgrade.image, upgrade.version);
+    check(targetImage.Id !== imageInfo.Id, "Upgrade requires two distinct version-stamped images");
+    await verifyUpgradeBackup(configRoot, saved.directory, target.directory);
+    check(
+      (await privateTreeFingerprint(configRoot)) !== beforeUpgrade,
+      "Upgrade must actually publish a new generation and backup",
+    );
+    await retained(target, upgrade.assets);
+    console.log(
+      "PASS public two-image upgrade: target health/OCI/pin, private complete cluster dump with both databases and roles, old generation and application/Git/record data retained; two healthy idle containers",
+    );
+
+    async function unchangedCommand(args, expectedOk) {
+      const files = await privateTreeFingerprint(configRoot);
+      const before = dockerFingerprint(await snapshot());
+      const result = await start(process.execPath, [bin, ...args], {
+        diagnostic: expectedOk ? undefined : "Refusing downgrade",
+      }).result;
+      check(result.ok === expectedOk, "Upgrade no-op/refusal must return the expected exit status");
+      check(
+        expectedOk || result.diagnosticMatched,
+        "Downgrade must fail explicitly, not from an unrelated error",
+      );
+      check(
+        (await privateTreeFingerprint(configRoot)) === files &&
+          dockerFingerprint(await snapshot()) === before,
+        "Upgrade no-op/refusal must not change installation files, backups or Docker state",
+      );
+      await retained(target, upgrade.assets);
+    }
+    stage = "explicit downgrade refusal";
+    await unchangedCommand(
+      ["server", "upgrade", "--version", version, "--assets-dir", assets, "--offline"],
+      false,
+    );
+    stage = "same-version upgrade no-op";
+    await unchangedCommand(
+      [
+        "server",
+        "upgrade",
+        "--version",
+        upgrade.version,
+        "--assets-dir",
+        upgrade.assets,
+        "--offline",
+      ],
+      true,
+    );
+    console.log(
+      "PASS explicit downgrade refused and same-version upgrade left files/backups/Docker unchanged",
+    );
+    console.log(
+      "EVIDENCE LIMIT: same-source version fixtures exercise upgrade mechanics and retention, not historical migration compatibility, database restore or target-startup failure recovery",
+    );
+  } else
+    console.log("NOT TESTED version upgrade; set paired MEND_TEST_UPGRADE_IMAGE/VERSION to enable");
   console.log(
-    "NOT TESTED version upgrade or macOS; downloaded/build image caches are retained, never pruned",
+    "NOT TESTED macOS or CLI updater; downloaded/build image caches are retained, never pruned",
   );
 }
 

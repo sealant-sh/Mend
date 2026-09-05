@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { lstat, readFile, realpath } from "node:fs/promises";
-import { join, relative, sep } from "node:path";
+import { lstat, readFile, readdir, readlink, realpath } from "node:fs/promises";
+import { join, relative, resolve, sep } from "node:path";
 
 const projectLabel = "com.docker.compose.project";
 const canonicalVolumes = new Set(
@@ -262,6 +262,210 @@ export function assertWorkspaceMounts(container, projectName) {
           mount.Destination.startsWith("/var/lib/mend")),
     ),
     "Workspace must not use host-store binds",
+  );
+}
+
+/** Exact release pins only. Build metadata and mutable tags are not image version fixtures. */
+function versionParts(value) {
+  assert.ok(
+    typeof value === "string" &&
+      /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/.test(
+        value,
+      ),
+    "Upgrade fixtures require exact semantic versions",
+  );
+  const [core, ...suffix] = value.split("-");
+  const pre = suffix.join("-").split(".").filter(Boolean);
+  assert.ok(
+    pre.every((part) => !/^\d+$/.test(part) || part === "0" || !part.startsWith("0")),
+    "Numeric prerelease identifiers must not have leading zeroes",
+  );
+  return { core: core.split(".").map(BigInt), pre };
+}
+
+function newerVersion(target, baseline) {
+  const a = versionParts(target);
+  const b = versionParts(baseline);
+  for (let i = 0; i < 3; i++) if (a.core[i] !== b.core[i]) return a.core[i] > b.core[i];
+  if (!a.pre.length || !b.pre.length) return !a.pre.length && b.pre.length > 0;
+  for (let i = 0; i < Math.max(a.pre.length, b.pre.length); i++) {
+    const x = a.pre[i];
+    const y = b.pre[i];
+    if (x === y) continue;
+    if (x === undefined || y === undefined) return y === undefined;
+    const xn = /^\d+$/.test(x);
+    const yn = /^\d+$/.test(y);
+    if (xn && yn) return BigInt(x) > BigInt(y);
+    return xn === yn ? x > y : !xn;
+  }
+  return false;
+}
+
+/** Validate before the first Docker call. A half-configured upgrade must never silently skip. */
+export function readUpgradeInputs(source, currentAssets, baseline) {
+  const image = source.MEND_TEST_UPGRADE_IMAGE;
+  const version = source.MEND_TEST_UPGRADE_VERSION;
+  const assets = source.MEND_TEST_UPGRADE_ASSETS;
+  if (image === undefined && version === undefined && assets === undefined) return undefined;
+  assert.ok(
+    image !== undefined && version !== undefined,
+    "Set paired MEND_TEST_UPGRADE_IMAGE and MEND_TEST_UPGRADE_VERSION",
+  );
+  versionParts(version);
+  assert.ok(
+    image === `ghcr.io/sealant-sh/mend:${version}`,
+    "Upgrade image must be the canonical Mend tag for the target version",
+  );
+  assert.ok(
+    newerVersion(version, baseline),
+    "Upgrade target must be newer than the initial MEND_TEST_VERSION",
+  );
+  assert.ok(
+    assets === undefined || assets.trim().length > 0,
+    "MEND_TEST_UPGRADE_ASSETS must be a directory path",
+  );
+  return { image, version, assets: resolve(assets ?? currentAssets) };
+}
+
+/** The image itself must be stamped, not only its tag or the container's health environment. */
+export function assertImagePin(container, inspectedImage, image, version) {
+  assert.ok(
+    container?.Config?.Image === image &&
+      container.Image === inspectedImage?.Id &&
+      inspectedImage.Config?.Labels?.["org.opencontainers.image.version"] === version &&
+      inspectedImage.Config?.Env?.filter((value) => value.startsWith("MEND_VERSION=")).join() ===
+        `MEND_VERSION=${version}` &&
+      container.Config.Env?.filter((value) => value.startsWith("MEND_VERSION=")).join() ===
+        `MEND_VERSION=${version}`,
+    "Canonical tag, image ID, OCI label and baked/runtime version must agree with the pin",
+  );
+}
+
+/** Compare secret-bearing values only as booleans, never assertion diffs. */
+export function assertUpgradeRetention(previous, target) {
+  assert.ok(previous.target !== target.target, "Upgrade must select a new generation");
+  assert.ok(previous.identity === target.identity, "Upgrade must retain installation identity");
+  assert.ok(
+    JSON.stringify({ ...previous.config, serverVersion: target.config.serverVersion }) ===
+      JSON.stringify(target.config),
+    "Upgrade must retain deployment configuration except for the explicit server pin",
+  );
+  const oldPin = `MEND_VERSION=${previous.config.serverVersion}`;
+  const newPin = `MEND_VERSION=${target.config.serverVersion}`;
+  const envLines = previous.serverEnv.split("\n");
+  assert.ok(
+    envLines.filter((line) => line === oldPin).length === 1,
+    "Previous environment must contain one exact server pin",
+  );
+  assert.ok(
+    envLines.map((line) => (line === oldPin ? newPin : line)).join("\n") === target.serverEnv,
+    "Upgrade must retain every environment credential and setting except the server pin",
+  );
+}
+
+/** Bounded diagnostic recognition. The caller gets a boolean, never stderr or secret bytes. */
+export function createDiagnosticProbe(phrase) {
+  let tail = "";
+  let found = false;
+  return {
+    accept(chunk) {
+      if (!phrase || found) return;
+      const text = tail + chunk.toString();
+      found = text.includes(phrase);
+      tail = found ? "" : text.slice(-(phrase.length - 1));
+    },
+    matched: () => found,
+  };
+}
+
+/** One public command; failure propagates without rollback, fallback, retries or success claims. */
+export async function runPackagedUpgrade(target, offline, cli, collectOwned) {
+  try {
+    await cli(
+      [
+        "server",
+        "upgrade",
+        "--version",
+        target.version,
+        "--assets-dir",
+        target.assets,
+        ...(offline ? ["--offline"] : []),
+      ],
+      { timeout: 600_000 },
+    );
+  } finally {
+    await collectOwned();
+  }
+}
+
+/** Secret-free digest of all installation files, modes and symlinks. Never follows symlinks. */
+export async function privateTreeFingerprint(root) {
+  const entries = [];
+  async function visit(path) {
+    const info = await lstat(path);
+    const name = relative(root, path);
+    if (info.isSymbolicLink()) entries.push([name, info.mode, "link", await readlink(path)]);
+    else if (info.isDirectory()) {
+      entries.push([name, info.mode, "directory"]);
+      for (const child of (await readdir(path)).toSorted()) await visit(join(path, child));
+    } else {
+      assert.ok(info.isFile(), "Installation contains an unexpected filesystem object");
+      entries.push([name, info.mode, digest(await readFile(path))]);
+    }
+  }
+  await visit(root);
+  return digest(JSON.stringify(entries));
+}
+
+/** Real pg_dumpall evidence, not a restore or historical-migration claim. Never print dump bytes. */
+export async function verifyUpgradeBackup(configRoot, previousGeneration, targetGeneration) {
+  const backups = join(configRoot, "backups");
+  const names = await readdir(backups);
+  assert.ok(
+    names.length === 1 && /^upgrade-[0-9a-f-]{36}$/.test(names[0]),
+    "Upgrade must create exactly one recovery directory",
+  );
+  const directory = join(backups, names[0]);
+  for (const path of [backups, directory]) {
+    const info = await lstat(path);
+    assert.ok(
+      info.isDirectory() && (info.mode & 0o777) === 0o700,
+      "Backup directories must be private and not symlinks",
+    );
+  }
+  const files = (await readdir(directory)).toSorted();
+  assert.ok(
+    JSON.stringify(files) === JSON.stringify(["database.sql", "recovery.json"]),
+    "Backup must be complete, with recovery record and no partial dump",
+  );
+  for (const name of files) {
+    const info = await lstat(join(directory, name));
+    assert.ok(
+      info.isFile() && (info.mode & 0o777) === 0o600 && info.size > 0,
+      "Backup files must be nonempty private regular files",
+    );
+  }
+  const recovery = JSON.parse(await readFile(join(directory, "recovery.json"), "utf8"));
+  assert.ok(
+    recovery.previousGeneration === previousGeneration &&
+      recovery.targetGeneration === targetGeneration &&
+      recovery.database === "database.sql",
+    "Recovery record must link the previous and target generations to the completed dump",
+  );
+  const sql = await readFile(join(directory, "database.sql"), "utf8");
+  for (const name of ["mend", "sealant_control_plane"])
+    assert.ok(
+      new RegExp(`^CREATE DATABASE ${name}\\s`, "m").test(sql),
+      "Cluster backup must contain both product databases",
+    );
+  for (const name of ["mend", "sealant", "postgres"])
+    assert.ok(
+      new RegExp(`^CREATE ROLE ${name};$`, "m").test(sql),
+      "Cluster backup must include database roles",
+    );
+  assert.ok(
+    /^-- PostgreSQL database cluster dump complete$/m.test(sql),
+    "Cluster dump must have a completion marker",
   );
 }
 
