@@ -1,11 +1,9 @@
-// Single-host entrypoint: run the Mend API server and the web server as two
-// child processes in one service — the shape the installer and the Docker
-// image use. Kubernetes runs the same two entries as separate Deployments
-// instead (deploy/helm/mend). Either child dying takes the pair down so the
-// supervisor (systemd, Docker) restarts both together.
-import { spawn } from "node:child_process";
+// Single-host Mend-only entrypoint. The bundle image uses bundle-supervisor.mjs; this remains the
+// host/standalone pair and shares the same fatal-child and signal semantics.
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { supervise } from "./process-supervisor.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const node = process.execPath;
@@ -14,27 +12,21 @@ const flags = ["--experimental-strip-types"];
 const webPort = process.env.PORT ?? "3105";
 const apiPort = process.env.MEND_API_SERVER_PORT ?? "3101";
 
-const children = [
-  spawn(node, [...flags, path.join(repoRoot, "apps/api/src/main.ts")], {
-    stdio: "inherit",
-    // MEND_WEB_PORT tells the API's auth server which port browsers actually
-    // arrive on, so LAN/tailnet origins on the web tier are trusted.
+await supervise(async (supervisor) => {
+  await supervisor.start({
+    name: "mend-api",
+    command: [node, ...flags, path.join(repoRoot, "apps/api/src/main.ts")],
     env: { ...process.env, PORT: apiPort, MEND_WEB_PORT: webPort },
-  }),
-  spawn(node, [...flags, path.join(repoRoot, "apps/web/src/entry/main.ts")], {
     stdio: "inherit",
+  });
+  await supervisor.start({
+    name: "mend-web",
+    command: [node, ...flags, path.join(repoRoot, "apps/web/src/entry/main.ts")],
     env: {
       ...process.env,
       PORT: webPort,
       MEND_API_URL: process.env.MEND_API_URL ?? `http://localhost:${apiPort}`,
     },
-  }),
-];
-
-const stop = (code) => {
-  for (const child of children) child.kill("SIGTERM");
-  setTimeout(() => process.exit(code ?? 0), 5000).unref();
-};
-for (const child of children) child.on("exit", (code) => stop(code ?? 0));
-process.on("SIGINT", () => stop(0));
-process.on("SIGTERM", () => stop(0));
+    stdio: "inherit",
+  });
+});

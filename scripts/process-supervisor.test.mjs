@@ -1,0 +1,86 @@
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { test } from "node:test";
+
+import { ChildProcessFailure, ProcessSupervisor } from "./process-supervisor.mjs";
+
+const withTimeout = (promise, milliseconds = 5_000) =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("test timed out")), milliseconds).unref(),
+    ),
+  ]);
+
+test("an unexpected child exit becomes fatal and shutdown stops its sibling", async () => {
+  const supervisor = new ProcessSupervisor();
+  await supervisor.start({
+    name: "sibling",
+    command: [process.execPath, "-e", "setInterval(()=>{}, 1000)"],
+    env: process.env,
+    stdio: "ignore",
+  });
+  await supervisor.start({
+    name: "failure",
+    command: [process.execPath, "-e", "setTimeout(()=>process.exit(7), 50)"],
+    env: process.env,
+    stdio: "ignore",
+  });
+
+  const failure = await withTimeout(supervisor.failure);
+  assert.equal(failure.name, "failure");
+  assert.equal(failure.code, 7);
+  await supervisor.shutdown("SIGTERM", 2_000);
+});
+
+test("a one-shot failure reports its process and exit code", async () => {
+  const supervisor = new ProcessSupervisor();
+  await assert.rejects(
+    supervisor.run({
+      name: "migration",
+      command: [process.execPath, "-e", "process.exit(4)"],
+      env: process.env,
+      stdio: "ignore",
+    }),
+    (error) =>
+      error instanceof ChildProcessFailure &&
+      error.result.name === "migration" &&
+      error.result.code === 4,
+  );
+  await supervisor.shutdown();
+});
+
+test("shutdown propagates SIGTERM to the child process group", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "mend-supervisor-"));
+  const ready = path.join(directory, "ready");
+  const stopped = path.join(directory, "stopped");
+  const supervisor = new ProcessSupervisor();
+  try {
+    await supervisor.start({
+      name: "signal-target",
+      command: [
+        process.execPath,
+        "-e",
+        `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(ready)},'1');process.on('SIGTERM',()=>{fs.writeFileSync(${JSON.stringify(stopped)},'1');process.exit(0)});setInterval(()=>{},1000)`,
+      ],
+      env: process.env,
+      stdio: "ignore",
+    });
+    await withTimeout(
+      (async () => {
+        for (;;) {
+          if (await readFile(ready, "utf8").catch(() => undefined)) return;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      })(),
+    );
+
+    await supervisor.shutdown("SIGTERM", 2_000);
+    assert.equal(await readFile(stopped, "utf8"), "1");
+  } finally {
+    await supervisor.shutdown("SIGKILL", 0);
+    await rm(directory, { recursive: true, force: true });
+  }
+});

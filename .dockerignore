@@ -3,6 +3,9 @@
 **/.turbo
 **/.output
 .git
+.vitest
+core
+core.*
 *.md
 PRODUCT.html
 compose*.yaml
