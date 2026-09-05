@@ -286,6 +286,69 @@ describe("mend server setup", () => {
       expect(ref).toMatch(/^127\.0\.0\.1:5501\/mend-registry-probe\/[a-f0-9]{48}:probe$/);
   });
 
+  it("setup completes beside mend-dev and leaves its resources unchanged", async () => {
+    const daemon = new DockerProtocol();
+    const labels = { "com.docker.compose.project": "mend-dev" };
+    daemon.containers.set("mend-dev-postgres-1", labels);
+    daemon.networks.set("mend-dev_default", labels);
+    daemon.volumes.set("mend-dev_postgres", labels);
+    const containers = [...daemon.containers];
+    const networks = [...daemon.networks];
+    const control = makeRuntime({ daemon });
+    expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
+    expect([...daemon.containers]).toEqual(containers);
+    expect([...daemon.networks]).toEqual(networks);
+    expect(daemon.volumes.get("mend-dev_postgres")).toEqual(labels);
+    const identity = fs.readFileSync(path.join(control.runtime.configDir, "identity.env"));
+    const owner = createHash("sha256").update(identity).digest("hex");
+    expect(daemon.volumes.get("mend-store")).toEqual({ [SERVER_VOLUME_OWNER_LABEL]: owner });
+    expect(daemon.volumes.get("mend-control")).toEqual({ [SERVER_VOLUME_OWNER_LABEL]: owner });
+    expect(
+      control.commands.some(([, args]) => args.includes("compose") && args.includes("up")),
+    ).toBe(true);
+    expect(
+      control.commands.some(
+        ([, args]) => args.includes("down") || args.includes("--remove-orphans"),
+      ),
+    ).toBe(false);
+  });
+
+  it.each(["unlabelled", "mismatched", "reserved", "inspection-failure"])(
+    "setup refuses %s container evidence before Compose or allocation",
+    async (scenario) => {
+      const daemon = new DockerProtocol();
+      const name = scenario === "reserved" ? "mend-postgres-1" : "mend-dev-postgres-1";
+      const project =
+        scenario === "reserved"
+          ? "mend-postgres"
+          : scenario === "mismatched"
+            ? "other"
+            : "mend-dev";
+      daemon.containers.set(
+        name,
+        scenario === "unlabelled" ? null : { "com.docker.compose.project": project },
+      );
+      if (scenario === "inspection-failure")
+        daemon.response = (args) =>
+          args[2] === "container" && args[3] === "inspect"
+            ? { status: 1, stdout: "", stderr: "permission denied" }
+            : undefined;
+      const before = [...daemon.containers];
+      const control = makeRuntime({ daemon });
+      expect(await serverCommand(["setup"], control.runtime)).toMatchObject({
+        _tag: "error",
+        message: expect.stringContaining("Docker volume ownership check failed"),
+      });
+      expect([...daemon.containers]).toEqual(before);
+      expect(daemon.volumes.size).toBe(0);
+      expect(
+        control.commands.some(
+          ([, args]) => args.includes("up") || args.includes("create") || args[2] === "image",
+        ),
+      ).toBe(false);
+    },
+  );
+
   it("a different configDir identity cannot operate an existing daemon's data", async () => {
     const daemon = new DockerProtocol();
     const first = makeRuntime({ daemon });

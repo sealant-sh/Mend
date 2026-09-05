@@ -176,6 +176,79 @@ const ensureVolume = async (
   return inspectOwner(runtime, context, name, owner);
 };
 
+const inProjectNamespace = (name: string, project: string): boolean =>
+  ["-", "_"].some(
+    (separator) => name.startsWith(`${project}${separator}`) && name.length > project.length + 1,
+  );
+
+const reservedResourceName = (
+  name: string,
+  kind: "container" | "network",
+  namespace: ServerDockerNamespace,
+): boolean => {
+  if ([namespace.project, namespace.store, namespace.control].includes(name)) return true;
+  // Reserve the bundle's service names, replicas, one-offs and default network, including legacy
+  // Compose separators. The project label "mend-postgres" must not excuse "mend-postgres-1".
+  return ["-", "_"].some((separator) =>
+    (kind === "container" ? ["mend", "postgres"] : ["default"]).some((service) => {
+      const reserved = `${namespace.project}${separator}${service}`;
+      return (
+        name === reserved ||
+        (kind === "container" &&
+          name.startsWith(reserved) &&
+          /^[-_](?:[0-9]+|run[-_][a-f0-9]+)$/.test(name.slice(reserved.length)))
+      );
+    }),
+  );
+};
+
+const inspectForeignProject = async (
+  runtime: Runtime,
+  context: string,
+  kind: "container" | "network",
+  name: string,
+  project: string,
+): Promise<Result<void>> => {
+  // Project only the ownership evidence. Full container inspection also includes environment secrets.
+  const output = await docker(runtime, context, [
+    kind,
+    "inspect",
+    name,
+    "--format",
+    `{"Name":{{json .Name}},"Labels":{{json .${kind === "container" ? "Config.Labels" : "Labels"}}}}`,
+  ]);
+  if (output._tag === "error") return output;
+  try {
+    const resource: unknown = JSON.parse(output.value);
+    if (
+      typeof resource !== "object" ||
+      resource === null ||
+      !("Name" in resource) ||
+      resource.Name !== (kind === "container" ? `/${name}` : name) ||
+      !("Labels" in resource)
+    )
+      return fail("inspection", `${kind} inspect`);
+    const labels = resource.Labels;
+    if (labels === null) return fail("unowned-data", `existing ${kind} without anchor`);
+    if (
+      typeof labels !== "object" ||
+      Array.isArray(labels) ||
+      !Object.values(labels).every((value) => typeof value === "string")
+    )
+      return fail("inspection", `${kind} labels`);
+    if (!("com.docker.compose.project" in labels))
+      return fail("unowned-data", `existing ${kind} without anchor`);
+    const foreignProject = labels["com.docker.compose.project"];
+    if (typeof foreignProject !== "string" || !/^[a-z0-9][a-z0-9_-]*$/.test(foreignProject))
+      return fail("inspection", `${kind} project label`);
+    if (foreignProject === project || !inProjectNamespace(name, foreignProject))
+      return fail("unowned-data", `existing ${kind} without anchor`);
+    return { _tag: "ok", value: undefined };
+  } catch {
+    return fail("inspection", `${kind} inspect`);
+  }
+};
+
 const refuseOldData = async (
   runtime: Runtime,
   context: string,
@@ -193,15 +266,20 @@ const refuseOldData = async (
     if (kind !== "volume") {
       const named = await listNames(runtime, context, kind);
       if (named._tag === "error") return named;
-      if (
-        named.value.some(
-          (name) =>
-            name === namespace.project ||
-            name.startsWith(`${namespace.project}_`) ||
-            name.startsWith(`${namespace.project}-`),
-        )
-      )
-        return fail("unowned-data", `existing ${kind} without anchor`);
+      for (const name of named.value) {
+        if (reservedResourceName(name, kind, namespace))
+          return fail("unowned-data", `existing ${kind} without anchor`);
+        if (name.startsWith(`${namespace.project}_`) || name.startsWith(`${namespace.project}-`)) {
+          const foreign = await inspectForeignProject(
+            runtime,
+            context,
+            kind,
+            name,
+            namespace.project,
+          );
+          if (foreign._tag === "error") return foreign;
+        }
+      }
     }
   }
   return { _tag: "ok", value: undefined };

@@ -69,10 +69,19 @@ class DockerDaemon implements Pick<ServerSetupRuntime, "run"> {
         });
       return ok(name);
     }
-    if (kind === "volume" && operation === "inspect") {
+    if (operation === "inspect") {
       const name = args[4] ?? "";
-      if (!this.volumes.has(name)) return { status: 1, stdout: "", stderr: "No such volume" };
-      return ok(JSON.stringify({ Name: name, Labels: this.volumes.get(name) }));
+      if (!collection.has(name)) return { status: 1, stdout: "", stderr: "No such resource" };
+      if (kind !== "volume")
+        expect(args.at(-1)).toBe(
+          `{"Name":{{json .Name}},"Labels":{{json .${kind === "container" ? "Config.Labels" : "Labels"}}}}`,
+        );
+      return ok(
+        JSON.stringify({
+          Name: kind === "container" ? `/${name}` : name,
+          Labels: collection.get(name),
+        }),
+      );
     }
     throw new Error(`Unexpected Docker command: ${args.join(" ")}`);
   }
@@ -99,6 +108,191 @@ describe("daemon data ownership", () => {
     expect(daemon.mutations()).toHaveLength(mutations);
     expect(JSON.stringify(daemon.commands)).not.toContain("first-secret");
   });
+
+  it("coexists with mend-dev without modifying its containers, networks or volumes", async () => {
+    const daemon = new DockerDaemon();
+    const labels = { "com.docker.compose.project": "mend-dev" };
+    daemon.containers.set("mend-dev-postgres-1", labels);
+    daemon.networks.set("mend-dev_default", labels);
+    daemon.volumes.set("mend-dev_postgres", labels);
+    const containers = [...daemon.containers];
+    const networks = [...daemon.networks];
+    expect(await claimServerDockerVolumes(daemon, input)).toMatchObject({ _tag: "ok" });
+    expect([...daemon.containers]).toEqual(containers);
+    expect([...daemon.networks]).toEqual(networks);
+    expect(daemon.volumes.get("mend-dev_postgres")).toEqual(labels);
+    expect(daemon.mutations().map((args) => args.at(-1))).toEqual(["mend-store", "mend-control"]);
+    expect(
+      daemon.commands.every((args) => ["ls", "inspect", "create"].includes(args[3] ?? "")),
+    ).toBe(true);
+  });
+
+  describe.each(["container", "network"] as const)("%s namespace evidence", (kind) => {
+    it.each(["-postgres-1", "_postgres_1", "_default"])(
+      "permits a foreign project in its own namespace: mend-dev%s",
+      async (suffix) => {
+        const daemon = new DockerDaemon();
+        const resources = kind === "container" ? daemon.containers : daemon.networks;
+        resources.set(`mend-dev${suffix}`, { "com.docker.compose.project": "mend-dev" });
+        const before = [...resources];
+        expect(await claimServerDockerVolumes(daemon, input)).toMatchObject({ _tag: "ok" });
+        expect([...resources]).toEqual(before);
+      },
+    );
+
+    it.each(["mend_dev", "mend-postgres-dev", "mend-mend-dev"])(
+      "permits project %s without treating its name as a reserved service",
+      async (project) => {
+        const daemon = new DockerDaemon();
+        const resources = kind === "container" ? daemon.containers : daemon.networks;
+        const name = kind === "container" ? `${project}-postgres-1` : `${project}_default`;
+        const labels = { "com.docker.compose.project": project };
+        resources.set(name, labels);
+        expect(await claimServerDockerVolumes(daemon, input)).toMatchObject({ _tag: "ok" });
+        expect(resources.get(name)).toEqual(labels);
+      },
+    );
+
+    it.each([
+      ["mend-dev-postgres-1", null],
+      ["mend_dev_postgres_1", {}],
+      ["mend-old-1", null],
+      ["mend_old_1", null],
+      ["mend-", null],
+      ["mend_", null],
+      ["mend-dev-postgres-1", { "com.docker.compose.project": "mend" }],
+      ["unrelated-name", { "com.docker.compose.project": "mend" }],
+      ["mend-dev-postgres-1", { "com.docker.compose.project": "other" }],
+      ["mend-dev-postgres-1", { "com.docker.compose.project": "mend-de" }],
+      ["mend-dev-postgres-1", { "com.docker.compose.project": "mend-dev-postgres-1" }],
+      ["mend-dev-", { "com.docker.compose.project": "mend-dev" }],
+      ["mend-dev_", { "com.docker.compose.project": "mend-dev" }],
+      ["mend-dev-postgres-1", { "com.docker.compose.project": "" }],
+      ["mend-dev-postgres-1", { "com.docker.compose.project": "MEND-dev" }],
+      ["mend-dev-postgres-1", { "com.docker.compose.project": "mend.dev" }],
+    ] as const)("refuses ambiguous or mismatched name %s with labels %j", async (name, labels) => {
+      const daemon = new DockerDaemon();
+      const resources = kind === "container" ? daemon.containers : daemon.networks;
+      resources.set(name, labels);
+      const before = [...resources];
+      expect((await claimServerDockerVolumes(daemon, input))._tag).toBe("error");
+      expect(daemon.mutations()).toEqual([]);
+      expect([...resources]).toEqual(before);
+    });
+
+    it.each([
+      "permission",
+      "vanished",
+      "rejected",
+      "invalid-json",
+      "null",
+      "array",
+      "wrong-name",
+      "missing-name",
+      "missing-labels",
+      "array-labels",
+      "number-label",
+    ])("inconclusive inspection (%s) fails before allocation", async (failure) => {
+      const daemon = new DockerDaemon();
+      const resources = kind === "container" ? daemon.containers : daemon.networks;
+      const name = "mend-dev_postgres_1";
+      const labels = { "com.docker.compose.project": "mend-dev" };
+      resources.set(name, labels);
+      const inspectedName = kind === "container" ? `/${name}` : name;
+      daemon.response = (args) => {
+        if (args[2] !== kind || args[3] !== "inspect") return undefined;
+        if (failure === "rejected") throw new Error("transport failure");
+        if (failure === "permission" || failure === "vanished") return denied;
+        if (failure === "invalid-json") return ok("{");
+        if (failure === "null") return ok("null");
+        if (failure === "array") return ok("[]");
+        if (failure === "wrong-name") return ok(JSON.stringify({ Name: "other", Labels: labels }));
+        if (failure === "missing-name") return ok(JSON.stringify({ Labels: labels }));
+        if (failure === "missing-labels") return ok(JSON.stringify({ Name: inspectedName }));
+        return ok(
+          JSON.stringify({
+            Name: inspectedName,
+            Labels: failure === "array-labels" ? [] : { ...labels, other: 42 },
+          }),
+        );
+      };
+      expect(await claimServerDockerVolumes(daemon, input)).toMatchObject({
+        _tag: "error",
+        error: {
+          reason: ["permission", "vanished", "rejected"].includes(failure)
+            ? "docker"
+            : "inspection",
+        },
+      });
+      expect(daemon.mutations()).toEqual([]);
+      expect(resources.get(name)).toEqual(labels);
+    });
+
+    it("does not let a proven foreign resource hide a later orphan", async () => {
+      const daemon = new DockerDaemon();
+      const resources = kind === "container" ? daemon.containers : daemon.networks;
+      resources.set("mend-dev_postgres_1", { "com.docker.compose.project": "mend-dev" });
+      resources.set("mend-orphan", null);
+      expect(await claimServerDockerVolumes(daemon, input)).toMatchObject({
+        _tag: "error",
+        error: { reason: "unowned-data" },
+      });
+      expect(daemon.mutations()).toEqual([]);
+    });
+  });
+
+  it.each([
+    "mend",
+    "mend-store",
+    "mend-control",
+    "mend-mend",
+    "mend-postgres",
+    "mend-mend-1",
+    "mend-postgres-1",
+    "mend-postgres-2",
+    "mend-mend-run-abc123",
+    "mend_mend_1",
+    "mend_postgres_1",
+    "mend_postgres_2",
+  ])("a foreign label cannot excuse reserved container %s", async (name) => {
+    const daemon = new DockerDaemon();
+    // The claimed project deliberately matches the prefix where possible, not just an unrelated label.
+    const project = name.replace(/[-_][^-_]+$/, "");
+    daemon.containers.set(name, { "com.docker.compose.project": project });
+    expect(await claimServerDockerVolumes(daemon, input)).toMatchObject({
+      _tag: "error",
+      error: { reason: "unowned-data" },
+    });
+    expect(daemon.mutations()).toEqual([]);
+  });
+
+  it.each(["mend", "mend_default", "mend-default", "mend-store", "mend-control"])(
+    "a foreign label cannot excuse reserved network %s",
+    async (name) => {
+      const daemon = new DockerDaemon();
+      daemon.networks.set(name, { "com.docker.compose.project": "mend-dev" });
+      expect(await claimServerDockerVolumes(daemon, input)).toMatchObject({
+        _tag: "error",
+        error: { reason: "unowned-data" },
+      });
+      expect(daemon.mutations()).toEqual([]);
+    },
+  );
+
+  it.each(["mend-store", "mend-control", "mend_dev_postgres"])(
+    "foreign Compose labels do not relax volume guard for %s",
+    async (name) => {
+      const daemon = new DockerDaemon();
+      const labels = {
+        "com.docker.compose.project": "mend_dev",
+        [SERVER_VOLUME_OWNER_LABEL]: "other",
+      };
+      daemon.volumes.set(name, labels);
+      expect((await claimServerDockerVolumes(daemon, input))._tag).toBe("error");
+      expect(daemon.mutations()).toEqual([]);
+      expect(daemon.volumes.get(name)).toEqual(labels);
+    },
+  );
 
   it("another config directory or lost config cannot replace credentials", async () => {
     const daemon = new DockerDaemon();

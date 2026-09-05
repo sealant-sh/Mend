@@ -115,6 +115,73 @@ describe.skipIf(context === undefined)("real Docker ownership and registry proto
     }
   }, 120_000);
 
+  it("claims beside a foreign Compose namespace and preserves its container and network", async () => {
+    if (context === undefined) return;
+    const namespace = freshNamespace();
+    const foreignProject = `${namespace.project}-dev`;
+    const identityBytes = randomBytes(48);
+    const label = "dev.sealant.mend.protocol-test";
+    const nonce = randomBytes(24).toString("hex");
+    let containerId: string | undefined;
+    let networkId: string | undefined;
+    // Test infrastructure only. The stopped container needs neither ports nor persistent storage.
+    await docker("image", "pull", "busybox:1.37");
+    try {
+      containerId = await docker(
+        "container",
+        "create",
+        "--name",
+        `${foreignProject}-postgres-1`,
+        "--label",
+        `${label}=${nonce}`,
+        "--label",
+        `com.docker.compose.project=${foreignProject}`,
+        "busybox:1.37",
+        "true",
+      );
+      networkId = await docker(
+        "network",
+        "create",
+        "--label",
+        `${label}=${nonce}`,
+        "--label",
+        `com.docker.compose.project=${foreignProject}`,
+        `${foreignProject}_default`,
+      );
+      const beforeContainer = await docker("container", "inspect", containerId);
+      const beforeNetwork = await docker("network", "inspect", networkId);
+      expect(
+        await claimServerDockerVolumes(volumeRuntime, {
+          dockerContext: context,
+          identityBytes,
+          namespace,
+        }),
+      ).toMatchObject({ _tag: "ok" });
+      expect(await docker("container", "inspect", containerId)).toBe(beforeContainer);
+      expect(await docker("network", "inspect", networkId)).toBe(beforeNetwork);
+    } finally {
+      if (containerId !== undefined) {
+        expect(
+          await docker(
+            "container",
+            "inspect",
+            containerId,
+            "--format",
+            `{{index .Config.Labels "${label}"}}`,
+          ),
+        ).toBe(nonce);
+        await docker("container", "rm", containerId);
+      }
+      if (networkId !== undefined) {
+        expect(
+          await docker("network", "inspect", networkId, "--format", `{{index .Labels "${label}"}}`),
+        ).toBe(nonce);
+        await docker("network", "rm", networkId);
+      }
+      await cleanVolumes(namespace, [digest(identityBytes)]);
+    }
+  }, 120_000);
+
   it("two concurrent identities cannot both claim a fresh namespace", async () => {
     if (context === undefined) return;
     const namespace = freshNamespace();

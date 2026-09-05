@@ -90,11 +90,21 @@ export class DockerProtocol {
           collection.set(name, { [label.slice(0, separator)]: label.slice(separator + 1) });
         return ok(name);
       }
-      if (kind === "volume" && operation === "inspect") {
+      if (operation === "inspect") {
         const name = args[4] ?? "";
+        const format =
+          kind === "volume"
+            ? "{{json .}}"
+            : `{"Name":{{json .Name}},"Labels":{{json .${kind === "container" ? "Config.Labels" : "Labels"}}}}`;
+        if (args.at(-1) !== format) return failed("Unexpected inspection format");
         return collection.has(name)
-          ? ok(JSON.stringify({ Name: name, Labels: collection.get(name) }))
-          : failed("No such volume");
+          ? ok(
+              JSON.stringify({
+                Name: kind === "container" ? `/${name}` : name,
+                Labels: collection.get(name),
+              }),
+            )
+          : failed("No such resource");
       }
     }
     if (kind === "image") {
