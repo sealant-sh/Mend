@@ -185,11 +185,12 @@ mend/
   server.lock/owner.json
 ```
 
-Directories are mode `0700`; secret/configuration files and backups are `0600`. Each generation is
-complete and immutable. An atomic `active` symlink chooses one generation. Keep the installation
-identity, generations, and Docker volumes together in backups. A database upgrade dump alone does
-not back up repositories, worktrees, harness state, SSH host keys, registry images, or RabbitMQ
-data.
+Directories are mode `0700`; secret/configuration files and backups are `0600`. The public
+`postgres-init.sh` asset is `0755` so the official image's Postgres user can execute its read-only
+mount. It contains environment references, not generated credentials. Each generation is complete
+and immutable. An atomic `active` symlink chooses one generation. Keep the installation identity,
+generations, and Docker volumes together in backups. A database upgrade dump alone does not back up
+repositories, worktrees, harness state, SSH host keys, registry images, or RabbitMQ data.
 
 The canonical store and control volumes are external to Compose. Setup claims them using a label
 whose value is the SHA-256 fingerprint of the persisted installation identity. A different
@@ -208,6 +209,10 @@ An incomplete `database.sql.partial` is not a backup. After a killed upgrade, if
 the target, assume migrations may have begun and retry that target after diagnosis. If it still
 selects the old generation, target startup was not reached. Never select an unreferenced prepared
 generation merely because it exists.
+
+A failed first Postgres initialization can leave a data directory that the official image will not
+initialize again. Keep it and the matching identity. Diagnose the original bootstrap failure and use
+explicit database recovery; rerunning setup is not permission to erase or reset that directory.
 
 Do not run independent Compose commands or retag images concurrently with Mend. Mend's lock cannot
 coordinate arbitrary Docker clients. Never use `docker compose down --volumes` or Docker prune as a

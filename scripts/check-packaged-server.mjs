@@ -152,7 +152,7 @@ function start(command, args, options = {}) {
     activeChildren.delete(child);
     const ok = code === 0 && !terminated && !spawnError;
     const output = Buffer.concat(stdout);
-    if (!ok)
+    if (!ok || options.failureEvidence === true)
       await failedCommands.record(
         {
           stage: commandStage,
@@ -367,7 +367,11 @@ async function installation(expectedVersion = version, expectedAssets = assets, 
     "postgres-init.sh",
   ]) {
     const file = join(directory, name);
-    check(((await stat(file)).mode & 0o077) === 0, "Generation files must be private");
+    const mode = (await stat(file)).mode & 0o777;
+    check(
+      name === "postgres-init.sh" ? mode === 0o755 : (mode & 0o077) === 0,
+      "Credentials/config stay private; the public Postgres bootstrap must be readable and executable",
+    );
     values[name] = hash(await readFile(file));
   }
   check(values["identity.env"] === hash(identity), "Generation must retain installation identity");
@@ -408,6 +412,16 @@ async function sshIdentity(port) {
     .toSorted();
   check(publicKeys.length > 0, "SSH gateway must present a host key on the selected port");
   return hash(publicKeys.join("\n"));
+}
+
+async function collectFailureLogs() {
+  await collectOwned();
+  for (const id of containers.keys()) {
+    await start("docker", ["--context", context, "logs", "--tail", "200", id], {
+      timeout: 10_000,
+      failureEvidence: true,
+    }).result;
+  }
 }
 
 async function cleanup() {
@@ -933,11 +947,42 @@ async function main() {
     (await cli(["projects"])).includes(projectName),
     "Authenticated installed CLI must list the adopted project",
   );
+  stage = "workspace image fixture";
+  // The public custom-base contract checks git/node/npm before setupCommands run.
+  // A unique local alias also prevents the platform's build tag from replacing another test's tag.
+  const workspaceBase = `${fixtureName}-base:latest`;
+  check(
+    lines(
+      await docker([
+        "image",
+        "ls",
+        "--filter",
+        `reference=${workspaceBase}`,
+        "--format",
+        "{{.ID}}",
+      ]),
+    ).length === 0,
+    "Workspace fixture image alias must be new",
+  );
+  await docker(["pull", "node:26-bookworm"], { timeout: 600_000 });
+  await docker(["tag", "node:26-bookworm", workspaceBase]);
+  await docker([
+    "run",
+    "--rm",
+    "--label",
+    `sh.sealant.mend.acceptance=${runId}`,
+    "--entrypoint",
+    "sh",
+    workspaceBase,
+    "-c",
+    "command -v git && command -v node && command -v npm",
+  ]);
+  console.log("PASS real network Git adoption and custom workspace base prerequisites");
   const workspaceImage = {
     mode: "custom",
-    baseImage: "alpine:3.22",
+    baseImage: workspaceBase,
     packages: [],
-    setupCommands: ["apk add --no-cache git"],
+    setupCommands: [],
     services: { docker: false },
   };
   const imageSaved = await api(`/projects/${project.id}/workspace-image`, {
@@ -962,6 +1007,11 @@ async function main() {
   const workspace = await until(
     "live workspace volume-subpath mounts",
     async () => {
+      const current = await api(`/sessions/${session.id}`);
+      check(
+        current.session.status !== "failed",
+        "Session provisioning failed; inspect private owned-container diagnostics",
+      );
       const { now } = await collectOwned();
       return now.containers.find(
         (item) =>
@@ -1305,6 +1355,13 @@ try {
     `FAIL ${stage}: ${error instanceof assert.AssertionError ? error.message : "operation failed; raw error withheld"}`,
   );
 } finally {
+  if (process.exitCode === 1 && (setupAttempted || fixtureId)) {
+    try {
+      await collectFailureLogs();
+    } catch {
+      console.error("Owned-container failure logs unavailable; cleanup will still run");
+    }
+  }
   try {
     await cleanup();
   } catch {
