@@ -7,6 +7,24 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## ✅ 2026-09-03 · 0.27.0 · Workspace-scoped Docker on Kubernetes, refused at create where absent
+
+**Shipped in Sealant 0.27.0 (sealant#223); Mend pins it and maps the refusal.** Mend sends
+`services.docker: true` by default and the Kubernetes adapter refused it at launch, so the cluster's
+Mend settings had Docker switched off and every project that needs compose or testcontainers was
+blocked there.
+
+Sealant now serves the service on Kubernetes when the operator enables it
+(`workspaces.docker.enabled`): the same rootless `docker:*-dind-rootless` daemon as the Docker
+adapter, as a sidecar of a **user-namespaced** workspace Pod (`hostUsers: false`), so its
+`privileged` flag is privileged over the Pod's namespace only. The workspace gets
+`DOCKER_HOST=unix:///run/docker/docker.sock`, and `forward({ host: "docker" })` keeps working (the
+name resolves to the Pod's loopback, where nested containers publish). An install that cannot serve
+it refuses `create` with `workspace-docker-unsupported` (422) — the capability probe this file asked
+for on 2026-08-26, for this one capability. Mend maps it to a readable refusal in the session.
+Documented limits: nested cgroup limits are ignored, the graph pulls cold per workspace, the store
+filesystem must be idmap-capable (NFS is not).
+
 ## 2026-08-29 · 0.25.2 · One uid story for workspace-written store files
 
 - **Needed:** Mend's engine reads workspace-written files server-side — the external-agent observer

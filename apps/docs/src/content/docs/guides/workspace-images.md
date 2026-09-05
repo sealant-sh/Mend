@@ -74,6 +74,11 @@ and git. The build checks the contract and fails readably when the base misses a
 The Docker switch supplies a disposable rootless daemon for that workspace. Mend does not mount the
 host Docker socket. Compose files can run inside the workspace against that daemon.
 
+On a Kubernetes deployment the operator has to enable the daemon (`workspaces.docker.enabled` on the
+Sealant chart); otherwise a launch with the switch on is refused at create and the session says so.
+There, the daemon shares the workspace Pod, its image graph has a per-workspace disk budget, and
+nested containers' own memory and CPU limits are not enforced (the workspace's limits still apply).
+
 The image definition is not a Compose editor. It describes one workspace container plus optional
 platform services.
 

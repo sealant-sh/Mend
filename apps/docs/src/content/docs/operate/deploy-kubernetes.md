@@ -172,8 +172,13 @@ compatible with the current schema — check release notes before rolling back.
 
 - One `mend-app` replica; the web and worker tiers cannot be split yet.
 - The Service tunnel is TCP-only; UDP Services need the operator exposure path.
-- Workspace-scoped Docker (`services.docker`) is refused on Kubernetes until the DinD capability
-  ships — turn Docker off in the image definition for projects that run there.
+- Workspace-scoped Docker (`services.docker`) needs `workspaces.docker.enabled` on the Sealant
+  chart: the daemon then runs as a rootless sidecar of a user-namespaced workspace Pod, which needs
+  Kubernetes 1.33+, containerd 2.0+, kernel 6.3+ and an idmap-capable store filesystem (CephFS,
+  ext4, xfs; not NFS). Until the operator enables it, a launch with Docker on is refused at create
+  and the session shows the refusal; turn Docker off in the workspace environment for projects that
+  run there. Inside it, nested `--memory`/`--cpus` limits are ignored and the image graph is a
+  per-workspace budget (`workspaces.docker.graphSize`) that pulls cold every session.
 - The shared store is written by Mend (UID 1000) and workspaces (root); cleanup of root-owned files
   can require operator action.
 

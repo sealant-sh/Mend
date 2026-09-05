@@ -929,9 +929,28 @@ const tagOf = (value: unknown): string | null => {
   return null;
 };
 
+/**
+ * The stable code a typed contract error carries in its body (`runtime-env-references-unsupported`,
+ * `workspace-docker-unsupported`), when there is one. The SDK's `SealantApiError.code` is the
+ * error's TAG (`WorkspaceDockerServiceUnsupportedError`) and keeps the decoded contract error as its
+ * `cause`; the body code is the capability probe the engine branches on, so it wins over the tag.
+ */
+const stableCodeOf = (value: unknown): string | null => {
+  const record = value instanceof SealantError ? value.cause : value;
+  if (typeof record === "object" && record !== null && "code" in record) {
+    const code: unknown = record["code"];
+    return typeof code === "string" && code !== "" ? code : null;
+  }
+  return null;
+};
+
+/** The code `SealantPlatformError` carries: the body's stable code, else the SDK/tag code. */
+export const platformErrorCode = (cause: unknown): string =>
+  stableCodeOf(cause) ?? (cause instanceof SealantError ? cause.code : (tagOf(cause) ?? "UNKNOWN"));
+
 const toPlatformError = (cause: unknown) =>
   new SealantPlatformError({
-    code: cause instanceof SealantError ? cause.code : (tagOf(cause) ?? "UNKNOWN"),
+    code: platformErrorCode(cause),
     status: cause instanceof SealantApiError ? (cause.status ?? null) : null,
     message: cause instanceof Error ? cause.message : String(cause),
     cause,
