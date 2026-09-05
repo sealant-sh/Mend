@@ -18,7 +18,9 @@ RUN pnpm install --frozen-lockfile
 RUN pnpm --filter @mend/web build
 
 FROM node:26-slim
-ENV NODE_ENV=production PORT=3105
+ARG MEND_VERSION=dev
+LABEL org.opencontainers.image.version="${MEND_VERSION}"
+ENV NODE_ENV=production PORT=3105 MEND_VERSION=${MEND_VERSION}
 WORKDIR /app
 COPY --from=build /app/apps/web/.output .output
 USER node

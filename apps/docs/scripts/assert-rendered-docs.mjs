@@ -12,6 +12,11 @@ const createAccount = installPage.indexOf('id="create-your-mend-account"');
 assert.notEqual(networkBoundary, -1, "Install page must explain its network boundary");
 assert.notEqual(createAccount, -1, "Install page must explain account creation");
 assert.ok(networkBoundary < createAccount, "Install page must state network risk before sign-up");
+for (const section of ["install-only-the-cli", "set-up-the-server", "operate-and-upgrade"]) {
+  assert.ok(installPage.includes(`id="${section}"`), `Install page must explain ${section}`);
+}
+assert.ok(!installPage.includes("MEND_ALLOW_MACOS"), "Do not document the retired macOS bypass");
+assert.ok(!installPage.includes("SEALANT_VERSION=latest"), "Users select only a Mend version");
 
 const homePage = await readFile(new URL("../dist/index.html", import.meta.url), "utf8");
 for (const section of [

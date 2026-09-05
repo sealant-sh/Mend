@@ -22,7 +22,9 @@ FROM node:26-slim
 # Sessions and adoption need git; mend-key auth mode speaks ssh.
 RUN apt-get update && apt-get install -y --no-install-recommends git openssh-client ca-certificates \
   && rm -rf /var/lib/apt/lists/*
-ENV NODE_ENV=production MEND_MODE=all PORT=3101
+ARG MEND_VERSION=dev
+LABEL org.opencontainers.image.version="${MEND_VERSION}"
+ENV NODE_ENV=production MEND_MODE=all PORT=3101 MEND_VERSION=${MEND_VERSION}
 WORKDIR /app
 COPY --from=build /app/node_modules node_modules
 COPY --from=build /app/pnpm-workspace.yaml /app/package.json ./

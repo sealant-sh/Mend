@@ -1,98 +1,119 @@
 ---
 title: Deploy on a VPS
-description: Run Mend on a remote Linux host and work with it from your own devices.
+description: Run Mend on a private remote server and connect from your devices.
 sidebar:
   order: 1
 ---
 
-A VPS or home server is the middle deployment tier: the same single-host install as
-[your own machine](/getting-started/install/), plus the realities of the server not being the
-machine you sit at. Run the installer on the VPS over SSH; everything on that page applies,
-including Sealant — the workspace platform under Mend — which the installer sets up and manages on
-the VPS for you. This page covers what changes when the server is remote.
+A VPS or home server uses the same [Docker installation](/getting-started/install/) as your own
+machine. Run setup on the server over ordinary host SSH. It runs the complete Mend application and
+separate official Postgres; you do not install or choose a Sealant version separately.
 
 ## Reach the server privately
 
-The Mend HTTP server listens on every interface so your devices can reach it, and sign-up stays open
-— so the network is the boundary. Put the VPS on a private network you trust before anything else:
-
-- **Tailscale (or another mesh VPN)** is the recommended shape: the server gets a stable private
-  address, every device you enroll can reach it, and nothing is published to the internet.
-- Without a mesh, use the provider's private networking or an SSH tunnel. Do not expose port `3105`
-  publicly; plain HTTP on an untrusted network does not protect credentials.
-
-Then point the CLI on your laptop at it:
+Configure a private network such as Tailscale before exposing the server. On the server:
 
 ```sh
+npm install --global @sealant/mend
+mend server setup --bind 0.0.0.0 --url http://your-vps:3105 \
+  --origin http://localhost:3105
+```
+
+Replace `your-vps` with a hostname reachable from your clients. Without explicit exposure, web and
+SSH stay on localhost. Binding `0.0.0.0` opens every IPv4 interface; setup does not configure your
+firewall. Sign-up is open to anyone who can reach Mend, so keep those ports private. Plain HTTP on
+an untrusted network does not protect credentials.
+
+The workspace registry stays loopback-only and Postgres publishes no host port. Do not widen the
+registry binding to work around a Docker runtime that fails its push/pull check.
+
+On your laptop, install only the CLI:
+
+```sh
+npm install --global @sealant/mend
 mend login --url http://your-vps:3105
 mend doctor
 ```
 
-The CLI runs on your devices; the server runs the work. Every command in the docs behaves the same
-with a remote `MEND_URL`.
+Server lifecycle commands run on the server machine. A remote client URL does not turn
+`mend server setup` into a remote provisioning command.
 
-## Connect providers from where the credentials live
+## Connect providers from your laptop
 
-`mend connect` reads provider credentials from the machine where you run it and sends them to the
-server — so run it on your laptop, where `codex login`, `claude`, and `gh auth login` already
-happened. Nothing needs to be logged in on the VPS itself.
+`mend connect` reads credentials from the machine where you run it and sends them to Mend. Run it
+where you already signed into your providers:
 
 ```sh
 mend connect codex
 mend connect github
 ```
 
-## Git authentication: ambient usually stops working
+You do not need to log provider CLIs in on the VPS itself.
 
-On your own machine, the default `ambient` mode borrows your existing SSH setup. A fresh VPS login
-user has no such setup, so adoption over SSH remotes fails with permission or host-key errors.
-Choose an explicit mode instead:
+## Git authentication
+
+The application container does not inherit your laptop's home directory or SSH agent. Choose an
+explicit authentication mode for SSH remotes:
 
 ```sh
-mend keys init                    # the server generates its own deploy key
-mend keys show                    # add this as a deploy key on your Git host
+mend keys init
+mend keys show                    # register this public deploy key on your Git host
 mend adopt git@github.com:acme/api.git --auth mend-key
 ```
 
-or keep your key on the laptop and relay signing:
+Or keep the private key on your laptop and relay signing:
 
 ```sh
-mend keys share                   # keep running in a spare terminal
+mend keys share                   # keep this running in another terminal
 mend adopt git@github.com:acme/api.git --auth bridge
 ```
 
-`mend-key` works unattended; `bridge` needs the relay running for every server-side Git operation.
-Read [Git access](/guides/git-access/) for the full model.
+`mend-key` works unattended; `bridge` needs the relay for server-side Git operations. See
+[Git access](/guides/git-access/). Adoption takes a network repository URL, never a client or server
+folder path.
 
-## Reach development Services
+## Reach development services and workspaces
 
-A Service's host port binds on the **server**. From your laptop, bring it to your own loopback over
-the authenticated tunnel:
+A service's host port belongs to the server. Bring it to your laptop's loopback through the
+authenticated tunnel:
 
 ```sh
 mend service connect web --port 43100
 curl http://127.0.0.1:43100
 ```
 
-Alternatively, bind the server's private interface with `MEND_SERVICE_HOSTS` on the server and reach
-the port directly over your private network — those ports carry no Mend authentication, so the
-network is the gate. Read [Development services](/guides/services/).
+See [development services](/guides/services/). The VS Code extension opens session workspaces over
+Remote-SSH, using the Mend URL's hostname and the advertised SSH port. SSH setup needs consent and a
+usable key. Verify server host keys rather than blindly replacing known_hosts entries. See
+[workspace SSH](https://github.com/sealant-sh/mend/blob/main/docs/WORKSPACE-SSH.md).
 
-## Pair phones and other devices
+## Pair another device
 
 ```sh
 mend pair
 ```
 
-The printed address must be reachable from the device — on a tailnet, that is the server's tailnet
-address. Override it with `--url` when detection picks the wrong interface.
+Pairing offers only origins already configured on the server. Use `--url` to select one of those
+exact URLs, not to introduce an unconfigured address. No interface discovery adds URLs to the
+trusted list.
 
 ## Operate it
 
-- **Upgrade** by rerunning the installer on the VPS; volumes survive.
-- **Check** with `mend doctor` from any signed-in device.
-- **Back up** the machine before version changes; a tested backup and restore procedure is not
-  published yet.
+Run lifecycle commands on the server:
 
-When one host stops being enough — several users, more isolation, or cluster storage — the next tier
-is [Deploy on Kubernetes](/operate/deploy-kubernetes/).
+```sh
+mend server status
+mend server logs --tail 100
+mend server restart
+mend server upgrade --version VERSION
+```
+
+Choose an exact published version. Updating the laptop's CLI or rerunning the POSIX installer does
+not upgrade the server. Upgrade stops application writers and saves a private database backup before
+activating the target. A post-startup failure keeps the target pin; it never automatically restores
+the database or starts older code.
+
+Back up private configuration and Docker volumes as well. Read the
+[self-hosting and recovery guide](https://github.com/sealant-sh/mend/blob/main/docs/SELF-HOSTING.md)
+before planned maintenance. [Kubernetes](/operate/deploy-kubernetes/) remains an operator-managed
+alternative, not a mode of this setup command.
