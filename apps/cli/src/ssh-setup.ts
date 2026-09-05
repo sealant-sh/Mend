@@ -92,6 +92,9 @@ const showStatus = async (
       ? `ssh config      ${green("●")} Host ${parsedTarget.value.alias} ${dim(`· ${sshConfigPath()}`)}`
       : `ssh config      ${warn("missing or stale")} ${dim("· run: mend ssh setup")}`,
   );
+  say(
+    "host trust      not checked · status checks config and client-key registration, not an SSH connection",
+  );
 };
 
 const setup = async (
@@ -127,8 +130,8 @@ const setup = async (
   });
   const sourceLabel = {
     explicit: "from --key",
-    agent: "from your ssh-agent (nothing new created)",
-    existing: "existing dedicated key",
+    agent: "from your ssh-agent (public identity saved locally)",
+    existing: "existing selected key",
     generated: "generated dedicated key",
   }[picked.value.source];
   say(`key             ${green("●")} ${registered.fingerprint} ${dim(`· ${sourceLabel}`)}`);
@@ -141,6 +144,9 @@ const setup = async (
   if (written.ok === false) return showFailure(written.error.message);
   say(
     `ssh config      ${green("●")} Host ${parsedTarget.value.alias} ${dim(`· ${sshConfigPath()}`)}`,
+  );
+  say(
+    "host trust      not checked · SSH verifies the gateway when you connect; setup does not replace known_hosts entries",
   );
   say("");
   say(

@@ -762,7 +762,7 @@ class MendCommands {
         {
           modal: true,
           detail:
-            "Mend registers this machine's SSH key and manages one server-specific Host block in ~/.ssh/config. Existing hand-written config and other Mend servers stay untouched.",
+            "Mend registers this machine's SSH key and manages one server-specific Host block in ~/.ssh/config. Existing hand-written config and other Mend servers are preserved. Setup does not test the SSH connection or verify gateway host trust.",
         },
         "Set up",
       );
@@ -771,7 +771,10 @@ class MendCommands {
         await runWorkspaceSshSetup(parsedTarget.value, (publicKey, name) =>
           this.client.ensureWorkspaceSshKey(publicKey, name),
         );
-        void vscode.window.setStatusBarMessage("Mend workspace SSH is ready", 3_000);
+        void vscode.window.setStatusBarMessage(
+          "Mend SSH config saved; client key registered. Host trust not checked.",
+          7_000,
+        );
       } catch (cause) {
         void vscode.window.showErrorMessage(errorMessage(cause));
         return "cancelled";

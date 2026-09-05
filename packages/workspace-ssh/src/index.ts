@@ -45,13 +45,13 @@ export interface WorkspaceSshTarget {
 /** A public key available to register for workspace SSH. */
 export interface WorkspaceSshKey {
   readonly publicKey: string;
-  /** Null means OpenSSH should ask the running ssh-agent for the private key. */
+  /** Absolute private-key path or public selector for an agent key; null for legacy unpinned config. */
   readonly identityFile: string | null;
   readonly source: "explicit" | "agent" | "existing" | "generated";
   readonly fingerprint: string;
 }
 
-/** Exact readiness facts for this server, key, host, and published port. */
+/** Configuration and key-registration facts only; no connection or host-trust check is performed. */
 export interface WorkspaceSshReadiness {
   readonly ready: boolean;
   readonly configReady: boolean;
@@ -64,14 +64,8 @@ const failure = <T>(error: WorkspaceSshError): WorkspaceSshResult<T> => ({ ok: f
 const stripIpv6Brackets = (hostname: string): string =>
   hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
 
-const hashIdentity = (identity: string): string => {
-  let hash = 0x811c9dc5;
-  for (const character of identity) {
-    hash ^= character.codePointAt(0) ?? 0;
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(36).padStart(7, "0");
-};
+const hashIdentity = (identity: string): string =>
+  createHash("sha256").update(identity).digest("hex").slice(0, 24);
 
 const aliasLabel = (hostname: string): string => {
   const label = hostname
@@ -160,22 +154,82 @@ export const parseWorkspaceSshTarget = (input: {
 const blockBegin = (alias: string): string => `# >>> mend workspace ssh ${alias} (managed) >>>`;
 const blockEnd = (alias: string): string => `# <<< mend workspace ssh ${alias} <<<`;
 
-/** Render the complete managed OpenSSH block for one Mend server. */
+const hasControls = (value: string): boolean => /[\p{Cc}\p{Zl}\p{Zp}]/u.test(value);
+
+const parseIdentityPath = (value: string): WorkspaceSshResult<string> => {
+  const resolved = path.resolve(
+    value.startsWith("~/") ? path.join(os.homedir(), value.slice(2)) : value,
+  );
+  if (
+    value === "" ||
+    hasControls(value) ||
+    hasControls(resolved) ||
+    value.includes("${") ||
+    resolved.includes("${")
+  ) {
+    return failure(
+      new WorkspaceSshError(
+        "key",
+        "SSH identity path must be nonempty and contain no controls or ${…} expansion.",
+      ),
+    );
+  }
+  if (value.startsWith("~") && !value.startsWith("~/")) {
+    return failure(
+      new WorkspaceSshError("key", "SSH identity path supports ~/ but not ~user paths."),
+    );
+  }
+  return success(resolved);
+};
+
+// OpenSSH token expansion runs after quote removal, so a literal percent needs doubling.
+const quoteIdentityPath = (value: string): string =>
+  `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%")}"`;
+
+/** Render a scoped block with an absolute, escaped identity; reject unsafe config values. */
 export const managedWorkspaceSshBlock = (
   target: WorkspaceSshTarget,
   identityFile: string | null,
-): string =>
-  [
-    blockBegin(target.alias),
-    `Host ${target.alias}`,
-    `  HostName ${target.hostname}`,
-    `  Port ${target.port}`,
-    `  HostKeyAlias ${target.alias}`,
-    ...(identityFile === null ? [] : [`  IdentityFile ${identityFile}`, "  IdentitiesOnly yes"]),
-    "  StrictHostKeyChecking accept-new",
-    blockEnd(target.alias),
+): WorkspaceSshResult<string> => {
+  if (
+    !/^[a-z0-9-]+$/.test(target.alias) ||
+    !/^[a-zA-Z0-9.:-]+$/.test(target.hostname) ||
+    !Number.isInteger(target.port) ||
+    target.port < 1 ||
+    target.port > 65_535
+  ) {
+    return failure(new WorkspaceSshError("config", "SSH target contains invalid config values."));
+  }
+  const identity = identityFile === null ? success(null) : parseIdentityPath(identityFile);
+  if (!identity.ok) return identity;
+  return success(
+    [
+      blockBegin(target.alias),
+      `Host ${target.alias}`,
+      `  HostName ${target.hostname}`,
+      `  Port ${target.port}`,
+      `  HostKeyAlias ${target.alias}`,
+      ...(identity.value === null
+        ? []
+        : [`  IdentityFile ${quoteIdentityPath(identity.value)}`, "  IdentitiesOnly yes"]),
+      "  StrictHostKeyChecking accept-new",
+      // Restore the initial all-host scope before the user's global directives or other blocks.
+      "Host *",
+      blockEnd(target.alias),
+      "",
+    ].join("\n"),
+  );
+};
+
+// A leading sequence of our scoped blocks leaves unrelated hosts in the initial all-host scope.
+// Allow only the directives we emit, not a nested Host/Match/Include hidden under managed markers.
+const isManagedPreamble = (config: string): boolean => {
+  const unmanaged = config.replace(
+    /^# >>> mend workspace ssh (mend-ws-[a-z0-9-]+) \(managed\) >>>\nHost \1\n(?:  (?:HostName|Port|HostKeyAlias|IdentityFile|IdentitiesOnly|StrictHostKeyChecking) [^\n]*\n)*Host \*\n# <<< mend workspace ssh \1 <<<\n/gm,
     "",
-  ].join("\n");
+  );
+  return unmanaged.split(/\r?\n/).every((line) => /^\s*(#.*)?$/.test(line));
+};
 
 const removeManagedBlock = (
   config: string,
@@ -193,19 +247,42 @@ const removeManagedBlock = (
       ),
     );
   }
-  const after = config.slice(end + endMarker.length).replace(/^\n/, "");
+  const after = config.slice(end + endMarker.length).replace(/^\r?\n/, "");
+  const firstDirective = after.split(/\r?\n/).find((line) => !/^\s*(#.*)?$/.test(line));
+  const restoresScope = /\nHost \*\r?\n$/.test(config.slice(begin, end));
+  if (
+    !(restoresScope && isManagedPreamble(config.slice(0, begin))) &&
+    firstDirective !== undefined &&
+    !/^\s*(Host|Match)\s/i.test(firstDirective)
+  ) {
+    return failure(
+      new WorkspaceSshError(
+        "config",
+        "Managed SSH block has trailing scoped directives. Move them into an explicit Host or Match block before rerunning setup; Mend left the config unchanged.",
+      ),
+    );
+  }
+  if (config.indexOf(beginMarker, end + endMarker.length) !== -1) {
+    return failure(
+      new WorkspaceSshError(
+        "config",
+        "Duplicate managed SSH blocks; Mend left the config unchanged.",
+      ),
+    );
+  }
   return success(`${config.slice(0, begin)}${after}`);
 };
 
 const containsExactHost = (config: string, alias: string): boolean =>
   config.split("\n").some((line) => {
-    const match = /^\s*Host\s+(.+?)\s*$/.exec(line);
+    const match = /^\s*Host\s+(.+?)\s*$/i.exec(line);
     return match?.[1]?.split(/\s+/).includes(alias) === true;
   });
 
 /**
- * Replace this server's managed block and migrate Mend's old global block. Other servers and every
- * hand-written byte stay in place. A hand-written block using the generated alias is reported.
+ * Replace this server's managed block and migrate Mend's old global block. Retain other servers and
+ * every hand-written byte. Prepending wins OpenSSH's first-match policy; Host * restores the
+ * original global scope. Ambiguous legacy scopes and hand-written alias collisions are refused.
  */
 export const reconcileWorkspaceSshConfig = (
   existing: string,
@@ -233,13 +310,8 @@ export const reconcileWorkspaceSshConfig = (
     );
   }
   const block = managedWorkspaceSshBlock(target, identityFile);
-  if (withoutLegacy.value === "") return success(block);
-  const separator = withoutLegacy.value.endsWith("\n\n")
-    ? ""
-    : withoutLegacy.value.endsWith("\n")
-      ? "\n"
-      : "\n\n";
-  return success(`${withoutLegacy.value}${separator}${block}`);
+  if (!block.ok) return block;
+  return success(`${block.value}${withoutLegacy.value}`);
 };
 
 /** SHA-256 fingerprint in the same `SHA256:…` form OpenSSH and the server report. */
@@ -258,16 +330,20 @@ export const workspaceSshPublicKeyFingerprint = (publicKey: string): WorkspaceSs
   }
 };
 
-/** The first public key line offered by `ssh-add -L`, or null when no key line is present. */
-export const firstWorkspaceSshAgentKey = (output: string): string | null => {
-  for (const line of output.split("\n")) {
-    const trimmed = line.trim();
-    const algorithm = trimmed.split(/\s+/)[0];
-    if (algorithm?.startsWith("ssh-") === true || algorithm?.startsWith("ecdsa-") === true) {
-      return trimmed;
-    }
-  }
-  return null;
+const publicKeyIdentity = (publicKey: string): string =>
+  publicKey.trim().split(/\s+/).slice(0, 2).join(" ");
+
+const agentKeys = (): ReadonlyArray<string> => {
+  if (!process.env["SSH_AUTH_SOCK"]) return [];
+  const listed = spawnSync("ssh-add", ["-L"], {
+    encoding: "utf8",
+    timeout: 3_000,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, SSH_ASKPASS_REQUIRE: "never" },
+  });
+  return listed.status === 0
+    ? listed.stdout.split("\n").filter((line) => /^(ssh-|ecdsa-|sk-)/.test(line))
+    : [];
 };
 
 const readText = (file: string): WorkspaceSshResult<string> => {
@@ -295,7 +371,15 @@ export const configuredWorkspaceSshIdentityFile = (
   if (end === -1) return null;
   const block = config.slice(begin, end);
   const match = /^\s*IdentityFile\s+(.+?)\s*$/m.exec(block);
-  return match?.[1] ?? null;
+  const value = match?.[1];
+  if (value === undefined) return null;
+  // Decode our quoted representation. Old unquoted blocks contained literal paths.
+  if (!value.startsWith('"')) return value;
+  if (!/^"(?:[^"\\]|\\["\\])*"$/.test(value)) return null;
+  return value
+    .slice(1, -1)
+    .replace(/\\(["\\])/g, "$1")
+    .replaceAll("%%", "%");
 };
 
 type WorkspaceSshKeyMaterial = Omit<WorkspaceSshKey, "fingerprint">;
@@ -303,42 +387,75 @@ type WorkspaceSshKeyMaterial = Omit<WorkspaceSshKey, "fingerprint">;
 const publicKeyPath = (keyPath: string): string =>
   keyPath.endsWith(".pub") ? keyPath : `${keyPath}.pub`;
 
-const keyMaterial = (
-  publicKey: string,
-  publicPath: string,
-  source: WorkspaceSshKey["source"],
-): WorkspaceSshKeyMaterial => ({
-  publicKey: publicKey.trim(),
-  identityFile: publicPath.slice(0, -".pub".length),
-  source,
-});
-
 const readRequiredKey = (
   keyPath: string,
   source: WorkspaceSshKey["source"],
 ): WorkspaceSshResult<WorkspaceSshKeyMaterial> => {
-  const publicPath = publicKeyPath(keyPath);
+  const parsed = parseIdentityPath(keyPath);
+  if (!parsed.ok) return parsed;
+  const publicPath = publicKeyPath(parsed.value);
+  const privatePath = publicPath.slice(0, -".pub".length);
   const read = readText(publicPath);
-  if (read.ok === false) return failure(read.error);
-  if (read.value.trim() === "") {
-    return failure(new WorkspaceSshError("key", `No public key exists at ${publicPath}.`));
+  if (!read.ok) return read;
+  // An empty passphrase is explicit: ssh-keygen cannot open a tty or askpass dialog.
+  // Deriving the public half checks private-key readability, format, permissions and encryption.
+  const derived = spawnSync("ssh-keygen", ["-y", "-P", "", "-f", privatePath], {
+    encoding: "utf8",
+    timeout: 3_000,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, SSH_ASKPASS_REQUIRE: "never" },
+  });
+  const publicKey = read.value.trim() || (derived.status === 0 ? derived.stdout.trim() : "");
+  if (publicKey === "") {
+    return failure(
+      new WorkspaceSshError(
+        "key",
+        `No usable SSH key exists at ${privatePath}. Restore the key or choose --key explicitly.`,
+      ),
+    );
   }
-  return success(keyMaterial(read.value, publicPath, source));
+  if (derived.status === 0 && publicKeyIdentity(derived.stdout) === publicKeyIdentity(publicKey)) {
+    return success({ publicKey, identityFile: privatePath, source });
+  }
+  if (agentKeys().some((key) => publicKeyIdentity(key) === publicKeyIdentity(publicKey))) {
+    // A public IdentityFile pins precisely the matching agent key, even without a private file.
+    return success({ publicKey, identityFile: publicPath, source });
+  }
+  return failure(
+    new WorkspaceSshError(
+      "key",
+      `SSH key at ${privatePath} has no usable matching private material or unlocked agent identity. Restore the private key, or unlock this exact key with ssh-add and rerun setup.`,
+    ),
+  );
 };
 
 const readOptionalKey = (keyPath: string): WorkspaceSshResult<WorkspaceSshKeyMaterial | null> => {
-  const publicPath = publicKeyPath(keyPath);
-  const read = readText(publicPath);
-  if (read.ok === false) return failure(read.error);
-  return success(read.value.trim() === "" ? null : keyMaterial(read.value, publicPath, "existing"));
+  const parsed = parseIdentityPath(keyPath);
+  if (!parsed.ok) return parsed;
+  if (!fs.existsSync(parsed.value) && !fs.existsSync(publicKeyPath(parsed.value)))
+    return success(null);
+  return readRequiredKey(parsed.value, "existing");
 };
 
-const agentKey = (): WorkspaceSshKeyMaterial | null => {
-  const socket = process.env["SSH_AUTH_SOCK"];
-  if (socket === undefined || socket === "") return null;
-  const listed = spawnSync("ssh-add", ["-L"], { encoding: "utf8" });
-  const publicKey = listed.status === 0 ? firstWorkspaceSshAgentKey(listed.stdout) : null;
-  return publicKey === null ? null : { publicKey, identityFile: null, source: "agent" };
+const pinAgentKey = (
+  configHome: string,
+  publicKey: string,
+): WorkspaceSshResult<WorkspaceSshKeyMaterial> => {
+  const identityFile = path.resolve(
+    configHome,
+    "ssh",
+    `agent-${hashIdentity(publicKeyIdentity(publicKey))}.pub`,
+  );
+  try {
+    fs.mkdirSync(path.dirname(identityFile), { recursive: true, mode: 0o700 });
+    // Only a public selector is persisted. Never copy private material out of the agent.
+    fs.writeFileSync(identityFile, `${publicKey}\n`, { mode: 0o600 });
+    return success({ publicKey, identityFile, source: "agent" });
+  } catch (cause) {
+    return failure(
+      new WorkspaceSshError("key", "Could not save the selected agent public key.", cause),
+    );
+  }
 };
 
 const generateDedicatedKey = (privatePath: string): WorkspaceSshResult<WorkspaceSshKeyMaterial> => {
@@ -352,7 +469,7 @@ const generateDedicatedKey = (privatePath: string): WorkspaceSshResult<Workspace
   const generated = spawnSync(
     "ssh-keygen",
     ["-t", "ed25519", "-f", privatePath, "-N", "", "-C", `mend-${os.hostname()}`],
-    { encoding: "utf8" },
+    { encoding: "utf8", timeout: 3_000, stdio: ["ignore", "pipe", "pipe"] },
   );
   if (generated.status !== 0) {
     return failure(
@@ -383,12 +500,14 @@ const dedicatedKey = (
   const existing = readOptionalKey(privatePath);
   if (existing.ok === false) return failure(existing.error);
   if (existing.value !== null || !create) return existing;
-  return generateDedicatedKey(privatePath);
+  const agent = agentKeys()[0];
+  return agent === undefined ? generateDedicatedKey(privatePath) : pinAgentKey(configHome, agent);
 };
 
 /**
  * Pick the key this client can use. The explicit key or this server's configured identity wins,
- * then agent and dedicated keys. Generation happens only when `create` is true.
+ * then the persistent dedicated key. First setup may pin an agent public key or generate a key.
+ * A missing/unusable selected key is an error, never permission to silently select another key.
  */
 export const pickWorkspaceSshKey = (input: {
   readonly configHome: string;
@@ -396,23 +515,23 @@ export const pickWorkspaceSshKey = (input: {
   readonly configuredIdentityFile?: string | null;
   readonly create: boolean;
 }): WorkspaceSshResult<WorkspaceSshKey | null> => {
-  const explicit = input.explicitKeyPath?.trim() ?? "";
-  const configured = input.configuredIdentityFile?.trim() ?? "";
+  const explicit = input.explicitKeyPath ?? "";
+  const configured = input.configuredIdentityFile ?? "";
   let material: WorkspaceSshKeyMaterial | null;
 
-  if (explicit !== "") {
-    const read = readRequiredKey(explicit, "explicit");
-    if (read.ok === false) return failure(read.error);
-    material = read.value;
-  } else {
-    const fromConfig = configured === "" ? success(null) : readOptionalKey(configured);
+  if (explicit === "") {
+    const fromConfig = configured === "" ? success(null) : readRequiredKey(configured, "existing");
     if (fromConfig.ok === false) return failure(fromConfig.error);
-    material = fromConfig.value ?? agentKey();
+    material = fromConfig.value;
     if (material === null) {
       const dedicated = dedicatedKey(input.configHome, input.create);
       if (dedicated.ok === false) return failure(dedicated.error);
       material = dedicated.value;
     }
+  } else {
+    const read = readRequiredKey(explicit, "explicit");
+    if (read.ok === false) return failure(read.error);
+    material = read.value;
   }
 
   if (material === null) return success(null);
@@ -428,9 +547,13 @@ export const inspectWorkspaceSshReadiness = (input: {
   readonly key: WorkspaceSshKey | null;
   readonly registeredFingerprints: ReadonlyArray<string>;
 }): WorkspaceSshReadiness => {
+  const block =
+    input.key === null ? null : managedWorkspaceSshBlock(input.target, input.key.identityFile);
+  // Only intact managed blocks and comments may precede ours. An arbitrary earlier directive
+  // could win first-match evaluation. Do not execute a user's Match exec while inspecting status.
+  const prefix = input.config.slice(0, input.config.indexOf(blockBegin(input.target.alias)));
   const configReady =
-    input.key !== null &&
-    input.config.includes(managedWorkspaceSshBlock(input.target, input.key.identityFile));
+    block !== null && block.ok && input.config.includes(block.value) && isManagedPreamble(prefix);
   const keyRegistered =
     input.key !== null && input.registeredFingerprints.includes(input.key.fingerprint);
   return { ready: configReady && keyRegistered, configReady, keyRegistered };
