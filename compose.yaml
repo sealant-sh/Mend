@@ -1,4 +1,5 @@
-# Convenience entry point for the versioned bundle contract used by `mend setup`.
-# Put the generated .env beside this file, then run `docker compose up -d --wait`.
+# Convenience entry point for the same contract used by `mend server setup`.
+# Direct use: docker compose --env-file ~/.config/mend/server.env up -d --wait
+name: mend
 include:
   - path: deploy/docker/compose.v1.yaml

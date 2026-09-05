@@ -8,15 +8,15 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const composeDirectory = path.join(root, "deploy/docker");
 
-const renderCompose = () => {
+const renderCompose = (file = path.join(composeDirectory, "compose.v1.yaml")) => {
   const result = spawnSync(
     "docker",
     [
       "compose",
       "--project-directory",
-      composeDirectory,
+      path.dirname(file),
       "-f",
-      "compose.v1.yaml",
+      file,
       "config",
       "--format",
       "json",
@@ -66,6 +66,13 @@ test("the rendered deployment has only Mend and official Postgres", () => {
   );
 });
 
+test("the root Compose entry point uses the same deployment and project name", () => {
+  const compose = renderCompose(path.join(root, "compose.yaml"));
+  assert.equal(compose.name, "mend");
+  assert.deepEqual(Object.keys(compose.services).toSorted(), ["mend", "postgres"]);
+  assert.equal(compose.services.mend.image, "example.invalid/mend:1.2.3");
+});
+
 test("named-volume lowering and persistence paths stay aligned", () => {
   const compose = renderCompose();
   const mend = compose.services.mend;
@@ -94,6 +101,7 @@ test("the bundle pins published Sealant 0.28.0 artifacts and its official migrat
   ]);
   assert.equal(contract.sealantVersion, "0.28.0");
   assert.deepEqual(contract.runtimeContainers, ["mend", "postgres"]);
+  assert.match(dockerfile, /MEND_VERSION=\$\{MEND_VERSION\}/);
   assert.match(dockerfile, /sealant-api@sha256:8b171e4c/);
   assert.match(dockerfile, /sealant-worker@sha256:e6600512/);
   assert.match(dockerfile, /sealant-ssh-gateway@sha256:5c408d44/);

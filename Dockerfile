@@ -71,6 +71,7 @@ RUN zot_binary="$(find /opt/zot -maxdepth 1 -type f -name 'zot-linux-*-minimal' 
   && mkdir -p /var/lib/mend/store /var/lib/mend/config /var/lib/mend/ssh /var/lib/registry /run/sealant/sockets /run/mend-bundle
 
 ENV NODE_ENV=production \
+  MEND_VERSION=${MEND_VERSION} \
   HOME=/var/lib/mend/config \
   XDG_CONFIG_HOME=/var/lib/mend/config \
   MEND_MODE=all \

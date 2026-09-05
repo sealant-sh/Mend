@@ -2,7 +2,10 @@
 # Linux Docker smoke: starts only the bundle and Postgres with uniquely named resources.
 set -eu
 
-SCRIPT_DIR=$(unset CDPATH; cd -- "$(dirname -- "$0")" && pwd)
+SCRIPT_DIR=$(
+  unset CDPATH
+  cd -- "$(dirname -- "$0")" && pwd
+)
 TOKEN="mend-bundle-smoke-$$-$(date +%s)"
 PROJECT=$(printf '%s' "$TOKEN" | tr -c 'a-z0-9_-' '-')
 ENV_FILE=$(mktemp "${TMPDIR:-/tmp}/$PROJECT.env.XXXXXX")
@@ -80,7 +83,17 @@ expected=$(printf 'mend\npostgres')
 }
 [ "$(docker ps --quiet --filter "label=com.docker.compose.project=$PROJECT" | wc -l | tr -d ' ')" = 2 ]
 
-node -e "fetch('http://127.0.0.1:$WEB_PORT/api/health').then(r=>{if(!r.ok)throw Error(String(r.status))})"
+MEND_SMOKE_EXPECTED_VERSION=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$IMAGE_REPOSITORY:$IMAGE_VERSION")
+MEND_SMOKE_HEALTH_URL="http://127.0.0.1:$WEB_PORT/api/health"
+export MEND_SMOKE_EXPECTED_VERSION MEND_SMOKE_HEALTH_URL
+node --input-type=module -e '
+  const response = await fetch(process.env.MEND_SMOKE_HEALTH_URL);
+  if (!response.ok) throw Error(`Health returned ${response.status}`);
+  const body = await response.json();
+  if (body.status !== "ok" || body.version !== process.env.MEND_SMOKE_EXPECTED_VERSION) {
+    throw Error("Health must identify the running image version");
+  }
+'
 node -e "fetch('http://127.0.0.1:$REGISTRY_PORT/v2/').then(r=>{if(!r.ok)throw Error(String(r.status))})"
 printf 'registry probe\n' >"$PROBE_DIR/evidence"
 tar -C "$PROBE_DIR" -cf - evidence | docker import - "$PROBE_IMAGE" >/dev/null
@@ -91,11 +104,11 @@ docker image inspect "$PROBE_IMAGE" >/dev/null
 docker image rm "$PROBE_IMAGE" >/dev/null
 
 compose exec --no-TTY postgres psql --username postgres --dbname postgres --tuples-only --no-align \
-  --command "SELECT datname FROM pg_database WHERE datname IN ('mend','sealant_control_plane') ORDER BY datname" \
-  | grep -Fx 'mend' >/dev/null
+  --command "SELECT datname FROM pg_database WHERE datname IN ('mend','sealant_control_plane') ORDER BY datname" |
+  grep -Fx 'mend' >/dev/null
 compose exec --no-TTY postgres psql --username postgres --dbname postgres --tuples-only --no-align \
-  --command "SELECT datname FROM pg_database WHERE datname IN ('mend','sealant_control_plane') ORDER BY datname" \
-  | grep -Fx 'sealant_control_plane' >/dev/null
+  --command "SELECT datname FROM pg_database WHERE datname IN ('mend','sealant_control_plane') ORDER BY datname" |
+  grep -Fx 'sealant_control_plane' >/dev/null
 
 compose exec --no-TTY mend sh -c 'printf smoke > /var/lib/mend/store/.bundle-smoke'
 host_key_before=$(compose exec --no-TTY mend sha256sum /var/lib/mend/ssh/ssh_gateway_host_key | cut -d' ' -f1)
