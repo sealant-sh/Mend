@@ -64,6 +64,7 @@ import {
   privateTreeFingerprint,
   verifyUpgradeBackup,
 } from "./packaged-server-assertions.mjs";
+import { preparePackagedSshAcceptance } from "./packaged-ssh-acceptance.mjs";
 
 const repo = await realpath(fileURLToPath(new URL("../", import.meta.url)));
 const assets = join(repo, "deploy/docker");
@@ -853,6 +854,18 @@ async function main() {
   await badSignup.body?.cancel();
   console.log("PASS real BetterAuth account/bearer and authentication/Origin negatives");
 
+  stage = "installed CLI SSH setup";
+  const { check: checkSsh } = await preparePackagedSshAcceptance({
+    cli,
+    docker,
+    run,
+    until,
+    api,
+    scratch,
+    privateHome: home,
+    mendContainerId: mend.Id,
+  });
+
   stage = "network Git fixture";
   const source = join(scratch, "source");
   await mkdir(source);
@@ -1032,6 +1045,20 @@ async function main() {
     480_000,
   );
   assertWorkspaceMounts(workspace, projectName);
+  stage = "authenticated workspace SSH";
+  const workspaceId = await until("public workspace identity", async () => {
+    const current = await api(`/sessions/${session.id}`);
+    return current.session.sealantWorkspaceId ?? false;
+  });
+  check(
+    workspace.Name === `/sealant-${workspaceId}`,
+    "SSH must target the API-identified workspace",
+  );
+  await checkSsh(workspaceId, marker);
+  console.log(
+    "PASS installed CLI key registration and native workspace SSH with private config and pinned gateway trust",
+  );
+  stage = "recorded command and change";
   check(
     (await launched.result).ok,
     "mend run must finish successfully through the real record stream",
@@ -1189,7 +1216,9 @@ async function main() {
         sessionAfter.session.branch === detail.session.branch &&
         sessionAfter.session.worktree === detail.session.worktree &&
         sessionAfter.currentAgent?.id === detail.currentAgent.id &&
-        sessionAfter.currentAgent.exitCode === 0,
+        sessionAfter.currentAgent.status === "exited" &&
+        sessionAfter.currentAgent.exitedAt === detail.currentAgent.exitedAt &&
+        sessionAfter.currentAgent.exitCode === detail.currentAgent.exitCode,
       "Completed session, process and run identities must survive",
     );
     check(

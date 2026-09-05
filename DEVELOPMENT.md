@@ -67,7 +67,8 @@ pnpm exec turbo lint --force
 pnpm exec turbo test --force
 pnpm format:fix
 node --test scripts/process-supervisor.test.mjs scripts/bundle-packaging.test.mjs \
-  scripts/check-packaged-server.test.mjs scripts/release-publication.test.mjs
+  scripts/check-packaged-server.test.mjs scripts/release-publication.test.mjs \
+  scripts/packaged-ssh-acceptance.test.mjs
 ```
 
 The bundle-contract test needs the Docker Compose plugin, not a running daemon. Live bundle and
