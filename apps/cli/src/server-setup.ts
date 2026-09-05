@@ -754,7 +754,7 @@ const persistSetup = (
   assets: { readonly compose: string; readonly postgresInit: string },
 ): ServerGeneration =>
   storeValue(
-    store.commit({
+    store.prepare({
       identity: renderIdentity(secrets),
       config: `${JSON.stringify(config, null, 2)}\n`,
       env: renderSecrets(secrets, config),
@@ -897,44 +897,79 @@ const resolveAssets = async (
   return { compose, postgresInit };
 };
 
+const inspectImage = async (
+  runtime: ServerSetupRuntime,
+  context: string,
+  image: string,
+  format: string,
+  policy: "local" | "pull-missing",
+): Promise<CommandOutput> => {
+  const args = ["--context", context, "image", "inspect", image, "--format", format];
+  const inspected = await runtime.run("docker", args);
+  if (inspected.status === 0 || policy === "local") return inspected;
+  const pulled = await runtime.run("docker", ["--context", context, "pull", image]);
+  if (pulled.status !== 0) throw commandFailure(`Could not pull ${image}`, pulled);
+  return runtime.run("docker", args);
+};
+
 const checkLocalImages = async (
   runtime: ServerSetupRuntime,
   config: ServerConfig,
+  policy: "local" | "pull-missing" = "local",
 ): Promise<void> => {
   const image = `ghcr.io/sealant-sh/mend:${config.serverVersion}`;
-  const mend = await runtime.run("docker", [
-    "--context",
+  const mend = await inspectImage(
+    runtime,
     config.dockerContext,
-    "image",
-    "inspect",
     image,
-    "--format",
     '{{index .Config.Labels "org.opencontainers.image.version"}}',
-  ]);
+    policy,
+  );
   if (mend.status !== 0) throw commandFailure(`Preload ${image} before continuing`, mend);
   if (mend.stdout.trim() !== config.serverVersion) {
     throw setupError(
       `Image ${image} must carry org.opencontainers.image.version=${config.serverVersion}.`,
     );
   }
-  const postgres = await runtime.run("docker", [
-    "--context",
+  const postgres = await inspectImage(
+    runtime,
     config.dockerContext,
-    "image",
-    "inspect",
     "postgres:17-alpine",
-    "--format",
     "{{.Id}}",
-  ]);
+    policy,
+  );
   if (postgres.status !== 0)
     throw commandFailure("Preload postgres:17-alpine before continuing", postgres);
+};
+
+const checkComposeImages = async (
+  runtime: ServerSetupRuntime,
+  installation: ServerInstallation,
+): Promise<void> => {
+  const output = await runtime.run(
+    "docker",
+    serverComposeArgs(
+      { directory: installation.directory, dockerContext: installation.config.dockerContext },
+      ["config", "--images"],
+    ),
+  );
+  if (output.status !== 0) throw commandFailure("Docker Compose config failed", output);
+  const images = output.stdout.trim().split(/\s+/).toSorted();
+  const expected = [
+    `ghcr.io/sealant-sh/mend:${installation.config.serverVersion}`,
+    "postgres:17-alpine",
+  ].toSorted();
+  if (images.join("\n") !== expected.join("\n")) {
+    throw setupError(
+      "Compose must use only the canonical pinned Mend image and official postgres:17-alpine.",
+    );
+  }
 };
 
 const startCompose = async (
   runtime: ServerSetupRuntime,
   config: ServerConfig,
   generation: ServerGeneration,
-  offline: boolean,
 ): Promise<void> => {
   const compose = await runtime.run(
     "docker",
@@ -942,7 +977,9 @@ const startCompose = async (
       "up",
       "-d",
       "--wait",
-      ...(offline ? ["--pull", "never", "--no-build"] : []),
+      "--pull",
+      "never",
+      "--no-build",
     ]),
   );
   if (compose.status !== 0) throw commandFailure("Mend containers did not start", compose);
@@ -980,11 +1017,15 @@ const setupServer = async (
     ...validateExposure(existing?.config ?? null, options),
   };
   const assets = await resolveAssets(runtime, serverVersion, existing, store, options);
-  if (options.offline) await checkLocalImages(runtime, config);
   const secrets = savedSecrets ?? createSecrets(runtime);
   const generation = persistSetup(store, config, secrets, assets);
+  await checkComposeImages(runtime, { directory: generation.directory, config });
+  // Docker ownership claim integration point: identity and the complete generation are durable,
+  // but active is unchanged. Claim here before checkLocalImages can pull or Compose can start.
+  await checkLocalImages(runtime, config, options.offline ? "local" : "pull-missing");
+  storeValue(store.activate(generation));
   runtime.writeLine(`Using Docker context "${config.dockerContext}" (${config.dockerEndpoint})`);
-  await startCompose(runtime, config, generation, options.offline);
+  await startCompose(runtime, config, generation);
   await probeHealth(runtime, config.appUrl, config.serverVersion);
   runtime.writeLine(`Mend ${config.serverVersion} is reachable at ${config.appUrl}`);
   runtime.writeLine(

@@ -55,6 +55,9 @@ if (operation === "oversized-generation") {
         if (operation === "compose-failure")
           return { status: 1, stdout: "", stderr: "container failed" };
       } else if (args.includes("info")) stdout = "Docker Engine - Community";
+      else if (args.includes("image")) stdout = "0.23.0";
+      else if (args.includes("compose") && args.includes("config"))
+        stdout = "ghcr.io/sealant-sh/mend:0.23.0\npostgres:17-alpine\n";
       else if (args.includes("compose")) stdout = "2.35.0";
       else stdout = "1.45 1.47";
       return { status: 0, stdout, stderr: "" };

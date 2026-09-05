@@ -37,9 +37,13 @@ const setupRuntime = (configDir: string): ServerSetupRuntime => ({
         ? "unix:///var/run/docker.sock"
         : args.includes("info")
           ? "Docker Engine - Community"
-          : args.includes("compose")
-            ? "2.35.0"
-            : "1.45 1.47",
+          : args.includes("image")
+            ? "0.23.0"
+            : args.includes("compose")
+              ? args.includes("config")
+                ? "ghcr.io/sealant-sh/mend:0.23.0\npostgres:17-alpine\n"
+                : "2.35.0"
+              : "1.45 1.47",
   }),
   fetchText: async (url) =>
     url.endsWith("/api/health")
@@ -127,6 +131,184 @@ const composeAvailable =
 describe.skipIf(!composeAvailable)(
   "real Docker Compose interpolation, no daemon or containers required",
   () => {
+    it.each([
+      { name: "older Mend pin", image: "ghcr.io/sealant-sh/mend:0.22.0" },
+      { name: "unexpected Mend repository", image: "example.test/mend:0.23.0" },
+      { name: "unexpected Postgres image", postgres: "postgres:16-alpine" },
+      { name: "wrong OCI label", label: "0.22.0" },
+      { name: "missing OCI label", label: "<no value>" },
+    ])("rejects $name before activation or startup, online and offline", async (scenario) => {
+      for (const offline of [false, true]) {
+        const configDir = path.join(temporary(), "server");
+        const initial = setupRuntime(configDir);
+        expect(await serverCommand(["setup", "--context", "default"], initial)).toEqual({
+          _tag: "ok",
+        });
+        const previous = fs.realpathSync(path.join(configDir, "active"));
+        const previousFiles = fs
+          .readdirSync(previous)
+          .map((name) => [name, fs.readFileSync(path.join(previous, name), "utf8")]);
+        const identity = fs.readFileSync(path.join(configDir, "identity.env"), "utf8");
+        const assets = temporary();
+        let compose = fixtureAsset("compose.v1.yaml");
+        if (scenario.image !== undefined) {
+          // Keep the contract fragments as a comment: only resolved Compose proves the pin.
+          compose = compose.replace(
+            "${MEND_IMAGE_REPOSITORY:-ghcr.io/sealant-sh/mend}:${MEND_VERSION:?set MEND_VERSION in .env}",
+            `${scenario.image} # MEND_IMAGE_REPOSITORY MEND_VERSION`,
+          );
+          expect(compose).toContain(scenario.image);
+        }
+        if (scenario.postgres !== undefined) {
+          compose = compose.replace(
+            "image: postgres:17-alpine",
+            `image: ${scenario.postgres} # image: postgres:17-alpine`,
+          );
+        }
+        fs.writeFileSync(path.join(assets, "compose.v1.yaml"), compose);
+        fs.writeFileSync(path.join(assets, "postgres-init.sh"), fixtureAsset("postgres-init.sh"));
+        const mutations: Array<ReadonlyArray<string>> = [];
+        const configs: Array<string> = [];
+        let runningGeneration = previous;
+        const result = await serverCommand(
+          ["setup", "--assets-dir", assets, "--port", "4111", ...(offline ? ["--offline"] : [])],
+          {
+            ...initial,
+            run: async (command, args) => {
+              if (args.includes("compose") && args.includes("config")) {
+                const directory = args[args.indexOf("--project-directory") + 1];
+                if (directory === undefined) throw new Error("missing generation directory");
+                configs.push(directory);
+                expect(fs.realpathSync(path.join(configDir, "active"))).toBe(previous);
+                expect(fs.readdirSync(directory).toSorted()).toEqual(
+                  [
+                    "identity.env",
+                    "server.json",
+                    "server.env",
+                    "compose.yaml",
+                    "postgres-init.sh",
+                  ].toSorted(),
+                );
+                return runServerProcess(command, args, process.env);
+              }
+              if (args.includes("image")) {
+                expect(fs.realpathSync(path.join(configDir, "active"))).toBe(previous);
+                return { status: 0, stdout: scenario.label ?? "0.23.0", stderr: "" };
+              }
+              if (
+                args.includes("up") ||
+                args.includes("pull") ||
+                args.includes("stop") ||
+                args.includes("down")
+              ) {
+                mutations.push(args);
+                runningGeneration = fs.realpathSync(path.join(configDir, "active"));
+              }
+              return initial.run(command, args);
+            },
+          },
+        );
+        expect(result).toMatchObject({ _tag: "error" });
+        // Check runtime and persistence, not merely the eventual health error.
+        expect(mutations).toEqual([]);
+        expect(runningGeneration).toBe(previous);
+        expect(fs.realpathSync(path.join(configDir, "active"))).toBe(previous);
+        expect(
+          fs
+            .readdirSync(previous)
+            .map((name) => [name, fs.readFileSync(path.join(previous, name), "utf8")]),
+        ).toEqual(previousFiles);
+        expect(fs.readFileSync(path.join(configDir, "identity.env"), "utf8")).toBe(identity);
+        expect(configs).toHaveLength(1);
+        expect(configs[0]).not.toBe(previous);
+        if (result._tag === "error") {
+          expect(result.message).toContain(
+            scenario.label === undefined
+              ? "canonical pinned Mend image"
+              : "org.opencontainers.image.version",
+          );
+        }
+      }
+    });
+
+    it.each([
+      { label: "0.23.0", pullStatus: 0, inspectStatus: 0, offline: false, succeeds: true },
+      { label: "0.22.0", pullStatus: 0, inspectStatus: 0, offline: false, succeeds: false },
+      { label: "0.23.0", pullStatus: 1, inspectStatus: 0, offline: false, succeeds: false },
+      { label: "0.23.0", pullStatus: 0, inspectStatus: 1, offline: false, succeeds: false },
+      { label: "0.23.0", pullStatus: 0, inspectStatus: 0, offline: true, succeeds: false },
+    ])("checks missing images before activation: %j", async (scenario) => {
+      const configDir = path.join(temporary(), "server");
+      const initial = setupRuntime(configDir);
+      expect(await serverCommand(["setup", "--context", "default"], initial)).toEqual({
+        _tag: "ok",
+      });
+      const previous = fs.realpathSync(path.join(configDir, "active"));
+      const events: Array<string> = [];
+      const pulled = new Set<string>();
+      let target: string | undefined;
+      let runningGeneration = previous;
+      const result = await serverCommand(
+        ["setup", "--port", "4111", ...(scenario.offline ? ["--offline"] : [])],
+        {
+          ...initial,
+          run: async (command, args) => {
+            if (args.includes("config")) {
+              events.push("config");
+              target = args[args.indexOf("--project-directory") + 1];
+              expect(target).toBeDefined();
+              expect(fs.realpathSync(path.join(configDir, "active"))).toBe(previous);
+              return runServerProcess(command, args, process.env);
+            }
+            if (args.includes("image") || args.includes("pull")) {
+              expect(events[0]).toBe("config");
+              expect(fs.realpathSync(path.join(configDir, "active"))).toBe(previous);
+              const pulling = args.includes("pull");
+              const image = args[args.indexOf(pulling ? "pull" : "inspect") + 1];
+              if (image === undefined) throw new Error("missing image reference");
+              expect(["ghcr.io/sealant-sh/mend:0.23.0", "postgres:17-alpine"]).toContain(image);
+              events.push(`${pulling ? "pull" : "inspect"} ${image}`);
+              if (pulling) {
+                pulled.add(image);
+                return { status: scenario.pullStatus, stdout: "", stderr: "" };
+              }
+              return {
+                status: pulled.has(image) ? scenario.inspectStatus : 1,
+                stdout: scenario.label,
+                stderr: "",
+              };
+            }
+            if (args.includes("up")) {
+              events.push("up");
+              expect(args.slice(-3)).toEqual(["--pull", "never", "--no-build"]);
+              runningGeneration = fs.realpathSync(path.join(configDir, "active"));
+              expect(runningGeneration).toBe(target);
+            }
+            return initial.run(command, args);
+          },
+        },
+      );
+      expect(result._tag).toBe(scenario.succeeds ? "ok" : "error");
+      if (scenario.succeeds) {
+        expect(events).toEqual([
+          "config",
+          "inspect ghcr.io/sealant-sh/mend:0.23.0",
+          "pull ghcr.io/sealant-sh/mend:0.23.0",
+          "inspect ghcr.io/sealant-sh/mend:0.23.0",
+          "inspect postgres:17-alpine",
+          "pull postgres:17-alpine",
+          "inspect postgres:17-alpine",
+          "up",
+        ]);
+        expect(runningGeneration).not.toBe(previous);
+      } else {
+        expect(events).not.toContain("up");
+        expect(fs.realpathSync(path.join(configDir, "active"))).toBe(previous);
+        expect(runningGeneration).toBe(previous);
+        if (scenario.offline) expect(pulled.size).toBe(0);
+      }
+    });
+
     it("uses saved env, context, project, bindings, image and credentials despite a poisoned shell", async () => {
       const root = temporary();
       const configDir = path.join(root, "server");

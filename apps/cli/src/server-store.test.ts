@@ -99,6 +99,42 @@ describe("server filesystem transactions", () => {
     expect(fs.existsSync(path.join(root, "server.lock"))).toBe(false);
   });
 
+  it("prepares durable identity and complete files before selecting an active generation", async () => {
+    const root = temporary();
+    const result = await withServerStore(root, async (store) => {
+      const first = store.prepare(files);
+      expect(first._tag).toBe("ok");
+      if (first._tag === "error") return;
+      expect(identityAt(root)).toBe(files.identity);
+      expect(store.readActive()).toEqual({ _tag: "ok", value: null });
+      expect(fs.readdirSync(first.value.directory).toSorted()).toEqual(
+        [
+          "identity.env",
+          "server.json",
+          "server.env",
+          "compose.yaml",
+          "postgres-init.sh",
+        ].toSorted(),
+      );
+      expect(store.activate(first.value)).toEqual({ _tag: "ok", value: undefined });
+      expect(store.prepare(files)).toEqual(first);
+      const target = store.prepare({ ...files, config: "next config" });
+      expect(target._tag).toBe("ok");
+      if (target._tag === "error") return;
+      expect(activeDirectory(root)).toBe(first.value.directory);
+      expect(store.prepare({ ...files, identity: "replacement" })._tag).toBe("error");
+      expect(store.activate({ ...target.value, directory: temporary() })._tag).toBe("error");
+      fs.writeFileSync(path.join(target.value.directory, "compose.yaml"), "changed");
+      expect(store.activate(target.value)._tag).toBe("error");
+      expect(activeDirectory(root)).toBe(first.value.directory);
+      fs.writeFileSync(path.join(target.value.directory, "compose.yaml"), files.compose);
+      expect(store.activate(target.value)._tag).toBe("ok");
+      expect(store.readActive()).toEqual(target);
+      expect(identityAt(root)).toBe(files.identity);
+    });
+    expect(result._tag).toBe("ok");
+  });
+
   it.each([false, true])(
     "survives process loss after a kernel-limited partial write, prior active=%s",
     async (hasActive) => {

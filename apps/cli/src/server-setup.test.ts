@@ -122,10 +122,21 @@ const makeRuntime = (
           stderr: options.composeVersionStatus === 1 ? "compose unavailable" : "",
         };
       }
+      if (args.includes("compose") && args.includes("config")) {
+        const envFile = args[args.indexOf("--env-file") + 1];
+        if (envFile === undefined) throw new Error("missing Compose env file");
+        const version = readEnv(envFile).get("MEND_VERSION");
+        return {
+          status: 0,
+          stdout: `ghcr.io/sealant-sh/mend:${version}\npostgres:17-alpine\n`,
+          stderr: "",
+        };
+      }
       if (args.includes("image")) {
+        const image = args[args.indexOf("inspect") + 1];
         return {
           status: options.imageStatus ?? 0,
-          stdout: options.imageVersion ?? "0.23.0",
+          stdout: options.imageVersion ?? image?.split(":").at(-1) ?? "",
           stderr: "",
         };
       }
@@ -265,7 +276,7 @@ describe("mend server setup", () => {
         "0.23.0",
         "--offline",
         "--assets-dir",
-        path.resolve("test-fixtures/docker"),
+        path.resolve(import.meta.dirname, "../test-fixtures/docker"),
       ],
       control.runtime,
     );
@@ -375,6 +386,9 @@ describe("mend server setup", () => {
       "up",
       "-d",
       "--wait",
+      "--pull",
+      "never",
+      "--no-build",
     ]);
     expect(up?.[1]).not.toContain("down");
     expect(control.commands.some(([, args]) => args[0] === "context" && args[1] === "use")).toBe(
@@ -649,6 +663,34 @@ describe("mend server setup", () => {
     expect(fs.existsSync(path.join(control.runtime.configDir, "server.lock"))).toBe(false);
     expect(control.commands.some(([, args]) => args.includes("up"))).toBe(false);
   });
+
+  it.each([false, true])(
+    "retains an unactivated identity after image rejection, offline=%s",
+    async (offline) => {
+      const configDir = temporaryDirectory("image-rejection");
+      const first = makeRuntime({ configDir, imageVersion: "0.22.0" });
+      const flags = [
+        "setup",
+        "--version",
+        "0.23.0",
+        "--assets-dir",
+        path.resolve(import.meta.dirname, "../test-fixtures/docker"),
+        ...(offline ? ["--offline"] : []),
+      ];
+      expect(await serverCommand(flags, first.runtime)).toMatchObject({ _tag: "error" });
+      const identity = fs.readFileSync(path.join(configDir, "identity.env"), "utf8");
+      expect(first.randomCalls()).toBe(1);
+      expect(fs.existsSync(path.join(configDir, "active"))).toBe(false);
+      expect(fs.readdirSync(path.join(configDir, "generations"))).toHaveLength(1);
+      expect(first.commands.some(([, args]) => args.includes("up") || args.includes("pull"))).toBe(
+        false,
+      );
+      const second = makeRuntime({ configDir });
+      expect(await serverCommand(flags, second.runtime)).toEqual({ _tag: "ok" });
+      expect(second.randomCalls()).toBe(0);
+      expect(fs.readFileSync(activeFile(configDir, "identity.env"), "utf8")).toBe(identity);
+    },
+  );
 
   it("reuses the first identity after a filesystem failure before activating a generation", async () => {
     const configDir = temporaryDirectory("first-write-failure");

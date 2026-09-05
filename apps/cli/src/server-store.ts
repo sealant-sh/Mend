@@ -34,6 +34,10 @@ export interface ServerStore {
   readActive(): ServerStoreResult<ServerGeneration | null>;
   /** Retains all generations, reuses identical active files, and refuses identity replacement. */
   commit(files: ServerFiles): ServerStoreResult<ServerGeneration>;
+  /** Durably prepare identity and files without selecting; reuse identical active files. */
+  prepare(files: ServerFiles): ServerStoreResult<ServerGeneration>;
+  /** Select a retained generation from this store without rewriting it. */
+  activate(generation: ServerGeneration): ServerStoreResult<void>;
 }
 
 interface StorePaths {
@@ -243,7 +247,7 @@ const publishIdentity = (paths: StorePaths, identity: string): void => {
   fs.unlinkSync(temporary);
 };
 
-const publishGeneration = (paths: StorePaths, files: ServerFiles): ServerGeneration => {
+const prepareGeneration = (paths: StorePaths, files: ServerFiles): ServerGeneration => {
   fs.mkdirSync(paths.generations, { recursive: true, mode: 0o700 });
   const generationName = `gen-${randomUUID()}`;
   const directory = path.join(paths.generations, generationName);
@@ -257,14 +261,33 @@ const publishGeneration = (paths: StorePaths, files: ServerFiles): ServerGenerat
   }
   syncDirectory(directory);
   syncDirectory(paths.generations);
-  const pointer = path.join(paths.configDir, `.active-${randomUUID()}`);
-  fs.symlinkSync(`generations/${generationName}`, pointer);
-  fs.renameSync(pointer, paths.active);
   syncDirectory(paths.configDir);
   return { directory, files };
 };
 
-const commitGeneration = (paths: StorePaths, files: ServerFiles): ServerGeneration => {
+const activateGeneration = (paths: StorePaths, generation: ServerGeneration): void => {
+  const relative = path.relative(paths.configDir, generation.directory);
+  if (
+    !/^generations\/gen-[0-9a-f-]{36}$/.test(relative) ||
+    readIdentity(paths) !== fs.readFileSync(path.join(generation.directory, "identity.env"), "utf8")
+  ) {
+    throw new ServerStoreError("Cannot activate a generation outside this installation identity.");
+  }
+  for (const key of fileKeys) {
+    if (
+      fs.readFileSync(path.join(generation.directory, fileNames[key]), "utf8") !==
+      generation.files[key]
+    ) {
+      throw new ServerStoreError("Cannot activate an incomplete or changed server generation.");
+    }
+  }
+  const pointer = path.join(paths.configDir, `.active-${randomUUID()}`);
+  fs.symlinkSync(relative, pointer);
+  fs.renameSync(pointer, paths.active);
+  syncDirectory(paths.configDir);
+};
+
+const prepareFiles = (paths: StorePaths, files: ServerFiles): ServerGeneration => {
   const identity = readIdentity(paths);
   if (identity !== null && identity !== files.identity) {
     throw new ServerStoreError("Server identity already exists; refusing to replace credentials.");
@@ -273,7 +296,13 @@ const commitGeneration = (paths: StorePaths, files: ServerFiles): ServerGenerati
   if (active !== null && fileKeys.every((key) => files[key] === active.files[key])) return active;
   // Publish identity before preparing any generation. A crash here cannot orphan credentials.
   if (identity === null) publishIdentity(paths, files.identity);
-  return publishGeneration(paths, files);
+  return prepareGeneration(paths, files);
+};
+
+const commitGeneration = (paths: StorePaths, files: ServerFiles): ServerGeneration => {
+  const generation = prepareFiles(paths, files);
+  activateGeneration(paths, generation);
+  return generation;
 };
 
 const createStore = (configDir: string, lock: OwnedLock): ServerStore => {
@@ -292,6 +321,8 @@ const createStore = (configDir: string, lock: OwnedLock): ServerStore => {
     readIdentity: () => whileOwned(() => readIdentity(paths)),
     readActive: () => whileOwned(() => readActive(paths)),
     commit: (files) => whileOwned(() => commitGeneration(paths, files)),
+    prepare: (files) => whileOwned(() => prepareFiles(paths, files)),
+    activate: (generation) => whileOwned(() => activateGeneration(paths, generation)),
   };
 };
 
