@@ -1,5 +1,36 @@
 # @sealant/mend
 
+## 0.23.0
+
+### Minor Changes
+
+- e54c03d: Package Mend, the pinned Sealant runtime, RabbitMQ, and the workspace registry in one
+  application image. Keep Postgres separate, preserve application data and SSH identity in named
+  volumes, and supervise the application processes as one restartable unit.
+- 13999dd: Use `APP_URL` and explicit `MEND_ALLOWED_ORIGINS` for authentication, credentialed CORS,
+  pairing, and advertised addresses. Enforce the policy on unsafe cookie-authenticated requests and
+  WebSocket upgrades, including the web proxy. Pairing clients honor the server's configured
+  addresses. Stop trusting discovered container interfaces and forwarded host headers. Pin the
+  Sealant SDK and API contracts to 0.28.0 for the upcoming container bundle.
+- 95e3992: Support remote workspace SSH with per-server aliases, effective OpenSSH configuration
+  checks, and usable client-key validation. Keep host-key trust explicit and leave unrelated SSH
+  configuration intact.
+
+  Adopt repositories by network Git URL only. Reject local paths, option-like sources, and Git
+  remote helpers while preserving cwd project selection and session worktrees. Bundle the CLI's
+  private workspace dependencies so its npm tarball works outside the monorepo.
+
+- 867ee9d: Add server status, bounded logs, start, stop, restart, and explicit version upgrades.
+  Verify installation ownership before operations. Validate target artifacts before stopping writers
+  and save a private streamed database backup before activation. Retain the target pin and recovery
+  files after possible migrations, with no automatic downgrade or database restore. Bound
+  subprocesses and recover pre-startup failures without replacing identity or deleting volumes.
+- a2acca0: Install only the CLI through npm or the POSIX bootstrap. Add explicit Docker server setup
+  with exact version pins, private configuration generations, persistent identity, daemon volume
+  ownership checks, and a real Engine registry roundtrip. Validate release assets and image versions
+  before activation. Support explicit private origins, configurable ports, local release assets, and
+  offline setup.
+
 ## 0.22.0
 
 ### Minor Changes
