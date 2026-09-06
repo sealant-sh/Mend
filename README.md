@@ -32,45 +32,74 @@ product direction and carries the decision log.
 
 ## Install
 
-One command sets up the whole thing on a Linux machine with Docker: the Sealant control plane
-(without its web app, since Mend is the login), the Mend server as a user service, and the `mend`
-CLI. Nothing needs sudo. macOS is untested; the installer stops on Darwin unless
-`MEND_ALLOW_MACOS=1` is set.
+Install the CLI with Node.js 22 or newer:
 
 ```sh
-curl -fsSL https://mend.sealant.dev/install.sh | sh
+npm install --global @sealant/mend
+# Or: curl -fsSL https://mend.sealant.dev/install.sh | sh
 ```
 
-Then open `http://localhost:3105`, create the first account, `mend login`, `mend connect claude` (or
-`codex`, `github`), and run `mend claude` or `mend codex` inside a repository. `mend pair` hands a
-phone the same server; the native app in `apps/mobile` is unpublished, so build it yourself or open
-the URL in the phone's browser.
+Both methods install **only the CLI**. They do not install Docker, create a server, or start
+services. The optional terminal dashboard requires Node.js 26; other commands work on Node.js 22.
 
-Two network facts matter before you install. Postgres and the control plane bind to loopback, but
-the Mend server binds every interface so a phone on your tailnet or LAN can reach it. And sign-up
-stays open after the first account, so anyone who can reach the port can create one. Keep the
-machine on a network you control.
+On the machine that will hold your projects, install a current Docker Engine or Docker Desktop with
+Compose v2, then explicitly set up the server:
 
-Re-running the script repairs rather than reinstalls and leaves the volumes alone;
-`MEND_VERSION=latest SEALANT_VERSION=latest` upgrades. The knobs (ports, directories, dry run) are
-listed in the header of [`install.sh`](install.sh).
+```sh
+mend server setup
+```
 
-## Deploying further away
+At idle there are two containers: the complete Mend application and official Postgres. Sealant is
+pinned inside the application image; you manage the Mend version, not a separate platform version.
+Session workspaces may create additional containers while work is running. Repositories, worktrees,
+harness state, database data, and SSH identity live in Docker-managed volumes.
 
-That installer is the first of three deployment tiers, and the product behaves the same on each.
+Open `http://localhost:3105`, create an account, then:
 
-The same script works on a VPS or home server. Put the host behind Tailscale or another private
-network, run `mend login --url http://your-vps:3105` from your laptop, and every command works
-unchanged; `mend connect` still reads provider credentials from the machine you sit at, never the
-server.
+```sh
+mend login --url http://localhost:3105
+mend connect codex                 # or claude; connect github for private repositories
+mend adopt https://github.com/your-org/your-repo.git --name demo
+mend codex --project demo
+```
 
-The third tier is Kubernetes. Mend ships a Helm chart at [`deploy/helm/mend`](deploy/helm/mend) and
-Sealant ships its own: Mend runs as a Deployment, session workspaces are Pods, and both mount the
-same ReadWriteMany store volume, so nothing is cloned into a workspace and nothing syncs back.
-`mend service connect` brings a workspace Service's port to your own loopback over an authenticated
-tunnel, with no cluster networking exposed. [`docs/KUBERNETES.md`](docs/KUBERNETES.md) is the
-operator record, and [`docs/DEPLOYMENT-STRATEGIES.md`](docs/DEPLOYMENT-STRATEGIES.md) names the
-model behind the tiers.
+Adoption takes a Git repository URL, not a local folder or a server filesystem path. An existing
+checkout can still identify an already-adopted project when you run a command from it.
+
+Setup reruns preserve the server pin, secrets, and data. Updating the npm CLI does not upgrade the
+server. Use `mend server upgrade --version VERSION` when you choose to change it. See
+[`docs/SELF-HOSTING.md`](docs/SELF-HOSTING.md) for lifecycle commands, offline setup, and recovery.
+
+## Connect from another device
+
+The server binds to localhost by default. Private-network access is explicit; for example, on a Mac
+Mini or home server reachable as `mac-mini.local`:
+
+```sh
+mend server setup --bind 0.0.0.0 --url http://mac-mini.local:3105 \
+  --origin http://localhost:3105
+```
+
+Keep the host behind a private network or firewall. Binding `0.0.0.0` exposes web and SSH on every
+IPv4 interface; it does not configure Tailscale or a firewall for you. Sign-up remains open to
+anyone who can reach Mend. The unauthenticated workspace registry remains loopback-only, and
+Postgres has no published port.
+
+On your laptop, install just the CLI and run `mend login --url http://mac-mini.local:3105`.
+`mend connect` reads credentials from that laptop, not the server. `mend pair` offers only
+configured server URLs. The native mobile app is unpublished; build it yourself or use the browser.
+
+The VS Code extension opens session workspaces through Remote-SSH, using the configured Mend URL's
+hostname and the advertised SSH port. It maintains a separate SSH alias for each server, with your
+consent. See [`docs/WORKSPACE-SSH.md`](docs/WORKSPACE-SSH.md).
+
+Physical macOS and installed VS Code acceptance are tracked in
+[`docs/MACOS-VALIDATION.md`](docs/MACOS-VALIDATION.md). Linux container tests are not evidence that
+MacBook-to-Mac-Mini operation has been verified.
+
+`mend server setup` currently targets Docker. Kubernetes setup is later work; the existing
+[`deploy/helm/mend`](deploy/helm/mend) chart and [`docs/KUBERNETES.md`](docs/KUBERNETES.md) remain
+an operator-managed deployment path, not part of this installer.
 
 ## Status
 

@@ -1,106 +1,80 @@
 # Developing Mend
 
-How to run Mend locally against a Sealant. Product decisions live in `MEND-AGENT-WORKBENCH-PLAN.md`
-(canonical direction + decision log); the retired queue-era docs are in `docs/archive/`. This file
-is just the mechanics.
+Product decisions live in `MEND-AGENT-WORKBENCH-PLAN.md`. This guide covers running source code; for
+an installed server, use [`docs/SELF-HOSTING.md`](docs/SELF-HOSTING.md).
 
 ## Prerequisites
 
-- [direnv](https://direnv.net/) with Nix (recommended; entering the repository provides the pinned
-  Node and pnpm versions from `flake.nix`)
-- Or, when not using direnv: Node 26.7.0 and pnpm 10.32.1
-- Docker (dev Postgres, and the Sealant stack if you run one locally)
-- A running Sealant control plane (self-host stack lives in `~/.config/sealant` on a machine
-  installed via Sealant's installer — `~/.sealant` on pre-XDG installs; version pinned by
-  `SEALANT_VERSION` in its `.env`)
+- Node.js and pnpm at the versions in `.node-version` and `package.json`. Nix/direnv supplies them.
+- Docker for the development Postgres, unless you provide `DATABASE_URL`.
+- A separately configured Sealant control plane for source development. Mend uses only its public
+  SDK. The packaged application instead includes its pinned Sealant runtime.
 
-## Setup
+## Source development
 
 ```sh
-direnv allow                               # first checkout only
+direnv allow
 pnpm install
-cp .env.example .env                       # then point SEALANT_BASE_URL at your stack
-pnpm --filter @mend/web dev                # Postgres (docker, 5434) + vite (3101) + the Effect server (3105)
+cp .env.example .env
+# Set SEALANT_BASE_URL and, when required, SEALANT_SERVICE_KEY in .env.
+pnpm --filter @mend/web dev
 ```
 
-The dev command is self-sufficient: it loads the root `.env` (explicit shell env wins), brings up
-the dev Postgres via `compose.dev.yaml` (skipped when `DATABASE_URL` points elsewhere), and runs
-vite and the Effect server together. Without `SEALANT_BASE_URL` it still boots — and warns that
-session launches will fail against the SDK's `localhost:8080` default.
+The development command loads the root `.env`, preserving explicit shell overrides. It starts the
+Postgres from `compose.dev.yaml` when using the default database, then Vite on **3105** and the API
+on **3101**. Vite proxies `/api` to the API. Open `http://localhost:3105`.
 
-Open http://localhost:3101 (vite, proxies `/api` → 3105). Or build once
-(`pnpm --filter @mend/web build`) and run only the server — it then serves the built app itself on
-http://localhost:3105.
-
-Migrations run automatically at boot. Sign-up is open on a fresh instance; the first account is
-yours.
+Database migrations run at API startup. Without a working Sealant connection, the web app can start
+but session launches cannot. For host-side source development, the Sealant worker must be configured
+to mount the store paths that this API uses; the production bundle's Docker-volume layout does not
+configure an unrelated development control plane.
 
 ## Environment
 
-All optional in dev — the defaults match `compose.dev.yaml` and a localhost Sealant:
+| Variable               | Default                                    | Purpose                                                                                   |
+| ---------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| `DATABASE_URL`         | `postgres://mend:mend@localhost:5434/mend` | Mend development database                                                                 |
+| `SEALANT_BASE_URL`     | SDK default, `http://localhost:8080`       | Set to your development control plane; a local Sealant stack commonly publishes port 4000 |
+| `SEALANT_SERVICE_KEY`  | unset                                      | Service principal on that control plane                                                   |
+| `APP_URL`              | `http://localhost:3105`                    | Primary public origin, shared by API and web                                              |
+| `MEND_ALLOWED_ORIGINS` | `[]`                                       | JSON array of additional exact HTTP(S) origins                                            |
+| `BETTER_AUTH_SECRET`   | development constant                       | Supply a persistent random secret outside development                                     |
+| `MEND_MODE`            | `all`                                      | API process mode: `all`, `api`, or `worker`                                               |
+| `PORT`                 | `3101` for API                             | Internal API listener; not the public web URL                                             |
 
-| Variable                        | Default                                    | What                                                                                                                                                                                                                                                                                     |
-| ------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`                  | `postgres://mend:mend@localhost:5434/mend` | Product Postgres                                                                                                                                                                                                                                                                         |
-| `SEALANT_BASE_URL`              | `http://localhost:8080`                    | Sealant control plane (a self-host stack serves **4000**)                                                                                                                                                                                                                                |
-| `SEALANT_SERVICE_KEY`           | unset                                      | Mend's service key — one of the control plane's `SEALANT_SERVICE_KEYS`. Mend acts on behalf of each signed-in user under their own Sealant user, provisioned on first use (`docs/SEALANT-IDENTITY.md`). An open local stack needs none. `SEALANT_API_KEY` still works as the older name. |
-| `MEND_MODE`                     | `all`                                      | `all` · `web` · `worker`                                                                                                                                                                                                                                                                 |
-| `PORT`                          | `3105`                                     | The Effect server                                                                                                                                                                                                                                                                        |
-| `APP_URL`                       | `http://localhost:3105`                    | Primary public origin for authentication, pairing, and advertised addresses. Use an exact HTTP(S) origin, without a path.                                                                                                                                                                |
-| `MEND_ALLOWED_ORIGINS`          | `[]`                                       | JSON array of additional exact origins, shared by authentication and credentialed CORS. No interface discovery or forwarded-header trust.                                                                                                                                                |
-| `BETTER_AUTH_SECRET`            | dev-grade constant                         | Generate for anything real: `openssl rand -base64 32`                                                                                                                                                                                                                                    |
-| `MEND_INFERENCE_CLAUDE_ACCOUNT` | the account named `default`                | Which connected claude account inference uses                                                                                                                                                                                                                                            |
-| `MEND_DISPATCH_INTERVAL`        | `5 seconds`                                | Dispatcher poll                                                                                                                                                                                                                                                                          |
+Origins must include the correct scheme, hostname, and port, without a path. Interface discovery,
+wildcards, and incoming forwarding headers do not grant trust. Do not configure a second allowlist
+through `BETTER_AUTH_TRUSTED_ORIGINS`.
 
-Against a local self-host stack, put these in the root `.env` (loaded by `pnpm dev`; see
-`.env.example`):
+These are source-development inputs. The installed CLI generates and preserves its own server
+configuration; shell environment overrides do not change a saved installation.
+
+## Work through a session
+
+1. Create an account and inspect the Sealant connection in Settings.
+2. Connect your own harness and Git credentials with `mend connect codex`, `mend connect claude`, or
+   `mend connect github`. Mend does not supply model credentials.
+3. Adopt a cloneable Git repository URL. Local folder and `file://` adoption are not supported.
+4. Start a session, inspect its record and accumulated change, and send a follow-up to that session.
+   A commit or pull request is optional publication, not the identity of the work.
+
+## Build and verify
 
 ```sh
-SEALANT_BASE_URL=http://localhost:4000
+pnpm build                        # generates route trees needed by clean-checkout typechecks
+pnpm exec turbo typecheck --force # tsgo; never tsc
+pnpm exec turbo lint --force
+pnpm exec turbo test --force
+pnpm format:fix
+node --test scripts/process-supervisor.test.mjs scripts/bundle-packaging.test.mjs \
+  scripts/check-packaged-server.test.mjs scripts/release-publication.test.mjs \
+  scripts/packaged-ssh-acceptance.test.mjs
 ```
 
-## The loop, locally
+The bundle-contract test needs the Docker Compose plugin, not a running daemon. Live bundle and
+installed-CLI acceptance additionally need a Docker daemon; see `docs/MACOS-VALIDATION.md` for the
+separate physical-device gates.
 
-1. Settings → the Sealant connection check must be green ("Connected · observed").
-2. Connect your own accounts: Settings → Connected accounts (web or desktop), or from a machine
-   where the agent CLIs are logged in, `mend connect codex` / `mend connect claude` /
-   `mend connect github` (`mend accounts` lists them). Each person's sessions and Mend's model calls
-   run on their own subscription — Mend ships no model keys, and the Sealant web UI is not involved.
-3. New issue → give it a **real, cloneable repository** → drag it into Queued. The dispatcher (5s
-   poll) takes the top card into Mending; the card streams the recording live; a failed run returns
-   to Triage carrying the failure.
-
-## Production-shaped run
-
-The supported production shape is what [`install.sh`](install.sh) builds — run it with
-`MEND_DRY_RUN=1` to see every command without changing the machine:
-
-- Sealant from `compose.selfhost.yaml` in `~/.config/sealant`, started with `--scale web=0`; its
-  `.env` carries `SEALANT_SERVICE_KEYS` (Mend's key is the first entry), `SEALANT_CREDENTIALS_KEY`
-  and `SEALANT_MOUNT_ALLOWED_STORE_ROOTS` (which must include Mend's store root).
-- The Mend server on the host, not in a container: it owns the store path that Sealant bind-mounts
-  into workspaces. A shallow clone at `~/.local/share/mend/src` (the `cli-v*` tag), built with
-  `pnpm --filter @mend/web build`, run by `node apps/web/src/entry/main.ts` as a user service
-  (`systemctl --user status mend` / `journalctl --user -u mend -f` on Linux; `dev.sealant.mend`
-  under launchd on macOS). Config in `~/.config/mend/server.env` (0600): `DATABASE_URL`,
-  `SEALANT_BASE_URL`, `SEALANT_SERVICE_KEY`, `BETTER_AUTH_SECRET`, `PORT` (3105), `APP_URL`,
-  `MEND_STORE_ROOT`, `MEND_VERSION`, `NODE_ENV`, `PATH`.
-- Mend's Postgres from `~/.config/mend/compose.yaml` (project `mend`, host port 5436 on loopback —
-  5432–5434 are taken on dev machines).
-- The CLI under a private npm prefix (`~/.local/share/mend/npm`), linked to `~/.local/bin/mend`.
-
-`compose.yaml` at the repo root is the containerised alternative (the Mend image + Postgres, pointed
-at your Sealant via `SEALANT_BASE_URL` / `SEALANT_SERVICE_KEY`; container listens on 3000, host port
-via `MEND_PORT`). Two caveats: a loopback-bound Sealant is not reachable through
-`host.docker.internal` (bind it wider or share a network), and the store lives inside the container,
-so Sealant mounts need the same host path on both sides.
-
-## Conventions & gotchas
-
-- `pnpm typecheck` (tsgo) · `pnpm lint` · `pnpm format:fix` after changes · `pnpm test`.
-- `pnpm-lock.yaml` is generated by pnpm, never hand-edited; commit it with the dependency change
-  that produced it.
-- Platform access only through `@sealant/sdk`; gaps go to `PLATFORM-FEEDBACK.md` — including
-  release-artifact bugs found while dogfooding (two are filed against 0.5.0 there: the api image
-  missing the Agent SDK native binary, and the ssh-gateway env break on upgraded installs).
-- Design source of truth for any UI work: `DESIGN.md`.
+`pnpm-lock.yaml` is generated by pnpm, never hand-edited. Commit it with the manifest/catalog change
+that produced it. Platform gaps belong in `PLATFORM-FEEDBACK.md`; never import Sealant internals.
+Read `DESIGN.md` before non-trivial UI work.

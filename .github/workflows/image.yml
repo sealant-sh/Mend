@@ -1,22 +1,17 @@
 name: Image
 
-# Images are RELEASES: a v* (or legacy cli-v*) tag publishes `mend` (combined,
-# scripts/serve.mjs — the single-host/VPS shape), `mend-api` and `mend-web` to
-# GHCR with the semver tag + `latest`. Every image is multi-arch
-# (amd64 + arm64), and each architecture builds on its NATIVE runner — the
-# arm64 half of the API build spent 40+ minutes under QEMU emulating a
-# production install of the full dependency tree; on a real arm64 runner it
-# takes minutes. The per-arch jobs push by digest; a merge job stitches the
-# manifest list per image. workflow_dispatch rebuilds ad hoc (tagging by
-# branch, or by the `version` input).
-
+# Publish immutable candidate tags first. The caller promotes stable latest tags
+# only after native packaged acceptance, npm publication, and release assets.
 on:
-  push:
-    tags: ["v*.*.*", "cli-v*.*.*"]
+  workflow_call:
+    inputs:
+      version:
+        required: false
+        type: string
   workflow_dispatch:
     inputs:
       version:
-        description: "Tag images as this version (e.g. 0.8.0) instead of the branch name"
+        description: "Exact candidate version; otherwise use a dev version from this commit"
         required: false
         type: string
 
@@ -25,14 +20,44 @@ permissions:
   packages: write
 
 jobs:
-  build:
+  version:
     if: github.repository == 'sealant-sh/mend'
+    runs-on: ubuntu-latest
+    outputs:
+      value: ${{ steps.resolve.outputs.version }}
+      before: ${{ steps.resolve.outputs.before }}
+    steps:
+      - name: Resolve one version for image labels and tags
+        id: resolve
+        env:
+          OVERRIDE_VERSION: ${{ inputs.version }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync } from 'node:fs';
+          const { GITHUB_REF, GITHUB_REF_NAME, GITHUB_SHA, GITHUB_OUTPUT, OVERRIDE_VERSION } = process.env;
+          const tagged = GITHUB_REF.startsWith('refs/tags/');
+          const tagVersion = tagged ? GITHUB_REF_NAME.replace(/^v/, '') : undefined;
+          if (tagged && OVERRIDE_VERSION && OVERRIDE_VERSION !== tagVersion) {
+            throw new Error('A release tag cannot be overridden with another version.');
+          }
+          const version = OVERRIDE_VERSION || tagVersion || `0.0.0-dev.sha${GITHUB_SHA.slice(0, 12)}`;
+          const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?$/.exec(version);
+          if (!match || (match[4]?.split('.') ?? []).some(p => !/^[0-9A-Za-z-]+$/.test(p) || /^0\d+$/.test(p))) {
+            throw new Error('Expected an exact Docker-compatible Mend semantic version.');
+          }
+          const before = `0.0.0-acceptance.${process.env.GITHUB_RUN_ID}.${process.env.GITHUB_RUN_ATTEMPT}`;
+          appendFileSync(GITHUB_OUTPUT, `version=${version}\nbefore=${before}\n`);
+          NODE
+
+  build:
+    needs: version
     strategy:
       matrix:
         image:
-          - { name: mend, dockerfile: Dockerfile }
-          - { name: mend-api, dockerfile: apps/api/Dockerfile }
-          - { name: mend-web, dockerfile: apps/web/Dockerfile }
+          - { id: mend, name: mend, dockerfile: Dockerfile, baseline: false }
+          - { id: mend-before, name: mend, dockerfile: Dockerfile, baseline: true }
+          - { id: mend-api, name: mend-api, dockerfile: apps/api/Dockerfile, baseline: false }
+          - { id: mend-web, name: mend-web, dockerfile: apps/web/Dockerfile, baseline: false }
         platform:
           - { arch: amd64, runner: ubuntu-latest }
           - { arch: arm64, runner: ubuntu-24.04-arm }
@@ -51,33 +76,40 @@ jobs:
           context: .
           file: ${{ matrix.image.dockerfile }}
           platforms: linux/${{ matrix.platform.arch }}
-          # Push by digest only; the merge job owns the human-readable tags.
+          build-args:
+            MEND_VERSION=${{ matrix.image.baseline && needs.version.outputs.before ||
+            needs.version.outputs.value }}
           outputs:
             type=image,name=ghcr.io/${{ github.repository_owner }}/${{ matrix.image.name
             }},push-by-digest=true,name-canonical=true,push=true
       - name: Export digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           mkdir -p /tmp/digests
-          digest="${{ steps.build.outputs.digest }}"
-          touch "/tmp/digests/${digest#sha256:}"
+          touch "/tmp/digests/${DIGEST#sha256:}"
       - uses: actions/upload-artifact@v4
         with:
-          name: digests-${{ matrix.image.name }}--${{ matrix.platform.arch }}
+          name: digests-${{ matrix.image.id }}--${{ matrix.platform.arch }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
 
   merge:
     runs-on: ubuntu-latest
-    needs: build
+    needs: [version, build]
     strategy:
       matrix:
-        name: [mend, mend-api, mend-web]
+        image:
+          - { id: mend, name: mend, baseline: false }
+          - { id: mend-before, name: mend, baseline: true }
+          - { id: mend-api, name: mend-api, baseline: false }
+          - { id: mend-web, name: mend-web, baseline: false }
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: /tmp/digests
-          pattern: digests-${{ matrix.name }}--*
+          pattern: digests-${{ matrix.image.id }}--*
           merge-multiple: true
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
@@ -85,23 +117,51 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}
-          tags: |
-            type=match,pattern=^cli-v(.*)$,group=1
-            type=match,pattern=^v(.*)$,group=1
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
-            type=raw,value=${{ inputs.version }},enable=${{ inputs.version != '' && github.event_name == 'workflow_dispatch' }}
-            type=ref,event=branch,enable=${{ inputs.version == '' && github.event_name == 'workflow_dispatch' }}
-      - name: Create the multi-arch manifest
+      - name: Create and inspect the multi-arch candidate
         working-directory: /tmp/digests
+        env:
+          REPOSITORY: ghcr.io/${{ github.repository_owner }}/${{ matrix.image.name }}
+          VERSION:
+            ${{ matrix.image.baseline && needs.version.outputs.before || needs.version.outputs.value
+            }}
         run: |
-          docker buildx imagetools create \
-            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf 'ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}@sha256:%s ' *)
-      - name: Inspect
-        run:
-          docker buildx imagetools inspect ghcr.io/${{ github.repository_owner }}/${{ matrix.name
-          }}:${{ steps.meta.outputs.version }}
+          sources=()
+          for digest in *; do sources+=("$REPOSITORY@sha256:$digest"); done
+          docker buildx imagetools create --tag "$REPOSITORY:$VERSION" "${sources[@]}"
+          docker buildx imagetools inspect "$REPOSITORY:$VERSION"
+
+  packaged-smoke:
+    name: Packaged Mend acceptance
+    needs: [version, merge]
+    strategy:
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Stamp and exercise the actual release package
+        env:
+          MEND_TEST_IMAGE:
+            ghcr.io/${{ github.repository_owner }}/mend:${{ needs.version.outputs.before }}
+          MEND_TEST_VERSION: ${{ needs.version.outputs.before }}
+          MEND_TEST_UPGRADE_IMAGE:
+            ghcr.io/${{ github.repository_owner }}/mend:${{ needs.version.outputs.value }}
+          MEND_TEST_UPGRADE_VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          pnpm --filter @sealant/mend exec npm version "$MEND_TEST_UPGRADE_VERSION" --no-git-tag-version --allow-same-version
+          node scripts/check-packaged-server.mjs

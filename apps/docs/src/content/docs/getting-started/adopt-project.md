@@ -1,6 +1,6 @@
 ---
 title: Adopt a project
-description: Bring a local or remote Git repository into Mend's central store.
+description: Clone a network Git repository into Mend's central store.
 sidebar:
   order: 3
 ---
@@ -16,7 +16,9 @@ From a Git checkout:
 mend adopt
 ```
 
-Mend finds the repository root, derives a project name, and clones it into the central store.
+Mend reads the checkout's `origin` URL and asks the server to clone that network repository. It does
+not upload your local files or uncommitted changes. Without a network origin, supply a Git URL
+explicitly.
 
 Choose a name explicitly:
 
@@ -26,17 +28,16 @@ mend adopt --name billing-api
 
 ## Adopt another source
 
-The source can be a local path or any Git URL:
+Supply a network Git URL:
 
 ```sh
-mend adopt /home/you/Developer/api
 mend adopt https://github.com/acme/api.git
 mend adopt git@github.com:acme/api.git
 mend adopt ssh://git@example.com/acme/api.git
 ```
 
-The server performs the clone. A local path must exist on the Mend machine, not only on the laptop
-where the CLI runs.
+The server performs the clone. Local paths, Windows paths, `file://` sources, and custom Git remote
+helpers are rejected, even if the files exist on the server. There is no folder-adoption mode.
 
 ## Choose Git authentication
 
@@ -48,11 +49,9 @@ where the CLI runs.
 | `mend-key` | Use the machine's Mend-generated deploy key               |
 | `bridge`   | Relay signing to an SSH agent shared from another machine |
 
-Ambient mode is the default. Verify the host first:
-
-```sh
-git ls-remote <source>
-```
+Ambient mode is the default and uses credentials available inside the application container. It does
+not inherit your laptop's home directory or SSH agent. Use a Mend key or a bridge when the container
+has no credentials for your remote.
 
 For a Mend key:
 

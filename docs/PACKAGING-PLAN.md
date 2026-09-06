@@ -63,12 +63,21 @@ pickers are removed. Existing-project selection, worktree creation, and joining 
 Setup reruns preserve data, secrets, SSH host keys, selected context, and existing configuration
 unless the user explicitly changes a setting. Corrupt persisted configuration fails with a clear
 error rather than generating a replacement identity. Generated secret files have restrictive
-permissions and are written atomically.
+permissions and are written atomically. An exclusive lock covers each operation. A write-once
+identity and complete immutable generation exist before setup claims daemon storage; the active
+generation changes through an atomic pointer.
+
+The `mend-store` anchor and `mend-control` volumes carry an installation label derived from the
+persisted identity. Setup refuses foreign, unlabelled, or orphaned canonical data rather than
+adopting it with new credentials. Lifecycle operations verify ownership without allocating storage.
 
 Start, stop, status, and logs act on the recorded installation and Docker context. Stopping does not
 remove volumes. Server upgrades select a Mend version explicitly; upgrading the CLI alone leaves the
 server version unchanged. Migration failure must be visible, and restoring an old binary is not
-presented as a database rollback. Postgres major upgrades are separate work.
+presented as a database rollback. Upgrade preflight checks the target before stopping writers and
+streaming a private, completed cluster backup. Once target startup may have run migrations, retain
+the target pin, old generation, and backup for explicit recovery. Never automatically restore or
+downgrade. Postgres major upgrades are separate work.
 
 Combining services removes the old container boundary between the worker and SSH gateway. The bundle
 must document its actual process and filesystem permissions rather than claim that boundary still

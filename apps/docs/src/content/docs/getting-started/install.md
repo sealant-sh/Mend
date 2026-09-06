@@ -1,55 +1,41 @@
 ---
 title: Install Mend
-description: Install the Mend server, CLI, and Sealant control plane on a Linux machine.
+description: Install the CLI, then explicitly set up a two-container Mend server.
 sidebar:
   order: 2
 ---
 
-The installer sets up Mend and the Sealant control plane on a machine you control.
+Install the CLI on each device. Set up the server on the machine that will keep your projects.
 
 ## Choose where Mend runs
 
-Three deployment tiers, simple to complex. Start with the simplest one that fits:
+| Deployment                                 | Shape                                     | Use it when                                  |
+| ------------------------------------------ | ----------------------------------------- | -------------------------------------------- |
+| Your own machine                           | Local Docker server                       | Server and client share a machine            |
+| [VPS or home server](/operate/deploy-vps/) | The same Docker setup on a remote machine | Work should continue when your laptop sleeps |
+| [Kubernetes](/operate/deploy-kubernetes/)  | Operator-managed Helm deployment          | You already operate a cluster                |
 
-| Tier                                                | Shape                          | Choose it when                                                              |
-| --------------------------------------------------- | ------------------------------ | --------------------------------------------------------------------------- |
-| **Your own machine** (this page)                    | Linux host with Docker, local  | You want the fastest start; server and terminal are the same machine        |
-| [Deploy on a VPS](/operate/deploy-vps/)             | Same install, on a remote host | Sessions should keep running when your laptop sleeps; several devices       |
-| [Deploy on Kubernetes](/operate/deploy-kubernetes/) | Helm charts on a cluster       | You already run a cluster and want cluster storage, policies, and isolation |
-
-The two single-host tiers share this installer; the VPS page covers only what changes when the
-server is remote. The rest of this page assumes the machine in front of you.
-
-## What the installer runs
-
-Two pieces land on the machine:
-
-- **Mend** — the server you interact with: projects, sessions, review, the web UI on port `3105`.
-- **Sealant** — the workspace platform underneath Mend. Sealant creates the isolated container
-  workspaces where agents actually run, builds their images, supervises their processes, and keeps
-  the durable record of what happened inside. It runs as a set of Docker containers bound to
-  loopback.
-
-You interact with Mend; Mend drives Sealant through its SDK. On the single-host tiers you never
-install, configure, or upgrade Sealant separately — the installer owns both. (Kubernetes is the one
-tier where you install Sealant yourself; its guide walks through that.)
+`mend server setup` currently provisions Docker, not Kubernetes.
 
 ## Requirements
 
-You need:
+- Node.js 22 or newer for the CLI. The optional terminal dashboard requires Node.js 26.
+- For the server, a local Docker daemon with client/server API 1.45 or newer and Docker Compose v2.
+- Disk space for repositories, worktrees, images, databases, and backups.
+- A trusted private network for access from another device.
 
-- an x64 or arm64 Linux machine;
-- Docker with a running daemon;
-- Docker Compose 2.23.1 or newer;
-- Git and `curl`;
-- enough disk for adopted repositories, worktrees, workspace images, and databases;
-- a private network you trust if another device will reach the server.
+Docker Desktop and OrbStack must pass the same capability and registry checks as Docker Engine.
+Physical macOS and installed VS Code acceptance are recorded separately in the
+[validation checklist](https://github.com/sealant-sh/mend/blob/main/docs/MACOS-VALIDATION.md). Linux
+checks are not evidence that MacBook-to-Mac-Mini operation has been verified.
 
-macOS support is not tested. The installer stops on macOS unless you set `MEND_ALLOW_MACOS=1`.
+## Install only the CLI
 
-## Inspect the installer
+```sh
+npm install --global @sealant/mend
+```
 
-Download and read it before running:
+Or download and inspect the POSIX bootstrap:
 
 ```sh
 curl -fsSL https://mend.sealant.dev/install.sh -o /tmp/mend-install.sh
@@ -57,97 +43,102 @@ less /tmp/mend-install.sh
 sh /tmp/mend-install.sh
 ```
 
-The shorter form is:
+Both methods install only the CLI. Neither installs Docker, creates a server, nor starts a service.
+
+## Set up the server
+
+On the server machine:
 
 ```sh
-curl -fsSL https://mend.sealant.dev/install.sh | sh
+mend server setup
 ```
 
-The installer does not need `sudo`. It installs the CLI, creates a user service for the Mend server,
-and starts the Sealant control-plane containers.
+At idle, two product containers run:
+
+- The complete Mend application, including its pinned Sealant API/worker/SSH runtime, RabbitMQ, and
+  workspace registry.
+- Official Postgres, with separate Mend and Sealant databases and users.
+
+You manage the Mend version. There is no separate Sealant installation or version choice for this
+Docker setup. Session workspaces may create additional containers. Repositories, worktrees, harness
+state, database data, and SSH identity persist in Docker-managed volumes.
 
 ## Network boundary
 
-Postgres and the Sealant control plane bind to loopback. The Mend HTTP server listens on every
-interface in the current installer shape so browsers and devices on the host's LAN or tailnet can
-reach it.
+Web and SSH bind to localhost by default. Postgres has no published host port, and the workspace
+registry stays on loopback. Private access must be configured explicitly:
 
-> **Keep the instance private.** Sign-up remains open after the first account. Anyone who can reach
-> the Mend server can create an account. The default install does not add HTTPS or account-level
-> isolation for project data.
+```sh
+mend server setup --bind 0.0.0.0 --url http://mend-host:3105 \
+  --origin http://localhost:3105
+```
 
-Use a private network such as Tailscale. Do not expose port `3105` directly to the public internet.
+Use your server's reachable private hostname. The primary URL and additional exact origins govern
+authentication, CORS, WebSockets, pairing, and advertised URLs. Incoming forwarding headers and
+interface discovery cannot add trust.
+
+> Keep the instance private. Binding `0.0.0.0` exposes web and SSH on every IPv4 interface. Sign-up
+> remains open to anyone who can reach Mend. The application has administrative Docker socket
+> access. Configure your firewall or private network yourself; setup does not do it for you.
+
+Do not expose this default installation to the internet. Plain HTTP does not protect credentials on
+an untrusted network. Use an encrypted private network or properly configured HTTPS.
 
 ## Create your Mend account
 
-Open:
-
-```text
-http://localhost:3105
-```
-
-Create an account, then sign the CLI in:
+Open `http://localhost:3105`, create an account, then sign in:
 
 ```sh
-mend login
+mend login --url http://localhost:3105
 ```
 
-For a remote host:
-
-```sh
-mend login --url http://mend-host:3105
-```
-
-`mend login` opens the browser at `<server>/authorize` and waits. Check that the code on the page
-matches the one in the terminal, then press **Authorize**. No password is typed into the terminal;
-the CLI receives a device token of its own, revocable any time under Settings → Devices. The URL and
-token land in `~/.config/mend/cli.json` with file mode `0600`.
+For a remote server, use its configured private URL instead. `mend login` opens the authorization
+page. Compare its code with your terminal before approving. The CLI receives its own revocable
+device token; it does not ask for your password in the terminal.
 
 ## Connect providers
 
-Connect only the providers you use:
+Run these where your credentials live, usually your laptop:
 
 ```sh
 mend connect claude
 mend connect codex
 mend connect github
 mend accounts
-```
-
-Signing in to Mend and connecting a provider are separate operations. Read
-[Connect provider accounts](/guides/provider-accounts/) for local credential sources, standard-input
-setup, replacement, and removal.
-
-## Check the installation
-
-```sh
 mend doctor
 ```
 
-Doctor checks server health, the saved token, the Sealant connection, connected accounts, adopted
-projects, local provider CLIs, local credentials, and the detected tailnet address. Setup tasks are
-reported separately from failures.
+Use only the providers you need. Signing in to Mend and connecting a provider are separate actions.
+See [provider accounts](/guides/provider-accounts/) and [Git access](/guides/git-access/).
 
-## Repair an installation
-
-Running the installer again repairs files and services while leaving existing volumes in place:
+## Operate and upgrade
 
 ```sh
-sh /tmp/mend-install.sh
+mend server status
+mend server logs --tail 100
+mend server stop
+mend server start
+mend server restart
 ```
 
-You can request current release tags:
+Stop stops both product containers without deleting volumes. Restart keeps Postgres running. These
+operations interrupt connections; workspace containers remain.
+
+Setup reruns preserve the server pin, secrets, and data. Updating the CLI does not upgrade the
+server. To change the server, explicitly choose a published version:
 
 ```sh
-MEND_VERSION=latest SEALANT_VERSION=latest sh /tmp/mend-install.sh
+mend server upgrade --version VERSION
 ```
 
-Mend does not yet publish a tested backup, rollback, and version-compatibility procedure. Treat a
-version change as an operator action, back up the machine first, and inspect release notes before
-upgrading.
+Upgrade validates the target, stops application writers, and saves a private database backup before
+target activation. A failure after target startup retains the target pin and recovery files. There
+is no automatic database restore or downgrade. Back up Docker volumes and private configuration too;
+the SQL dump is not a backup of repositories or SSH identity.
 
-The [`install.sh` source](https://github.com/sealant-sh/mend/blob/main/install.sh) documents ports,
-paths, version overrides, and dry-run options.
+The [self-hosting guide](https://github.com/sealant-sh/mend/blob/main/docs/SELF-HOSTING.md) covers
+offline assets, port selection, ownership conflicts, locks, and upgrade recovery. The retired host
+installer is not an automatic migration path into this volume-backed deployment.
 
 ## Next steps
 
