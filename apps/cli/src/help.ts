@@ -552,6 +552,71 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
 
   // ── this machine ───────────────────────────────────────────────────────
   {
+    name: "server",
+    section: "this machine",
+    summary: "install and manage this machine's Mend server",
+    synopsis: ["<command>"],
+    description: [
+      "Server commands manage the local Docker Compose installation. They do not sign this CLI in or change Docker's global context.",
+    ],
+    see: ["server setup", "login", "doctor"],
+  },
+  {
+    name: "server setup",
+    section: "this machine",
+    summary: "install or repair the local Mend server",
+    synopsis: [
+      "[--context <name>] [--version <version|latest>] [--bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--registry-port <n>] [--docker-socket <path>] [--assets-dir <dir>] [--offline]",
+    ],
+    description: [
+      "Checks a local Unix-socket Docker context and the Compose plugin, downloads the compose and Postgres initialization assets for one Mend release, preserves existing data and secrets, and starts the server. Re-running repairs the same pinned version. Use --version only when you intend to change the server version.",
+      "The default listens only on localhost at http://localhost:3105. Non-local access requires both --bind and --url. Every extra browser origin must be named with --origin; setup never guesses from the request Host header or network interfaces.",
+      "Docker Desktop on Linux and macOS, and OrbStack on macOS, expose client-side proxy sockets. Containers use the daemon-side /var/run/docker.sock. --docker-socket overrides detection and is retained on reruns.",
+      "Setup holds an exclusive process lock through startup and health checks. A busy lock reports its owner and manual recovery steps. Never remove a live lock. Private configuration uses immutable generations and an atomic active pointer; failed attempts retain credentials and never delete Docker volumes.",
+    ],
+    options: [
+      {
+        flag: "--context <name>",
+        text: "local Docker context to persist; the global context is unchanged",
+      },
+      {
+        flag: "--version <v>",
+        text: "exact Mend server version, or latest; omitted keeps the current pin",
+      },
+      { flag: "--bind <ip>", text: "published listen address. Default: 127.0.0.1" },
+      { flag: "--url <origin>", text: "advertised browser URL, required with a non-loopback bind" },
+      {
+        flag: "--origin <origin>",
+        text: "additional exact browser origin; repeat for more than one",
+      },
+      { flag: "--port <n>", text: "external web port. Default: 3105" },
+      { flag: "--ssh-port <n>", text: "external workspace SSH port. Default: 2222" },
+      {
+        flag: "--registry-port <n>",
+        text: "loopback registry port. Default: 5000; all three ports must differ",
+      },
+      {
+        flag: "--assets-dir <dir>",
+        text: "copy compose.v1.yaml and postgres-init.sh from a release directory; fresh setup requires --version",
+      },
+      {
+        flag: "--offline",
+        text: "use retained or supplied assets and preloaded images only; no GitHub requests or Docker pulls; exact image label and health version required",
+      },
+      { flag: "--docker-socket <path>", text: "daemon-side socket mount override for diagnostics" },
+    ],
+    examples: [
+      { command: "mend server setup", text: "localhost, using the current local Docker context" },
+      {
+        command:
+          "mend server setup --context orbstack --bind 0.0.0.0 --url http://100.70.80.90:3105",
+        text: "explicit tailnet exposure",
+      },
+      { command: "mend server setup --version latest", text: "explicitly upgrade the server" },
+    ],
+    see: ["server", "login", "doctor"],
+  },
+  {
     name: "ssh",
     section: "this machine",
     summary: "workspace SSH status: gateway, registered keys, ssh config",

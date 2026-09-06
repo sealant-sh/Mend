@@ -25,6 +25,7 @@ import {
 } from "./help.ts";
 import { loginCommand } from "./login.ts";
 import { type ApiCall, pairCommand, qrCommand } from "./pair.ts";
+import { serverCommand } from "./server-setup.ts";
 import {
   isComposeFile,
   proposeFromCompose,
@@ -3495,6 +3496,11 @@ const main = async () => {
     ownArgs.some((a) => a === "--help" || a === "-h")
   ) {
     return helpCommand([command, ...ownArgs.filter((a) => !a.startsWith("-"))]);
+  }
+  if (command === "server") {
+    const result = await serverCommand(rest);
+    if (result._tag === "error") return fail(result.message);
+    return;
   }
   const config = loadConfig();
   switch (command) {
