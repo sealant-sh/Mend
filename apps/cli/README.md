@@ -19,7 +19,9 @@ relaunch that session, or `o` to continue the review in the web app.
 
 ## Local server
 
-On Linux or macOS with local Docker and Compose v2:
+On a machine with a local Docker daemon and Compose v2 (Linux is verified; macOS with Docker Desktop
+or OrbStack is still being validated, see
+[docs/MACOS-VALIDATION.md](https://github.com/sealant-sh/Mend/blob/main/docs/MACOS-VALIDATION.md)):
 
 ```sh
 mend server setup
@@ -79,11 +81,11 @@ mend pair [--url <base url>]
 ```
 
 Asks the server for a pairing code and prints it three ways: a QR of the `mend://pair` deep link,
-the code grouped as `ABCD-EFGH`, and the base URL the device should reach — the machine's tailnet
-address when it has one, otherwise a LAN address (`--url` overrides the choice). Scan it in the Mend
-app, or type the URL and the code in by hand. The code is single use and expires in 10 minutes; the
-device's own token is minted when it claims the code, and can be revoked from the Mend app later.
-The device names itself when it claims the code.
+the code grouped as `ABCD-EFGH`, and the base URL the device should reach, chosen from the origins
+configured on the server (`--url` selects one of them; it cannot add an address the server does not
+know). Scan it in the Mend app, or type the URL and the code in by hand. The code is single use and
+expires in 10 minutes; the device's own token is minted when it claims the code, and can be revoked
+from the Mend app later. The device names itself when it claims the code.
 
 ### mend doctor
 
@@ -112,7 +114,8 @@ It exits 1 when a `✗` is printed, so a setup script can gate on it. No request
 ## Commands
 
 ```
-mend adopt [source] [--name <name>]   adopt a repository into the store (default: cwd)
+mend adopt [git-url] [--name <name>]  clone a network Git repository into the store
+                                      (default: the current checkout's origin URL)
 mend codex|claude|opencode            new session worktree + launch the harness in it
 mend run -- <command...>              same, with an arbitrary command
 mend attach <session-id-prefix>       reattach this terminal to a running session
@@ -127,6 +130,11 @@ mend skills [--project [p]]           your skill library on the server (or a pro
 mend skills push [--project [p]] [--prune] [--dir <path>]
                                       upload ~/.agents/skills bundles; sessions receive
                                       them at launch (--prune removes what's gone)
+mend keys init|show|mode|share        your Mend git key, default access mode, agent bridge
+mend ssh [setup]                      workspace SSH status; register a key + Host block
+mend server <command>                 this machine's Docker server: setup, status, logs,
+                                      start, stop, restart, upgrade
+mend version                          this CLI's version, and the server's when it answers
 ```
 
 ## Signing in

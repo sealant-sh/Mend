@@ -42,9 +42,10 @@ mend opencode
 mend run -- bash -i
 ```
 
-If no adopted project matches but the current directory is a Git repository, a harness launch can
-auto-adopt it. Run `mend adopt` yourself when you want to choose the project name or Git
-authentication mode.
+If no adopted project matches but the current directory is a Git checkout with a network `origin`, a
+harness launch adopts that origin URL first; the server clones it and never receives your local
+files. Run `mend adopt` yourself when you want to choose the project name or Git authentication
+mode.
 
 Select a project explicitly from another directory:
 
@@ -202,8 +203,8 @@ worktree against its base, committed or not.
 What does not survive a workspace replacement is everything outside the worktree: packages installed
 into the container, the workspace home directory, `/tmp`. Deleting a session removes only the
 conversation record — the worktree, its change, and its checkpoints remain. Removing the worktree is
-its own explicit act: it is refused while any session is live, refuses again while an unreviewed
-change stands, and deletes uncommitted changes with it.
+its own explicit act: it is refused while any session is live, refuses again while the worktree
+still holds any change against its base, and deletes uncommitted changes with it.
 
 Read [How Mend works](/concepts/how-mend-works/#where-uncommitted-files-live) for the full boundary.
 

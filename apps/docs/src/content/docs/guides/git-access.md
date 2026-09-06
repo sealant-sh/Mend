@@ -8,21 +8,23 @@ sidebar:
 Remote Git operations belong to the Mend host. Session workspaces do not receive the host's SSH keys
 or Git credentials.
 
-A project chooses one authentication mode.
+A project chooses one authentication mode. `mend keys mode` sets your default for new projects:
+`mend-key` until you change it, or `bridge`. A project's setup page can override it, and
+`mend adopt --auth` overrides it for one adoption.
 
 ## Ambient credentials
 
-Ambient mode uses the login user's existing Git and SSH setup on the Mend machine. It is the
-default.
+Ambient mode uses whatever Git and SSH setup exists where the Mend server process runs. In the
+Docker deployment that is the application container, which ships no credentials and does not inherit
+your laptop's home directory or SSH agent, so ambient mode reaches only public remotes there. It
+fits a source checkout you run as your own user, where the host already has the right SSH agent, key
+files, credential helper, or GitHub CLI setup.
 
-Verify access on that machine before adoption:
+Verify access where the server runs before adoption:
 
 ```sh
 git ls-remote git@github.com:acme/api.git
 ```
-
-Use ambient mode when the host already has the right SSH agent, key files, credential helper, or
-GitHub CLI setup.
 
 ## Mend deploy key
 
@@ -88,8 +90,10 @@ mode for repository transport.
 **Permission denied** means the selected host identity cannot access the remote. Test ambient
 access, install the Mend public key, or verify that the shared agent contains an authorized key.
 
-**Host key verification failed** means the Mend host does not trust the remote host key. Fix the
-host's `known_hosts` entry. Do not disable host-key checking in a workspace.
+**Host key verification failed** means the remote's host key changed since the Mend server first saw
+it: every mode accepts a first-contact key and refuses a changed one. Verify the new key out of
+band, then fix the `known_hosts` entry where the server's Git runs. Do not disable host-key checking
+in a workspace.
 
 **Bridge unavailable** means no signing client is connected. Restart `mend keys share` on the
 machine holding the key.

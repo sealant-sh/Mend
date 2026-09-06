@@ -29,8 +29,17 @@ flowchart LR
 
 ## Use a private network
 
-The installer exposes the Mend server so another device on the host's LAN or tailnet can reach it.
-Postgres and the Sealant control plane stay on loopback.
+Web and workspace SSH bind to localhost by default. Exposing them on a private network is an
+explicit choice when you set up the server:
+
+```sh
+mend server setup --bind 0.0.0.0 --url http://mend-host:3105 \
+  --origin http://localhost:3105
+```
+
+Postgres publishes no port and the workspace registry stays on loopback. Binding `0.0.0.0` opens
+every IPv4 interface and sign-up stays open to anyone who can reach Mend, so keep the machine on a
+network you control. Read [Install Mend](/getting-started/install/#network-boundary).
 
 Prefer Tailscale or another private network. Mend does not require public ingress for remote use. Do
 not publish the server directly to the internet.
@@ -50,7 +59,8 @@ mend pair
 The command prints a QR code, a short code, and the address the second device should open. A pairing
 code is valid for one device, one claim, and ten minutes.
 
-Override the advertised address when automatic detection chooses the wrong interface:
+The address comes from the origins configured on the server. `--url` selects one of those exact
+URLs; it cannot introduce an address the server does not know:
 
 ```sh
 mend pair --url http://mend-host.example:3105
@@ -94,10 +104,12 @@ is not intended to replace a full editor.
 
 ## Development services
 
-A declared Service runs in a session workspace and receives a stable host port while live. On the
-machine running the Mend server, that port is local; from another device, run
-`mend service connect <name>` to bind the same port on your own loopback over an authenticated
-WebSocket — it works on every deployment shape and needs no extra network exposure.
+A declared Service runs in a session workspace. `mend service connect <name>` binds its port on your
+own machine's loopback over an authenticated WebSocket, on every deployment shape, with no extra
+network exposure. `mend service run` opens that tunnel by itself when the CLI points at a
+non-loopback server URL; against a server reached at `localhost` it prints the raw forward instead,
+so run `mend service connect` explicitly there. That raw host forward is bound by the Mend server
+process itself; in the Docker deployment that is the application container, not the Docker host.
 
 Raw forwarded ports do not pass through Mend request authentication; when you expose one directly,
 the private network is the access boundary. Declare HTTP or HTTPS before presenting a Service as a

@@ -43,15 +43,16 @@ helpers are rejected, even if the files exist on the server. There is no folder-
 
 `--auth` selects how the Mend host authenticates remote Git operations:
 
-| Mode       | Behavior                                                  |
-| ---------- | --------------------------------------------------------- |
-| `ambient`  | Use the Mend server account's existing Git and SSH setup  |
-| `mend-key` | Use the machine's Mend-generated deploy key               |
-| `bridge`   | Relay signing to an SSH agent shared from another machine |
+| Mode       | Behavior                                                      |
+| ---------- | ------------------------------------------------------------- |
+| `ambient`  | Use whatever credentials exist inside the Mend server process |
+| `mend-key` | Use the machine's Mend-generated deploy key                   |
+| `bridge`   | Relay signing to an SSH agent shared from another machine     |
 
-Ambient mode is the default and uses credentials available inside the application container. It does
-not inherit your laptop's home directory or SSH agent. Use a Mend key or a bridge when the container
-has no credentials for your remote.
+The default is your Git access mode from `mend keys mode`, which is `mend-key` until you change it.
+Ambient mode uses whatever credentials exist inside the Mend application container; the Docker
+deployment ships none and never inherits your laptop's home directory or SSH agent, so ambient mode
+reaches only public remotes there.
 
 For a Mend key:
 

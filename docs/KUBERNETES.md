@@ -50,8 +50,8 @@ create (git's lock files).
   `sessionChannel: { mode: "unix-socket" | "network", endpoint }`.
 
 Everything else — launch flow, checkpoints, review, hot pool — is unchanged. In `local` mode (the
-default) none of the above activates and the installer, Docker Compose and the per-session socket
-behave exactly as before.
+default) none of the above activates and the Docker deployment from `mend server setup` and the
+per-session socket behave exactly as before.
 
 ## Configuration
 

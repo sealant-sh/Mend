@@ -38,5 +38,22 @@ assert.ok(
   "Home page must use the documentation layout rather than a custom marketing hero",
 );
 assert.ok(!homePage.includes(" :::"), "Rendered pages must not expose directive markers");
+assert.ok(homePage.includes("mend server setup"), "Home page must point at explicit server setup");
+assert.ok(
+  !homePage.includes("The installer sets up Mend and Sealant"),
+  "Home page must not describe the retired host-process installer",
+);
+
+const cliPage = await readFile(
+  new URL("../dist/reference/cli/index.html", import.meta.url),
+  "utf8",
+);
+for (const section of ["server-commands", "workspace-ssh-commands", "skills-commands"]) {
+  assert.ok(cliPage.includes(`id="${section}"`), `CLI reference must document ${section}`);
+}
+assert.ok(
+  !cliPage.includes("Adopt a local path"),
+  "CLI reference must not offer local-path adoption",
+);
 
 process.stdout.write("Rendered docs structure is valid\n");

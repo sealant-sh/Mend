@@ -25,6 +25,11 @@ Mend supervises the command, waits for port 3000 to answer, and opens a port on 
 laptop, not the Mend host), loopback only: `http://127.0.0.1:43127`. Open it. That is your app, hot
 reload and all, because Mend pipes raw bytes and rewrites nothing.
 
+One exception: when the CLI's server URL is `localhost`, `mend service run` treats the server's own
+forward as your machine and prints it instead of tunnelling. On the Docker deployment that forward
+lives inside the application container, so run `mend service connect <name>` there to bring the port
+to your loopback.
+
 Behind that port, Mend bridges each TCP connection through to the dev server:
 
 ```text

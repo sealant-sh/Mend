@@ -18,20 +18,63 @@ version. One-shot commands require Node 22 or newer. The terminal dashboard requ
 | `mend connect <provider> [--from-stdin] [--remove]` | Connect or remove `claude`, `codex`, or `github` for the signed-in user                                                                                |
 | `mend accounts`                                     | List the signed-in user's connected provider accounts                                                                                                  |
 | `mend doctor`                                       | Run a read-only setup checklist and print a repair command for unfinished items                                                                        |
-| `mend pair [--url <base-url>]`                      | Create a single-use, ten-minute pairing code for another device                                                                                        |
+| `mend pair [--url <base-url>]`                      | Create a single-use, ten-minute pairing code for another device; `--url` selects one of the server's configured origins                                |
+| `mend version`                                      | Print this CLI's version and the server's, when it answers within two seconds                                                                          |
 
 Read [Connect provider accounts](/guides/provider-accounts/) for credential sources and removal.
 
+## Server commands
+
+Server commands run on the machine that hosts Mend. They manage the local Docker Compose
+installation created by `mend server setup`; they do not sign this CLI in or change Docker's global
+context.
+
+| Command                                                                           | Purpose                                                                                                                                                                                                                                             |
+| --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mend server setup [options]`                                                     | Install or repair the local server: check the Docker context and Compose plugin, download one release's assets, claim the persistent volumes, pull and verify the pinned images, start both containers, then verify health and a registry roundtrip |
+| `mend server status`                                                              | Show the saved pin, active generation, and container state without changing anything; a running Mend must answer health with the exact pinned version                                                                                               |
+| `mend server start [--offline]`                                                   | Start the selected generation from preloaded images; never downloads assets or pulls release images                                                                                                                                                 |
+| `mend server stop`                                                                | Stop Mend and Postgres without deleting volumes; workspace containers remain                                                                                                                                                                        |
+| `mend server restart [--offline]`                                                 | Restart Mend on the same generation and pin; Postgres keeps running                                                                                                                                                                                 |
+| `mend server logs [--tail <n>]`                                                   | Print a bounded tail of both containers' logs, 1 to 1000 lines per service, default 100; no follow mode                                                                                                                                             |
+| `mend server upgrade --version <target\|latest> [--assets-dir <dir>] [--offline]` | Upgrade to an explicit version after validating its assets and image label, stopping application writers, and saving a private database backup; downgrades are refused                                                                              |
+
+Setup options:
+
+| Option                   | Meaning                                                                                                               |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| `--context <name>`       | Local Unix-socket Docker context to persist; the global context is unchanged                                          |
+| `--version <v>`          | Exact Mend server version, or `latest`; a fresh setup pins the CLI's own version, and a rerun keeps the existing pin  |
+| `--bind <ip>`            | Published listen address for web and SSH; default `127.0.0.1`                                                         |
+| `--url <origin>`         | Advertised browser URL; required with a non-loopback bind                                                             |
+| `--origin <origin>`      | Additional exact browser origin; repeat for more than one                                                             |
+| `--port <n>`             | External web port; default `3105`                                                                                     |
+| `--ssh-port <n>`         | External workspace SSH port; default `2222`                                                                           |
+| `--registry-port <n>`    | Loopback workspace registry port; default `5000`; all three ports must differ                                         |
+| `--assets-dir <dir>`     | Copy `compose.v1.yaml` and `postgres-init.sh` from a local release directory; a fresh setup then requires `--version` |
+| `--offline`              | Use retained or supplied assets and preloaded images only; no GitHub requests or release-image pulls                  |
+| `--docker-socket <path>` | Daemon-side socket mount override for diagnostics; retained on reruns                                                 |
+
+Setup holds an exclusive lock through startup and health checks, keeps private configuration in
+immutable generations, and never deletes Docker volumes. A changed `--version` on a rerun is
+refused; use `mend server upgrade`. Read [Install Mend](/getting-started/install/) and the
+[self-hosting guide](https://github.com/sealant-sh/mend/blob/main/docs/SELF-HOSTING.md) for
+exposure, offline assets, locks, and upgrade recovery.
+
 ## Project commands
 
-| Command                                                    | Purpose                                                                    |
-| ---------------------------------------------------------- | -------------------------------------------------------------------------- |
-| `mend adopt [source] [--name <name>] [--auth <mode>]`      | Adopt a local path or Git URL into the store                               |
-| `mend projects`                                            | List adopted projects and their live sessions                              |
-| `mend env load [file] [--secret [A,B]] [--project <name>]` | Load dotenv values into project configuration and secrets                  |
-| `mend env show [--project <name>]`                         | List configuration, secret, and cluster-binding names; never secret values |
+| Command                                                                                       | Purpose                                                                                                      |
+| --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `mend adopt [git-url] [--name <name>] [--auth <mode>]`                                        | Clone a network Git repository into the store; with no URL, the current checkout's `origin`                  |
+| `mend refresh [project]`                                                                      | Fetch origin's branches into the store so new sessions base on current tips                                  |
+| `mend projects`                                                                               | List adopted projects and their live sessions                                                                |
+| `mend env load [file] [--secret [A,B]] [--project <name>]`                                    | Load dotenv values into project configuration and secrets                                                    |
+| `mend env show [--project <name>]`                                                            | List configuration, secret, and cluster-binding names; never secret values                                   |
+| `mend env cluster add secret\|configmap <name>`, `remove <kind>/<name>`, `sa <name>\|--clear` | Bind Kubernetes Secrets, ConfigMaps, and a service account to a project's workspaces; Mend stores names only |
 
-Git authentication modes for `mend adopt` are `ambient`, `mend-key`, and `bridge`.
+Git authentication modes for `mend adopt` are `mend-key`, `bridge`, and `ambient`. The default is
+your Git access mode from `mend keys mode`, which is `mend-key` until you change it. Local paths,
+`file://` URLs, option-like sources, and Git remote helpers are rejected.
 
 ## Start agents and commands
 
@@ -106,8 +149,8 @@ improves.
 
 Deleting a session removes only the conversation record; the worktree — with its change and
 checkpoints — remains. Removing a worktree is its own explicit act (dashboard `Shift+D`, or the
-API): refused while any session is live, and refused while an unreviewed change stands unless
-forced.
+API): refused while any session is live, and refused while the worktree still holds any change
+against its base unless forced.
 
 ## Dashboard keys
 
@@ -149,15 +192,34 @@ when tmux, Zellij, or another outer tool owns detaching.
 
 Read [Dotfiles](/guides/dotfiles/) before syncing credentials or machine-specific files.
 
+## Skills commands
+
+| Command                                                     | Purpose                                                                                                                                             |
+| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mend skills [--project [p]]`                               | List your skill library on the server, or a project's                                                                                               |
+| `mend skills push [--project [p]] [--prune] [--dir <path>]` | Upload skill bundles from `~/.agents/skills`; sessions receive them at launch, and `--prune` removes server-side skills the directory no longer has |
+
 ## Git key commands
 
-| Command           | Purpose                                                             |
-| ----------------- | ------------------------------------------------------------------- |
-| `mend keys init`  | Generate the Mend machine's Ed25519 deploy key                      |
-| `mend keys show`  | Print the public key and fingerprint                                |
-| `mend keys share` | Relay this machine's SSH agent to the Mend server until interrupted |
+| Command                             | Purpose                                                             |
+| ----------------------------------- | ------------------------------------------------------------------- |
+| `mend keys init`                    | Generate the Mend machine's Ed25519 deploy key                      |
+| `mend keys show`                    | Print the public key and fingerprint                                |
+| `mend keys mode [mend-key\|bridge]` | Show or set your default Git access mode for new projects           |
+| `mend keys share`                   | Relay this machine's SSH agent to the Mend server until interrupted |
 
 The key bridge requires a reachable local SSH agent. Signing happens on the machine holding the key.
+
+## Workspace SSH commands
+
+| Command                                             | Purpose                                                                                                                                                                              |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `mend ssh [status]`                                 | Report the gateway, this client's registered key, and the managed `~/.ssh/config` block; it does not test a connection or verify the host key                                        |
+| `mend ssh setup [--key <path>] [--host <hostname>]` | Register this client's public key and write a server-specific Host block before wildcard defaults; the hostname defaults to the configured Mend URL and the server supplies the port |
+
+The VS Code extension uses the same configuration. Read
+[workspace SSH](https://github.com/sealant-sh/mend/blob/main/docs/WORKSPACE-SSH.md) for identity
+selection and host-key verification.
 
 ## Service commands
 
@@ -236,3 +298,6 @@ on the machine.
 One-shot commands print a readable server error and exit nonzero when a request fails. Interactive
 commands return terminal control when the process ends or the user detaches. `mend doctor` does not
 change server or machine state.
+
+`mend help <command>` prints one command's page and `mend man <command>` opens the same page in
+`man`; the npm package also installs `mend(1)` and `mend-<command>(1)` for a global install.
