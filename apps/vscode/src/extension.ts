@@ -8,6 +8,14 @@ import { MendApiError, MendClient, normalizeProjectName } from "./client.js";
 import { ConnectionStore } from "./config.js";
 import { currentBranch, pathContains, repositoryFacts, worktreePath } from "./git.js";
 import {
+  agentModeLabel,
+  continueCommand,
+  isStalePendingTakeover,
+  liveEngineAgentOf,
+  pendingTakeoverFor,
+  type PendingTakeover,
+} from "./takeover.js";
+import {
   MendTreeProvider,
   displaySession,
   isProjectNode,
@@ -21,7 +29,9 @@ import type {
   ProjectDetail,
   Session,
   SessionLocation,
+  SessionProcess,
   WorkspaceSshView,
+  WorktreeJoin,
 } from "./types.js";
 import { runWorkspaceSshSetup, workspaceSshReadiness } from "./workspace-ssh.js";
 
@@ -42,10 +52,46 @@ const MODEL_OPTIONS: Readonly<Record<string, ReadonlyArray<readonly [string, str
 
 const liveStatuses: ReadonlySet<string> = new Set(["starting", "running", "waiting", "idle"]);
 
+/** Global-state key carrying a takeover intent into the workspace window it opens. */
+const PENDING_TAKEOVER_KEY = "mend.pendingTakeover";
+
+/** New session title: the project, plus the worktree when the session joins one. */
+const newSessionTitle = (project: Project, join: WorktreeJoin | null): string =>
+  join === null ? `New session · ${project.name}` : `New session · ${project.name} › ${join.name}`;
+
+/**
+ * The remote authority this window runs under, read off its remote workspace folder (the
+ * public API exposes only the remote NAME). Undefined in a local window.
+ */
+const windowRemoteAuthority = (): string | undefined =>
+  (vscode.workspace.workspaceFolders ?? []).find((folder) => folder.uri.scheme === "vscode-remote")
+    ?.uri.authority;
+
+/**
+ * The hand-run half of a takeover: a terminal INSIDE the workspace (in a remote window every
+ * integrated terminal is remote) running the provider's own resume. Mend observes the process
+ * through the mounted harness home; the session reads running again under the same
+ * conversation.
+ */
+const runContinue = (harness: string, command: string): void => {
+  const terminal = vscode.window.createTerminal({ name: `${harness} · Mend` });
+  terminal.show();
+  terminal.sendText(command, true);
+};
+
 const errorMessage = (cause: unknown): string =>
   cause instanceof MendApiError || cause instanceof Error
     ? cause.message
     : "Mend could not complete that action.";
+
+/**
+ * The Remote-SSH authority of one workspace through the gateway — the authority the
+ * workspace folder carries inside that window.
+ */
+const remoteAuthority = (
+  destination: { readonly host: string; readonly usernamePrefix: string },
+  workspaceId: string,
+): string => `ssh-remote+${destination.usernamePrefix}-${workspaceId}@${destination.host}`;
 
 const safeFileName = (value: string): string =>
   value
@@ -167,6 +213,10 @@ interface ActionPick extends vscode.QuickPickItem {
   readonly action: "new-session" | "new-worktree" | "open-mend";
 }
 
+interface TakeoverPick extends vscode.QuickPickItem {
+  readonly takeover: boolean;
+}
+
 interface SessionKindPick extends vscode.QuickPickItem {
   readonly sessionKind: "workbench" | "claude" | "codex" | "advanced";
 }
@@ -250,10 +300,45 @@ class MendCommands {
     }
   }
 
-  async openWorktree(argument?: unknown): Promise<void> {
+  /**
+   * Open the session's workspace. From the tree, the quick pick, or a deep link, a session
+   * whose agent Mend is running elsewhere first asks whether to open ALONGSIDE it or take it
+   * over here; the opens that follow a launch from this editor skip the question.
+   */
+  async openWorktree(
+    argument?: unknown,
+    options: { readonly offerTakeover?: boolean } = {},
+  ): Promise<void> {
     try {
       const location = await this.sessionLocation(argument);
       if (location === null) return;
+      if (options.offerTakeover === true && liveStatuses.has(location.session.status)) {
+        const detail = await this.client.sessionDetail(location.session.id);
+        const agent = liveEngineAgentOf(detail.processes);
+        if (agent !== null) {
+          const choice = await vscode.window.showQuickPick<TakeoverPick>(
+            [
+              {
+                label: "$(multiple-windows) Open alongside",
+                detail: `${detail.session.harness} keeps running ${agentModeLabel(agent.kind)}; the editor opens the same worktree.`,
+                takeover: false,
+              },
+              {
+                label: "$(debug-continue) Take over in the editor",
+                detail:
+                  "End the running agent here and continue the same conversation in the workspace terminal.",
+                takeover: true,
+              },
+            ],
+            { title: `${displaySession(location.session)} is running`, ignoreFocusOut: true },
+          );
+          if (choice === undefined) return;
+          if (choice.takeover) {
+            await this.takeOver({ ...location, session: detail.session }, agent);
+            return;
+          }
+        }
+      }
       const workspaceUri = await this.workspaceUri(location);
       if (workspaceUri === "cancelled") return;
       await this.openNamedWorkspace(location, workspaceUri);
@@ -316,13 +401,108 @@ class MendCommands {
     }
   }
 
+  /** Explicit takeover from the tree — the same flow the open-time question reaches. */
+  async takeOverSession(argument?: unknown): Promise<void> {
+    try {
+      const location = await this.sessionLocation(argument);
+      if (location === null) return;
+      const detail = await this.client.sessionDetail(location.session.id);
+      const agent = liveEngineAgentOf(detail.processes);
+      if (agent === null) {
+        void vscode.window.showInformationMessage(
+          `${displaySession(location.session)} has no agent Mend is running — nothing to take over. Open the workspace and run the harness yourself.`,
+        );
+        return;
+      }
+      await this.takeOver({ ...location, session: detail.session }, agent);
+    } catch (cause) {
+      void vscode.window.showErrorMessage(errorMessage(cause));
+    }
+  }
+
+  /**
+   * Editor-native takeover. The editor cannot adopt the engine's PTY, so it takes the observed
+   * route: a shell holds the workspace lease, the stop ends the agent (a stop that ends a live
+   * agent keeps its shells, so the workspace stays), and the provider's own resume runs in a
+   * terminal inside the workspace — where the harness home still holds the transcript the
+   * agent was writing. Mend observes that process as the same conversation.
+   */
+  private async takeOver(location: SessionLocation, agent: SessionProcess): Promise<void> {
+    const { session } = location;
+    const command = continueCommand(session.harness, agent.providerSessionId);
+    if (command === null) {
+      void vscode.window.showErrorMessage(
+        `Mend cannot continue a ${session.harness} conversation by hand; attach from a terminal instead: mend attach ${session.id.slice(0, 8)}`,
+      );
+      return;
+    }
+    // Reconcile SSH before ending anything: a cancelled setup must leave the agent running.
+    const destination = await this.resolveWorkspaceSsh(false);
+    if (destination === "cancelled") return;
+    const workspaceId = session.sealantWorkspaceId;
+    if (workspaceId === null) {
+      void vscode.window.showErrorMessage(
+        `${displaySession(session)} reports no live workspace to take over.`,
+      );
+      return;
+    }
+    const answer = await vscode.window.showWarningMessage(
+      `Take over ${displaySession(session)} in the editor?`,
+      {
+        modal: true,
+        detail: `Ends the ${session.harness} Mend is running ${agentModeLabel(agent.kind)}. The workspace stays open, and the same conversation resumes in its terminal with: ${command}`,
+      },
+      "Take over",
+    );
+    if (answer !== "Take over") return;
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `Taking over ${displaySession(session)}…`,
+      },
+      async () => {
+        await this.client.openShell(session.id);
+        await this.client.stopSession(session.id);
+      },
+    );
+    this.tree.refresh();
+    await this.scope.refresh();
+    const authority = remoteAuthority(destination, workspaceId);
+    if (windowRemoteAuthority() === authority) {
+      // Already inside this workspace's window: the terminal opens right here.
+      runContinue(session.harness, command);
+      return;
+    }
+    // The new window's extension host claims this on activation (see `activate`).
+    const pending: PendingTakeover = {
+      authority,
+      workspaceId,
+      sessionId: session.id,
+      harness: session.harness,
+      command,
+      at: Date.now(),
+    };
+    await this.context.globalState.update(PENDING_TAKEOVER_KEY, pending);
+    if (!(await this.ensureRemoteSsh(authority, "/workspace/repo"))) {
+      await this.context.globalState.update(PENDING_TAKEOVER_KEY, undefined);
+      void vscode.window.showInformationMessage(
+        `${displaySession(session)} is yours: the workspace stays open. Run "${command}" in its terminal to continue the conversation.`,
+      );
+      return;
+    }
+    await this.openNamedWorkspace(
+      location,
+      vscode.Uri.from({ scheme: "vscode-remote", authority, path: "/workspace/repo" }),
+    );
+  }
+
   /**
    * The core loop's front door: one chooser, then at most one question, then VS Code opens
    * inside the new session's workspace. The editor-native flavor comes first — a workbench
    * (fresh worktree, shell-held workspace, you run the agent yourself and Mend observes it).
    * The six-question flow survives only behind "Agent with options…".
    */
-  async newSession(argument?: unknown): Promise<void> {
+  async newSession(argument?: unknown, join: WorktreeJoin | null = null): Promise<void> {
     const project = await this.pickProject(argument);
     if (project === null) return;
     const kind = await vscode.window.showQuickPick<SessionKindPick>(
@@ -349,16 +529,48 @@ class MendCommands {
           sessionKind: "advanced",
         },
       ],
-      { title: `New session · ${project.name}`, ignoreFocusOut: true },
+      { title: newSessionTitle(project, join), ignoreFocusOut: true },
     );
     if (kind === undefined) return;
-    if (kind.sessionKind === "workbench") return this.startWorkbench(project);
-    if (kind.sessionKind === "advanced") return this.newSessionAdvanced(project);
-    return this.startAgent(project, kind.sessionKind);
+    if (kind.sessionKind === "workbench") return this.startWorkbench(project, join);
+    if (kind.sessionKind === "advanced") return this.newSessionAdvanced(project, join);
+    return this.startAgent(project, kind.sessionKind, join);
+  }
+
+  /**
+   * Another session inside an existing worktree — the same files, a new conversation. The
+   * worktree keeps its base; this session's harness state is its own (each session owns its
+   * harness home), so continuing a sibling's conversation here is a takeover, not a join.
+   */
+  async newSessionInWorktree(argument?: unknown): Promise<void> {
+    const location = await this.sessionLocation(argument);
+    if (location === null) return;
+    try {
+      const name = await this.worktreeNameOf(location);
+      if (name === null) {
+        void vscode.window.showErrorMessage(
+          "This server does not report worktrees, so the session's worktree cannot be joined.",
+        );
+        return;
+      }
+      await this.newSession({ kind: "project", project: location.project } satisfies ProjectNode, {
+        name,
+      });
+    } catch (cause) {
+      void vscode.window.showErrorMessage(errorMessage(cause));
+    }
+  }
+
+  /** The joinable name of the session's worktree; null on a pre-worktree server. */
+  private async worktreeNameOf(location: SessionLocation): Promise<string | null> {
+    const worktreeId = location.session.worktreeId;
+    if (worktreeId === undefined) return null;
+    const detail = await this.client.projectDetail(location.project.id);
+    return detail.worktrees?.find((worktree) => worktree.id === worktreeId)?.name ?? null;
   }
 
   /** A fresh worktree with a shell holding the workspace — VS Code opens straight into it. */
-  private async startWorkbench(project: Project): Promise<void> {
+  private async startWorkbench(project: Project, join: WorktreeJoin | null): Promise<void> {
     try {
       const session = await vscode.window.withProgress(
         {
@@ -366,7 +578,7 @@ class MendCommands {
           title: `Preparing workbench · ${project.name}…`,
         },
         async () => {
-          const created = await this.createSessionSafely(project, "claude");
+          const created = await this.createSessionSafely(project, "claude", join);
           await this.client.resumeSession(created.id, "shell");
           return created;
         },
@@ -380,9 +592,13 @@ class MendCommands {
   }
 
   /** Launch the harness on a prompt with defaults, then open the workspace in VS Code. */
-  private async startAgent(project: Project, harness: "claude" | "codex"): Promise<void> {
+  private async startAgent(
+    project: Project,
+    harness: "claude" | "codex",
+    join: WorktreeJoin | null,
+  ): Promise<void> {
     const prompt = await vscode.window.showInputBox({
-      title: `New ${harness} session · ${project.name}`,
+      title: newSessionTitle(project, join),
       prompt: "What should the agent do? Empty opens the harness without a prompt.",
       ignoreFocusOut: true,
     });
@@ -397,7 +613,7 @@ class MendCommands {
       const session = await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: `Starting ${harness}…` },
         async () => {
-          const created = await this.createSessionSafely(project, harness);
+          const created = await this.createSessionSafely(project, harness, join);
           await this.client.launchSession(
             created.id,
             prompt.trim() === "" ? {} : { prompt: prompt.trim() },
@@ -426,7 +642,13 @@ class MendCommands {
    * Create with the quietly inferred base; when the store does not know that ref (a local
    * branch never pushed), fall back to the project default instead of failing the quick path.
    */
-  private async createSessionSafely(project: Project, harness: string): Promise<Session> {
+  private async createSessionSafely(
+    project: Project,
+    harness: string,
+    join: WorktreeJoin | null,
+  ): Promise<Session> {
+    // A join takes the worktree's own base — sending another is refused, never re-based.
+    if (join !== null) return this.client.createSession(project.id, harness, null, null, join.name);
     const base = await this.quietBase(project);
     if (base === null) return this.client.createSession(project.id, harness, null, null);
     try {
@@ -440,9 +662,23 @@ class MendCommands {
     }
   }
 
-  private async newSessionAdvanced(project: Project): Promise<void> {
+  /** The base question, prefilled with the open window's branch when it IS the project. */
+  private async askBase(project: Project, title: string): Promise<string | undefined> {
+    const branch =
+      this.scope.currentProject()?.id === project.id
+        ? await currentBranch(this.scope.currentFolder() ?? undefined)
+        : null;
+    return vscode.window.showInputBox({
+      title,
+      prompt: "Base branch or commit",
+      value: branch ?? project.defaultBranch,
+      ignoreFocusOut: true,
+    });
+  }
+
+  private async newSessionAdvanced(project: Project, join: WorktreeJoin | null): Promise<void> {
     const prompt = await vscode.window.showInputBox({
-      title: `New session · ${project.name}`,
+      title: newSessionTitle(project, join),
       prompt: "What should the session do? Leave empty to open the harness without a prompt.",
       ignoreFocusOut: true,
     });
@@ -459,7 +695,7 @@ class MendCommands {
         { label: "Claude", description: "claude", id: "claude" },
         { label: "Codex", description: "codex", id: "codex" },
       ],
-      { title: `New session · ${project.name}`, placeHolder: "Harness", ignoreFocusOut: true },
+      { title: newSessionTitle(project, join), placeHolder: "Harness", ignoreFocusOut: true },
     );
     if (harness === undefined) return;
     const modelOptions = MODEL_OPTIONS[harness.id] ?? [];
@@ -499,16 +735,9 @@ class MendCommands {
       },
     );
     if (permissions === undefined) return;
-    const branch =
-      this.scope.currentProject()?.id === project.id
-        ? await currentBranch(this.scope.currentFolder() ?? undefined)
-        : null;
-    const base = await vscode.window.showInputBox({
-      title: `New ${harness.description} session`,
-      prompt: "Base branch or commit",
-      value: branch ?? project.defaultBranch,
-      ignoreFocusOut: true,
-    });
+    // A joined worktree already has its base; only a fresh one asks.
+    const base =
+      join === null ? await this.askBase(project, `New ${harness.description} session`) : "";
     if (base === undefined) return;
     try {
       const session = await vscode.window.withProgress(
@@ -522,6 +751,7 @@ class MendCommands {
             harness.id,
             null,
             base.trim() || null,
+            join?.name ?? null,
           );
           const start: LaunchStart = {
             ...(prompt.trim() === "" ? {} : { prompt: prompt.trim() }),
@@ -613,11 +843,10 @@ class MendCommands {
     });
     if (picked === undefined) return;
     if (picked.action === "session") {
-      await this.openWorktree({
-        kind: "session",
-        project,
-        session: picked.session,
-      } satisfies SessionNode);
+      await this.openWorktree(
+        { kind: "session", project, session: picked.session } satisfies SessionNode,
+        { offerTakeover: true },
+      );
     } else if (picked.action === "new-session") {
       await this.newSession({ kind: "project", project } satisfies ProjectNode);
     } else if (picked.action === "new-worktree") {
@@ -634,7 +863,7 @@ class MendCommands {
       await vscode.commands.executeCommand("workbench.view.extension.mend");
       return;
     }
-    await this.openWorktree(sessionId);
+    await this.openWorktree(sessionId, { offerTakeover: true });
   }
 
   private async pickProject(argument?: unknown): Promise<Project | null> {
@@ -709,7 +938,7 @@ class MendCommands {
       workspaceId = await this.resumeForEditor(location);
       if (workspaceId === null) return "cancelled";
     }
-    const authority = `ssh-remote+${destination.usernamePrefix}-${workspaceId}@${destination.host}`;
+    const authority = remoteAuthority(destination, workspaceId);
     if (!(await this.ensureRemoteSsh(authority, "/workspace/repo"))) return "cancelled";
     return vscode.Uri.from({
       scheme: "vscode-remote",
@@ -919,7 +1148,13 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand("mend.adoptProject", () => commands.adoptProject()),
     vscode.commands.registerCommand("mend.openWorktree", (argument?: unknown) =>
-      commands.openWorktree(argument),
+      commands.openWorktree(argument, { offerTakeover: true }),
+    ),
+    vscode.commands.registerCommand("mend.takeOverSession", (argument?: unknown) =>
+      commands.takeOverSession(argument),
+    ),
+    vscode.commands.registerCommand("mend.newSessionInWorktree", (argument?: unknown) =>
+      commands.newSessionInWorktree(argument),
     ),
     vscode.commands.registerCommand("mend.openInMend", (argument?: unknown) =>
       commands.openInMend(argument),
@@ -951,6 +1186,25 @@ export function activate(context: vscode.ExtensionContext): void {
 
   void scope.refresh();
   void tree.snapshot();
+  claimPendingTakeover(context);
 }
+
+/**
+ * The window a takeover opened finishes it: this extension host is the one that can create a
+ * terminal inside the workspace. Claimed once, then cleared; a stale record is cleared too.
+ */
+const claimPendingTakeover = (context: vscode.ExtensionContext): void => {
+  const stored: unknown = context.globalState.get(PENDING_TAKEOVER_KEY);
+  const now = Date.now();
+  const pending = pendingTakeoverFor(stored, windowRemoteAuthority(), now);
+  if (pending === null) {
+    if (isStalePendingTakeover(stored, now)) {
+      void context.globalState.update(PENDING_TAKEOVER_KEY, undefined);
+    }
+    return;
+  }
+  void context.globalState.update(PENDING_TAKEOVER_KEY, undefined);
+  runContinue(pending.harness, pending.command);
+};
 
 export function deactivate(): void {}

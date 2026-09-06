@@ -46,4 +46,25 @@ stops the open with a message instead of opening a folder on the host, where a t
 outside Mend's observation. `Mend: Copy worktree path` still copies the server-side path for your
 own use.
 
+## Taking over a running session
+
+Opening a session whose agent Mend is running elsewhere — a `mend codex` in a terminal, a pickup
+from the phone — asks whether to open **alongside** it or **take it over in the editor**. The editor
+has no terminal client for Mend's PTY, so a takeover goes the observed route: a shell holds the
+workspace lease, the running agent is stopped, the workspace opens (or the current window is
+reused), and a new integrated terminal runs the harness's own resume — `codex resume <id>` or
+`claude --resume <id>` (the most recent conversation when the id is not yet known). The harness home
+is mounted in the workspace, so that resume finds the conversation the agent was writing a moment
+ago, and Mend observes the new process under the same conversation.
+`Mend: Take over session in the editor` on a live session does the same without the question.
+
+Cancelling the SSH setup or the confirmation leaves the agent running. The stop ends only the agent:
+the shell keeps the workspace open until you stop the session again.
+
+## Another session in the same worktree
+
+`Mend: New session in this worktree…` on a session starts a second session inside the same worktree
+— the same files and branch, a new conversation. Each session owns its own harness state, so a
+sibling does not see the first session's conversation; to continue that one, take it over instead.
+
 Deep links: `vscode://sealant-sh.mend/open?session=<session-id>`
