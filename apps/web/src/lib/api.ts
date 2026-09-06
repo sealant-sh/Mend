@@ -195,6 +195,14 @@ export const setProjectApplyDotfiles = (projectId: string, applyDotfiles: boolea
   orLogin(
     trpcClient.projects.setApplyDotfiles.mutate({ id: projectId, request: { applyDotfiles } }),
   );
+/** Persist whether new sessions inherit the user's global skill library. */
+export const setProjectInheritUserSkills = (projectId: string, inheritUserSkills: boolean) =>
+  orLogin(
+    trpcClient.projects.setInheritUserSkills.mutate({
+      id: projectId,
+      request: { inheritUserSkills },
+    }),
+  );
 export const setProjectGitAuth = (projectId: string, gitAuthMode: GitAuthModeDto) =>
   orLogin(trpcClient.projects.setGitAuth.mutate({ id: projectId, request: { gitAuthMode } }));
 export const setProjectHotSessions = (projectId: string, hotSessions: number) =>
@@ -279,6 +287,18 @@ export const pasteSessionImage = (id: string, contentsBase64: string) =>
 export const resumeSession = (id: string, harness: string | null) =>
   orLogin(trpcClient.sessions.resume.mutate({ id, request: { harness } }));
 export const removeSession = (id: string) => orLogin(trpcClient.sessions.remove.mutate({ id }));
+
+/**
+ * Provision the worktree alone — the deliberate "New worktree" flow. No
+ * session, no harness, nothing running: conversations join it afterwards.
+ * A `name` already used in this project is refused (WorktreeNameTaken);
+ * null derives an anonymous identity. Null `base` uses the project's
+ * default branch.
+ */
+export const createWorktree = (
+  projectId: string,
+  worktree: { readonly name: string | null; readonly base: string | null },
+): Promise<WorktreeDto> => orLogin(trpcClient.worktrees.create.mutate({ projectId, worktree }));
 
 /** The container's own verbs — the one explicit destructive act, and a new conversation inside. */
 export const removeWorktree = (id: string, force?: boolean) =>

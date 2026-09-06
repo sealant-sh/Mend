@@ -59,7 +59,7 @@ import type {
   Worktree,
 } from "@mend/domain/workbench";
 import {
-  ProjectLink,
+  type ProjectLink,
   AGENT_PROCESS_KINDS,
   type AgentApprovalDecision,
   type AgentInputAnswers,
@@ -587,7 +587,7 @@ export class SessionEngine extends Context.Service<
     /**
      * Schedule a hot-pool reconcile for the project (coalesced per project; returns
      * immediately). Call after any change to an input workspaces are created from — the
-     * hot-sessions count itself, the image, dotfiles, env, secrets, references, or mounts.
+     * hot-sessions count itself, the image, dotfiles, skills, env, secrets, references, or mounts.
      */
     readonly reconcileHotSessions: (projectId: ProjectId) => Effect.Effect<void>;
     /** Snapshot the worktree now — review-open and user-mark come through here. */
@@ -2470,14 +2470,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             Effect.annotateLogs({ sessionId, harnessHome }),
           );
         }
-        // Skills ride the harness home: the merged libraries (owner's + the
+        // Skills ride the harness home: the resolved libraries (optional owner's + the
         // project's, project wins by name) are written server-side before the
         // workspace boots; the boot relocation keeps mount-side files, so the
         // harness discovers them natively. Best-effort by design — a launch
         // never fails over its skills.
         if (harnessHomeReady) {
           const skillLibraries = yield* skillsRepo.forLaunch(ownerUserId, project.id);
-          yield* materializeSkills(harnessHome, mergeSkillLibraries(skillLibraries)).pipe(
+          const resolvedSkills = mergeSkillLibraries(skillLibraries, {
+            inheritUserSkills: project.inheritUserSkills,
+          });
+          yield* materializeSkills(harnessHome, resolvedSkills).pipe(
             Effect.catchTag("SkillMaterializeError", (error) =>
               Effect.logWarning("session engine: skills were not materialized").pipe(
                 Effect.annotateLogs({ sessionId, harnessHome, message: error.message }),
@@ -5082,9 +5085,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const declaredMounts = yield* projectMounts
           .listForProject(project.id)
           .pipe(Effect.orElseSucceed(() => []));
+        const skillLibraries = yield* skillsRepo.forLaunch(ownerUserId, project.id);
+        const resolvedSkills = mergeSkillLibraries(skillLibraries, {
+          inheritUserSkills: project.inheritUserSkills,
+        });
         const inputs: HotFingerprintInputs = {
           workspaceImage,
           applyDotfiles: project.applyDotfiles,
+          inheritUserSkills: project.inheritUserSkills,
+          skills: resolvedSkills.map((bundle) => ({
+            id: bundle.skill.id,
+            name: bundle.skill.name,
+            revision: bundle.skill.revision,
+          })),
           dotfiles: {
             repository: repository === null ? null : { url: repository.url, ref: repository.ref },
             snapshotSha: snapshot?.sha ?? null,

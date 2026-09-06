@@ -6,6 +6,11 @@ import { hotFingerprint, type HotFingerprintInputs } from "../src/hot-pool.ts";
 const base: HotFingerprintInputs = {
   workspaceImage: defaultWorkspaceImage,
   applyDotfiles: true,
+  inheritUserSkills: true,
+  skills: [
+    { id: "skill-user", name: "typescript", revision: 2 },
+    { id: "skill-project", name: "review", revision: 1 },
+  ],
   dotfiles: {
     repository: { url: "git@github.com:acme/dots.git", ref: null },
     snapshotSha: "abc123",
@@ -22,9 +27,10 @@ const base: HotFingerprintInputs = {
 };
 
 describe("hotFingerprint", () => {
-  it("is stable across reference and mount ordering", () => {
+  it("is stable across skill, reference, and mount ordering", () => {
     const reordered: HotFingerprintInputs = {
       ...base,
+      skills: base.skills.toReversed(),
       references: base.references.toReversed(),
       mounts: base.mounts.toReversed(),
     };
@@ -37,8 +43,19 @@ describe("hotFingerprint", () => {
       { ...base, secretRevision: base.secretRevision + 1 },
       { ...base, clusterBindingRevision: base.clusterBindingRevision + 1 },
       { ...base, applyDotfiles: false },
+      { ...base, inheritUserSkills: false },
+      {
+        ...base,
+        skills: base.skills.map((skill) =>
+          skill.id === "skill-project" ? { ...skill, revision: skill.revision + 1 } : skill,
+        ),
+      },
+      { ...base, skills: base.skills.slice(1) },
       { ...base, dotfiles: { ...base.dotfiles, snapshotSha: "def456" } },
-      { ...base, dotfiles: { repository: null, snapshotSha: base.dotfiles.snapshotSha } },
+      {
+        ...base,
+        dotfiles: { repository: null, snapshotSha: base.dotfiles.snapshotSha },
+      },
       {
         ...base,
         workspaceImage: {

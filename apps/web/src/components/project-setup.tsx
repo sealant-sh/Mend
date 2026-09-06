@@ -100,8 +100,8 @@ export function GitAccessSection({ project }: { readonly project: ProjectDto }) 
   };
 
   return (
-    <section id="git" className="scroll-mt-6">
-      <p className="border-b border-rule pb-2 text-xs font-medium text-label">Git access</p>
+    <section id="git" className="project-setup-card">
+      <h2 className="font-sans text-sm font-semibold">Git access</h2>
       <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
         How Mend reaches this project&apos;s remote; the default for new projects is set in
         Settings. The Mend key is your own key on the server, added to your git account. Bridge
@@ -190,8 +190,8 @@ export function DotfilesSection({ project }: { readonly project: ProjectDto }) {
   };
 
   return (
-    <section id="dotfiles" className="scroll-mt-6">
-      <p className="border-b border-rule pb-2 text-xs font-medium text-label">Dotfiles</p>
+    <section id="dotfiles" className="project-setup-card">
+      <h2 className="font-sans text-sm font-semibold">Dotfiles</h2>
       {customImage ? (
         <p className="mt-2.5 font-mono text-xs text-faint">custom image · dotfiles not applied</p>
       ) : (
@@ -263,8 +263,8 @@ export function HotSessionsSection({ project }: { readonly project: ProjectDto }
     parts.length > 0 ? parts.join(" · ") : project.hotSessions === 0 ? "off" : "none ready yet";
 
   return (
-    <section id="hot-sessions" className="scroll-mt-6">
-      <p className="border-b border-rule pb-2 text-xs font-medium text-label">Hot sessions</p>
+    <section id="hot-sessions" className="project-setup-card">
+      <h2 className="font-sans text-sm font-semibold">Hot sessions</h2>
       <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
         Workspaces kept ready for new sessions — a new session claims one and attaches immediately.
         Each ready workspace is a live container on this machine; the pool rebuilds when the image,
@@ -327,8 +327,8 @@ export function ReviewAutomationSection({ project }: { readonly project: Project
   };
 
   return (
-    <section id="review" className="scroll-mt-6">
-      <p className="border-b border-rule pb-2 text-xs font-medium text-label">Review automation</p>
+    <section id="review" className="project-setup-card">
+      <h2 className="font-sans text-sm font-semibold">Review automation</h2>
       <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
         What Mend runs when a session settles here. Inherit follows the defaults in Settings.
       </p>
@@ -386,8 +386,8 @@ export function SessionLifecycleSection({ project }: { readonly project: Project
   };
 
   return (
-    <section id="sessions" className="scroll-mt-6">
-      <p className="border-b border-rule pb-2 text-xs font-medium text-label">Sessions</p>
+    <section id="sessions" className="project-setup-card">
+      <h2 className="font-sans text-sm font-semibold">Sessions</h2>
       <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
         Whether sessions here keep running when every client disconnects. Off gives CLI launches
         foreground semantics — the session stops when the launching mend exits. Inherit follows the
@@ -442,7 +442,7 @@ export function RemoveProjectSection({ projectId }: { readonly projectId: string
   };
 
   return (
-    <section id="remove" className="scroll-mt-6 border-t border-rule-faint pt-4">
+    <section id="remove" className="project-setup-card">
       <button
         type="button"
         disabled={removing === "working"}
@@ -517,14 +517,14 @@ export function MountsSection({ projectId }: { readonly projectId: string }) {
   };
 
   return (
-    <section id="mounts" className="scroll-mt-6">
-      <p className="border-b border-rule pb-2 text-xs font-medium text-label">Mounted folders</p>
+    <section id="mounts" className="project-setup-card">
+      <h2 className="font-sans text-sm font-semibold">Mounted folders</h2>
       <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
         Host folders next sessions see at{" "}
         <span className="font-mono text-[11px]">/workspace/home/&lt;name&gt;</span>. Read-only
         unless deliberately chosen otherwise — the reviewed change stays the worktree.
       </p>
-      <div className="mt-3 overflow-hidden rounded-2xl border border-rule bg-card shadow-xs">
+      <div className="mt-4 overflow-hidden rounded-xl border border-rule-faint">
         {mounts.map((mount, index) => (
           <div
             key={mount.id}
@@ -673,14 +673,14 @@ export function LinksSection({ projectId }: { readonly projectId: string }) {
   };
 
   return (
-    <section id="links" className="scroll-mt-6">
-      <p className="border-b border-rule pb-2 text-xs font-medium text-label">Linked projects</p>
+    <section id="links" className="project-setup-card">
+      <h2 className="font-sans text-sm font-semibold">Linked projects</h2>
       <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
         Other adopted projects next sessions can work in, read-write, at{" "}
         <span className="font-mono text-[11px]">/workspace/repos/&lt;name&gt;</span>. One of the
         linked project's worktrees is bound at launch; commits there are that project's own change.
       </p>
-      <div className="mt-3 overflow-hidden rounded-2xl border border-rule bg-card shadow-xs">
+      <div className="mt-4 overflow-hidden rounded-xl border border-rule-faint">
         {links.map((link, index) => (
           <div
             key={link.id}
@@ -836,14 +836,14 @@ export function ServicesSection({ projectId }: { readonly projectId: string }) {
   };
 
   return (
-    <section id="services" className="scroll-mt-6">
-      <p className="border-b border-rule pb-2 text-xs font-medium text-label">Services</p>
+    <section id="services" className="project-setup-card">
+      <h2 className="font-sans text-sm font-semibold">Services</h2>
       <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
         Commands sessions can run and expose — a dev server, a database. Every session offers these
         one tap away, beside whatever <span className="font-mono text-[11px]">mend.toml</span>{" "}
         declares in the repo. Leave the command empty to adopt an already-listening port.
       </p>
-      <div className="mt-3 overflow-hidden rounded-2xl border border-rule bg-card shadow-xs">
+      <div className="mt-4 overflow-hidden rounded-xl border border-rule-faint">
         {recipes.map((recipe, index) => (
           <div
             key={recipe.name}
@@ -1025,13 +1025,13 @@ export function ReferencesSection({ projectId }: { readonly projectId: string })
   };
 
   return (
-    <section id="references" className="scroll-mt-6">
-      <p className="border-b border-rule pb-2 text-xs font-medium text-label">References</p>
+    <section id="references" className="project-setup-card">
+      <h2 className="font-sans text-sm font-semibold">References</h2>
       <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
         Read-only clones of dependency sources. Checked ones mount at{" "}
         <span className="font-mono text-[11px]">/workspace/ref/&lt;name&gt;</span> in next sessions.
       </p>
-      <div className="mt-3 overflow-hidden rounded-2xl border border-rule bg-card shadow-xs">
+      <div className="mt-4 overflow-hidden rounded-xl border border-rule-faint">
         {references.map((reference, index) => (
           <div
             key={reference.id}

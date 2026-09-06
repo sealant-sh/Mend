@@ -25,6 +25,7 @@
 @layer base {
   html {
     background: var(--sw-canvas);
+    scrollbar-gutter: stable;
   }
 
   body {
@@ -34,6 +35,12 @@
 
   ::selection {
     background: color-mix(in oklab, var(--sw-accent) 18%, transparent);
+  }
+}
+
+@layer components {
+  .project-setup-card {
+    @apply scroll-mt-6 rounded-2xl bg-panel p-6 shadow-sm;
   }
 }
 

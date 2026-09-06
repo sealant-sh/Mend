@@ -148,6 +148,13 @@ export class ProjectApplyDotfilesRequest extends Schema.Class<ProjectApplyDotfil
   applyDotfiles: Schema.Boolean,
 }) {}
 
+/** Whether sessions inherit the launching user's skills in addition to project skills. */
+export class ProjectInheritUserSkillsRequest extends Schema.Class<ProjectInheritUserSkillsRequest>(
+  "ProjectInheritUserSkillsRequest",
+)({
+  inheritUserSkills: Schema.Boolean,
+}) {}
+
 /** How many hot workspaces this project keeps ready for new sessions (0 = none). */
 export class ProjectHotSessionsRequest extends Schema.Class<ProjectHotSessionsRequest>(
   "ProjectHotSessionsRequest",

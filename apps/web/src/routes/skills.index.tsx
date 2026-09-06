@@ -16,14 +16,14 @@ function SkillsPage() {
   useWorkbenchEvents();
   return (
     <AppShell>
-      <div className="mx-auto max-w-[760px]">
+      <div className="min-w-0">
         <p className="ev-eyebrow">skills</p>
         <h1 className="mt-2 font-display text-3xl font-medium tracking-tight text-foreground">
           Your skill library
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          Instruction bundles every one of your sessions receives, whatever the project. A
-          same-named project skill overrides yours.
+          Instruction bundles your projects inherit by default. Each project can turn inheritance
+          off in Setup; a same-named project skill overrides yours.
         </p>
         <SkillsLibrary scope="user" />
       </div>

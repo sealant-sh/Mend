@@ -375,6 +375,59 @@ describe.skipIf(!reachable)("0035 process kinds and 0036 agent conversation", ()
   });
 });
 
+describe.skipIf(!reachable)("0052 project skill inheritance", () => {
+  const SETTINGS_DB = `${SCRATCH_DB}_skill_inheritance`;
+  const settingsUrl = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${SETTINGS_DB}`;
+    return url.toString();
+  })();
+  const settingsLayer = PgClient.layer({ url: Redacted.make(settingsUrl) });
+  const withSettingsDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(settingsLayer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${SETTINGS_DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${SETTINGS_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("defaults existing and new projects to inheriting user skills", async () => {
+    const rows = await withSettingsDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0051_user_git_access");
+        yield* sql`
+          INSERT INTO projects (id, name, origin_url, store_path, default_branch)
+          VALUES ('project-existing', 'existing', NULL, '/store/existing/repo.git', 'main')`;
+        yield* migrations["0052_project_inherit_user_skills"];
+        yield* sql`
+          INSERT INTO projects (id, name, origin_url, store_path, default_branch)
+          VALUES ('project-new', 'new', NULL, '/store/new/repo.git', 'main')`;
+        return yield* sql<{
+          readonly id: string;
+          readonly inherit_user_skills: boolean;
+        }>`SELECT id, inherit_user_skills FROM projects ORDER BY id`;
+      }),
+    );
+    expect(rows).toEqual([
+      { id: "project-existing", inherit_user_skills: true },
+      { id: "project-new", inherit_user_skills: true },
+    ]);
+  });
+});
+
 describe.skipIf(!reachable)("0046 worktree containers", () => {
   const WORKTREE_DB = `${SCRATCH_DB}_wt`;
   const worktreeUrl = (() => {

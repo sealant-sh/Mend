@@ -9,7 +9,8 @@ import { LIVE_STATES } from "#/lib/workbench-menus";
 /**
  * The workbench shell: a persistent left sidebar (brand, primary nav, an
  * optional page-contextual rail, the adopted projects with a liveness dot,
- * the machine block) beside a left-aligned content column. The sidebar is the
+ * the machine block) beside one centered content frame. The shell owns its
+ * width and gutters for every page. The sidebar is the
  * ambient view of the machine — which repos have agents alive, whether this
  * box is reachable off-box — and stays put while you move between Now, a
  * session, and a review. Below `lg` it folds into a top strip.
@@ -41,12 +42,14 @@ export function AppShell({
         </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-between gap-4 border-b border-rule bg-panel px-5 py-3 lg:hidden">
+        <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 border-b border-rule bg-panel px-5 py-3 lg:hidden">
           <Brand compact />
           <PrimaryNav horizontal />
           <SignOut />
         </header>
-        <main className="min-w-0 flex-1 px-6 py-8 lg:px-12 lg:py-12">{children}</main>
+        <main className="min-w-0 flex-1 px-6 py-8 lg:px-12 lg:py-12">
+          <div className="mx-auto w-full min-w-0 max-w-[1180px]">{children}</div>
+        </main>
       </div>
     </div>
   );
@@ -72,7 +75,11 @@ function Brand({ compact = false }: { readonly compact?: boolean }) {
 function PrimaryNav({ horizontal = false }: { readonly horizontal?: boolean }) {
   return (
     <nav
-      className={horizontal ? "flex items-center gap-1" : "flex w-full flex-col gap-0.5"}
+      className={
+        horizontal
+          ? "order-last flex w-full items-center justify-between gap-1 sm:order-none sm:w-auto"
+          : "flex w-full flex-col gap-0.5"
+      }
       aria-label="Primary"
     >
       <NavItem to="/">Now</NavItem>
@@ -87,7 +94,7 @@ function NavItem({ to, children }: { readonly to: string; readonly children: Rea
   return (
     <Link
       to={to}
-      className="rounded-[10px] px-3 py-2 font-sans text-[13px] font-medium text-ink-2 no-underline transition-colors duration-200 hover:bg-secondary hover:text-foreground data-[status=active]:bg-wash data-[status=active]:text-info"
+      className="rounded-[10px] px-2 py-2 font-sans text-[13px] font-medium text-ink-2 no-underline transition-colors duration-200 hover:bg-secondary hover:text-foreground data-[status=active]:bg-wash data-[status=active]:text-info sm:px-3"
       activeOptions={{ exact: to === "/" }}
     >
       {children}

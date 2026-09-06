@@ -55,6 +55,7 @@ import {
   ServiceId,
   ServiceObservationId,
   SessionGitOpId,
+  SkillId,
   SessionId,
   SessionProcessId,
   Sha,
@@ -81,6 +82,8 @@ import {
   Session,
   SessionProcess,
   SessionRun,
+  Skill,
+  SkillWithFiles,
   Worktree,
   type SessionExtraMount,
   type SessionReferenceMount,
@@ -471,6 +474,20 @@ const skillsStubLayer = Layer.succeed(SkillsRepo, {
   forLaunch: () => Effect.succeed({ user: [], project: [] }),
 });
 
+const skillsForLaunchLayer = (
+  forLaunch: SkillsRepo["Service"]["forLaunch"],
+): Layer.Layer<SkillsRepo> =>
+  Layer.succeed(SkillsRepo, {
+    listForUser: () => Effect.succeed([]),
+    listForProject: () => Effect.succeed([]),
+    byId: () => Effect.die("not in test"),
+    create: () => Effect.die("not in test"),
+    update: () => Effect.die("not in test"),
+    remove: () => Effect.die("not in test"),
+    sync: () => Effect.die("not in test"),
+    forLaunch,
+  });
+
 const mendKeysStubLayer = Layer.succeed(MendKeys, {
   ensure: () =>
     Effect.succeed({
@@ -504,6 +521,30 @@ const gitOpsStubLayer = Layer.succeed(SessionGitOpsRepo, {
 });
 
 const now = () => new Date();
+
+const launchSkill = (
+  name: string,
+  contents: string,
+  owner:
+    | { readonly scope: "user"; readonly userId: string }
+    | { readonly scope: "project"; readonly projectId: ProjectId },
+): SkillWithFiles =>
+  new SkillWithFiles({
+    skill: new Skill({
+      id: SkillId.make(`${owner.scope}-${name}`),
+      scope: owner.scope,
+      ownerUserId: owner.scope === "user" ? owner.userId : null,
+      projectId: owner.scope === "project" ? owner.projectId : null,
+      name,
+      description: "",
+      fileCount: 1,
+      bytes: contents.length,
+      revision: 1,
+      createdAt: now(),
+      updatedAt: now(),
+    }),
+    files: [{ path: "SKILL.md", contents }],
+  });
 
 interface World {
   readonly projects: Map<string, Project>;
@@ -1038,6 +1079,7 @@ const projectsLayer = (world: World) =>
     setGitAuthMode: () => Effect.die("not in test"),
     setWorkspaceImage: () => Effect.die("not in test"),
     setApplyDotfiles: () => Effect.die("not in test"),
+    setInheritUserSkills: () => Effect.die("not in test"),
     setHotSessions: () => Effect.die("not in test"),
     byId: (id) => {
       const found = world.projects.get(id);
@@ -1084,7 +1126,7 @@ const sessionsLayer = (world: World) => {
           workspaceTtlRenewalError: null,
           workspaceImage: null,
           dotfiles: null,
-          ownerUserId: null,
+          ownerUserId: input.ownerUserId,
           hasTranscript: null,
           status: "starting",
           summary: null,
@@ -1469,6 +1511,7 @@ const setup = (tmp: string, world: World) => {
       gitAuthMode: "ambient",
       workspaceImage: null,
       applyDotfiles: true,
+      inheritUserSkills: true,
       hotSessions: 0,
       createdAt: now(),
       updatedAt: now(),
@@ -1487,6 +1530,7 @@ const withEngine = <A, E>(
     readonly sealantLayer?: Layer.Layer<SealantClient>;
     readonly protocolHostLayer?: Layer.Layer<ProtocolHost>;
     readonly hotWorkspacesLayer?: Layer.Layer<HotWorkspacesRepo>;
+    readonly skillsLayer?: Layer.Layer<SkillsRepo>;
     readonly workspaceImage?: typeof defaultSettings.workspaceImage;
     readonly environment?: () => {
       readonly revision: number;
@@ -1561,7 +1605,7 @@ const withEngine = <A, E>(
         secretCipherStubLayer,
         userDotfilesStubLayer,
         dotfilesStoreStubLayer,
-        skillsStubLayer,
+        options.skillsLayer ?? skillsStubLayer,
       ),
     ),
   );
@@ -1610,6 +1654,105 @@ describe("SessionEngine", () => {
           services: { docker: true },
         },
       },
+    );
+  });
+
+  it("delivers the launching owner's skills and lets project skills override by name", async () => {
+    const created: CreateOptions[] = [];
+    const requestedOwners: Array<string | null> = [];
+    const skillsLayer = skillsForLaunchLayer((ownerUserId, projectId) =>
+      Effect.sync(() => {
+        requestedOwners.push(ownerUserId);
+        return {
+          user: [
+            launchSkill("global", "owner global", {
+              scope: "user",
+              userId: ownerUserId ?? "missing-owner",
+            }),
+            launchSkill("shared", "owner shared", {
+              scope: "user",
+              userId: ownerUserId ?? "missing-owner",
+            }),
+          ],
+          project: [launchSkill("shared", "project shared", { scope: "project", projectId })],
+        };
+      }),
+    );
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "owner-1",
+            base: null,
+          });
+
+          yield* engine.launch(session.id, ["codex"]);
+
+          const skillsRoot = path.join(
+            harnessHomePathOf(project.storePath, session.id),
+            ".claude",
+            "skills",
+          );
+          expect(fs.readFileSync(path.join(skillsRoot, "global", "SKILL.md"), "utf8")).toBe(
+            "owner global",
+          );
+          expect(fs.readFileSync(path.join(skillsRoot, "shared", "SKILL.md"), "utf8")).toBe(
+            "project shared",
+          );
+          expect(requestedOwners).toEqual(["owner-1"]);
+        }),
+      { sealantLayer: sealantLaunchLayer(created), skillsLayer },
+    );
+  });
+
+  it("excludes user skills when the project's inheritance setting is off", async () => {
+    const created: CreateOptions[] = [];
+    const skillsLayer = skillsForLaunchLayer((ownerUserId, projectId) =>
+      Effect.succeed({
+        user: [
+          launchSkill("global", "owner global", {
+            scope: "user",
+            userId: ownerUserId ?? "missing-owner",
+          }),
+        ],
+        project: [launchSkill("local", "project local", { scope: "project", projectId })],
+      }),
+    );
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const noInheritance = new Project({ ...project, inheritUserSkills: false });
+          world.projects.set(project.id, noInheritance);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "owner-2",
+            base: null,
+          });
+
+          yield* engine.launch(session.id, ["codex"]);
+
+          const skillsRoot = path.join(
+            harnessHomePathOf(project.storePath, session.id),
+            ".claude",
+            "skills",
+          );
+          expect(fs.existsSync(path.join(skillsRoot, "global"))).toBe(false);
+          expect(fs.readFileSync(path.join(skillsRoot, "local", "SKILL.md"), "utf8")).toBe(
+            "project local",
+          );
+        }),
+      { sealantLayer: sealantLaunchLayer(created), skillsLayer },
     );
   });
 

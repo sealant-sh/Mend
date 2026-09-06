@@ -4,7 +4,13 @@ import { Schema } from "effect";
 import { HttpApi } from "effect/unstable/httpapi";
 import { describe, expect, it } from "vitest";
 
-import { MendApi, NewWorktree, ProcessLogPage, ProjectBranch } from "./index.ts";
+import {
+  MendApi,
+  NewWorktree,
+  ProcessLogPage,
+  ProjectBranch,
+  ProjectInheritUserSkillsRequest,
+} from "./index.ts";
 
 const conversationEndpointNames = new Set(["submitTurn", "interruptTurn", "respondAgentRequest"]);
 
@@ -117,6 +123,22 @@ describe("typed HTTP error contracts", () => {
       updatedAt: "2026-08-31T00:00:00.000Z",
     });
     expect(orphaned.sessionId).toBeNull();
+  });
+
+  it("exposes the authenticated project skill-inheritance update contract", () => {
+    const endpoints = new Set<string>();
+    HttpApi.reflect(MendApi, {
+      onGroup: () => {},
+      onEndpoint: ({ group, endpoint }) => {
+        if (group.identifier === "projects") endpoints.add(endpoint.name);
+      },
+    });
+    expect(endpoints.has("inheritUserSkills")).toBe(true);
+    expect(
+      Schema.decodeUnknownSync(ProjectInheritUserSkillsRequest)({ inheritUserSkills: false })
+        .inheritUserSkills,
+    ).toBe(false);
+    expect(() => Schema.decodeUnknownSync(ProjectInheritUserSkillsRequest)({})).toThrow();
   });
 
   it("encodes a process-log response as the endpoint's class schema", () => {
