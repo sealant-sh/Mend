@@ -28,6 +28,13 @@ export interface ServerGeneration {
   readonly files: ServerFiles;
 }
 
+/** Private recovery record. Only a completed, fsynced dump is published as database.sql. */
+export interface ServerBackup {
+  readonly directory: string;
+  readonly partialFile: string;
+  complete(): ServerStoreResult<void>;
+}
+
 /** Valid only inside withServerStore. All lifecycle commands must use the same lock. */
 export interface ServerStore {
   readIdentity(): ServerStoreResult<string | null>;
@@ -38,6 +45,11 @@ export interface ServerStore {
   prepare(files: ServerFiles): ServerStoreResult<ServerGeneration>;
   /** Select a retained generation from this store without rewriting it. */
   activate(generation: ServerGeneration): ServerStoreResult<void>;
+  /** Retain old/target references before interrupting the app. Never removes a backup. */
+  createBackup(
+    previous: ServerGeneration,
+    target: ServerGeneration,
+  ): ServerStoreResult<ServerBackup>;
 }
 
 interface StorePaths {
@@ -151,9 +163,15 @@ const lockGuidance = (lockDir: string): ServerStoreError =>
     `Server is busy: ${lockDir} is locked (${describeOwner(lockDir)}). Wait for the owning command. Never remove a live lock. For stale-lock recovery, verify on that host that the owner and its Docker Compose children have stopped, then move only this lock directory aside and retry. Keep identity.env, active, and generations intact.`,
   );
 
-const acquireLock = (configDir: string): OwnedLock => {
-  fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
-  fs.chmodSync(configDir, 0o700);
+const acquireLock = (configDir: string, create: boolean): OwnedLock => {
+  if (create) {
+    fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
+    fs.chmodSync(configDir, 0o700);
+  } else if (!fs.existsSync(configDir)) {
+    throw new ServerStoreError(
+      "No Mend server is configured. Run mend server setup explicitly to install one.",
+    );
+  }
   const lockDir = path.join(configDir, "server.lock");
   try {
     fs.mkdirSync(lockDir, { mode: 0o700 });
@@ -331,6 +349,50 @@ const createStore = (configDir: string, lock: OwnedLock): ServerStore => {
     commit: (files) => whileOwned(() => commitGeneration(paths, files)),
     prepare: (files) => whileOwned(() => prepareFiles(paths, files)),
     activate: (generation) => whileOwned(() => activateGeneration(paths, generation)),
+    createBackup: (previous, target) =>
+      whileOwned(() => {
+        const backups = path.join(configDir, "backups");
+        fs.mkdirSync(backups, { recursive: true, mode: 0o700 });
+        fs.chmodSync(backups, 0o700);
+        const directory = path.join(backups, `upgrade-${randomUUID()}`);
+        fs.mkdirSync(directory, { mode: 0o700 });
+        writeDurable(
+          path.join(directory, "recovery.json"),
+          `${JSON.stringify(
+            {
+              previousGeneration: previous.directory,
+              targetGeneration: target.directory,
+              database: "database.sql",
+              policy:
+                "If target is active, migrations may have begun. Never downgrade or restore automatically.",
+            },
+            null,
+            2,
+          )}\n`,
+        );
+        syncDirectory(directory);
+        syncDirectory(backups);
+        syncDirectory(configDir);
+        const partialFile = path.join(directory, "database.sql.partial");
+        return {
+          directory,
+          partialFile,
+          complete: () =>
+            whileOwned(() => {
+              if (fs.statSync(partialFile).size === 0)
+                throw new ServerStoreError("Database backup is empty; refusing target startup.");
+              const fd = fs.openSync(partialFile, "r");
+              try {
+                fs.fchmodSync(fd, 0o600);
+                fs.fsyncSync(fd);
+              } finally {
+                fs.closeSync(fd);
+              }
+              fs.renameSync(partialFile, path.join(directory, "database.sql"));
+              syncDirectory(directory);
+            }),
+        };
+      }),
   };
 };
 
@@ -354,12 +416,13 @@ const refuseFlatLayout = (configDir: string): void => {
 export const withServerStore = async <T>(
   directory: string,
   operation: (store: ServerStore) => Promise<T>,
+  options: { readonly create?: boolean } = {},
 ): Promise<ServerStoreResult<T>> => {
   const configDir = path.resolve(directory);
   let lock: OwnedLock | undefined;
   let result: ServerStoreResult<T>;
   try {
-    lock = acquireLock(configDir);
+    lock = acquireLock(configDir, options.create ?? true);
     refuseFlatLayout(configDir);
     result = { _tag: "ok", value: await operation(createStore(configDir, lock)) };
   } catch (cause) {

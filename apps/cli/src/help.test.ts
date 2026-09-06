@@ -63,7 +63,15 @@ describe("findCommand", () => {
 
   it("groups a family", () => {
     expect(commandGroup("service").map((doc) => doc.name)).toContain("service logs");
-    expect(commandGroup("server").map((doc) => doc.name)).toEqual(["server setup"]);
+    expect(commandGroup("server").map((doc) => doc.name)).toEqual([
+      "server setup",
+      "server status",
+      "server start",
+      "server stop",
+      "server restart",
+      "server logs",
+      "server upgrade",
+    ]);
     expect(commandGroup("login")).toEqual([]);
   });
 });
@@ -140,6 +148,25 @@ describe("renderCommand", () => {
 });
 
 describe("man pages", () => {
+  it("documents offline flags and migration-safe recovery in the generated manual", () => {
+    const setup = findCommand(["server", "setup"]);
+    const upgrade = findCommand(["server", "upgrade"]);
+    if (setup === null || upgrade === null) throw new Error("Server help missing");
+    const page = renderManPage(setup, "0.23.0");
+    expect(page).toContain("\\-\\-registry\\-port");
+    expect(page).toContain("assets");
+    expect(page).toContain("offline");
+    const recovery = renderManPage(upgrade, "0.23.0");
+    expect(recovery).toContain("pg_dumpall");
+    expect(recovery).toContain("never automatically downgrades or restores");
+    for (const name of ["setup", "start", "restart", "upgrade"]) {
+      const doc = findCommand(["server", name]);
+      if (doc === null) throw new Error("Server help missing");
+      const text = renderCommand(doc, 120).replace(/\s+/g, " ");
+      expect(text).toContain("loopback registry");
+      expect(text).not.toContain("no GitHub requests or Docker pulls");
+    }
+  });
   it("escapes roff and names every page", () => {
     const page = renderManPage(findCommand(["service", "run"])!, "0.17.0");
     expect(page.startsWith('.TH MEND-SERVICE-RUN 1 "" "mend 0.17.0"')).toBe(true);
