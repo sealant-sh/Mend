@@ -24,12 +24,22 @@ inside the workspace — its image, its environment, and the mounted harness hom
 and the conversation is recorded and natively resumable from any device. A settled session offers a
 shell resume first — the shell keeps the fresh workspace alive while the editor is attached.
 
-Setup is one dialog, once per machine: the first open offers "Set up workspace SSH?" — Mend uses
-your ssh-agent key (or creates a dedicated one under `~/.config/mend/ssh`), registers it under your
-account, and adds one managed Host block to `~/.ssh/config`. Re-run it any time with
-`Mend: Set up workspace SSH` (or `mend ssh setup` in a terminal). The gateway address comes from the
-server; `mend.workspaceSshGateway` and `mend.workspaceSshUsernamePrefix` remain as overrides for
-unusual networks.
+The first open offers "Set up workspace SSH?" Mend registers this client's key and adds a
+server-specific Host block at the start of `~/.ssh/config`, before wildcard defaults. Existing
+hand-written configuration is preserved. Setup reuses the selected key on later runs. On first setup
+it can save an agent public-key selector or create a dedicated key under `~/.config/mend/ssh`. An
+encrypted or missing private key requires that exact identity in an unlocked agent, not just any
+agent key. Setup never prompts for a passphrase.
+
+Re-run with `Mend: Set up workspace SSH` or `mend ssh setup`. The SSH hostname comes from the
+configured Mend URL; the server publishes the port. `mend.workspaceSshHost` overrides the hostname
+for unusual networks.
+
+Setup reports configuration and client-key registration only. It does not test a connection or
+verify the gateway's host key. OpenSSH accepts a previously unknown host key on first connection and
+rejects changed keys. Mend never clears `known_hosts`. For a host-key mismatch, follow the
+[fingerprint verification and manual rotation procedure](../cli/README.md#gateway-host-key-rotation)
+before removing only this server's HostKeyAlias entry.
 
 When the deployment exposes no gateway, opening falls back to the worktree path: local when it
 exists, else via `mend.remoteSshHost` on the Mend machine. The fallback terminal runs on the host,

@@ -97,9 +97,9 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "adopt",
     section: "start",
     summary: "adopt a repository into the store",
-    synopsis: ["[source] [--name <name>] [--auth ambient|mend-key|bridge]"],
+    synopsis: ["[git-url] [--name <name>] [--auth ambient|mend-key|bridge]"],
     description: [
-      "Clones the repository into Mend's store. Every session then gets its own worktree of it. The default source is the current directory; any git URL works, GitHub, GitLab, self-hosted, ssh://, or a local path.",
+      "Clones a network Git repository into Mend's store. Every session then gets its own worktree of it. With no argument, Mend uses the current checkout's origin URL. HTTP(S), SSH, git://, and SCP-style URLs work; local paths and file:// URLs do not.",
       "--auth says how the store fetches from the remote. Default: your mode from mend keys mode. mend-key signs with your Mend key on the server (see mend keys). bridge relays this machine's ssh-agent while a mend command runs here, so hardware keys stay on your desk. ambient uses the server's own credentials.",
     ],
     options: [
@@ -107,7 +107,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       { flag: "--auth <mode>", text: "mend-key, bridge, or ambient. Default: mend keys mode" },
     ],
     examples: [
-      { command: "mend adopt", text: "the repository you are standing in" },
+      { command: "mend adopt", text: "the current repository's origin URL" },
       { command: "mend adopt git@github.com:acme/api.git --auth mend-key", text: "" },
     ],
     see: ["keys init", "keys share", "refresh"],
@@ -563,11 +563,14 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "ssh setup",
     section: "this machine",
     summary: "make this machine ready to ssh into workspaces, once",
-    synopsis: ["[--key <path>]"],
+    synopsis: ["[--key <path>] [--host <hostname>]"],
     description: [
-      "Registers a public key with the gateway (a key already in your ssh-agent is preferred; nothing new is created unless there is none) and writes a Host mend-ws block to ~/.ssh/config.",
+      "Registers this client's public key and writes a server-specific managed Host block to ~/.ssh/config. The hostname defaults to the configured Mend URL; the gateway supplies the SSH port.",
     ],
-    options: [{ flag: "--key <path>", text: "the public key to register" }],
+    options: [
+      { flag: "--key <path>", text: "the public key to register" },
+      { flag: "--host <hostname>", text: "override only the SSH hostname" },
+    ],
     see: ["ssh", "shell"],
   },
   {

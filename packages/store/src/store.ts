@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { Sha } from "@mend/domain";
+import { RepositoryCloneUrl } from "@mend/domain/workbench";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -27,7 +28,7 @@ export class StoreConfig extends Context.Service<
 
 export class AdoptError extends Schema.TaggedErrorClass<AdoptError>()("AdoptError", {
   name: Schema.String,
-  source: Schema.String,
+  source: RepositoryCloneUrl,
   cause: GitError,
 }) {}
 
@@ -290,13 +291,13 @@ export class Store extends Context.Service<
   Store,
   {
     /**
-     * Clone `source` (URL or local path) into the store as a bare repo.
+     * Clone a parsed network Git `source` into the store as a bare repo.
      * `remoteEnv` carries the resolved auth (`GIT_SSH_COMMAND`, prompt policy)
      * from the git-auth seam — the store itself never decides credentials.
      */
     readonly adopt: (
       name: string,
-      source: string,
+      source: RepositoryCloneUrl,
       remoteEnv: Record<string, string>,
     ) => Effect.Effect<AdoptedRepo, AdoptError>;
     /**
@@ -497,14 +498,14 @@ export class Store extends Context.Service<
 
       const adopt = Effect.fn("Store.adopt")(function* (
         name: string,
-        source: string,
+        source: RepositoryCloneUrl,
         remoteEnv: Record<string, string>,
       ) {
         const projectDir = path.join(config.root, name);
         const storePath = path.join(projectDir, "repo.git");
         const attempt = Effect.gen(function* () {
           yield* Effect.sync(() => fs.mkdirSync(config.root, { recursive: true }));
-          yield* git(["clone", "--bare", source, storePath], config.root, remoteEnv);
+          yield* git(["clone", "--bare", "--", source, storePath], config.root, remoteEnv);
           // Bare clones don't fetch new branches by default — make later syncs sane.
           yield* git(
             ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
@@ -917,6 +918,7 @@ export class Store extends Context.Service<
               "--depth",
               "1",
               ...(ref === null ? [] : ["--branch", ref]),
+              "--",
               source,
               clonePath,
             ],

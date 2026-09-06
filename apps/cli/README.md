@@ -108,6 +108,70 @@ printed URL on any signed-in device instead.
 The token is stored 0600 in the CLI config below; every command uses it until `mend logout`. On a
 dev instance with `MEND_STATIC_TOKEN` set, `MEND_TOKEN=<that value>` also works.
 
+## Workspace SSH
+
+```sh
+mend ssh                          # inspect config and this client's key registration
+mend ssh setup                    # register a key and reconcile this server's Host block
+mend ssh setup --key ./my-key      # explicitly select private key or its .pub file
+mend ssh setup --host mini.tailnet.ts.net
+```
+
+Setup puts the managed block before wildcard defaults and restores all-host scope before your
+original configuration. It preserves other servers and hand-written Host/Match rules. If moving an
+older block would change the scope of trailing directives, it refuses the write; put those
+directives in an explicit Host or Match block and rerun setup.
+
+Relative `--key` paths resolve against the invoking directory; `~/` resolves against your home.
+Identity paths with spaces, quotes, backslashes and literal `%` are escaped for OpenSSH. Control
+characters, `~user` paths and `${…}` expansions are rejected. Mend reuses a selected key, never
+silently substitutes another identity when it disappears. A readable, unencrypted private key must
+match the public half; otherwise the exact public identity must be available in an unlocked
+ssh-agent. Unlock encrypted keys yourself with `ssh-add` before setup. Checks are noninteractive and
+time-bounded. First setup can pin an agent public key or generate a dedicated key under the Mend
+config directory. Later setup preserves private keys.
+
+Status and setup report config and client-key registration, not a successful SSH connection or
+verified host trust. The public Sealant SDK's gateway info supplies host, port and username prefix,
+not a host-key fingerprint. Mend cannot authenticate a rotated host key from that metadata.
+
+### Gateway host-key rotation
+
+Mend uses a stable per-server `HostKeyAlias`. OpenSSH's `accept-new` policy accepts an unknown key
+on first connection, but refuses a changed key. Rerunning setup does not replace or remove any
+`known_hosts` entry. Treat a mismatch as a possible interception until verified.
+
+1. On the trusted server, through its console or a separately trusted administrative connection,
+   find the SSH host-key file configured for the **gateway container**, not a session workspace.
+   Read its SHA-256 fingerprint there. For Docker, substitute the actual container and its
+   configured host-key file in this command:
+
+   ```sh
+   docker exec GATEWAY_CONTAINER ssh-keygen -lf HOST_KEY_FILE -E sha256
+   ```
+
+   Use the host key or its `.pub` file; do not copy or print private key contents. Keep the gateway
+   host-key storage persistent across ordinary restarts. A genuine rotation should be deliberate.
+
+2. Compare that fingerprint out-of-band with the gateway fingerprint in the client's SSH warning. If
+   they differ, or you cannot access the trusted server, stop. `ssh-keyscan` alone is not
+   verification, and an API response containing only host/port does not establish host trust.
+3. Only after the fingerprints match, locate this server's exact `HostKeyAlias` and
+   `UserKnownHostsFile` with `ssh -G YOUR_MEND_ALIAS`. Back up that known-hosts file. Remove only
+   the exact alias entry from that file, not the hostname, other server aliases, or the whole file:
+
+   ```sh
+   ssh-keygen -F 'EXACT_HOST_KEY_ALIAS' -f ~/.ssh/known_hosts
+   ssh-keygen -R 'EXACT_HOST_KEY_ALIAS' -f ~/.ssh/known_hosts
+   ```
+
+   Replace the alias and file path with the values you inspected. These commands also find and
+   remove hashed entries for that exact alias.
+
+4. Reconnect explicitly with `ssh -o StrictHostKeyChecking=ask USER@YOUR_MEND_ALIAS`. Compare the
+   prompt's fingerprint with the trusted-server fingerprint again before accepting. A different
+   fingerprint is a reason to stop, not to bypass host-key checking.
+
 ## Configuration
 
 | Source                    | What                                                                                                       |
@@ -124,6 +188,21 @@ Herdr for the lifetime of the attachment. The session therefore appears in Herdr
 whether it was started from the `mend` dashboard or a one-shot CLI command. Mend supplies Herdr's
 foreground-process hint rather than claiming lifecycle authority, so Herdr continues to derive
 working, idle, and blocked from its native agent screen rules.
+
+## Building and checking the npm package
+
+`pnpm --filter @sealant/mend typecheck` uses tsgo without emission.
+`pnpm --filter @sealant/mend build` bundles the CLI and its private workspace dependencies with
+esbuild, follows transitive imports, and generates the man pages. Split chunks stay directly in
+`dist/` so package-relative version reads work. Only declared public runtime dependencies remain
+external. The dashboard still loads OpenTUI lazily; ordinary commands do not require its native
+runtime. Source files remain runnable by the existing tests.
+
+`pnpm --filter @sealant/mend test:package` packs the CLI and uses npm to install the tarball into a
+fresh directory outside the checkout. It needs registry access. The smoke test checks the published
+files and runs server-independent commands with OpenTUI temporarily removed. Set
+`MEND_KEEP_PACKAGE_TEST=1` to retain the printed directory and installed package for inspection.
+Neither installation nor the build installs or starts a Mend server.
 
 ## How it works
 

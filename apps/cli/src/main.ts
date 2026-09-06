@@ -6,6 +6,8 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { repositoryCloneUrlIssue } from "@mend/domain/workbench";
+
 import { type AgentShareHandle, bridgeUrlOf, shareAgent, startAgentShare } from "./agent-share.ts";
 import { readClipboardImage } from "./clipboard.ts";
 import { doctorCommand } from "./doctor.ts";
@@ -36,6 +38,7 @@ import {
   agentOutcome,
   type AgentProcessLike,
   cwdFacts,
+  gitOriginUrl,
   gitTopLevel,
   HARNESS_COMMANDS,
   isDetachChunk,
@@ -353,9 +356,14 @@ const adopt = async (config: CliConfig, args: ReadonlyArray<string>) => {
       (nameFlag === -1 || i !== nameFlag + 1) &&
       (authFlagIndex === -1 || i !== authFlagIndex + 1),
   );
-  // Bare `mend adopt` adopts the repo the cwd is inside, not the subdirectory.
-  const rawSource = positional[0] ?? gitTopLevel(process.cwd()) ?? ".";
-  const source = /^(https?|git|ssh):|^git@/.test(rawSource) ? rawSource : path.resolve(rawSource);
+  const source = positional[0] ?? gitOriginUrl(process.cwd());
+  if (source === null) {
+    return fail(
+      "No Git URL was given and this repository has no origin. Run mend adopt <git-url>.",
+    );
+  }
+  const sourceIssue = repositoryCloneUrlIssue(source);
+  if (sourceIssue !== null) return fail(sourceIssue);
   // Derived defaults are normalized ("Mend" → "mend"); explicit --name is sent as typed.
   const projectName = name ?? normalizeProjectName(path.basename(source, ".git"));
 
@@ -402,17 +410,19 @@ const findProject = async (config: CliConfig, explicit: string | null, adoptCwd 
       `no adopted project matches ${cwd} — run "mend adopt" here first, or name one with --project`,
     );
   }
-  // Launching from an un-adopted repo just adopts it — adoption is cheap and
-  // has no ceremony to deserve a separate errand.
-  const top = gitTopLevel(cwd);
-  if (top === null) {
+  // Launching from an un-adopted checkout may adopt its origin. The server never receives a
+  // client filesystem path, even when client and server happen to be the same machine.
+  const facts = cwdFacts(cwd);
+  if (facts.repoRoot === null || facts.originUrl === null) {
     return fail(
-      `${cwd} is not inside a git repository — mend adopt <source> adopts one explicitly`,
+      `${cwd} does not match an adopted project with a Git origin — run "mend adopt <git-url>" first`,
     );
   }
+  const sourceIssue = repositoryCloneUrlIssue(facts.originUrl);
+  if (sourceIssue !== null) return fail(sourceIssue);
   const adopted = await api<ProjectDto>(config, "POST", "/projects", {
-    name: normalizeProjectName(path.basename(top)),
-    source: top,
+    name: normalizeProjectName(path.basename(facts.repoRoot)),
+    source: facts.originUrl,
   });
   say(`${green("✓")} adopted · ${adopted.name} · ${dim(adopted.storePath)}`);
   return adopted;
@@ -3527,7 +3537,7 @@ const main = async () => {
     case "env":
       return envCommand(config, rest);
     case "ssh":
-      return sshCommand(rest, boundApi(config), mendCliHome());
+      return sshCommand(rest, boundApi(config), mendCliHome(), config.url);
     case "completions":
       return completionsCommand(rest);
     case "__complete":

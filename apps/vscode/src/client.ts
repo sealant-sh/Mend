@@ -3,6 +3,7 @@ import { setTimeout as wait } from "node:timers/promises";
 import * as vscode from "vscode";
 
 import type { ConnectionStore, MendConnection } from "./config.js";
+import { requestMend } from "./mend-http.js";
 import {
   SESSION_STATUSES,
   type LaunchStart,
@@ -58,7 +59,7 @@ const parseSession = (value: unknown): Session => {
     worktree: stringField(value, "worktree"),
     branch: stringField(value, "branch"),
     status: parseSessionStatus(value["status"]),
-    // Tolerant: an older server omits the field; the workspace open then falls back.
+    // Tolerant: an older server may omit the field; editor open can resume to obtain an id.
     sealantWorkspaceId:
       typeof value["sealantWorkspaceId"] === "string" ? value["sealantWorkspaceId"] : null,
     createdAt: stringField(value, "createdAt"),
@@ -82,21 +83,7 @@ const parseProjectDetail = (value: unknown): ProjectDetail => {
   };
 };
 
-const responseMessage = (value: unknown, fallback: string): string => {
-  if (!isRecord(value)) return fallback;
-  const message = value["message"];
-  return typeof message === "string" && message !== "" ? message : fallback;
-};
-
-export class MendApiError extends Error {
-  constructor(
-    message: string,
-    readonly status: number | null,
-  ) {
-    super(message);
-    this.name = "MendApiError";
-  }
-}
+export { MendApiError } from "./mend-http.js";
 
 /** Small authenticated client for the extension's project and session jobs. */
 export class MendClient {
@@ -107,36 +94,7 @@ export class MendClient {
   }
 
   private async request(path: string, init?: RequestInit): Promise<unknown> {
-    const connection = await this.connections.get();
-    const headers = new Headers(init?.headers);
-    headers.set("accept", "application/json");
-    if (init?.body !== undefined) headers.set("content-type", "application/json");
-    if (connection.token !== null) headers.set("authorization", `Bearer ${connection.token}`);
-    let response: Response;
-    try {
-      response = await fetch(`${connection.url}/api${path}`, { ...init, headers });
-    } catch (cause) {
-      throw new MendApiError(
-        `Cannot reach Mend at ${connection.url}.${cause instanceof Error ? ` ${cause.message}` : ""}`,
-        null,
-      );
-    }
-    const text = await response.text();
-    let body: unknown = null;
-    if (text !== "") {
-      try {
-        body = JSON.parse(text);
-      } catch {
-        body = null;
-      }
-    }
-    if (!response.ok) {
-      throw new MendApiError(
-        responseMessage(body, `Mend responded ${response.status}.`),
-        response.status,
-      );
-    }
-    return body;
+    return requestMend(await this.connections.get(), path, init);
   }
 
   private post(path: string, payload: unknown): Promise<unknown> {
@@ -223,24 +181,40 @@ export class MendClient {
     const value = await this.request("/workspace-ssh");
     if (!isRecord(value)) throw new Error("Mend returned an invalid workspace-ssh view.");
     const gateway = value["gateway"];
-    const keys = Array.isArray(value["keys"]) ? value["keys"] : [];
+    const keys = value["keys"];
+    if (!Array.isArray(keys)) throw new Error("Mend returned invalid workspace SSH keys.");
+    let parsedGateway: WorkspaceSshView["gateway"] = null;
+    if (gateway !== null) {
+      if (!isRecord(gateway)) {
+        throw new Error("Mend returned invalid workspace SSH gateway metadata.");
+      }
+      const host = gateway["host"];
+      const port = gateway["port"];
+      const usernamePrefix = gateway["usernamePrefix"];
+      if (
+        typeof host !== "string" ||
+        host === "" ||
+        typeof port !== "number" ||
+        !Number.isInteger(port) ||
+        port < 1 ||
+        port > 65_535 ||
+        typeof usernamePrefix !== "string" ||
+        !/^[a-zA-Z0-9._-]+$/.test(usernamePrefix)
+      ) {
+        throw new Error("Mend returned invalid workspace SSH gateway metadata.");
+      }
+      parsedGateway = { host, port, usernamePrefix };
+    }
     return {
-      gateway:
-        isRecord(gateway) &&
-        typeof gateway["host"] === "string" &&
-        typeof gateway["port"] === "number" &&
-        typeof gateway["usernamePrefix"] === "string"
-          ? {
-              host: gateway["host"],
-              port: gateway["port"],
-              usernamePrefix: gateway["usernamePrefix"],
-            }
-          : null,
-      keys: keys.filter(isRecord).map((key) => ({
-        sshKeyId: stringField(key, "sshKeyId"),
-        name: stringField(key, "name"),
-        fingerprint: stringField(key, "fingerprint"),
-      })),
+      gateway: parsedGateway,
+      keys: keys.map((key) => {
+        if (!isRecord(key)) throw new Error("Mend returned an invalid workspace SSH key.");
+        return {
+          sshKeyId: stringField(key, "sshKeyId"),
+          name: stringField(key, "name"),
+          fingerprint: stringField(key, "fingerprint"),
+        };
+      }),
     };
   }
 
