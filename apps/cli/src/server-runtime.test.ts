@@ -211,6 +211,28 @@ it("passes only the server allowlist to a real child process", async () => {
   });
 });
 
+it("shows inherited stdout on the terminal while still bounding stderr and the deadline", async () => {
+  const shown = await runServerProcess(
+    process.execPath,
+    ["-e", "process.stdout.write('progress\\n'); process.stderr.write('warned')"],
+    {},
+    { stdout: "inherit" },
+  );
+  expect(shown).toEqual({ status: 0, stdout: "", stderr: "warned" });
+  const conflicting = await runServerProcess(
+    process.execPath,
+    ["-e", "console.log('never runs')"],
+    {},
+    { stdout: "inherit", stdoutFile: path.join(temporary(), "unused") },
+  );
+  expect(conflicting).toEqual({
+    status: null,
+    stdout: "",
+    stderr: "",
+    error: "Invalid process output options",
+  });
+});
+
 it("streams large process output to an exclusive private file, never a captured string", async () => {
   const directory = temporary();
   const file = path.join(directory, "database.sql.partial");
