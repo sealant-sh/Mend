@@ -73,6 +73,29 @@ export interface LaunchStart {
   readonly speed?: "fast" | undefined;
 }
 
+/** One process a session has held — an agent, a shell, a Service attempt. */
+export interface SessionProcess {
+  readonly id: string;
+  readonly kind: string;
+  readonly harness: string | null;
+  readonly status: string;
+  /** Wire timestamp kept opaque: only its presence matters here. */
+  readonly exitedAt: string | null;
+  readonly providerSessionId: string | null;
+}
+
+/** GET /sessions/:id — the session with every process it has held. */
+export interface SessionDetail {
+  readonly session: Session;
+  readonly processes: ReadonlyArray<SessionProcess>;
+  readonly currentAgent: SessionProcess | null;
+}
+
+/** Joining an existing worktree: the new session becomes another conversation inside it. */
+export interface WorktreeJoin {
+  readonly name: string;
+}
+
 export interface SessionLocation {
   readonly project: Project;
   readonly session: Session;

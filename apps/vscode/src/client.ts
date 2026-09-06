@@ -12,8 +12,11 @@ import {
   type ProjectResolution,
   type RepositoryFacts,
   type Session,
+  type SessionDetail,
+  type SessionProcess,
   type SessionStatus,
   type WorkspaceSshView,
+  type Worktree,
 } from "./types.js";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -54,6 +57,8 @@ const parseSession = (value: unknown): Session => {
   return {
     id: stringField(value, "id"),
     projectId: stringField(value, "projectId"),
+    // Present once the server is worktree-aware; older servers omit it.
+    ...(typeof value["worktreeId"] === "string" ? { worktreeId: value["worktreeId"] } : {}),
     harness: stringField(value, "harness"),
     label: nullableStringField(value, "label"),
     worktree: stringField(value, "worktree"),
@@ -75,11 +80,54 @@ const parseArray = <T>(
   return value.map(parse);
 };
 
+const parseWorktree = (value: unknown): Worktree => {
+  if (!isRecord(value)) throw new Error("Mend returned an invalid worktree.");
+  return {
+    id: stringField(value, "id"),
+    name: stringField(value, "name"),
+    directory: stringField(value, "directory"),
+    branch: stringField(value, "branch"),
+    baseSha: stringField(value, "baseSha"),
+    baseRef: nullableStringField(value, "baseRef"),
+    createdAt: stringField(value, "createdAt"),
+  };
+};
+
 const parseProjectDetail = (value: unknown): ProjectDetail => {
   if (!isRecord(value)) throw new Error("Mend returned an invalid project detail.");
   return {
     project: parseProject(value["project"]),
     sessions: parseArray(value["sessions"], parseSession, "sessions"),
+    // The worktree tier is the capability signal: absent on a pre-worktree server.
+    ...(Array.isArray(value["worktrees"])
+      ? { worktrees: parseArray(value["worktrees"], parseWorktree, "worktrees") }
+      : {}),
+  };
+};
+
+const parseSessionProcess = (value: unknown): SessionProcess => {
+  if (!isRecord(value)) throw new Error("Mend returned an invalid session process.");
+  const exitedAt = value["exitedAt"];
+  return {
+    id: stringField(value, "id"),
+    kind: stringField(value, "kind"),
+    harness: nullableStringField(value, "harness"),
+    status: stringField(value, "status"),
+    exitedAt: exitedAt === null || exitedAt === undefined ? null : String(exitedAt),
+    providerSessionId: nullableStringField(value, "providerSessionId"),
+  };
+};
+
+const parseSessionDetail = (value: unknown): SessionDetail => {
+  if (!isRecord(value)) throw new Error("Mend returned an invalid session detail.");
+  const currentAgent = value["currentAgent"];
+  return {
+    session: parseSession(value["session"]),
+    processes: parseArray(value["processes"], parseSessionProcess, "processes"),
+    currentAgent:
+      currentAgent === null || currentAgent === undefined
+        ? null
+        : parseSessionProcess(currentAgent),
   };
 };
 
@@ -144,18 +192,40 @@ export class MendClient {
     return { status: "not-found" };
   }
 
+  /**
+   * Create a session. `name` joins the worktree of that name when it exists (a new
+   * conversation inside it; the server refuses a conflicting base) and otherwise creates it;
+   * null derives an anonymous worktree.
+   */
   async createSession(
     projectId: string,
     harness: string,
     label: string | null,
     base: string | null,
+    name: string | null = null,
   ): Promise<Session> {
     return parseSession(
       await this.post(`/projects/${encodeURIComponent(projectId)}/sessions`, {
         harness,
         label,
         base,
+        name,
       }),
+    );
+  }
+
+  /** The session with every process it has held — agents, shells, Services. */
+  async sessionDetail(sessionId: string): Promise<SessionDetail> {
+    return parseSessionDetail(await this.request(`/sessions/${encodeURIComponent(sessionId)}`));
+  }
+
+  /**
+   * Open a shell in the live workspace. Its process row holds the workspace lease, which is
+   * what lets a takeover stop the agent without the workspace closing under the editor.
+   */
+  async openShell(sessionId: string): Promise<SessionProcess> {
+    return parseSessionProcess(
+      await this.post(`/sessions/${encodeURIComponent(sessionId)}/shell`, {}),
     );
   }
 

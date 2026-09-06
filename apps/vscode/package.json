@@ -100,6 +100,16 @@
         "icon": "$(vm)"
       },
       {
+        "command": "mend.takeOverSession",
+        "title": "Mend: Take over session in the editor",
+        "icon": "$(debug-continue)"
+      },
+      {
+        "command": "mend.newSessionInWorktree",
+        "title": "Mend: New session in this worktree…",
+        "icon": "$(add)"
+      },
+      {
         "command": "mend.openInMend",
         "title": "Mend: Open in Mend",
         "icon": "$(link-external)"
@@ -179,6 +189,16 @@
           "command": "mend.newManualWorktree",
           "when": "view == mend.sessions && viewItem == mend.project",
           "group": "navigation@2"
+        },
+        {
+          "command": "mend.takeOverSession",
+          "when": "view == mend.sessions && viewItem == mend.session.live",
+          "group": "1_open@1"
+        },
+        {
+          "command": "mend.newSessionInWorktree",
+          "when": "view == mend.sessions && viewItem =~ /^mend\\.session/",
+          "group": "1_open@2"
         },
         {
           "command": "mend.stopSession",
