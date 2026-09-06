@@ -324,9 +324,12 @@ describe("server lifecycle", { timeout: 30_000 }, () => {
       "https://api.github.com/repos/sealant-sh/Mend/releases/latest",
     ]);
     expect(f.state().version).toBe("0.24.0");
-    expect(f.runCalls.find((call) => call.args[2] === "pull")?.options?.timeoutMs).toBe(
-      serverProcessDeadlines.pull,
-    );
+    // The pull shows Docker's own progress on the terminal instead of a captured, silent wait.
+    expect(f.runCalls.find((call) => call.args[2] === "pull")?.options).toEqual({
+      timeoutMs: serverProcessDeadlines.pull,
+      stdout: "inherit",
+    });
+    expect(f.lines).toContain("Pulling ghcr.io/sealant-sh/mend:0.24.0");
   });
 
   it("backs up with writers stopped before selecting and starting the exact target", async () => {

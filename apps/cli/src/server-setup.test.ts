@@ -374,7 +374,14 @@ describe("mend server setup", () => {
       ),
     ).toBe(false);
     expect(second.randomSizes).toEqual([256]);
-    expect(second.lines).toEqual([]);
+    expect(
+      second.lines.some(
+        (line) =>
+          line.startsWith("Pulling") ||
+          line.startsWith("Starting") ||
+          line.includes("is reachable"),
+      ),
+    ).toBe(false);
     expect(await serverCommand(["setup"], first.runtime)).toEqual({ _tag: "ok" });
   });
 
@@ -635,6 +642,18 @@ describe("mend server setup", () => {
     expect(control.lines.some((line) => line.includes("is reachable"))).toBe(false);
   });
 
+  it("reports the health wait while it lasts, then fails with the last observation", async () => {
+    const control = makeRuntime({ healthStatus: 503, healthBody: "" });
+    expect(await serverCommand(["setup"], control.runtime)).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining("HTTP 503"),
+    });
+    expect(control.lines.filter((line) => line.startsWith("Waiting for"))).toEqual(
+      Array.from({ length: 3 }, () => "Waiting for http://localhost:3105/api/health (HTTP 503)"),
+    );
+    expect(control.lines.some((line) => line.includes("is reachable at"))).toBe(false);
+  });
+
   it.each([
     "{}",
     "<html>OK</html>",
@@ -717,8 +736,14 @@ describe("mend server setup", () => {
     expect(
       fs.readFileSync(activeFile(control.runtime.configDir, "compose.yaml"), "utf8"),
     ).toContain("mend-postgres");
-    expect(control.lines).toContain("Mend 0.23.0 is reachable at http://localhost:3105");
-    expect(control.lines.at(-1)).toContain("mend login --url http://localhost:3105");
+    // Each slow phase announces itself before it starts, so a long pull or wait never looks like a hang.
+    expect(control.lines).toEqual([
+      'Using Docker context "default" (unix:///var/run/docker.sock)',
+      "Downloading release assets for Mend 0.23.0",
+      "Starting Mend 0.23.0 containers; Docker waits up to 120s for them to report healthy",
+      "Mend 0.23.0 is reachable at http://localhost:3105",
+      "Open http://localhost:3105, create the first account, then run: mend login --url http://localhost:3105",
+    ]);
 
     const up = control.commands.find(([, args]) => args.includes("up"));
     expect(up?.[1]).toEqual([

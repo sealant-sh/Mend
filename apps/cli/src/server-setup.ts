@@ -600,6 +600,7 @@ const checkDocker = async (runtime: ServerSetupRuntime, context: string): Promis
 };
 
 const resolveLatestVersion = async (runtime: ServerSetupRuntime): Promise<string> => {
+  runtime.writeLine("Resolving the latest Mend server release");
   const response = await runtime.fetchText(LATEST_RELEASE_URL, 15_000);
   if (response.error !== undefined || response.status !== 200) {
     throw setupError(
@@ -828,6 +829,7 @@ const probeHealth = async (
         lastFailure = "health response is not valid JSON";
       }
     }
+    if (attempt % 10 === 0) runtime.writeLine(`Waiting for ${healthUrl} (${lastFailure})`);
     if (attempt < 29) await runtime.sleep(2_000);
   }
   throw setupError(
@@ -934,6 +936,7 @@ const resolveAssets = async (
   }
   if (options.offline)
     throw setupError("--offline needs --assets-dir or the retained assets for this exact version.");
+  runtime.writeLine(`Downloading release assets for Mend ${serverVersion}`);
   const [compose, postgresInit] = await Promise.all([
     downloadAsset(runtime, serverVersion, COMPOSE_ASSET),
     downloadAsset(runtime, serverVersion, POSTGRES_INIT_ASSET),
@@ -953,8 +956,11 @@ const inspectImage = async (
   const args = ["--context", context, "image", "inspect", image, "--format", format];
   const inspected = await runtime.run("docker", args);
   if (inspected.status === 0 || policy === "local") return inspected;
+  // Docker renders its own layer progress on the terminal; a silent pull looks like a hang.
+  runtime.writeLine(`Pulling ${image}`);
   const pulled = await runtime.run("docker", ["--context", context, "pull", image], {
     timeoutMs: serverProcessDeadlines.pull,
+    stdout: "inherit",
   });
   if (pulled.status !== 0) throw commandFailure(`Could not pull ${image}`, pulled);
   return runtime.run("docker", args);
@@ -1014,11 +1020,17 @@ const checkComposeImages = async (
   }
 };
 
+const startingNotice = (runtime: ServerSetupRuntime, version: string): void =>
+  runtime.writeLine(
+    `Starting Mend ${version} containers; Docker waits up to ${serverProcessDeadlines.composeWaitSeconds}s for them to report healthy`,
+  );
+
 const startCompose = async (
   runtime: ServerSetupRuntime,
   config: ServerConfig,
   generation: ServerGeneration,
 ): Promise<void> => {
+  startingNotice(runtime, config.serverVersion);
   const compose = await runtime.run(
     "docker",
     serverComposeArgs({ directory: generation.directory, dockerContext: config.dockerContext }, [
@@ -1062,6 +1074,7 @@ const setupServer = async (
     options.context ?? existing?.config.dockerContext,
   );
   const operatingSystem = await checkDocker(runtime, selectedContext.name);
+  runtime.writeLine(`Using Docker context "${selectedContext.name}" (${selectedContext.endpoint})`);
 
   const serverVersion = await resolveServerVersion(runtime, options, existing?.config ?? null);
   const config: ServerConfig = {
@@ -1087,7 +1100,6 @@ const setupServer = async (
   if (ownership._tag === "error") throw setupError(ownership.error.message);
   await checkLocalImages(runtime, config, options.offline ? "local" : "pull-missing");
   storeValue(store.activate(generation));
-  runtime.writeLine(`Using Docker context "${config.dockerContext}" (${config.dockerEndpoint})`);
   await startCompose(runtime, config, generation);
   await probeHealth(runtime, config.appUrl, config.serverVersion);
   await verifyRegistry(runtime, config);
@@ -1187,6 +1199,7 @@ const startInstallation = async (
   runtime: ServerSetupRuntime,
   installation: ServerInstallation,
 ): Promise<void> => {
+  startingNotice(runtime, installation.config.serverVersion);
   await composeCommand(runtime, installation, [
     "up",
     "-d",

@@ -69,9 +69,12 @@ combined prepare-and-activate operation for callers that need it.
 
 Setup prepares first, runs read-only `docker compose config --images` against that exact generation,
 then inspects the canonical images. Online setup pulls missing images explicitly and inspects them
-again. Only after all image checks pass does setup activate and start Compose. Both online and
-offline startup use `--pull never --no-build`, so startup cannot replace a checked image by pulling
-or building. Image rejection leaves any old active generation and running containers untouched.
+again; the pull inherits the terminal's stdout so Docker's own layer progress is visible, while
+stderr stays captured for the error report. Every phase that can take minutes (release lookup, asset
+download, pull, Compose start, health wait) prints one line before it begins. Only after all image
+checks pass does setup activate and start Compose. Both online and offline startup use
+`--pull never --no-build`, so startup cannot replace a checked image by pulling or building. Image
+rejection leaves any old active generation and running containers untouched.
 
 The Docker ownership claim integration point is after durable preparation and read-only config
 checks, before image checks that may pull. `server-docker-volumes.ts` owns the claim protocol;

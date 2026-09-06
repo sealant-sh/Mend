@@ -19,11 +19,13 @@ export const serverProcessDeadlines = {
   dump: 15 * 60_000,
   composeWaitSeconds: 120,
 } as const;
-/** Optional exclusive, durable private stdout destination. stderr always remains bounded. */
+/** Optional stdout destination: a private exclusive file, or the terminal. stderr always remains bounded. */
 export interface ServerProcessOptions {
   /** Finite wall-clock budget, defaulting to ordinary commands even with a stdout file. */
   readonly timeoutMs?: number;
   readonly stdoutFile?: string;
+  /** Show the child's stdout on the terminal instead of capturing it, so long pulls render Docker's own progress. */
+  readonly stdout?: "inherit";
 }
 
 /**
@@ -49,6 +51,14 @@ export const runServerProcess = (
       error: "Invalid process timeout",
     });
   }
+  if (options.stdoutFile !== undefined && options.stdout === "inherit") {
+    return Promise.resolve({
+      status: null,
+      stdout: "",
+      stderr: "",
+      error: "Invalid process output options",
+    });
+  }
   const env: NodeJS.ProcessEnv = {};
   for (const key of [
     "PATH",
@@ -72,7 +82,7 @@ export const runServerProcess = (
       const child = spawn(command, [...args], {
         env,
         detached: process.platform !== "win32",
-        stdio: ["ignore", fd ?? "pipe", "pipe"],
+        stdio: ["ignore", fd ?? (options.stdout === "inherit" ? "inherit" : "pipe"), "pipe"],
       });
       let stdout = "";
       let stderr = "";
