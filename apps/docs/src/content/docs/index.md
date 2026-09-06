@@ -124,13 +124,17 @@ Read [Configure session environments](/guides/project-environment/) for the full
 
 ### Install Mend
 
+Install the CLI, then set up the server on the machine that will keep your projects:
+
 ```sh
-curl -fsSL https://mend.sealant.dev/install.sh | sh
+npm install --global @sealant/mend
+mend server setup
 ```
 
-The installer sets up Mend and Sealant — the workspace platform underneath Mend that runs and
-records the isolated environments where agents execute — on your machine. Read
-[Install Mend](/getting-started/install/) for prerequisites and the current network boundary.
+The npm package installs only the CLI. `mend server setup` creates two Docker containers: the
+complete Mend application, with Sealant — the workspace platform underneath Mend that runs and
+records the isolated environments where agents execute — pinned inside it, and Postgres. Read
+[Install Mend](/getting-started/install/) for prerequisites, private-network exposure, and upgrades.
 
 ### Connect an agent account
 

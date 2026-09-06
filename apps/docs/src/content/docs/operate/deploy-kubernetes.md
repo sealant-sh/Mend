@@ -24,12 +24,12 @@ isolated environments agents run in, builds their images, supervises their proce
 everything that happens inside them. Mend never touches a container or Pod itself — it asks Sealant
 through the platform's SDK.
 
-On the single-host tiers the installer sets Sealant up for you and you can ignore it. On Kubernetes
-you install it yourself, **before Mend**, because Mend refuses to run without a platform to talk to.
-Sealant's chart brings its own control plane — an API, a worker (the component that creates
-workspace Pods), Postgres, RabbitMQ, an image registry, an SSH gateway — plus the namespace
-workspace Pods run in, the certificate authority that secures their control channels, and the narrow
-RBAC the worker needs.
+On the single-host tiers `mend server setup` ships Sealant inside the Mend application image and you
+can ignore it. On Kubernetes you install it yourself, **before Mend**, because Mend refuses to run
+without a platform to talk to. Sealant's chart brings its own control plane — an API, a worker (the
+component that creates workspace Pods), Postgres, RabbitMQ, an image registry, an SSH gateway — plus
+the namespace workspace Pods run in, the certificate authority that secures their control channels,
+and the narrow RBAC the worker needs.
 
 ## What you need
 
@@ -112,13 +112,13 @@ remote workflow applies unchanged.
 
 The chart sets `MEND_DEPLOYMENT_MODE=kubernetes`. Compared to the single-host install:
 
-| Concern           | Single host                       | Kubernetes                                                     |
-| ----------------- | --------------------------------- | -------------------------------------------------------------- |
-| Session channel   | Unix socket in the run directory  | Authenticated network listener; per-session revocable tokens   |
-| Machine git key   | `~/.config/mend/keys`             | A `subPath` of the store claim, so it survives Pod replacement |
-| Git adoption auth | `ambient` works (your login user) | `ambient` cannot work in a Pod — use `mend-key` or `bridge`    |
-| Service listeners | Bind your machine's interfaces    | Bind the Pod; reach them with `mend service connect`           |
-| One replica       | One process                       | Still one replica — the session engine is in-memory            |
+| Concern           | Single host                                                            | Kubernetes                                                     |
+| ----------------- | ---------------------------------------------------------------------- | -------------------------------------------------------------- |
+| Session channel   | Unix socket in the run directory                                       | Authenticated network listener; per-session revocable tokens   |
+| Machine git key   | The application's configuration volume                                 | A `subPath` of the store claim, so it survives Pod replacement |
+| Git adoption auth | `ambient` sees only the application container's credentials            | `ambient` cannot work in a Pod — use `mend-key` or `bridge`    |
+| Service listeners | Bind the application container; reach them with `mend service connect` | Bind the Pod; reach them with `mend service connect`           |
+| One replica       | One process                                                            | Still one replica — the session engine is in-memory            |
 
 Adoption in a Pod has no ambient identity, so pick an explicit mode:
 

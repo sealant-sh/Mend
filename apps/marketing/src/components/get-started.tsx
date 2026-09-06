@@ -8,11 +8,11 @@ import { Link } from "@tanstack/react-router";
 import { Check, Copy } from "lucide-react";
 import { type ReactNode, useState } from "react";
 
-import { Cmd, INSTALL_COMMAND, InstallCommand, PageHeader, REPO_URL } from "#/components/content";
+import { Cmd, InstallCommand, PageHeader, REPO_URL } from "#/components/content";
 
 export const GET_STARTED_TITLE = "From an empty machine to a reviewed change";
 export const GET_STARTED_SUBLINE =
-  "Eight steps. Install Mend on your own box, point your own agent at your own repository, read what it did, and carry it in your pocket.";
+  "Eight steps. Install the CLI, set the server up on your own box, point your own agent at your own repository, read what it did, and carry it in your pocket.";
 
 // ── page primitives ────────────────────────────────────────────────────────
 
@@ -114,48 +114,47 @@ const STEPS: ReadonlyArray<Step> = [
     title: "Install Mend",
     body: (
       <>
-        <P>One line, on the machine you want your agents to run on. Linux, with Docker.</P>
+        <P>
+          Two commands, on the machine you want your agents to run on: install the CLI, then set the
+          server up.
+        </P>
         <div className="mt-4">
           <InstallCommand />
         </div>
-        <P>It puts four things on the box:</P>
+        <Snippet lines={["mend server setup"]} />
+        <P>
+          The one-liner installs only the <Cmd>mend</Cmd> CLI, through npm;{" "}
+          <Cmd>npm install -g @sealant/mend</Cmd> does the same. <Cmd>mend server setup</Cmd> then
+          creates two containers on your Docker:
+        </P>
         <Points
           items={[
             <>
-              the Sealant control plane — workspaces and the record — as Docker Compose services in{" "}
-              <Cmd>~/.config/sealant</Cmd>, without its own web app
+              the Mend application — API, web app, and the Sealant workspace platform pinned inside
+              it, so you pick one Mend version and nothing else
             </>,
-            <>
-              Mend’s server, on the host as a user service (<Cmd>systemd --user mend</Cmd> or
-              launchd), from a checkout in <Cmd>~/.local/share/mend/src</Cmd>
-            </>,
-            <>Mend’s Postgres, in Docker</>,
-            <>
-              the <Cmd>mend</Cmd> CLI, in <Cmd>~/.local/bin</Cmd>
-            </>,
+            <>Postgres, with separate Mend and Sealant databases</>,
           ]}
         />
         <Quiet>
-          When it finishes, the server answers at <Cmd>http://localhost:3105</Cmd>. Postgres and the
-          control plane bind to loopback; the Mend server binds every interface, so a phone on your
-          tailnet or LAN can reach it. Keep it behind one of those.
+          When it finishes, the server answers at <Cmd>http://localhost:3105</Cmd>. Web and
+          workspace SSH bind to localhost and Postgres publishes no port. Reaching it from another
+          device is an explicit choice, in step 07. Repositories, worktrees, and the record live in
+          Docker volumes.
         </Quiet>
         <p className="mt-7 text-xs font-medium text-label">Requirements</p>
         <Points
           items={[
-            <>Docker: the daemon running, and compose 2.23.1 or newer</>,
             <>
-              <Cmd>git</Cmd> and <Cmd>curl</Cmd>
-            </>,
-            <>
-              Node 22 or newer if you already have it; otherwise the installer downloads a private
-              Node 26 that only Mend uses. The <Cmd>mend</Cmd> dashboard needs 26; every other
+              Node 22 or newer for the CLI. The <Cmd>mend</Cmd> dashboard needs 26; every other
               command runs on 22
             </>,
+            <>Docker Engine, Docker Desktop, or OrbStack: the daemon running, with Compose v2</>,
             <>
-              Linux. macOS is untested: the control plane bind-mounts{" "}
-              <Cmd>/run/sealant/sockets</Cmd>, which Docker Desktop does not share, so the installer
-              stops on Darwin unless you set <Cmd>MEND_ALLOW_MACOS=1</Cmd>
+              Linux is verified. macOS is being validated; the checklist is{" "}
+              <a href={`${REPO_URL}/blob/main/docs/MACOS-VALIDATION.md`}>
+                docs/MACOS-VALIDATION.md
+              </a>
             </>,
           ]}
         />
@@ -163,20 +162,20 @@ const STEPS: ReadonlyArray<Step> = [
         <Facts
           rows={[
             {
-              term: "MEND_VERSION",
-              detail: "Which Mend to check out. Set it to pin, or to upgrade.",
+              term: "--version",
+              detail: "Which Mend server to pin. A fresh setup pins the CLI's own version.",
             },
-            { term: "SEALANT_VERSION", detail: "Which control-plane images to pull." },
-            { term: "MEND_PORT", detail: "Where the server listens. Default 3105." },
+            { term: "--port", detail: "Where the web app listens. Default 3105." },
+            { term: "--ssh-port", detail: "Where workspace SSH listens. Default 2222." },
             {
-              term: "MEND_DB_PORT",
-              detail: "Where Mend’s Postgres publishes on loopback. Default 5436.",
+              term: "--bind, --url",
+              detail: "Private-network exposure, together. Step 07 has the exact command.",
             },
           ]}
         />
         <Quiet>
-          Re-running the installer repairs rather than reinstalls: it re-checks each piece, replaces
-          what drifted, and leaves the volumes — and your data — alone.
+          Re-running setup repairs rather than reinstalls: it keeps the pinned version, the secrets,
+          and the volumes — and your data — alone.
         </Quiet>
       </>
     ),
@@ -201,8 +200,8 @@ const STEPS: ReadonlyArray<Step> = [
           the machine on a network you control.
         </P>
         <Quiet>
-          The account lives in Mend’s own Postgres on your box. No hosted identity, no third-party
-          sign-in.
+          The account lives in the Postgres container on your box. No hosted identity, no
+          third-party sign-in.
         </Quiet>
       </>
     ),
@@ -216,8 +215,10 @@ const STEPS: ReadonlyArray<Step> = [
         <P>The CLI talks to the same server as the browser, as the same account.</P>
         <Snippet lines={["mend login"]} />
         <Quiet>
-          It asks for the email and password you just used and writes a token to{" "}
-          <Cmd>~/.config/mend/cli.json</Cmd>. Nothing else on the machine can read your session.
+          It opens the browser at the server's authorize page. Check that the code on the page
+          matches the one in the terminal, press Authorize, and the CLI receives its own revocable
+          device token, written with mode 0600 to <Cmd>~/.config/mend/cli.json</Cmd>. No password is
+          typed into the terminal.
         </Quiet>
       </>
     ),
@@ -281,9 +282,9 @@ const STEPS: ReadonlyArray<Step> = [
         <P>From any checkout on the machine:</P>
         <Snippet lines={["cd ~/code/my-repo", 'mend claude "fix the flaky upload test"']} />
         <P>
-          The first <Cmd>mend claude</Cmd> in a repository Mend has not seen adopts it. Your
-          checkout is never the execution target — Mend clones the repository into its own store and
-          works there.
+          The first <Cmd>mend claude</Cmd> in a repository Mend has not seen adopts it from the
+          checkout’s origin URL: Mend clones the repository into its own store and works there. Your
+          checkout is never the execution target, and no local file is uploaded.
         </P>
         <p className="mt-7 text-xs font-medium text-label">What you just made</p>
         <Facts
@@ -293,22 +294,27 @@ const STEPS: ReadonlyArray<Step> = [
               detail: "The repository, adopted into the machine’s central store.",
             },
             {
+              term: "worktree",
+              detail:
+                "A durable named checkout in the store, on its own branch. It holds many sessions over its life.",
+            },
+            {
               term: "session",
               detail:
-                "One supervised coding-agent process in its own git worktree. Bring your own harness — claude, codex, or any command.",
+                "One supervised coding-agent conversation in that worktree, with its record. Bring your own harness — claude, codex, or any command.",
             },
             {
               term: "change",
               detail:
-                "The session’s worktree against its base. One change per session, reviewable from the first edit.",
+                "The worktree against its base, shared by every session inside it, reviewable from the first edit.",
             },
           ]}
         />
         <Quiet>
           <Cmd>mend codex</Cmd> and <Cmd>mend run -- &lt;cmd&gt;</Cmd> start the same kind of
-          session with a different harness. <Cmd>mend adopt</Cmd> adopts without starting one.{" "}
-          <Cmd>mend sessions</Cmd> lists them; <Cmd>mend attach</Cmd> puts you back in a running
-          one.
+          session with a different harness. <Cmd>mend adopt &lt;git-url&gt;</Cmd> adopts without
+          starting one. <Cmd>mend sessions</Cmd> lists them; <Cmd>mend attach</Cmd> puts you back in
+          a running one.
         </Quiet>
       </>
     ),
@@ -366,11 +372,21 @@ const STEPS: ReadonlyArray<Step> = [
         </Quiet>
         <p className="mt-7 text-xs font-medium text-label">Reaching the machine</p>
         <P>
-          The Mend server listens on every interface, so the phone needs a route to the box rather
-          than a setting: a tailnet is the short path, a LAN address works at home. The pairing
-          screen lists the addresses this machine answers on — the tailnet one first — and the QR
-          encodes the one you pick. Nothing here is an internet-facing setup; put the machine behind
-          a tailnet or a firewall.
+          The server binds to localhost until you say otherwise. To reach it from a phone, set it up
+          with an explicit private address — a tailnet name is the short path, a LAN name works at
+          home:
+        </P>
+        <Snippet
+          lines={[
+            "mend server setup --bind 0.0.0.0 --url http://mac-mini.local:3105 \\",
+            "  --origin http://localhost:3105",
+          ]}
+        />
+        <P>
+          Pairing offers only the origins you configured; there is no interface guessing. Nothing
+          here is an internet-facing setup: binding <Cmd>0.0.0.0</Cmd> opens every interface and
+          sign-up stays open to whoever can reach it, so put the machine behind a tailnet or a
+          firewall.
         </P>
       </>
     ),
@@ -389,40 +405,29 @@ const STEPS: ReadonlyArray<Step> = [
           <Cmd>gh</Cmd> CLIs on PATH, and the tailnet address. It changes nothing, and exits 1 when
           a line is a blocker.
         </Quiet>
-        <p className="mt-7 text-xs font-medium text-label">Logs and restarts</p>
+        <p className="mt-7 text-xs font-medium text-label">Status, logs, restarts</p>
         <Snippet
-          lines={[
-            "systemctl --user status mend",
-            "journalctl --user -u mend -f",
-            "systemctl --user restart mend",
-          ]}
+          lines={["mend server status", "mend server logs --tail 100", "mend server restart"]}
         />
         <Quiet>
-          On macOS the same service runs under launchd as <Cmd>dev.sealant.mend</Cmd> —{" "}
-          <Cmd>launchctl print gui/$(id -u)/dev.sealant.mend</Cmd> for status, and it writes{" "}
-          <Cmd>~/.config/mend/server.log</Cmd>.
+          <Cmd>mend server stop</Cmd> stops both containers and <Cmd>mend server start</Cmd> brings
+          them back, on the same version and data. None of these delete a volume. Stop and restart
+          interrupt connections; workspaces keep running, but active work may need to reconnect.
         </Quiet>
         <p className="mt-7 text-xs font-medium text-label">Upgrade</p>
-        <Snippet lines={[INSTALL_COMMAND.replace("| sh", "| MEND_VERSION=latest sh")]} />
+        <Snippet lines={["mend server upgrade --version 0.24.0"]} />
         <Quiet>
-          The installer is the upgrade path: it moves the checkout forward, rebuilds, and restarts
-          the service, which applies any new migrations on boot. The old server keeps serving while
-          its own files are being replaced, so expect a short window where it may fall over — it
-          comes back on the restart.
+          Updating the CLI never changes the server; the upgrade is its own explicit command. It
+          validates the target image, stops the app, saves a private database dump, then activates
+          the target and runs its migrations. Downgrades are refused, and nothing restores a
+          database automatically — the dump is there for you.
         </Quiet>
         <p className="mt-7 text-xs font-medium text-label">Uninstall</p>
-        <Snippet
-          lines={[
-            "systemctl --user disable --now mend",
-            "docker compose --project-directory ~/.config/sealant down -v",
-            "docker compose --project-directory ~/.config/mend down -v",
-            "rm -rf ~/.config/mend ~/.config/sealant ~/.local/share/mend ~/.local/bin/mend",
-          ]}
-        />
         <Quiet>
-          The <Cmd>-v</Cmd> takes the volumes with it: the record, the workspaces, and Mend’s
-          database. Adopted repositories live in the store under <Cmd>~/.config/mend/store</Cmd>,
-          and the checkout under <Cmd>~/.local/share/mend</Cmd> — both go with the last line.
+          There is no uninstall command yet. <Cmd>mend server stop</Cmd> stops both containers and
+          keeps every volume. Removing the installation is a manual Docker operation on the{" "}
+          <Cmd>mend</Cmd> Compose project and its volumes, plus <Cmd>~/.config/mend</Cmd>; do it
+          only after backing up what you want to keep.
         </Quiet>
       </>
     ),

@@ -46,9 +46,12 @@ flowchart TB
   store -->|mount worktree| workspace
 ```
 
-The installer binds Postgres and the Sealant control plane to loopback. The current installer starts
-the Mend HTTP server on all host interfaces. Use a private network such as Tailscale when another
-device needs to reach it.
+On a single host, `mend server setup` runs Mend and its pinned Sealant control plane in one
+application container, with Postgres in a second container. Web and workspace SSH bind to localhost
+by default and Postgres publishes no port. Exposure on a private network such as Tailscale is an
+explicit setup choice; read [Install Mend](/getting-started/install/#network-boundary). On
+Kubernetes, Sealant is installed separately; read
+[Deploy on Kubernetes](/operate/deploy-kubernetes/).
 
 ## Project store
 
@@ -138,9 +141,11 @@ decides what survives each lifecycle event:
 - Everything outside the worktree is ephemeral. Packages installed into the container, files in the
   workspace home directory, and `/tmp` disappear when the workspace is replaced. The exception is a
   read-write extra mount, which writes to its host folder directly.
-- Removing a session is the only operation that deletes the worktree, and it takes uncommitted
-  changes with it. Mend refuses to remove a session while its processes are live, but it does not
-  check for uncommitted work — review, commit, or export before removing.
+- Deleting a session removes only its conversation record; the worktree, its change, and its
+  checkpoints remain. Removing the worktree is a separate explicit act that takes uncommitted
+  changes with it: Mend refuses it while any session in it is live, and refuses again while the
+  worktree still holds any change against its base unless forced. Review, commit, or export before
+  removing.
 
 ## Environment and identity
 

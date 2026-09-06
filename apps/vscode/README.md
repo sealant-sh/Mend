@@ -8,7 +8,7 @@ Code — run `claude` or `codex` yourself in the terminal, Mend observes and rec
 any existing session to open it the same way.
 
 - Browse projects and sessions from the Mend Activity Bar view.
-- Open a session's workspace over SSH — or its worktree locally / on the Mend machine.
+- Open a session's workspace over SSH, through the Mend server's workspace gateway.
 - Start Claude or Codex sessions without building harness arguments in the extension.
 - Open the canonical session and review surfaces in Mend.
 
@@ -41,8 +41,9 @@ rejects changed keys. Mend never clears `known_hosts`. For a host-key mismatch, 
 [fingerprint verification and manual rotation procedure](../cli/README.md#gateway-host-key-rotation)
 before removing only this server's HostKeyAlias entry.
 
-When the deployment exposes no gateway, opening falls back to the worktree path: local when it
-exists, else via `mend.remoteSshHost` on the Mend machine. The fallback terminal runs on the host,
-not in the workspace — agents run there are outside Mend's observation.
+There is no host-path fallback. A missing gateway, a failed discovery, or an authentication error
+stops the open with a message instead of opening a folder on the host, where a terminal would run
+outside Mend's observation. `Mend: Copy worktree path` still copies the server-side path for your
+own use.
 
 Deep links: `vscode://sealant-sh.mend/open?session=<session-id>`

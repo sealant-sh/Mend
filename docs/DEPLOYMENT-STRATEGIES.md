@@ -33,6 +33,12 @@ known capabilities and invariants.
 | Run record / product store                              | Postgres                  | Postgres                          | Postgres (Hyperdrive); R2 later      |
 | Service exposure                                        | loopback forwards         | forwards over the control channel | authenticated HTTP/WS previews only  |
 
+Since the packaging work (`mend server setup`, see `docs/SELF-HOSTING.md`), the `local` strategy
+runs inside the Mend application container: the "host directories" and unix sockets above are
+container paths under `/var/lib/mend/store` and `/run/sealant/sockets`, which Sealant 0.28's Docker
+volume mappings lower onto named volumes. The invariant is unchanged; only where the POSIX worktree
+physically lives moved.
+
 Capabilities differ per strategy and are **reported, never assumed** — sealant's `supports()`
 already refuses what a runtime cannot do (the Docker service where the operator has not enabled it,
 gVisor selection, mount sources on Cloudflare), the API refuses at create with a stable code

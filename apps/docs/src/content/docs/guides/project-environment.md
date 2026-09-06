@@ -80,6 +80,11 @@ repository. Mend mounts it at:
 Mounts are read-only by default. A read-write mount writes directly to the host folder, outside the
 session's reviewed worktree. Use read-write only when that is the intended behavior.
 
+The path must exist on the Mend server's own filesystem. In the Docker deployment that is the
+application container, so a folder on your laptop or on the Docker host is not mountable; only paths
+under the store volume (`/var/lib/mend/store`) can be mapped into a workspace there. Use a reference
+repository for material that lives in Git.
+
 ## Dotfiles
 
 Dotfiles belong to each Mend user. The project setting only decides whether sessions apply the
@@ -91,8 +96,10 @@ owns its environment. Read [Dotfiles](/guides/dotfiles/) for repository and loca
 ## Services
 
 A Service is an explicitly declared development process associated with a session. Add recipes to
-`mend.toml` or start a command with `mend service run`. Mend records each attempt and forwards the
-declared port to the host.
+`mend.toml` or start a command with `mend service run`. Mend records each attempt.
+`mend service connect <name>` brings the declared port to your machine's loopback over an
+authenticated WebSocket; `mend service run` opens that tunnel by itself only when the CLI points at
+a non-loopback server URL, and never for UDP.
 
 Services do not start or expose themselves automatically. HTTP and HTTPS are separate declarations;
 other transports provide an endpoint to copy rather than a browser action.
