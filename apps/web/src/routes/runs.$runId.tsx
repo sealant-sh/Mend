@@ -41,7 +41,7 @@ function RunPage() {
         </p>
       </div>
 
-      <div className="max-w-3xl space-y-6">
+      <div className="space-y-6">
         {/* The run-record motif: lifted panel, mono facts, hairline rows. */}
         <section className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
           <div className="flex items-center justify-between gap-4">

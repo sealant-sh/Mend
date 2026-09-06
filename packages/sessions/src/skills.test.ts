@@ -35,12 +35,37 @@ const tmpHome = () => fs.mkdtempSync(path.join(os.tmpdir(), "mend-skills-home-")
 
 describe("mergeSkillLibraries", () => {
   it("project wins over user by name", () => {
-    const merged = mergeSkillLibraries({
-      user: [bundle("a", [{ path: "SKILL.md", contents: "user a" }])],
-      project: [bundle("a", [{ path: "SKILL.md", contents: "project a" }], "project")],
-    });
+    const merged = mergeSkillLibraries(
+      {
+        user: [bundle("a", [{ path: "SKILL.md", contents: "user a" }])],
+        project: [bundle("a", [{ path: "SKILL.md", contents: "project a" }], "project")],
+      },
+      { inheritUserSkills: true },
+    );
     expect(merged).toHaveLength(1);
     expect(merged[0]?.files[0]?.contents).toBe("project a");
+  });
+
+  it("inherits user skills by default when enabled", () => {
+    const merged = mergeSkillLibraries(
+      {
+        user: [bundle("global", [{ path: "SKILL.md", contents: "user" }])],
+        project: [bundle("local", [{ path: "SKILL.md", contents: "project" }], "project")],
+      },
+      { inheritUserSkills: true },
+    );
+    expect(merged.map((entry) => entry.skill.name)).toEqual(["global", "local"]);
+  });
+
+  it("keeps project skills and excludes user skills when inheritance is off", () => {
+    const merged = mergeSkillLibraries(
+      {
+        user: [bundle("global", [{ path: "SKILL.md", contents: "user" }])],
+        project: [bundle("local", [{ path: "SKILL.md", contents: "project" }], "project")],
+      },
+      { inheritUserSkills: false },
+    );
+    expect(merged.map((entry) => entry.skill.name)).toEqual(["local"]);
   });
 });
 

@@ -30,6 +30,7 @@ import {
   ProjectDetail,
   ProjectGitAuthRequest,
   ProjectHotSessionsRequest,
+  ProjectInheritUserSkillsRequest,
   ProjectHotSessionsStatus,
   ProjectWorkspaceImageRequest,
   ProjectWorkspaceImageSaveResult,
@@ -107,6 +108,14 @@ export const projectsGroup = HttpApiGroup.make("projects")
     HttpApiEndpoint.put("applyDotfiles", "/projects/:id/apply-dotfiles", {
       params: { id: ProjectId },
       payload: ProjectApplyDotfilesRequest,
+      success: Project,
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put("inheritUserSkills", "/projects/:id/inherit-user-skills", {
+      params: { id: ProjectId },
+      payload: ProjectInheritUserSkillsRequest,
       success: Project,
       error: NotFound,
     }),

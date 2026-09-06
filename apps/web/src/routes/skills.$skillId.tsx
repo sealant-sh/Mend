@@ -26,7 +26,7 @@ function SkillPage() {
 
   return (
     <AppShell projectId={detail.skill.projectId ?? undefined}>
-      <div className="mx-auto max-w-[900px]">
+      <div className="min-w-0">
         <Crumbs detail={detail} />
         <div className="flex items-start justify-between gap-4">
           <h1 className="mt-2 font-display text-3xl font-medium tracking-tight text-foreground">
@@ -69,8 +69,9 @@ function Crumbs({ detail }: { readonly detail: SkillDetailDto }) {
       </Link>
       <span className="mx-1.5 text-faint">/</span>
       <Link
-        to="/projects/$projectId/skills"
+        to="/projects/$projectId/setup"
         params={{ projectId }}
+        hash="skills"
         className="transition-colors hover:text-foreground"
       >
         skills
@@ -239,7 +240,7 @@ function DeleteSkillButton({ detail }: { readonly detail: SkillDetailDto }) {
       if (projectId === null) {
         await navigate({ to: "/skills" });
       } else {
-        await navigate({ to: "/projects/$projectId/skills", params: { projectId } });
+        await navigate({ to: "/projects/$projectId/setup", params: { projectId }, hash: "skills" });
       }
     } catch {
       setState("idle");

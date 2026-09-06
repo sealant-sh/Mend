@@ -270,6 +270,8 @@ export const projects = pgTable("projects", {
   workspaceImage: jsonbOf(WorkspaceImage),
   // Whether sessions here receive the launching user's dotfiles.
   applyDotfiles: boolean().notNull().default(true),
+  // Whether sessions inherit the launching user's skills. Project skills are always included.
+  inheritUserSkills: boolean().notNull().default(true),
   // Aggregate revision of the project's environment variables; bumped by every mutation under the
   // project row lock, so a launch snapshot can prove it read one coherent state.
   environmentRevision: integer().notNull().default(0),

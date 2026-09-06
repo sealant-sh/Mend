@@ -108,12 +108,17 @@ describe("Mend Drizzle schema", () => {
     }
   });
 
-  it("maps the automation cascade columns with 'inherit' defaults", () => {
+  it("maps project defaults for automation and user-scoped setup", () => {
     const projectColumns = getTableConfig(projects).columns;
     for (const name of ["auto_tour", "auto_suggest", "auto_name"]) {
       const column = projectColumns.find((candidate) => candidate.name === name);
       expect(column?.notNull, name).toBe(true);
       expect(column?.default, name).toBe("inherit");
+    }
+    for (const name of ["apply_dotfiles", "inherit_user_skills"]) {
+      const column = projectColumns.find((candidate) => candidate.name === name);
+      expect(column?.notNull, name).toBe(true);
+      expect(column?.default, name).toBe(true);
     }
   });
 

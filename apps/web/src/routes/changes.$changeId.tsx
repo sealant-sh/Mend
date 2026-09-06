@@ -83,7 +83,7 @@ function ChangePage() {
   if (review.change.sessionId === null) {
     return (
       <AppShell>
-        <div className="mx-auto max-w-[1200px]">
+        <div className="min-w-0">
           <p className="ev-eyebrow">review</p>
           <p className="mt-4 font-mono text-xs text-faint">
             no conversation has inhabited this worktree yet · nothing to review
@@ -206,7 +206,7 @@ function ChangeReview({
 
   return (
     <AppShell projectId={sessionDetail?.session.projectId}>
-      <div className="mx-auto max-w-[1200px]">
+      <div className="min-w-0">
         {sessionDetail === undefined ? (
           <p className="ev-eyebrow">review</p>
         ) : (

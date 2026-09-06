@@ -19,6 +19,8 @@ const allowedHosts = [
   ...new Set(publicNetwork.allowedOrigins.map((origin) => new URL(origin).hostname)),
 ];
 
+const apiTarget = process.env.MEND_API_URL ?? "http://localhost:3101";
+
 const config = defineConfig({
   server: {
     // The workbench is steered from any device on the operator's network
@@ -27,9 +29,9 @@ const config = defineConfig({
     port: 3105,
     allowedHosts,
     proxy: {
-      // ws: the terminal rides a WebSocket (/api/tty); the shorthand form
-      // proxies only HTTP and leaves the upgrade hanging forever in dev.
-      "/api": { target: "http://localhost:3101", ws: true },
+      // Vite owns WebSocket upgrades for terminals and tunnels. Nitro's
+      // earlier middleware handles HTTP through devProxy below.
+      "/api": { target: apiTarget, ws: true },
       // /trpc needs no proxy: it is a Start SERVER route, served by vite dev
       // itself (and by nitro in production).
     },
@@ -40,7 +42,13 @@ const config = defineConfig({
     tanstackStart(),
     // The official deployment layer: `vite build` emits a self-contained node
     // server at .output/server/index.mjs (+ static assets in .output/public).
-    nitro(),
+    nitro({
+      // Nitro handles extensionless requests before Vite's HTTP proxy runs.
+      // Without this, auth and SSE requests fall into the app's HTML 404.
+      devProxy: {
+        "/api/**": { target: apiTarget },
+      },
+    }),
     viteReact(),
   ],
 });

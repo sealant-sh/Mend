@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 import { ProjectId, Sha } from "../ids.ts";
 import { WorkspaceImage } from "../settings.ts";
@@ -131,6 +131,12 @@ export class Project extends Schema.Class<Project>("Project")({
    * "does this project want them applied".
    */
   applyDotfiles: Schema.Boolean,
+  /**
+   * Whether sessions receive skills from the launching user's library. Project skills always
+   * remain enabled and override inherited user skills with the same name. Older values decode to
+   * enabled so adding this setting cannot silently drop an existing user's skills.
+   */
+  inheritUserSkills: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
   /**
    * How many hot workspaces to keep ready for new sessions (0 = none). Each is a fully
    * pre-provisioned worktree + live workspace a new session claims at start, so the attach is

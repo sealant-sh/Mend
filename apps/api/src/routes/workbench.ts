@@ -549,6 +549,18 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         return project;
       }),
     )
+    .handle("inheritUserSkills", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        const engine = yield* SessionEngine;
+        const project = yield* projects
+          .setInheritUserSkills(params.id, payload.inheritUserSkills)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        // Skills are materialized before workspace boot, so ready skeletons must be rebuilt.
+        yield* engine.reconcileHotSessions(params.id);
+        return project;
+      }),
+    )
     .handle("hotSessions", ({ params, payload }) =>
       Effect.gen(function* () {
         const projects = yield* ProjectsRepo;
@@ -1010,9 +1022,8 @@ export const ProjectLinksGroupLive = HttpApiBuilder.group(MendApi, "projectLinks
           }
         }
         const target =
-          worktreeName !== ""
-            ? worktreeName
-            : yield* engine
+          worktreeName === ""
+            ? yield* engine
                 .ensureWorktree(
                   linked.id,
                   { name: linked.defaultBranch, base: null },
@@ -1026,7 +1037,8 @@ export const ProjectLinksGroupLive = HttpApiBuilder.group(MendApi, "projectLinks
                       }),
                   ),
                   Effect.map((worktree) => worktree.name),
-                );
+                )
+            : worktreeName;
         const created = yield* links.create({
           projectId: params.id,
           linkedProjectId: linked.id,

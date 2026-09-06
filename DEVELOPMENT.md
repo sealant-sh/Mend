@@ -22,12 +22,23 @@ pnpm --filter @mend/web dev
 
 The development command loads the root `.env`, preserving explicit shell overrides. It starts the
 Postgres from `compose.dev.yaml` when using the default database, then Vite on **3105** and the API
-on **3101**. Vite proxies `/api` to the API. Open `http://localhost:3105`.
+on **3101**. Nitro forwards `/api` HTTP requests to the API; Vite forwards WebSocket upgrades. The
+production web entrypoint uses its own proxy instead. Open `http://localhost:3105`.
 
 Database migrations run at API startup. Without a working Sealant connection, the web app can start
 but session launches cannot. For host-side source development, the Sealant worker must be configured
 to mount the store paths that this API uses; the production bundle's Docker-volume layout does not
 configure an unrelated development control plane.
+
+With dev running, check the auth proxy without creating accounts or sessions:
+
+```sh
+node --test apps/web/scripts/dev-auth.integration.mjs
+```
+
+The check sends empty signup/signin bodies and reads the anonymous session. Set `MEND_DEV_TEST_URL`
+to test a different web origin. This catches HTML 404 responses from the app when requests should
+reach the auth server.
 
 ## Environment
 

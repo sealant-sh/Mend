@@ -152,7 +152,7 @@ function SessionPage() {
 
   return (
     <AppShell projectId={session.projectId}>
-      <div className="mx-auto max-w-[1100px]">
+      <div className="min-w-0">
         <ProjectCrumbs projectId={session.projectId} leaf="session" />
         <div className="mt-2 flex flex-wrap items-center justify-between gap-4">
           {labelDraft === null ? (

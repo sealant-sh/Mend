@@ -102,7 +102,7 @@ function IssuePage() {
           </p>
         ) : null
       ) : (
-        <div className="mb-8 max-w-[72rem] space-y-6">
+        <div className="mb-8 space-y-6">
           <VersionedBrief brief={brief} versions={versions} runs={runs} />
           <ReviewConversation
             issueId={issue.id}
@@ -113,12 +113,12 @@ function IssuePage() {
       )}
 
       {failure === null ? null : (
-        <div className="mb-8 max-w-[72rem]">
+        <div className="mb-8">
           <FailureBriefCard run={failure.run} brief={failure.brief} />
         </div>
       )}
 
-      <div className="grid max-w-[72rem] gap-6 lg:grid-cols-[1.4fr_1fr]">
+      <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
         <section className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
           <h2 className="font-sans text-sm font-semibold">The issue as filed</h2>
           {issue.body === "" ? (

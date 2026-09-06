@@ -2,7 +2,13 @@ import type { EffortLevel, PermissionMode, SpeedMode } from "@mend/domain/workbe
 import type { QueryClient } from "@tanstack/react-query";
 import type { UseNavigateResult } from "@tanstack/react-router";
 
-import { createSession, launchSessionStart } from "#/lib/api";
+import {
+  createSession,
+  createSessionInWorktree,
+  launchSessionStart,
+  type SessionDto,
+  type WorktreeDto,
+} from "#/lib/api";
 import type { TrpcProxy } from "#/lib/trpc";
 
 /** Harnesses the web can start; opencode stays CLI-only until it is exercised end to end. */
@@ -11,54 +17,74 @@ export type Harness = (typeof HARNESSES)[number];
 
 type Navigate = UseNavigateResult<string>;
 
-/** One composed start, as the composer (or a quick-start menu) describes it. */
-export interface LaunchSpec {
+/** The first message and harness options, independent of where the session runs. */
+export interface SessionStartSpec {
   readonly harness: Harness;
-  /** Empty = a bare harness session, exactly as the quick-start buttons launch. */
+  /** Empty starts the harness without an initial message. */
   readonly prompt: string;
   readonly model?: string;
   readonly effort?: EffortLevel;
   readonly permissionMode?: PermissionMode;
   readonly speed?: SpeedMode;
-  /** Branch or sha for the worktree; null = the project's default branch. */
+}
+
+/** A project quick-start also provisions a worktree. The composer uses an existing worktree. */
+export interface LaunchSpec extends SessionStartSpec {
+  /** Branch or sha for the new worktree; null uses the project's default branch. */
   readonly base?: string | null;
-  /** Names the worktree (branch `mend/<name>`); null derives from the session id. */
+  /** Null derives a worktree name from its generated identity. */
   readonly name?: string | null;
 }
 
-/** What launching needs from the calling component — hooks own both instances now. */
+/** Router and query-cache capabilities supplied by the calling component. */
 export interface LaunchContext {
   readonly queryClient: QueryClient;
   readonly trpc: TrpcProxy;
 }
 
-/**
- * Fire a composed session: create the row, kick the supervised launch with
- * the structured start (the server assembles harness argv and seeds
- * auto-naming from the prompt), land on the session page — its terminal
- * pane attaches the moment the workspace is ready. The launch promise
- * outlives the navigation (same SPA); a failure settles the session
- * server-side, so the page shows it. A create failure rejects here — the
- * composer keeps the prompt and shows it.
- */
-export const startComposedSession = (
+/** Start the supervised process without holding navigation until it finishes provisioning. */
+const launchCreatedSession = (
   navigate: Navigate,
   { queryClient, trpc }: LaunchContext,
+  session: SessionDto,
+  spec: SessionStartSpec,
+): Promise<void> => {
+  const prompt = spec.prompt.trim();
+  // Launch failures settle the durable session; its page shows the recorded failure.
+  void launchSessionStart(session.id, {
+    ...(prompt === "" ? {} : { prompt }),
+    ...(spec.model === undefined ? {} : { model: spec.model }),
+    ...(spec.effort === undefined ? {} : { effort: spec.effort }),
+    ...(spec.permissionMode === undefined ? {} : { permissionMode: spec.permissionMode }),
+    ...(spec.speed === undefined ? {} : { speed: spec.speed }),
+  })
+    .catch(() => undefined)
+    .finally(() => {
+      void queryClient.invalidateQueries(trpc.sessions.pathFilter());
+      void queryClient.invalidateQueries(trpc.projects.pathFilter());
+      void queryClient.invalidateQueries(trpc.worktrees.pathFilter());
+    });
+  return navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } });
+};
+
+/** Project quick-start: provision a worktree and session, launch, then open the session. */
+export const startComposedSession = (
+  navigate: Navigate,
+  context: LaunchContext,
   projectId: string,
   spec: LaunchSpec,
-) =>
-  createSession(projectId, spec.harness, spec.base ?? null, spec.name ?? null).then((session) => {
-    const prompt = spec.prompt.trim();
-    void launchSessionStart(session.id, {
-      ...(prompt === "" ? {} : { prompt }),
-      ...(spec.model === undefined ? {} : { model: spec.model }),
-      ...(spec.effort === undefined ? {} : { effort: spec.effort }),
-      ...(spec.permissionMode === undefined ? {} : { permissionMode: spec.permissionMode }),
-      ...(spec.speed === undefined ? {} : { speed: spec.speed }),
-    })
-      .catch(() => undefined)
-      .finally(() => {
-        void queryClient.invalidateQueries(trpc.sessions.pathFilter());
-      });
-    return navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } });
-  });
+): Promise<void> =>
+  createSession(projectId, spec.harness, spec.base ?? null, spec.name ?? null).then((session) =>
+    launchCreatedSession(navigate, context, session, spec),
+  );
+
+/** Start inside the explicitly selected worktree. This operation never creates a worktree. */
+export const startComposedSessionInWorktree = (
+  navigate: Navigate,
+  context: LaunchContext,
+  worktreeId: WorktreeDto["id"],
+  spec: SessionStartSpec,
+): Promise<void> =>
+  createSessionInWorktree(worktreeId, spec.harness).then((session) =>
+    launchCreatedSession(navigate, context, session, spec),
+  );

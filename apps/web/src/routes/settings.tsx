@@ -74,7 +74,7 @@ function SettingsPage() {
           runtime you point it at.
         </p>
       </div>
-      <div className="max-w-2xl space-y-6">
+      <div className="space-y-6">
         <ThemePanel />
         <WorkspaceEnvironmentPanel />
         <DotfilesPanel />

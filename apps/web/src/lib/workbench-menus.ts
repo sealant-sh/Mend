@@ -3,7 +3,6 @@ import type { UseNavigateResult } from "@tanstack/react-router";
 
 import {
   checkpointSession,
-  createSessionInWorktree,
   removeProject,
   removeSession,
   removeWorktree,
@@ -18,6 +17,7 @@ import {
 import {
   HARNESSES,
   startComposedSession,
+  startComposedSessionInWorktree,
   type Harness,
   type LaunchContext,
 } from "#/lib/session-launch";
@@ -227,11 +227,10 @@ export const worktreeMenu = (
       (harness): ContextMenuEntry => ({
         label: `Start ${harness} session here`,
         onSelect: () => {
-          void createSessionInWorktree(worktree.id, harness)
-            .then((session) =>
-              navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } }),
-            )
-            .finally(() => invalidate());
+          void startComposedSessionInWorktree(navigate, context, worktree.id, {
+            harness,
+            prompt: "",
+          }).finally(() => invalidate());
         },
       }),
     ),

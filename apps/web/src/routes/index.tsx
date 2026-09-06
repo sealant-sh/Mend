@@ -156,7 +156,7 @@ function HomePage() {
 
   return (
     <AppShell>
-      <div className="mx-auto max-w-[1000px]">
+      <div className="min-w-0">
         <p className="ev-eyebrow">now</p>
         <h1 className="mt-2 font-display text-3xl font-medium tracking-tight text-foreground">
           What needs you

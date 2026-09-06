@@ -58,6 +58,11 @@ export class ProjectsRepo extends Context.Service<
       id: ProjectId,
       applyDotfiles: boolean,
     ) => Effect.Effect<Project, ProjectNotFoundError>;
+    /** Whether sessions inherit the launching user's skills in addition to project skills. */
+    readonly setInheritUserSkills: (
+      id: ProjectId,
+      inheritUserSkills: boolean,
+    ) => Effect.Effect<Project, ProjectNotFoundError>;
     /** How many hot workspaces to keep ready for new sessions (0 = none). */
     readonly setHotSessions: (
       id: ProjectId,
@@ -194,6 +199,22 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return updated;
       });
 
+      const setInheritUserSkills = Effect.fn("ProjectsRepo.setInheritUserSkills")(function* (
+        id: ProjectId,
+        inheritUserSkills: boolean,
+      ) {
+        const [row] = yield* db
+          .update(projects)
+          .set({ inheritUserSkills, updatedAt: new Date() })
+          .where(eq(projects.id, id))
+          .returning()
+          .pipe(Effect.orDie);
+        if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
+        const updated = toProject(row);
+        yield* notifyEvent(sql, { type: "project", projectId: id });
+        return updated;
+      });
+
       const setHotSessions = Effect.fn("ProjectsRepo.setHotSessions")(function* (
         id: ProjectId,
         hotSessions: number,
@@ -224,6 +245,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         setGitAuthMode,
         setWorkspaceImage,
         setApplyDotfiles,
+        setInheritUserSkills,
         setHotSessions,
         remove,
       };

@@ -1,16 +1,21 @@
-import { repositoryCloneUrlIssue } from "@mend/domain/workbench";
 import { useContextMenu } from "@mend/ui/context-menu";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
-import { GitKeyCard } from "#/components/git-key-card";
+import { AdoptPanel } from "#/components/projects-index/adopt-panel";
+import { ProjectsDirectory } from "#/components/projects-index/layout-directory";
+import {
+  matchesQuery,
+  projectEntries,
+  type ProjectMenuHandler,
+} from "#/components/projects-index/model";
 import { AppShell } from "#/components/shell";
-import { adoptProject, initGitKey, type GitAuthModeDto, type GitKeyDto } from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 import { projectMenu } from "#/lib/workbench-menus";
 
+/** The adopted-project directory and its URL-only adoption entry point. */
 export const Route = createFileRoute("/projects/")({
   ssr: false,
   loader: async ({ context }) => {
@@ -19,170 +24,108 @@ export const Route = createFileRoute("/projects/")({
   component: ProjectsPage,
 });
 
+/** Searchable directory of repositories adopted into this machine's store. */
 function ProjectsPage() {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const launchContext = { queryClient, trpc };
   const projects = useSuspenseQuery(trpc.projects.list.queryOptions()).data;
+  const activeSessions = useQuery(trpc.sessions.listActive.queryOptions()).data;
   const navigate = useNavigate();
   const { openMenu, menuElement } = useContextMenu();
+  const [query, setQuery] = useState("");
+  const [adoptOpen, setAdoptOpen] = useState(false);
   useWorkbenchEvents();
+
+  const allEntries = projectEntries(projects, activeSessions);
+  const entries = allEntries.filter(({ project }) => matchesQuery(project, query));
+  const live =
+    activeSessions === undefined
+      ? null
+      : allEntries.reduce((total, entry) => total + (entry.live ?? 0), 0);
+
+  const onProjectMenu: ProjectMenuHandler = (event, project) =>
+    openMenu(event, projectMenu(project, navigate, launchContext));
 
   return (
     <AppShell>
-      <div className="mx-auto max-w-[760px]">
-        <p className="ev-eyebrow">projects</p>
-        <h1 className="mt-2 font-display text-3xl font-medium tracking-tight text-foreground">
-          Adopted repositories
-        </h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          A project is a repository cloned into Mend&apos;s store; sessions get their own worktree.
-        </p>
-
-        <AdoptForm />
-
-        <div className="mt-8 flex flex-col gap-3">
-          {projects.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              Nothing adopted yet — use the form above, or{" "}
-              <span className="font-mono text-xs">mend adopt</span> from a repository.
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4">
+          <div className="min-w-0">
+            <p className="ev-eyebrow">store</p>
+            <h1 className="mt-2 font-display text-3xl font-medium tracking-tight text-foreground">
+              Projects
+            </h1>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Repositories in Mend&apos;s store, with worktrees and their sessions.
             </p>
-          ) : (
-            projects.map((project) => (
-              <Link
-                key={project.id}
-                to="/projects/$projectId"
-                params={{ projectId: project.id }}
-                onContextMenu={(event) =>
-                  openMenu(event, projectMenu(project, navigate, launchContext))
-                }
-                className="rounded-2xl bg-card p-5 no-underline shadow-sm transition-shadow hover:shadow-md"
-              >
-                <div className="flex items-center justify-between gap-4">
-                  <p className="font-sans text-sm font-medium text-foreground">{project.name}</p>
-                  <p className="font-mono text-xs text-faint">{project.defaultBranch}</p>
-                </div>
-                <p className="mt-2 truncate font-mono text-xs text-faint">
-                  {project.originUrl ?? project.storePath}
-                </p>
-              </Link>
-            ))
-          )}
+            {projects.length > 0 && (
+              <p className="mt-2 font-mono text-[11.5px] text-faint">
+                {projects.length} adopted
+                {live === null
+                  ? " · session activity unavailable"
+                  : ` · ${live} session${live === 1 ? "" : "s"} live`}
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            aria-expanded={adoptOpen}
+            aria-controls="adopt-panel"
+            onClick={() => setAdoptOpen((open) => !open)}
+            className="mt-1 shrink-0 rounded-xl border border-border bg-card px-3.5 py-2 font-sans text-[13px] font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5"
+          >
+            {adoptOpen ? "Close" : "Adopt a repository"}
+          </button>
         </div>
+
+        <div id="adopt-panel" className="mt-6" hidden={!adoptOpen}>
+          <AdoptPanel onAdopted={() => setAdoptOpen(false)} />
+        </div>
+
+        {projects.length === 0 ? (
+          <p className="mt-8 text-sm text-muted-foreground">
+            Nothing adopted yet. Use the adoption button above, or{" "}
+            <span className="font-mono text-xs">mend adopt</span> from a repository.
+          </p>
+        ) : (
+          <>
+            <div className="mt-8 flex items-center gap-3">
+              <input
+                type="search"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                aria-label="Filter projects by name, origin or store path"
+                placeholder="Filter by name, origin or path"
+                className="w-full min-w-0 max-w-[340px] rounded-lg border border-input bg-background px-3 py-1.5 font-mono text-xs text-foreground placeholder:text-faint"
+              />
+              {query.trim() !== "" && (
+                <p className="shrink-0 font-mono text-[11.5px] text-faint" aria-live="polite">
+                  {entries.length} of {projects.length}
+                </p>
+              )}
+            </div>
+            <div className="mt-5">
+              {entries.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No project matches <span className="font-mono text-xs">{query.trim()}</span>.{" "}
+                  <button
+                    type="button"
+                    onClick={() => setQuery("")}
+                    className="font-sans text-sm font-medium text-info underline-offset-2 hover:underline"
+                  >
+                    clear the filter
+                  </button>
+                  .
+                </p>
+              ) : (
+                <ProjectsDirectory entries={entries} onProjectMenu={onProjectMenu} />
+              )}
+            </div>
+          </>
+        )}
       </div>
       {menuElement}
     </AppShell>
   );
 }
-
-function AdoptForm() {
-  const trpc = useTRPC();
-  const queryClient = useQueryClient();
-  const [name, setName] = useState("");
-  const [source, setSource] = useState("");
-  // The user's git access (Settings) is the default; the row below overrides it for this adopt.
-  const access = useQuery(trpc.git.access.queryOptions()).data;
-  const [authOverride, setAuthOverride] = useState<GitAuthModeDto | null>(null);
-  const auth: GitAuthModeDto = authOverride ?? access?.mode ?? "mend-key";
-  const [createdKey, setCreatedKey] = useState<GitKeyDto | null>(null);
-  const gitKey = createdKey ?? (access?.key.exists === true ? access.key : null);
-  const [error, setError] = useState<string | null>(null);
-  const [pending, setPending] = useState(false);
-  const trimmedSource = source.trim();
-  const sourceIssue = trimmedSource === "" ? null : repositoryCloneUrlIssue(trimmedSource);
-  const displayedError = error ?? sourceIssue;
-
-  const submit = async () => {
-    if (trimmedSource === "") return;
-    if (sourceIssue !== null) {
-      setError(sourceIssue);
-      return;
-    }
-    setPending(true);
-    setError(null);
-    try {
-      await adoptProject(name === "" ? inferName(trimmedSource) : name, trimmedSource, auth);
-      await queryClient.invalidateQueries(trpc.projects.pathFilter());
-      setName("");
-      setSource("");
-    } catch (adoptError) {
-      setError(adoptError instanceof Error ? adoptError.message : String(adoptError));
-    } finally {
-      setPending(false);
-    }
-  };
-
-  // Choosing the Mend key generates it up front: the public key must be on
-  // the git host before a private clone can succeed, so show it now.
-  const chooseAuth = (mode: GitAuthModeDto) => {
-    setAuthOverride(mode);
-    setError(null);
-    if (mode !== "mend-key" || gitKey !== null) return;
-    initGitKey()
-      .then(setCreatedKey)
-      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)));
-  };
-
-  return (
-    <div className="mt-7 rounded-2xl bg-card p-5 shadow-sm">
-      <p className="text-xs font-medium text-label">Adopt a repository</p>
-      <div className="mt-3 flex flex-wrap items-center gap-3">
-        <input
-          value={source}
-          onChange={(event) => setSource(event.target.value)}
-          placeholder="Git URL (HTTP(S), SSH, or git@host:owner/repo.git)"
-          className="min-w-64 flex-1 rounded-lg border border-input bg-background px-3 py-2 font-mono text-xs text-foreground placeholder:text-faint"
-        />
-        <input
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-          placeholder="name (optional)"
-          className="w-40 rounded-lg border border-input bg-background px-3 py-2 font-mono text-xs text-foreground placeholder:text-faint"
-        />
-        <button
-          type="button"
-          disabled={pending || trimmedSource === "" || sourceIssue !== null}
-          onClick={() => void submit()}
-          className="rounded-xl bg-primary px-4 py-2 font-sans text-sm font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-opacity disabled:opacity-50"
-        >
-          {pending ? "Adopting…" : "Adopt"}
-        </button>
-      </div>
-      <div className="mt-3 flex items-center gap-2">
-        <span className="text-xs text-label">git access:</span>
-        {(["mend-key", "bridge", "ambient"] as const).map((mode) => (
-          <button
-            key={mode}
-            type="button"
-            onClick={() => chooseAuth(mode)}
-            className={`rounded-lg border px-2 py-1 font-mono text-[11px] transition-colors ${
-              auth === mode
-                ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
-                : "border-border bg-card text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            {mode === "mend-key" ? "mend key" : mode}
-          </button>
-        ))}
-      </div>
-      {auth === "mend-key" && gitKey !== null && (
-        <div className="mt-3 max-w-[560px]">
-          <GitKeyCard gitKey={gitKey} />
-        </div>
-      )}
-      {displayedError !== null && (
-        <p className="mt-3 border-l-2 border-[var(--sw-red)] pl-2 font-mono text-xs text-danger">
-          {displayedError}
-        </p>
-      )}
-      <p className="mt-3 text-xs text-muted-foreground">
-        Cloned into the store; your existing checkout is never the execution target.
-      </p>
-    </div>
-  );
-}
-
-const inferName = (source: string) => {
-  const trimmed = source.replace(/\/+$/, "").replace(/\.git$/, "");
-  return trimmed.split("/").at(-1) ?? trimmed;
-};

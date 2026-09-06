@@ -7,6 +7,7 @@ import {
   ProjectAutomationRequest,
   ProjectGitAuthRequest,
   ProjectHotSessionsRequest,
+  ProjectInheritUserSkillsRequest,
   ProjectReferenceSelection,
   ProjectWorkspaceImageRequest,
 } from "@mend/api-contracts";
@@ -48,6 +49,13 @@ export const projectsRouter = router({
     .input(input(Schema.Struct({ id: ProjectId, request: ProjectApplyDotfilesRequest })))
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.projects.applyDotfiles({ params: { id: i.id }, payload: i.request })),
+    ),
+  setInheritUserSkills: procedure
+    .input(input(Schema.Struct({ id: ProjectId, request: ProjectInheritUserSkillsRequest })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.projects.inheritUserSkills({ params: { id: i.id }, payload: i.request }),
+      ),
     ),
   setGitAuth: procedure
     .input(input(Schema.Struct({ id: ProjectId, request: ProjectGitAuthRequest })))

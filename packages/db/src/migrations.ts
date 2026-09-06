@@ -1310,6 +1310,14 @@ const userGitAccessMigration = Effect.gen(function* () {
     )`;
 });
 
+/** Project skills are always delivered; user-library inheritance is an opt-out project setting. */
+const projectInheritUserSkillsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE projects
+      ADD COLUMN IF NOT EXISTS inherit_user_skills boolean NOT NULL DEFAULT true`;
+});
+
 const worktreesMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`
@@ -1511,4 +1519,5 @@ export const migrations = {
   "0049_project_links": projectLinksMigration,
   "0050_session_has_transcript": sessionHasTranscriptMigration,
   "0051_user_git_access": userGitAccessMigration,
+  "0052_project_inherit_user_skills": projectInheritUserSkillsMigration,
 };

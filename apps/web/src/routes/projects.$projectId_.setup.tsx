@@ -1,6 +1,6 @@
 import { ProjectEnvironmentVariableId } from "@mend/domain";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { useReducer, useRef, useState } from "react";
 
 import {
@@ -15,7 +15,8 @@ import {
   ServicesSection,
   SessionLifecycleSection,
 } from "#/components/project-setup";
-import { AppShell } from "#/components/shell";
+import { ProjectShell } from "#/components/project-shell";
+import { ProjectSkillsSection } from "#/components/project-skills-section";
 import {
   setProjectWorkspaceImage,
   type ProjectDto,
@@ -56,6 +57,7 @@ import {
   projectEnvironmentFormReducer,
 } from "#/lib/project-environment-form";
 import { useTRPC } from "#/lib/trpc";
+import { useWorkbenchEvents } from "#/lib/workbench-events";
 import { copyText } from "#/lib/workbench-menus";
 import {
   OS_LABELS,
@@ -88,6 +90,8 @@ export const Route = createFileRoute("/projects/$projectId_/setup")({
       queryClient.ensureQueryData(trpc.projects.references.queryOptions({ id: params.projectId })),
       queryClient.ensureQueryData(trpc.projects.mounts.queryOptions({ id: params.projectId })),
       queryClient.ensureQueryData(trpc.projects.recipes.queryOptions({ id: params.projectId })),
+      queryClient.ensureQueryData(trpc.skills.list.queryOptions()),
+      queryClient.ensureQueryData(trpc.skills.forProject.queryOptions({ id: params.projectId })),
     ]);
   },
   component: ProjectSetupPage,
@@ -97,34 +101,24 @@ function ProjectSetupPage() {
   const { projectId } = Route.useParams();
   const trpc = useTRPC();
   const { project } = useSuspenseQuery(trpc.projects.detail.queryOptions({ id: projectId })).data;
+  useWorkbenchEvents();
 
   return (
-    <AppShell projectId={projectId}>
-      <div className="mx-auto max-w-[760px]">
-        <p className="ev-eyebrow">project · setup</p>
-        <h1 className="mt-2 font-display text-3xl font-medium tracking-tight text-foreground">
-          {project.name}
-        </h1>
+    <ProjectShell project={project}>
+      <div className="mt-6">
+        <h2 className="text-sm font-medium">Setup</h2>
         <p className="mt-2 max-w-[64ch] text-sm leading-relaxed text-muted-foreground">
           How sessions in this project launch — image, variables, secrets, references, mounts,
           services, dotfiles, git access, review automation. Changes apply to new workspace
           launches, including when you resume a settled session; running workspaces keep the
           configuration they started with.
         </p>
-        <p className="mt-2">
-          <Link
-            to="/projects/$projectId"
-            params={{ projectId }}
-            className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-          >
-            ← Back to project
-          </Link>
-        </p>
 
         <div className="mt-8 space-y-6">
           <div id="environment" className="scroll-mt-6">
             <WorkspaceImagePanel project={project} />
           </div>
+          <ProjectSkillsSection project={project} />
           <div id="variables" className="scroll-mt-6 space-y-6">
             <VariablesComposer projectId={projectId} />
             <ConfigurationPanel projectId={projectId} />
@@ -135,9 +129,6 @@ function ProjectSetupPage() {
           <div id="cluster-bindings" className="scroll-mt-6">
             <ClusterBindingsPanel projectId={projectId} />
           </div>
-        </div>
-
-        <div className="mt-12 flex flex-col gap-10 border-t border-rule pt-8">
           <ReferencesSection projectId={projectId} />
           <MountsSection projectId={projectId} />
           <LinksSection projectId={projectId} />
@@ -150,7 +141,7 @@ function ProjectSetupPage() {
           <RemoveProjectSection projectId={projectId} />
         </div>
       </div>
-    </AppShell>
+    </ProjectShell>
   );
 }
 
@@ -254,7 +245,7 @@ function WorkspaceImagePanel({ project }: { readonly project: ProjectDto }) {
   };
 
   return (
-    <section className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
+    <section className="project-setup-card">
       <h2 className="font-sans text-sm font-semibold">Workspace image</h2>
       {draft === null ? (
         <>
@@ -500,7 +491,7 @@ function ConfigurationPanel({ projectId }: { readonly projectId: string }) {
   const editingId = form.editing?.kind === "edit" ? form.editing.variableId : null;
 
   return (
-    <section className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
+    <section className="project-setup-card">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h2 className="font-sans text-sm font-semibold">Configuration</h2>
@@ -871,7 +862,7 @@ function SecretsPanel({ projectId }: { readonly projectId: string }) {
   const editingId = form.editing?.kind === "edit" ? form.editing.variableId : null;
 
   return (
-    <section className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
+    <section className="project-setup-card">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h2 className="font-sans text-sm font-semibold">Secrets</h2>
@@ -1229,7 +1220,7 @@ function ClusterBindingsPanel({ projectId }: { readonly projectId: string }) {
   };
 
   return (
-    <section className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
+    <section className="project-setup-card">
       <div>
         <h2 className="font-sans text-sm font-semibold">Cluster bindings</h2>
         <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
@@ -1518,7 +1509,7 @@ function VariablesComposer({ projectId }: { readonly projectId: string }) {
   };
 
   return (
-    <section className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
+    <section className="project-setup-card">
       <h2 className="font-sans text-sm font-semibold">Add variables</h2>
       <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
         One key per row. Paste a whole <span className="font-mono">.env</span> into any field and it

@@ -37,15 +37,20 @@ export class SkillMaterializeError extends Schema.TaggedErrorClass<SkillMaterial
 ) {}
 
 /**
- * Merge the two libraries into the delivered set: user skills as the base,
- * project skills over them by name.
+ * Resolve the delivered set. User skills form the optional base; project skills always remain
+ * enabled and replace inherited skills with the same name.
  */
-export const mergeSkillLibraries = (libraries: {
-  readonly user: ReadonlyArray<SkillWithFiles>;
-  readonly project: ReadonlyArray<SkillWithFiles>;
-}): ReadonlyArray<SkillWithFiles> => {
+export const mergeSkillLibraries = (
+  libraries: {
+    readonly user: ReadonlyArray<SkillWithFiles>;
+    readonly project: ReadonlyArray<SkillWithFiles>;
+  },
+  options: { readonly inheritUserSkills: boolean },
+): ReadonlyArray<SkillWithFiles> => {
   const byName = new Map<string, SkillWithFiles>();
-  for (const bundle of libraries.user) byName.set(bundle.skill.name, bundle);
+  if (options.inheritUserSkills) {
+    for (const bundle of libraries.user) byName.set(bundle.skill.name, bundle);
+  }
   for (const bundle of libraries.project) byName.set(bundle.skill.name, bundle);
   return [...byName.values()];
 };
