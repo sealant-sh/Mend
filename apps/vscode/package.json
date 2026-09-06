@@ -2,6 +2,7 @@
   "name": "mend",
   "displayName": "Mend",
   "version": "0.1.0",
+  "private": true,
   "description": "Open and steer Mend coding-agent sessions from VS Code.",
   "categories": [
     "Other",

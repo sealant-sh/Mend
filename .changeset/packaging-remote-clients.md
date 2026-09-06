@@ -1,6 +1,5 @@
 ---
 "@sealant/mend": minor
-"mend": minor
 ---
 
 Support remote workspace SSH with per-server aliases, effective OpenSSH configuration checks, and
