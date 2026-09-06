@@ -1,3 +1,4 @@
+import { PublicOrigin } from "@mend/network";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 
@@ -31,15 +32,11 @@ export class DeviceView extends Schema.Class<DeviceView>("DeviceView")({
   lastUsedAt: Schema.NullOr(Schema.String),
 }) {}
 
-/**
- * A freshly minted pairing code plus the base URLs this machine answers on —
- * the tailnet address first, then non-internal LAN IPv4s. Reachability is the
- * phone's to observe; these are candidates, not a promise.
- */
+/** A freshly minted pairing code plus the explicitly configured public origins. */
 export class PairingView extends Schema.Class<PairingView>("PairingView")({
   code: Schema.String,
   expiresAt: Schema.String,
-  urls: Schema.Array(Schema.String),
+  urls: Schema.Array(PublicOrigin),
 }) {}
 
 /** What a phone sends to claim a code: the code as typed, and what to call the device. */
@@ -52,7 +49,7 @@ export class PairClaimRequest extends Schema.Class<PairClaimRequest>("PairClaimR
 /** The claimed token, shown once. Mend keeps only its sha256. */
 export class PairClaimResult extends Schema.Class<PairClaimResult>("PairClaimResult")({
   token: Schema.String,
-  url: Schema.String,
+  url: PublicOrigin,
   user: Schema.Struct({
     id: Schema.String,
     name: Schema.String,

@@ -45,6 +45,8 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
 
 ## Agent Defaults
 
+- Submit pull requests as ready for review, never as drafts. With `gh stack`, use
+  `gh stack submit --auto --open`.
 - Never open a PR (or push a branch for one) without first running
   `pnpm exec turbo typecheck --force` and `pnpm exec turbo lint --force` and seeing both pass —
   forced, so a warm cache can't lie.

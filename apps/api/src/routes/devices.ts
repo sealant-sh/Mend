@@ -26,11 +26,10 @@ import {
   type CliAuthUnknownError,
   type PairedDevice,
 } from "@mend/db";
+import { NetworkConfig, type PublicNetwork, type PublicOrigin } from "@mend/network";
 import { Config, Effect, Layer, Option } from "effect";
 import { HttpServerRequest } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
-
-import { candidateBaseUrls } from "./machine.ts";
 
 /**
  * Device pairing: the operator mints a code on a machine they are signed in on,
@@ -216,14 +215,6 @@ export const claimAddress = (
   return address;
 };
 
-/**
- * The port CLIENTS arrive on — the web tier's, never this process's own PORT
- * (3101, cluster-internal): pairing URLs and QR codes point phones at what
- * they can actually reach. serve.mjs and the helm chart set it; the auth
- * server trusts origins on the same variable.
- */
-const publicPort = Config.int("MEND_WEB_PORT").pipe(Config.orElse(() => Config.succeed(3105)));
-
 const trustedProxyCidrs = Config.string("MEND_TRUSTED_PROXIES").pipe(
   Config.orElse(() => Config.succeed("")),
   Config.map((raw) =>
@@ -260,15 +251,20 @@ const mapCliAuthMiss = <A, R>(
     Effect.catchTag("CliAuthSpentError", () => Effect.fail(new CliAuthSpent())),
   );
 
-/** The URL this request actually arrived on — what the claimer should keep using. */
-const arrivalUrl = (request: HttpServerRequest.HttpServerRequest, port: number): string => {
-  const host = request.headers["host"];
-  const forwarded = request.headers["x-forwarded-proto"]?.split(",")[0]?.trim();
-  const scheme = forwarded === "https" || forwarded === "http" ? forwarded : "http";
-  if (host === undefined || host === "") {
-    return candidateBaseUrls(port)[0] ?? `http://localhost:${port}`;
-  }
-  return `${scheme}://${host}`;
+/**
+ * Choose only from configured origins for the address a claiming device stores.
+ * Origin and Host headers may select an allowed value but can never introduce one.
+ */
+export const configuredOriginForRequest = (
+  network: PublicNetwork,
+  headers: Readonly<Record<string, string | undefined>>,
+): PublicOrigin => {
+  const origin = network.allowedOrigins.find((allowed) => allowed === headers["origin"]);
+  if (origin !== undefined) return origin;
+
+  const host = headers["host"];
+  if (host === undefined) return network.appUrl;
+  return network.allowedOrigins.find((allowed) => new URL(allowed).host === host) ?? network.appUrl;
 };
 
 /**
@@ -278,6 +274,7 @@ const arrivalUrl = (request: HttpServerRequest.HttpServerRequest, port: number):
  */
 const devicePairingGroups = Effect.gen(function* () {
   const devices = yield* DevicesRepo;
+  const network = yield* NetworkConfig;
 
   /** Who this unauthenticated request is, for rate-limiting purposes. */
   const requestAddress = Effect.gen(function* () {
@@ -295,7 +292,6 @@ const devicePairingGroups = Effect.gen(function* () {
       .handle("createPairing", () =>
         Effect.gen(function* () {
           const caller = yield* CurrentUser;
-          const port = yield* publicPort.pipe(Effect.orDie);
           const pairing = yield* devices.createPairing({
             userId: caller.user.id,
             code: generatePairingCode(),
@@ -304,7 +300,7 @@ const devicePairingGroups = Effect.gen(function* () {
           return new PairingView({
             code: pairing.code,
             expiresAt: pairing.expiresAt.toISOString(),
-            urls: candidateBaseUrls(port),
+            urls: network.allowedOrigins,
           });
         }),
       )
@@ -358,7 +354,6 @@ const devicePairingGroups = Effect.gen(function* () {
     handlers.handle("claim", ({ payload }) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
-        const port = yield* publicPort.pipe(Effect.orDie);
         const trusted = yield* trustedProxyCidrs.pipe(Effect.orDie);
         const address = claimAddress(
           Option.getOrUndefined(request.remoteAddress),
@@ -392,7 +387,7 @@ const devicePairingGroups = Effect.gen(function* () {
 
         return new PairClaimResult({
           token,
-          url: arrivalUrl(request, port),
+          url: configuredOriginForRequest(network, request.headers),
           user: { id: claimed.user.id, name: claimed.user.name, email: claimed.user.email },
           device: { id: claimed.device.id, name: claimed.device.name },
         });

@@ -7,6 +7,38 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-09-05 · 0.28.0 · Volume-backed local deployments across Docker's VM boundary
+
+**Shipped in Sealant 0.28.0**, following PRs #225 and #226. The published worker accepts
+`SEALANT_DOCKER_VOLUME_MAPPINGS` and lowers existing path-based SDK requests to strict named-volume
+subpaths. The containerized-launcher test passed on Linux with actual workspace control, Git,
+read-only grants, staging, and persistence across controller replacement. Control directories are
+retained to avoid deleting a concurrent retry's socket. Mend packaging and actual macOS/VS Code
+acceptance remain separate work.
+
+- **Needed:** the local Mend bundle runs its control plane inside one application container on
+  Linux, Docker Desktop, or OrbStack. Workspaces must share selected store directories and Unix
+  sockets through Linux-native volumes without a Mac process accessing those sockets. Mend keeps
+  using the public SDK; users configure only Mend.
+- **Original observation in Core 0.27.0:** `DockerRuntimeAdapter.buildControlSocketMountArgs`,
+  `workspaceMountArgs`, and `extraMountArgs` emit host bind paths. Launch material staging returns
+  paths that the adapter also binds. Replacing only the Compose host bind with a named volume does
+  not translate those container-visible paths into daemon-visible sources. Mend's SDK inputs include
+  standby roots, bare git metadata, its own session socket, harness homes, references, and
+  linked-project roots, so fixing the platform control socket alone is insufficient.
+- **Suggested contract:** a platform-owned, deployment-configured mapping of approved local
+  directory roots to named volumes and relative subpaths, or an explicit public volume-source
+  contract. Cover primary/standby sources, additional/bindable mounts, control sockets, and staged
+  dotfiles/secrets. Enforce root containment, symlink/traversal checks, per-workspace subdirectory
+  selection, permissions, read-only mounts, and cleanup. Preserve absolute git metadata paths. Do
+  not require Mend to inspect Docker's private volume storage or mount an entire store into every
+  workspace.
+- **Acceptance:** a containerized SDK consumer launches a real workspace on macOS, exchanges
+  control/session socket traffic, uses git and staged launch material, and survives application
+  container replacement. Include a negative test proving one workspace cannot traverse to another
+  workspace's ungranted directories. A generic Docker volume probe does not establish platform
+  support. Test plan and current evidence: `docs/MACOS-VALIDATION.md`.
+
 ## ✅ 2026-09-03 · 0.27.0 · Workspace-scoped Docker on Kubernetes, refused at create where absent
 
 **Shipped in Sealant 0.27.0 (sealant#223); Mend pins it and maps the refusal.** Mend sends
@@ -237,7 +269,7 @@ lifted "Codex inference is not supported yet" 400. Tool-less v1: caller tools st
 
 **Implemented at the source** — sealant-sh/core stack #167 (PRs #163–#166) + sealantd stack #52 (PRs
 
-# 50–#51), pending review/release as 0.18.0.
+# 50–#51), pending review/release as 0.18.0
 
 - **Needed:** the user's own environment (shell, dotfiles) in every session workspace, with private
   repos reachable through the host's own ssh identity (agent, hardware keys) — never a credential in

@@ -13,7 +13,8 @@ services:
     environment:
       MEND_MODE: all
       PORT: 3000
-      APP_URL: ${APP_URL:-http://localhost:3000}
+      APP_URL: ${APP_URL:-http://localhost:${MEND_PORT:-3000}}
+      MEND_ALLOWED_ORIGINS: ${MEND_ALLOWED_ORIGINS:-[]}
       DATABASE_URL: postgres://mend:${POSTGRES_PASSWORD:-mend}@postgres:5432/mend
       # Generate one: openssl rand -base64 32. The default is dev-grade only.
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-mend-compose-secret-change-me-please}

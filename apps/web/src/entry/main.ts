@@ -5,6 +5,11 @@ import * as path from "node:path";
 import { pipeline } from "node:stream";
 import { fileURLToPath } from "node:url";
 
+import { loadPublicNetwork } from "@mend/network";
+import { Effect } from "effect";
+
+import { forwardHeaders } from "./proxy-headers.ts";
+
 /**
  * The web tier's FRONT (ARCHITECTURE.md §2): one public port that owns the
  * single concern nitro cannot — relaying `/api` verbatim to the Mend API
@@ -20,6 +25,7 @@ import { fileURLToPath } from "node:url";
 
 const port = Number(process.env["PORT"] ?? "3105");
 const apiUrl = new URL(process.env["MEND_API_URL"] ?? "http://localhost:3101");
+const publicNetwork = Effect.runSync(loadPublicNetwork);
 
 // ─── The app server: nitro output, supervised unless external ───────────────
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -83,29 +89,6 @@ const hopByHop = new Set([
   "upgrade",
 ]);
 
-/**
- * Standard forwarded headers for both proxy paths. proto passes through an
- * upstream TLS terminator's value; the client address is APPENDED to
- * x-forwarded-for (never trusted verbatim) so the API can take the last,
- * proxy-written entry.
- */
-const forwardHeaders = (request: http.IncomingMessage): http.OutgoingHttpHeaders => {
-  const proto = request.headers["x-forwarded-proto"];
-  const priorFor = request.headers["x-forwarded-for"];
-  return {
-    ...request.headers,
-    // The upstream sees the proxy's hostname otherwise; keep the client's.
-    "x-forwarded-host": request.headers.host ?? "",
-    "x-forwarded-proto": typeof proto === "string" && proto !== "" ? proto : "http",
-    "x-forwarded-for": [
-      Array.isArray(priorFor) ? priorFor.join(", ") : priorFor,
-      request.socket.remoteAddress,
-    ]
-      .filter(Boolean)
-      .join(", "),
-  };
-};
-
 /** Forward one request verbatim; stream both directions, never buffer. */
 const proxyRequest = (
   target: URL,
@@ -118,7 +101,10 @@ const proxyRequest = (
       port: target.port,
       method: request.method,
       path: request.url,
-      headers: forwardHeaders(request),
+      headers: forwardHeaders({
+        headers: request.headers,
+        remoteAddress: request.socket.remoteAddress,
+      }),
     },
     (upstreamResponse) => {
       // The client can be gone before the upstream answers (probe hangups
@@ -175,7 +161,10 @@ server.on("upgrade", (request, socket, head) => {
     port: apiUrl.port,
     method: request.method,
     path: url,
-    headers: forwardHeaders(request),
+    headers: forwardHeaders({
+      headers: request.headers,
+      remoteAddress: request.socket.remoteAddress,
+    }),
   });
   // Node hands the detached socket to this listener with NO error handling of
   // its own: a client reset before the API answers would otherwise be an
@@ -209,7 +198,7 @@ server.on("upgrade", (request, socket, head) => {
 
 server.listen(port, () => {
   console.log(
-    `[web] listening on :${port} · /api → ${apiUrl.origin} · app → ${appUrl.origin}${externalApp === undefined ? " (supervised nitro)" : ""}`,
+    `[web] listening on :${port} · public ${publicNetwork.appUrl} · /api → ${apiUrl.origin} · app → ${appUrl.origin}${externalApp === undefined ? " (supervised nitro)" : ""}`,
   );
 });
 

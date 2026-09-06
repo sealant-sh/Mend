@@ -62,8 +62,7 @@ export const signIn = async (input: SignInInput): Promise<SignInResult> => {
   try {
     response = await fetch(`${url}/api/auth/sign-in/email`, {
       method: "POST",
-      // better-auth's CSRF check rejects the `Origin: null` a non-browser fetch
-      // sends; the server's own URL is always a trusted origin, so present that.
+      // Sign-in must name one of the server's explicitly configured public origins.
       headers: { "content-type": "application/json", origin: url },
       body: JSON.stringify({ email: input.email, password: input.password }),
     });

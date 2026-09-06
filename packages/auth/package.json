@@ -13,6 +13,7 @@
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@mend/network": "workspace:*",
     "better-auth": "catalog:",
     "effect": "catalog:",
     "pg": "catalog:"

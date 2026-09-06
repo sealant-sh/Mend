@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { chooseUrl, groupCode, minutesUntil, pairingLink } from "./pair.ts";
+import { chooseUrl, groupCode, minutesUntil, pairingLink, renderQr } from "./pair.ts";
 
 type Handler = (request: IncomingMessage, response: ServerResponse) => void;
 
@@ -46,6 +46,7 @@ const runCli = async (
   const child = spawn(process.execPath, ["--experimental-strip-types", entrypoint, ...args], {
     env,
     stdio: ["ignore", "pipe", "pipe"],
+    timeout: 10_000,
   });
   let stdout = "";
   let stderr = "";
@@ -55,8 +56,13 @@ const runCli = async (
   child.stderr.on("data", (chunk: Buffer) => {
     stderr += chunk.toString();
   });
-  const [code] = await once(child, "exit");
-  return { code: typeof code === "number" ? code : null, stdout, stderr };
+  try {
+    const [code] = await once(child, "close");
+    return { code: typeof code === "number" ? code : null, stdout, stderr };
+  } finally {
+    child.kill();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 };
 
 describe("pairing facts", () => {
@@ -71,12 +77,16 @@ describe("pairing facts", () => {
     );
   });
 
-  it("prefers the tailnet address, then the first candidate, then --url over both", () => {
-    const urls = ["http://192.168.1.5:3105", "http://100.64.1.2:3105"];
-    expect(chooseUrl(urls, null)).toBe("http://100.64.1.2:3105");
-    expect(chooseUrl(["http://192.168.1.5:3105"], null)).toBe("http://192.168.1.5:3105");
-    expect(chooseUrl(urls, "http://mend.local:3105")).toBe("http://mend.local:3105");
+  it("preserves configured order and accepts only exact configured overrides", () => {
+    const urls = ["https://mend.example", "http://100.64.1.2:3105"];
+    expect(chooseUrl(urls, null)).toBe("https://mend.example");
+    expect(chooseUrl(urls.toReversed(), null)).toBe("http://100.64.1.2:3105");
+    for (const url of urls) {
+      expect(chooseUrl(urls, url)).toBe(url);
+    }
+    expect(chooseUrl(urls, "http://mend.local:3105")).toBeNull();
     expect(chooseUrl([], null)).toBeNull();
+    expect(chooseUrl([], "https://mend.example")).toBeNull();
   });
 
   it("reports whole minutes left, and nothing at all for an unreadable date", () => {
@@ -88,35 +98,114 @@ describe("pairing facts", () => {
 });
 
 describe("mend pair", () => {
-  it("prints the QR, the grouped code, the chosen URL, and when it expires", async () => {
-    const requests: Array<string> = [];
-    const fake = await startFakeMend((request, response) => {
-      requests.push(`${request.method ?? ""} ${request.url ?? ""}`);
-      if (request.url === "/api/me/devices/pairings") {
-        response.writeHead(200, { "content-type": "application/json" });
-        response.end(
-          JSON.stringify({
-            code: "ABCDEFGH",
-            expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
-            urls: ["http://192.168.1.5:3105", "http://100.64.1.2:3105"],
-          }),
-        );
-        return;
-      }
-      response.writeHead(404).end();
-    });
+  it.each([null, "http://100.64.1.2:3105"])(
+    "prints the configured URL and QR with override %s, without Origin",
+    async (override) => {
+      const requests: Array<{
+        method: string | undefined;
+        url: string | undefined;
+        origin: string | undefined;
+        authorization: string | undefined;
+      }> = [];
+      const fake = await startFakeMend((request, response) => {
+        requests.push({
+          method: request.method,
+          url: request.url,
+          origin: request.headers.origin,
+          authorization: request.headers.authorization,
+        });
+        if (request.url === "/api/me/devices/pairings") {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(
+            JSON.stringify({
+              code: "ABCDEFGH",
+              expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+              urls: ["https://mend.example", "http://100.64.1.2:3105"],
+            }),
+          );
+          return;
+        }
+        response.writeHead(404).end();
+      });
 
+      try {
+        const args = override === null ? ["pair"] : ["pair", "--url", override];
+        const result = await runCli(fake.url, args, { token: "test-token" });
+        expect(result.stderr).toBe("");
+        expect(result.code).toBe(0);
+        expect(requests).toEqual([
+          {
+            method: "POST",
+            url: "/api/me/devices/pairings",
+            origin: undefined,
+            authorization: "Bearer test-token",
+          },
+        ]);
+        // The QR renders as block characters, on a pipe as well as in a terminal.
+        expect(result.stdout).toContain("▄");
+        expect(result.stdout).toContain("ABCD-EFGH");
+        const selectedUrl = override ?? "https://mend.example";
+        expect(result.stdout).toContain(`url     ${selectedUrl}\n`);
+        expect(result.stdout).toContain(await renderQr(pairingLink(selectedUrl, "ABCDEFGH")));
+        expect(result.stdout).toContain("in 10 min");
+        expect(result.stdout).toContain("enter the url and the code");
+      } finally {
+        await fake.close();
+      }
+    },
+  );
+
+  it.each([
+    "https://unlisted.example",
+    "https://mend.example/",
+    "https://MEND.example",
+    "https://mend.example:443",
+    "http://mend.example",
+    "https://mend.example/path",
+    "https://mend.example?query=1",
+    "https://mend.example#fragment",
+    "https://user@mend.example",
+    " https://mend.example",
+    "",
+  ])("rejects unconfigured --url %s without printing a QR or code", async (override) => {
+    const fake = await startFakeMend((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" }).end(
+        JSON.stringify({
+          code: "ABCDEFGH",
+          expiresAt: new Date(Date.now() + 600_000).toISOString(),
+          urls: ["https://mend.example", "http://100.64.1.2:3105"],
+        }),
+      );
+    });
     try {
-      const result = await runCli(fake.url, ["pair"], { token: "test-token" });
-      expect(result.stderr).toBe("");
-      expect(result.code).toBe(0);
-      expect(requests).toEqual(["POST /api/me/devices/pairings"]);
-      // The QR renders as block characters, on a pipe as well as in a terminal.
-      expect(result.stdout).toContain("▄");
-      expect(result.stdout).toContain("ABCD-EFGH");
-      expect(result.stdout).toContain("http://100.64.1.2:3105");
-      expect(result.stdout).toContain("in 10 min");
-      expect(result.stdout).toContain("enter the url and the code");
+      const result = await runCli(fake.url, ["pair", "--url", override], { token: "test-token" });
+      expect(result.code).toBe(1);
+      expect(result.stderr).toBe(
+        "mend: --url must exactly match one of the server's configured pairing URLs\n",
+      );
+      expect(result.stdout).toBe("");
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it.each([[], ["--url"]])("rejects missing server URLs or flag values: %j", async (...args) => {
+    const fake = await startFakeMend((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" }).end(
+        JSON.stringify({
+          code: "ABCDEFGH",
+          expiresAt: new Date().toISOString(),
+          urls: [],
+        }),
+      );
+    });
+    try {
+      const result = await runCli(fake.url, ["pair", ...args], { token: "test-token" });
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain(
+        args.length === 0 ? "no configured pairing URLs" : "--url requires an exact URL",
+      );
+      expect(result.stdout).toBe("");
     } finally {
       await fake.close();
     }

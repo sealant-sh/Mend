@@ -56,27 +56,9 @@ export const groupCode = (code: string): string => {
 export const pairingLink = (url: string, code: string): string =>
   `mend://pair?u=${encodeURIComponent(url)}&c=${code}`;
 
-/**
- * Tailscale hands every node an IPv4 in the CGNAT range 100.64.0.0/10 — the same
- * observation packages/api/src/machine.ts makes. A tailnet URL is preferred because
- * it keeps working when the phone leaves the LAN.
- */
-const isTailnetUrl = (value: string): boolean => {
-  let host: string;
-  try {
-    host = new URL(value).hostname;
-  } catch {
-    return false;
-  }
-  const parts = host.split(".").map(Number);
-  const [first, second] = parts;
-  if (parts.length !== 4 || first === undefined || second === undefined) return false;
-  return first === 100 && second >= 64 && second <= 127;
-};
-
-/** `--url` wins; otherwise the tailnet address, otherwise the first candidate the server offered. */
+/** Keep the server's configured order; an override must match a configured URL exactly. */
 export const chooseUrl = (urls: ReadonlyArray<string>, override: string | null): string | null =>
-  override ?? urls.find(isTailnetUrl) ?? urls[0] ?? null;
+  override === null ? (urls[0] ?? null) : urls.includes(override) ? override : null;
 
 /** Whole minutes left, floored at 0; null when the server sent a date this CLI cannot read. */
 export const minutesUntil = (expiresAt: string, now: number = Date.now()): number | null => {
@@ -98,10 +80,16 @@ export const renderQr = async (text: string): Promise<string> => {
  */
 export const pairCommand = async (args: ReadonlyArray<string>, api: ApiCall): Promise<void> => {
   const pairing = await api<PairingDto>("POST", "/me/devices/pairings");
-  const url = chooseUrl(pairing.urls, takeFlagValue(args, "--url"));
+  const override = takeFlagValue(args, "--url");
+  if (args.includes("--url") && override === null) {
+    return fail("--url requires an exact URL configured on the server");
+  }
+  const url = chooseUrl(pairing.urls, override);
   if (url === null) {
     return fail(
-      "no LAN or tailnet address to hand the device — pass one: mend pair --url http://<host>:<port>",
+      override === null
+        ? "the server returned no configured pairing URLs; configure APP_URL on the server"
+        : "--url must exactly match one of the server's configured pairing URLs",
     );
   }
   const minutes = minutesUntil(pairing.expiresAt);

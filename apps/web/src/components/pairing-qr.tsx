@@ -16,30 +16,10 @@ import type { PairingDto } from "#/lib/api";
 export const pairingPayload = (baseUrl: string, code: string): string =>
   `mend://pair?u=${encodeURIComponent(baseUrl)}&c=${code}`;
 
-/** localhost is the operator's own view of the machine — never a phone's route to it. */
-const isLoopbackOrigin = (origin: string): boolean => {
-  try {
-    const host = new URL(origin).hostname;
-    return host === "localhost" || host === "[::1]" || host === "::1" || host.startsWith("127.");
-  } catch {
-    return true;
-  }
-};
-
-/**
- * Candidate URLs for the phone. The server enumerates the addresses bound to
- * its interfaces; the origin this page was served from is the one address
- * observed to reach the machine — a MagicDNS name, a reverse proxy, a container
- * address — so it leads the list whenever it is not loopback.
- */
-export const pairingUrls = (
-  pairing: PairingDto,
-  origin: string = typeof window === "undefined" ? "" : window.location.origin,
-): ReadonlyArray<string> => {
-  const own = origin !== "" && !isLoopbackOrigin(origin) ? [origin] : [];
-  const urls = [...new Set([...own, ...pairing.urls])];
-  return urls.length > 0 ? urls : [origin];
-};
+/** Configured public URLs for the phone, in the server's preferred order. */
+export const pairingUrls = (pairing: PairingDto): ReadonlyArray<string> => [
+  ...new Set(pairing.urls),
+];
 
 /** "ABCDEFGH" → "ABCD-EFGH", the shape the code is read aloud in. */
 export const groupCode = (code: string): string =>

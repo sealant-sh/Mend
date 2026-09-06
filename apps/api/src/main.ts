@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 
 import { NodeHttpServer, NodeRuntime } from "@effect/platform-node";
-import { Auth } from "@mend/auth";
+import { Auth, AuthLive } from "@mend/auth";
 import {
   AgentConversationRepoLive,
   BriefCommentsRepoLive,
@@ -81,6 +81,7 @@ import {
   SessionNotifierLive,
   startRunToolLayer,
 } from "@mend/jobs";
+import { NetworkConfig, NetworkConfigLive } from "@mend/network";
 import { asSealantUser, SealantLiveFromEnv } from "@mend/sealant";
 import {
   FollowUpDeliveryLive,
@@ -109,19 +110,13 @@ import {
   DeploymentConfigLive,
 } from "@mend/store";
 import { Config, Effect, Layer, Option, Schema } from "effect";
-import {
-  HttpMiddleware,
-  HttpRouter,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
+import { publicNetworkPolicy } from "./public-network-policy.ts";
 import { MendApiLive } from "./routes/api-live.ts";
 import { EventsRoutes } from "./routes/events.ts";
 import { GhLive } from "./routes/github.ts";
-import { KeysBridgeRoutes } from "./routes/keys-bridge.ts";
-import { ServiceTunnelRoutes } from "./routes/service-tunnel.ts";
-import { TtyRoutes } from "./routes/tty.ts";
+import { WebSocketRoutes } from "./routes/websocket.ts";
 import { HostEnvironmentLive } from "./services/host-environment.ts";
 
 /**
@@ -243,18 +238,15 @@ const AuthRoutes = HttpRouter.use((router) =>
 const ServerLive = Layer.unwrap(
   Effect.gen(function* () {
     const port = yield* Config.int("PORT").pipe(Config.orElse(() => Config.succeed(3101)));
-    // Self-host posture: the instance lives behind the operator's perimeter,
-    // and clients are many-origin by design (phone app, Expo web dev, LAN).
+    const network = yield* NetworkConfig;
     return HttpRouter.serve(
       Layer.mergeAll(
         MendApiLive,
         AuthRoutes,
         EventsRoutes,
-        TtyRoutes,
-        ServiceTunnelRoutes,
-        KeysBridgeRoutes,
+        WebSocketRoutes,
+        publicNetworkPolicy(network),
       ),
-      { middleware: HttpMiddleware.cors({ allowedOrigins: () => true, credentials: true }) },
     ).pipe(Layer.provide(NodeHttpServer.layer(createServer, { port })));
   }),
 );
@@ -507,7 +499,8 @@ const MainLive = Layer.unwrap(
       // The host's GitHub CLI, behind the api's Gh service (adoption discovery).
       Layer.provide(GhLive),
       Layer.provide(HostEnvironmentLive),
-      Layer.provide(Auth.layer),
+      Layer.provide(AuthLive),
+      Layer.provide(NetworkConfigLive),
       // One Sealant client per user, provisioned on first use (docs/SEALANT-IDENTITY.md).
       Layer.provide(SealantLiveFromEnv.pipe(Layer.provide(SealantIdentityStoreLive))),
       Layer.provide(DatabaseLive),

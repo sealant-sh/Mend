@@ -4,8 +4,9 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/
 
 import { toTRPCError } from "./errors.ts";
 
+/** Per-request API connection and caller provenance for the tRPC transport. */
 export interface TrpcContext {
-  /** The incoming request's headers — cookie/authorization forwarded to the API. */
+  /** Cookie, authorization and Origin are forwarded together to the API. */
   readonly headers: Headers;
   readonly apiUrl: string;
 }
@@ -13,13 +14,15 @@ export interface TrpcContext {
 /** One fetch-backed runtime for every request; clients are per-request wiring only. */
 const runtime = ManagedRuntime.make(FetchHttpClient.layer);
 
-/** The caller's credentials ride along; nothing else does. */
+/** Never detach browser credentials from their Origin, or infer trust from Host. */
 const credentialHeaders = (headers: Headers): Record<string, string> => {
   const forwarded: Record<string, string> = {};
   const cookie = headers.get("cookie");
   const authorization = headers.get("authorization");
+  const origin = headers.get("origin");
   if (cookie !== null) forwarded["cookie"] = cookie;
   if (authorization !== null) forwarded["authorization"] = authorization;
+  if (origin !== null) forwarded["origin"] = origin;
   return forwarded;
 };
 

@@ -1327,6 +1327,15 @@ understand the work.
 
 ### Decided
 
+- **2026-09-05: CLI-installed, two-container server.** Installing Mend installs only the CLI;
+  `mend server setup` creates one application container containing Mend and its pinned Sealant
+  services, plus a separate official Postgres container with separate databases and users. Setup
+  manages named-volume storage, exact public origins, and persistent secrets/SSH identity. Users
+  select only a Mend version. Adoption accepts Git URLs, replacing earlier local-path adoption.
+  Remote-SSH uses per-server configuration and the client's Mend hostname by default. macOS and
+  installed VS Code acceptance are release gates. Details and implementation sequence:
+  [Packaging plan](docs/PACKAGING-PLAN.md).
+
 - **2026-08-28: externally-run agents are observed process rows.** An agent the user runs by hand —
   in a mend shell, an SSH session, an editor terminal — writes through the mounted harness home, and
   that makes it observable server-side: fresh transcript writes become an `agent-external` process
