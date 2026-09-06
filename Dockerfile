@@ -1,60 +1,86 @@
-# The product is one image plus Postgres (ARCHITECTURE.md §1). The same image
-# runs both servers: the Mend API (apps/api — contract, engine, workers;
-# MEND_MODE=all|api|worker) and the stateless web server (apps/web — TanStack
-# app + /api proxy). The default CMD supervises both for single-host use;
-# Kubernetes runs each entry as its own Deployment (deploy/helm/mend).
-#
-# Node 24 executes the TypeScript sources directly (type stripping); only the
-# web app's client/SSR bundle needs a build. The container-local installs run
-# with --lockfile=false on purpose: the repo's pnpm-lock.yaml is never written
-# by tooling here.
+# Mend bundle: one Mend container plus one official Postgres container at runtime.
+# Sealant stays a published platform dependency. These stages copy the released 0.28.0 artifacts;
+# this build never imports Core source or its database schema.
+FROM ghcr.io/sealant-sh/sealant-api@sha256:8b171e4c7818cb634208d6253799565a69f0fec4be35f4578cc4be6c9b6eba51 AS sealant-api
+FROM ghcr.io/sealant-sh/sealant-worker@sha256:e66005128fd32c19e6cea46189ce00e0edeb258221104bf77d6e1aa2e48dfc41 AS sealant-worker
+FROM ghcr.io/sealant-sh/sealant-ssh-gateway@sha256:5c408d44c5b6e671a9540557e9d1da826d316b2b15c18547fbb0b47581438638 AS sealant-ssh-gateway
+FROM ghcr.io/project-zot/zot-minimal@sha256:346cefc8dd90c6ffe1e714460ba4bb5f867eacae9b40ca87da3c2e7e034ad31a AS zot
 
-FROM node:24-slim AS base
+FROM node:26-bookworm-slim AS mend-build
 ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-RUN corepack enable
+RUN npm install --global corepack && corepack enable
 WORKDIR /app
-
-FROM base AS build
 COPY . .
-RUN pnpm install --lockfile=false
+RUN pnpm install --frozen-lockfile
 RUN pnpm --filter @mend/web build
 
-# Production node_modules only, resolved against the same manifests.
-FROM base AS prod-deps
-COPY pnpm-workspace.yaml package.json ./
-COPY tooling/typescript/package.json tooling/typescript/
-COPY packages/ui/package.json packages/ui/
-COPY packages/domain/package.json packages/domain/
-COPY packages/db/package.json packages/db/
-COPY packages/api-contracts/package.json packages/api-contracts/
-COPY packages/auth/package.json packages/auth/
-COPY packages/network/package.json packages/network/
-COPY packages/jobs/package.json packages/jobs/
-COPY packages/sealant/package.json packages/sealant/
-COPY packages/inference/package.json packages/inference/
-COPY packages/sessions/package.json packages/sessions/
-COPY packages/store/package.json packages/store/
-COPY packages/agent-protocol/package.json packages/agent-protocol/
-COPY apps/web/package.json apps/web/
-COPY apps/api/package.json apps/api/
-RUN pnpm install --prod --lockfile=false --ignore-scripts
+FROM node:26-bookworm-slim AS mend-production-dependencies
+ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN npm install --global corepack && corepack enable
+WORKDIR /app
+COPY . .
+RUN pnpm install --frozen-lockfile --prod \
+  --filter "@mend/api-server..." \
+  --filter "@mend/web..."
 
-FROM base AS runtime
-# The store shells out to git (adopt, worktrees, checkpoints, diffs) and spawns ssh for the
-# workspace git transport; slim images carry neither.
-RUN apt-get update && apt-get install -y --no-install-recommends git openssh-client ca-certificates \
+# RabbitMQ is a supporting process in the Mend image, not an idle Compose service. Its official
+# Ubuntu image supplies Erlang, rabbitmq-server, gosu, and the maintained container entrypoint.
+FROM rabbitmq:4.2.9-management@sha256:e70db4e9198f2e49c42a9857452436a0eb610da85875fd74a51487b648c64976 AS runtime
+
+ARG MEND_VERSION=dev
+LABEL org.opencontainers.image.title="Mend bundle" \
+  org.opencontainers.image.version="${MEND_VERSION}" \
+  dev.sealant.mend.sealant-version="0.28.0"
+
+# Required by Sealant's root-owned control sockets and the host Docker socket contract.
+USER root
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates git gh libatomic1 openssh-client \
   && rm -rf /var/lib/apt/lists/*
-ENV NODE_ENV=production MEND_MODE=all PORT=3105 MEND_API_SERVER_PORT=3101
-COPY --from=prod-deps /app/node_modules node_modules
-COPY --from=prod-deps /app/packages packages
-COPY --from=prod-deps /app/apps apps
-COPY --from=prod-deps /app/tooling tooling
-COPY packages packages
-COPY apps/web/src apps/web/src
-COPY apps/api/src apps/api/src
-COPY scripts/serve.mjs scripts/serve.mjs
-COPY --from=build /app/apps/web/.output apps/web/.output
-EXPOSE 3105 3101
-HEALTHCHECK --interval=15s --timeout=3s --start-period=20s \
-  CMD node -e "fetch('http://localhost:'+(process.env.PORT??3105)+'/api/health').then((r)=>process.exit(r.ok?0:1),()=>process.exit(1))"
-CMD ["node", "scripts/serve.mjs"]
+
+# Node comes from Mend's build image. Sealant's published bundles support this newer runtime too.
+COPY --from=mend-build /usr/local/bin/node /usr/local/bin/node
+# The released worker carries the Docker 27 CLI and matching buildx plugin it was tested with.
+COPY --from=sealant-worker /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=sealant-worker /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-buildx
+
+WORKDIR /app
+COPY --from=mend-production-dependencies /app/node_modules ./node_modules
+COPY --from=mend-production-dependencies /app/package.json /app/pnpm-workspace.yaml ./
+COPY --from=mend-production-dependencies /app/packages ./packages
+COPY --from=mend-production-dependencies /app/tooling ./tooling
+COPY --from=mend-production-dependencies /app/apps/api ./apps/api
+COPY --from=mend-production-dependencies /app/apps/web ./apps/web
+COPY --from=mend-build /app/apps/web/.output ./apps/web/.output
+COPY scripts/process-supervisor.mjs scripts/process-supervisor.mjs
+COPY scripts/bundle-supervisor.mjs scripts/bundle-supervisor.mjs
+COPY scripts/bundle-health.mjs scripts/bundle-health.mjs
+
+COPY --from=sealant-api /app/dist /opt/sealant/api/dist
+COPY --from=sealant-api /app/drizzle /opt/sealant/api/drizzle
+COPY --from=sealant-api /app/node_modules /opt/sealant/api/node_modules
+COPY --from=sealant-worker /app/dist /opt/sealant/worker/dist
+COPY --from=sealant-worker /app/node_modules /opt/sealant/worker/node_modules
+COPY --from=sealant-ssh-gateway /app/dist /opt/sealant/ssh-gateway/dist
+COPY --from=sealant-ssh-gateway /app/node_modules /opt/sealant/ssh-gateway/node_modules
+COPY --from=zot /usr/local/bin/ /opt/zot/
+COPY deploy/docker/zot-config.json /etc/zot/config.json
+RUN zot_binary="$(find /opt/zot -maxdepth 1 -type f -name 'zot-linux-*-minimal' -print -quit)" \
+  && test -n "$zot_binary" \
+  && ln -s "$zot_binary" /usr/local/bin/zot \
+  && mkdir -p /var/lib/mend/store /var/lib/mend/config /var/lib/mend/ssh /var/lib/registry /run/sealant/sockets /run/mend-bundle
+
+ENV NODE_ENV=production \
+  MEND_VERSION=${MEND_VERSION} \
+  HOME=/var/lib/mend/config \
+  XDG_CONFIG_HOME=/var/lib/mend/config \
+  MEND_MODE=all \
+  MEND_STORE_ROOT=/var/lib/mend/store \
+  SEALANT_MOUNT_ALLOWED_STORE_ROOTS=/var/lib/mend/store \
+  SEALANT_DOCKER_VOLUME_MAPPINGS='[{"logicalRoot":"/var/lib/mend/store","volumeName":"mend-store"},{"logicalRoot":"/run/sealant/sockets","volumeName":"mend-control"}]'
+
+EXPOSE 3105 2222 5000
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=15s --timeout=8s --start-period=90s --retries=4 \
+  CMD ["node", "/app/scripts/bundle-health.mjs"]
+ENTRYPOINT ["node", "/app/scripts/bundle-supervisor.mjs"]
